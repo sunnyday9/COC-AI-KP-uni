@@ -1,0 +1,20 @@
+[
+  "adjust_hp",
+  "adjust_mp",
+  "adjust_san",
+  "apply_major_wound",
+  "first_aid",
+  "grant_clue",
+  "end_game",
+  "medicine",
+  "melee_attack",
+  "opposed_check",
+  "ranged_attack",
+  "reset_day",
+  "roll_dice",
+  "san_check",
+  "skill_check",
+  "spend_luck",
+  "transition_scene",
+  "trigger_insanity"
+]

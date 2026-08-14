@@ -1,0 +1,19 @@
+{
+  "name": "ai-coc-kp",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "server",
+    "client",
+    "shared"
+  ],
+  "scripts": {
+    "dev:server": "cd server && npm run dev",
+    "dev:h5": "cd client && npm run dev:h5",
+    "build:h5": "cd client && npm run build:h5",
+    "test": "npm run test --workspace=server"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
