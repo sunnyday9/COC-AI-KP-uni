@@ -2,24 +2,34 @@
 import { ref, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../stores/gameStore'
-import { OCCUPATION_SKILL_VALUES, PERSONAL_INTEREST_BONUS, PERSONAL_INTEREST_COUNT } from '../../types/character'
+import { useGameStore } from '../../../stores/gameStore'
+import { OCCUPATION_SKILL_VALUES, PERSONAL_INTEREST_BONUS, PERSONAL_INTEREST_COUNT } from '../../../types/character'
 import {
   COC7_OCCUPATIONS,
   COC7_SKILLS,
   INTERPERSONAL_SKILL_IDS,
   getSkillName,
-} from '../../data/coc7'
+} from '../../../data/coc7'
 import {
   buildCharacterSheet as buildSheet,
   rollAttributes,
   getSkillBase,
-} from '../../logic/coc7Character'
-import type { COCAttributes } from '../../types/character'
-import AppLayout from '../../components/layout/AppLayout.vue'
+} from '../../../logic/coc7Character'
+import type { COCAttributes } from '../../../types/character'
+import AppLayout from '../../../components/layout/AppLayout.vue'
 
 const gameStore = useGameStore()
 const { selectedOccupationId, selectedOccupationName } = storeToRefs(gameStore)
+
+/**
+ * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
+ */
+// #ifdef H5
+const pageBg = '/static/bg/bg_desk.webp'
+// #endif
+// #ifndef H5
+const pageBg = '/pages/character/static/bg_desk.webp'
+// #endif
 
 const occupation = computed(() =>
   COC7_OCCUPATIONS.find((o) => o.id === selectedOccupationId.value) ?? null
@@ -177,14 +187,14 @@ function confirm() {
 
 function goBackOccupation() {
   uni.navigateBack({
-    fail: () => uni.redirectTo({ url: '/pages/occupation/index' }),
+    fail: () => uni.redirectTo({ url: '/pages/character/occupation/index' }),
   })
 }
 
 // 原 onMounted：无已选职业 → router.replace('/occupation')；uni 返回上一页等价
 onLoad(() => {
   if (!selectedOccupationId.value) {
-    uni.redirectTo({ url: '/pages/occupation/index' })
+    uni.redirectTo({ url: '/pages/character/occupation/index' })
     return
   }
   initOccupationSlots()
@@ -192,7 +202,7 @@ onLoad(() => {
 </script>
 
 <template>
-  <app-layout active="home" bg="/static/bg/bg_desk.png" :overlay="0.7">
+  <app-layout active="home" :bg="pageBg" :overlay="0.7">
     <view class="page-root">
       <!-- 进度指示 -->
       <view class="page-head">
@@ -312,6 +322,7 @@ onLoad(() => {
           <button
             class="gothic-btn action-btn"
             :class="{ 'is-disabled': !canConfirm() }"
+            hover-class="confirm-btn-hover"
             @click="confirm"
           >
             确认角色并进入游戏
@@ -555,5 +566,10 @@ onLoad(() => {
 }
 .action-btn {
   font-size: 0.875rem;
+}
+/* 确认主 CTA 按压态（Task 9 / Task 8 Minor ③：MP 端 :active 不生效 → hover-class） */
+.confirm-btn-hover {
+  background: hsla(165, 50%, 25%, 0.85);
+  border-color: hsl(165, 60%, 35%);
 }
 </style>

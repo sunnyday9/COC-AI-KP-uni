@@ -13,40 +13,55 @@
 			}
 		},
 		{
-			"path": "pages/occupation/index",
-			"style": {
-				"navigationBarTitleText": "选择职业"
-			}
-		},
-		{
-			"path": "pages/character-create/index",
-			"style": {
-				"navigationBarTitleText": "创建角色"
-			}
-		},
-		{
-			"path": "pages/game/index",
-			"style": {
-				"navigationBarTitleText": "游戏房间"
-			}
-		},
-		{
-			"path": "pages/game-end/index",
-			"style": {
-				"navigationBarTitleText": "结局总结"
-			}
-		},
-		{
 			"path": "pages/settings/index",
 			"style": {
 				"navigationBarTitleText": "设置"
 			}
-		},
+		}
+		// #ifdef H5
+		,
 		{
 			"path": "pages/rag-inspector/index",
 			"style": {
 				"navigationBarTitleText": "RAG Inspector"
 			}
+		}
+		// #endif
+	],
+	"subPackages": [
+		{
+			"root": "pages/game",
+			"pages": [
+				{
+					"path": "index",
+					"style": {
+						"navigationBarTitleText": "游戏房间"
+					}
+				},
+				{
+					"path": "game-end/index",
+					"style": {
+						"navigationBarTitleText": "结局总结"
+					}
+				}
+			]
+		},
+		{
+			"root": "pages/character",
+			"pages": [
+				{
+					"path": "occupation/index",
+					"style": {
+						"navigationBarTitleText": "选择职业"
+					}
+				},
+				{
+					"path": "character-create/index",
+					"style": {
+						"navigationBarTitleText": "创建角色"
+					}
+				}
+			]
 		}
 	],
 	"globalStyle": {

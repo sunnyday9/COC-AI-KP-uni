@@ -2,17 +2,27 @@
 import { ref, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../stores/gameStore'
+import { useGameStore } from '../../../stores/gameStore'
 import {
   COC7_OCCUPATIONS,
   OCCUPATION_CATEGORIES,
   type OccupationCategory,
   type COCOccupationDef,
-} from '../../data/coc7'
-import AppLayout from '../../components/layout/AppLayout.vue'
+} from '../../../data/coc7'
+import AppLayout from '../../../components/layout/AppLayout.vue'
 
 const gameStore = useGameStore()
 const { storyId, storyName } = storeToRefs(gameStore)
+
+/**
+ * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
+ */
+// #ifdef H5
+const pageBg = '/static/bg/bg_desk.webp'
+// #endif
+// #ifndef H5
+const pageBg = '/pages/character/static/bg_desk.webp'
+// #endif
 
 const searchQuery = ref('')
 const selectedCategory = ref<OccupationCategory | 'all'>('all')
@@ -66,7 +76,7 @@ const categoryCounts = computed(() => {
 
 function selectOccupation(id: string, name: string) {
   gameStore.setOccupation(id, name)
-  uni.navigateTo({ url: '/pages/character-create/index' })
+  uni.navigateTo({ url: '/pages/character/character-create/index' })
 }
 
 function eraLabel(era: 'any' | 'classic' | 'modern'): string {
@@ -84,7 +94,7 @@ onLoad(() => {
 </script>
 
 <template>
-  <app-layout active="home" bg="/static/bg/bg_desk.png" :overlay="0.7">
+  <app-layout active="home" :bg="pageBg" :overlay="0.7">
     <view class="page-root">
       <!-- 进度指示 -->
       <view class="page-head">

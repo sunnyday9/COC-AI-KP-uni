@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../stores/gameStore'
-import { getSkillName } from '../../data/coc7'
-import type { COCAttributes } from '../../types/character'
+import { useGameStore } from '../../../stores/gameStore'
+import { getSkillName } from '../../../data/coc7'
+import type { COCAttributes } from '../../../types/character'
 
 const gameStore = useGameStore()
 const { characterSheet, derivedStatsVersion } = storeToRefs(gameStore)

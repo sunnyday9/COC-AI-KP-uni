@@ -5,14 +5,25 @@ import { storeToRefs } from 'pinia'
 import { useGameStore } from '../../stores/gameStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useGameGuard } from '../../composables/useGameGuard'
-import ChatMessage from '../../components/game/ChatMessage.vue'
-import PlayerStatsBar from '../../components/game/PlayerStatsBar.vue'
-import DebugPanel from '../../components/game/DebugPanel.vue'
+import ChatMessage from './components/ChatMessage.vue'
+import PlayerStatsBar from './components/PlayerStatsBar.vue'
+import DebugPanel from './components/DebugPanel.vue'
 import AppLayout from '../../components/layout/AppLayout.vue'
 
 const isDev = import.meta.env.DEV
 const gameStore = useGameStore()
 const settingsStore = useSettingsStore()
+
+/**
+ * 背景图（Task 9 分包）：H5 走主包 public 目录（src/static/bg，H5 仅拷贝该目录）；
+ * MP 子包页面引用子包内 static（pages/game/static，WeChat 子包可引用自身资源）。
+ */
+// #ifdef H5
+const pageBg = '/static/bg/bg_game.webp'
+// #endif
+// #ifndef H5
+const pageBg = '/pages/game/static/bg_game.webp'
+// #endif
 const { messages, isSending, storyId, storyName, playerName, gamePhase, characterSheet, currentScene, cluesObtained } = storeToRefs(gameStore)
 const isEnded = computed(() => gamePhase.value === 'ended')
 const inputText = ref('')
@@ -56,7 +67,7 @@ onLoad(() => {
   const guard = useGameGuard()
   if (!guard.checkGameAccess()) return
   if (gamePhase.value === 'ended') {
-    uni.redirectTo({ url: '/pages/game-end/index' })
+    uni.redirectTo({ url: '/pages/game/game-end/index' })
   }
 })
 
@@ -79,12 +90,12 @@ onShow(() => {
   const guard = useGameGuard()
   if (!guard.checkGameAccess()) return
   if (gamePhase.value === 'ended') {
-    uni.redirectTo({ url: '/pages/game-end/index' })
+    uni.redirectTo({ url: '/pages/game/game-end/index' })
   }
 })
 
 watch(gamePhase, (p) => {
-  if (p === 'ended') uni.redirectTo({ url: '/pages/game-end/index' })
+  if (p === 'ended') uni.redirectTo({ url: '/pages/game/game-end/index' })
 })
 
 async function handleSend() {
@@ -158,7 +169,7 @@ async function confirmLoad(saveId: string) {
 </script>
 
 <template>
-  <app-layout active="game" bg="/static/bg/bg_game.png" :overlay="0.8">
+  <app-layout active="game" :bg="pageBg" :overlay="0.8">
     <view class="game-root">
       <!-- 主聊天列 -->
       <view class="main-col">
@@ -222,6 +233,7 @@ async function confirmLoad(saveId: string) {
             <button
               class="gothic-btn send-btn"
               :class="{ 'is-disabled': !inputText.trim() || isSending || isEnded }"
+              hover-class="send-btn-hover"
               @click="handleSend"
             >
               <view v-if="isSending" class="sigil-spinner small-spinner" />
@@ -258,6 +270,8 @@ async function confirmLoad(saveId: string) {
             class="gothic-input save-input"
             placeholder="存档名称"
             placeholder-class="gothic-ph"
+            confirm-type="done"
+            @confirm="confirmSave"
           />
           <text v-if="saveError" class="modal-error">{{ saveError }}</text>
           <view class="modal-actions">
@@ -445,6 +459,11 @@ async function confirmLoad(saveId: string) {
   flex-shrink: 0;
   padding: 8px 20px;
   align-self: flex-end;
+}
+/* 发送主 CTA 按压态（Task 9 / Task 8 Minor ③：MP 端 :active 不生效 → hover-class） */
+.send-btn-hover {
+  background: hsla(165, 50%, 25%, 0.85);
+  border-color: hsl(165, 60%, 35%);
 }
 .small-spinner {
   width: 16px;

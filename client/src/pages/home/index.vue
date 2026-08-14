@@ -23,7 +23,7 @@ onMounted(() => { loadStories() })
 
 async function goToSetup(story: IndexedStory) {
   await gameStore.startGame({ storyId: story.storyId, storyName: story.name })
-  uni.navigateTo({ url: '/pages/occupation/index' })
+  uni.navigateTo({ url: '/pages/character/occupation/index' })
 }
 
 function goScripts() {
@@ -32,7 +32,7 @@ function goScripts() {
 </script>
 
 <template>
-  <app-layout active="home" bg="/static/bg/bg_home.png" :overlay="0.7">
+  <app-layout active="home" bg="/static/bg/bg_home.webp" :overlay="0.7">
     <view class="page-root">
       <!-- Hero 区（带径向晕影） -->
       <view class="hero">

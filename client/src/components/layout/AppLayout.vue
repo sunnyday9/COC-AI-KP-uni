@@ -21,7 +21,7 @@ const props = withDefaults(defineProps<{
   /** 暗色遮罩不透明度（原 bg-black/70 ~ bg-black/80） */
   overlay?: number
 }>(), {
-  bg: '/static/bg/bg_home.png',
+  bg: '/static/bg/bg_home.webp',
   overlay: 0.7,
 })
 

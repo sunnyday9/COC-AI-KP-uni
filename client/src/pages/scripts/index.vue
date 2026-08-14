@@ -172,7 +172,7 @@ async function handleTestGraphRagExtract(storyId: string) {
 </script>
 
 <template>
-  <app-layout active="scripts" bg="/static/bg/bg_archives.png" :overlay="0.7">
+  <app-layout active="scripts" bg="/static/bg/bg_archives.webp" :overlay="0.7">
     <view class="page-root">
       <!-- 页头 -->
       <view class="page-head">
@@ -292,9 +292,16 @@ async function handleTestGraphRagExtract(storyId: string) {
 
                 <view class="graph-placeholder">
                   <text v-if="graphLoading[idx.storyId]" class="placeholder-text">加载图数据中...</text>
+                  <!-- #ifdef H5 -->
                   <text v-else class="placeholder-text">
-                    GraphRAG 图谱浏览（GraphBrowser）由 Task 9 提供
+                    图谱浏览请使用 RAG Inspector（设置页开发调试区入口）
                   </text>
+                  <!-- #endif -->
+                  <!-- #ifndef H5 -->
+                  <text v-else class="placeholder-text">
+                    图谱浏览工具仅 H5 端可用
+                  </text>
+                  <!-- #endif -->
                 </view>
               </view>
             </view>

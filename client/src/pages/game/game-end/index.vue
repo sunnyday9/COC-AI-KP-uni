@@ -2,13 +2,23 @@
 import { computed, ref } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../stores/gameStore'
-import { useGameGuard } from '../../composables/useGameGuard'
-import { downloadText } from '../../utils/downloadText'
-import AppLayout from '../../components/layout/AppLayout.vue'
+import { useGameStore } from '../../../stores/gameStore'
+import { useGameGuard } from '../../../composables/useGameGuard'
+import { downloadText } from '../../../utils/downloadText'
+import AppLayout from '../../../components/layout/AppLayout.vue'
 
 const gameStore = useGameStore()
 const { endingState, storyName, storyId, playerName } = storeToRefs(gameStore)
+
+/**
+ * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
+ */
+// #ifdef H5
+const pageBg = '/static/bg/bg_end.webp'
+// #endif
+// #ifndef H5
+const pageBg = '/pages/game/static/bg_end.webp'
+// #endif
 
 const exporting = ref(false)
 
@@ -121,7 +131,7 @@ onShow(() => {
 </script>
 
 <template>
-  <app-layout active="game" bg="/static/bg/bg_end.png" :overlay="0.8">
+  <app-layout active="game" :bg="pageBg" :overlay="0.8">
     <view class="page-root">
       <view class="ending-card" :style="{ borderColor: outcomeColor.border, boxShadow: '0 10px 40px ' + outcomeColor.glow }">
         <view class="card-head">

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Message } from '../../types/game'
+import type { Message } from '../../../types/game'
 
 const props = defineProps<{ msg: Message }>()
 const emit = defineEmits<{ (e: 'select-option', text: string): void }>()

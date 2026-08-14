@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { useDebugStore } from '../../stores/debugStore'
-import type { TraceEvent, Trace } from '../../services/tracing'
-import { downloadText } from '../../utils/downloadText'
+import { useDebugStore } from '../../../stores/debugStore'
+import type { TraceEvent, Trace } from '../../../services/tracing'
+import { downloadText } from '../../../utils/downloadText'
 
 const debug = useDebugStore()
 
