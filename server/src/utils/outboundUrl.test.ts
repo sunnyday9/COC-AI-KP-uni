@@ -43,6 +43,14 @@ describe('assertSafeOutboundUrl', () => {
     'http://[::ffff:0:7f00:1]',
     // IPv4-compatible form
     'http://[::127.0.0.1]',
+    // Unique local addresses fc00::/7 (RFC 4193)
+    'http://[fc00::1]',
+    'http://[fd00::1]',
+    'http://[fd12:3456::789a]',
+    'http://[fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]',
+    // Link-local fe80::/10
+    'http://[fe80::1]',
+    'http://[febf::1]',
   ])('rejects %s', (url) => {
     expect(() => assertSafeOutboundUrl(url)).toThrow()
   })

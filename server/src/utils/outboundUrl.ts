@@ -105,7 +105,18 @@ export function assertSafeOutboundUrl(raw: string): void {
     return
   }
   if (lower.includes(':')) {
-    // Other literal IPv6 (e.g. public addresses) — not a private/loopback form we reject.
+    // Unique local addresses fc00::/7 (RFC 4193) and link-local fe80::/10
+    // must be rejected (checked via the first hextet range).
+    const firstHextet = parseInt(lower.split(':')[0], 16)
+    if (!Number.isNaN(firstHextet)) {
+      if (firstHextet >= 0xfc00 && firstHextet <= 0xfdff) {
+        throw new Error('unsafe outbound host: unique local address (fc00::/7) is not allowed')
+      }
+      if (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) {
+        throw new Error('unsafe outbound host: link-local address (fe80::/10) is not allowed')
+      }
+    }
+    // Other literal IPv6 (e.g. public addresses) — allowed
     return
   }
   if (IPV4_RE.test(lower)) {
