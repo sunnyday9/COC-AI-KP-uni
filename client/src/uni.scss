@@ -74,3 +74,110 @@ $uni-color-subtitle: #555; // 二级标题颜色
 $uni-font-size-subtitle: 18px;
 $uni-color-paragraph: #3f536e; // 文章段落颜色
 $uni-font-size-paragraph: 15px;
+
+/* ══════════════════════════════════════════════════════════════════
+   AI COC Keeper 设计令牌（Task 8，提取自 original/tailwind.config.js）
+   颜色 / 字体 / 阴影 —— 供各页面与组件 <style lang="scss"> 使用
+   （自动注入所有 scss 样式块，无需手动 @import）
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── 墨与纸（主导色系）── */
+$c-void: hsl(220, 20%, 4%);
+$c-abyss: hsl(220, 18%, 7%);
+$c-obsidian: hsl(220, 16%, 11%);
+$c-obsidian-light: hsl(220, 15%, 14%);
+$c-slate: hsl(220, 14%, 16%);
+$c-slate-light: hsl(220, 12%, 22%);
+$c-ash: hsl(220, 10%, 30%);
+$c-fog: hsl(220, 8%, 50%);
+
+/* 羊皮纸（正文/标题暖色） */
+$c-parchment-50: hsl(38, 50%, 95%);
+$c-parchment-100: hsl(38, 50%, 88%);
+$c-parchment-200: hsl(38, 45%, 82%);
+$c-parchment-300: hsl(38, 40%, 78%);
+$c-parchment-400: hsl(38, 35%, 68%);
+$c-parchment-500: hsl(38, 30%, 60%);
+$c-parchment-600: hsl(38, 25%, 55%);
+$c-parchment-700: hsl(38, 22%, 42%);
+$c-parchment-800: hsl(38, 20%, 30%);
+$c-parchment-900: hsl(38, 18%, 18%);
+
+/* 克苏鲁绿（主题强调色） */
+$c-eldritch-50: hsl(165, 50%, 90%);
+$c-eldritch-100: hsl(165, 50%, 78%);
+$c-eldritch-200: hsl(165, 55%, 65%);
+$c-eldritch-300: hsl(165, 60%, 50%);
+$c-eldritch-400: hsl(165, 70%, 45%);
+$c-eldritch-500: hsl(165, 60%, 35%);
+$c-eldritch-600: hsl(165, 55%, 28%);
+$c-eldritch-700: hsl(165, 45%, 22%);
+$c-eldritch-800: hsl(165, 40%, 15%);
+$c-eldritch-900: hsl(165, 35%, 10%);
+$c-eldritch-mist: hsla(165, 60%, 35%, 0.12);
+
+/* 血（伤害/危险） */
+$c-blood-50: hsl(0, 60%, 92%);
+$c-blood-100: hsl(0, 55%, 82%);
+$c-blood-200: hsl(0, 60%, 65%);
+$c-blood-300: hsl(0, 65%, 50%);
+$c-blood-400: hsl(0, 70%, 45%);
+$c-blood-500: hsl(0, 65%, 35%);
+$c-blood-600: hsl(0, 60%, 28%);
+$c-blood-700: hsl(0, 55%, 22%);
+$c-blood-800: hsl(0, 50%, 15%);
+$c-blood-900: hsl(0, 45%, 10%);
+
+/* 理智（紫） */
+$c-sanity-50: hsl(260, 50%, 92%);
+$c-sanity-100: hsl(260, 45%, 80%);
+$c-sanity-200: hsl(260, 50%, 68%);
+$c-sanity-300: hsl(260, 55%, 58%);
+$c-sanity-400: hsl(260, 60%, 55%);
+$c-sanity-500: hsl(260, 50%, 45%);
+$c-sanity-600: hsl(260, 45%, 35%);
+$c-sanity-700: hsl(260, 40%, 25%);
+$c-sanity-800: hsl(260, 35%, 18%);
+$c-sanity-900: hsl(260, 30%, 12%);
+
+/* 仪式金（烛光/黄铜） */
+$c-ritual-50: hsl(42, 70%, 92%);
+$c-ritual-100: hsl(42, 65%, 80%);
+$c-ritual-200: hsl(42, 68%, 68%);
+$c-ritual-300: hsl(42, 70%, 58%);
+$c-ritual-400: hsl(42, 70%, 50%);
+$c-ritual-500: hsl(42, 65%, 42%);
+$c-ritual-600: hsl(42, 55%, 32%);
+$c-ritual-700: hsl(42, 50%, 24%);
+$c-ritual-800: hsl(42, 45%, 16%);
+$c-ritual-900: hsl(42, 40%, 10%);
+
+/* 魔力蓝（神秘） */
+$c-mana-50: hsl(210, 55%, 92%);
+$c-mana-100: hsl(210, 50%, 78%);
+$c-mana-200: hsl(210, 55%, 65%);
+$c-mana-300: hsl(210, 60%, 55%);
+$c-mana-400: hsl(210, 60%, 45%);
+$c-mana-500: hsl(210, 55%, 38%);
+$c-mana-600: hsl(210, 50%, 30%);
+$c-mana-700: hsl(210, 45%, 22%);
+$c-mana-800: hsl(210, 40%, 15%);
+$c-mana-900: hsl(210, 35%, 10%);
+
+/* ── 字体族 ── */
+$font-display: 'Cinzel Decorative', Georgia, 'Noto Serif SC', 'STZhongsong', 'SimSun', serif;
+$font-serif: 'Crimson Text', Georgia, 'Noto Serif SC', 'Songti SC', 'SimSun', '华文宋体', serif;
+$font-body: 'Fira Sans', 'Noto Sans SC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+$font-mono: 'Fira Code', Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
+
+/* ── 阴影 ── */
+$shadow-eldritch: 0 0 15px hsla(165, 60%, 35%, 0.25), inset 0 0 30px hsla(165, 60%, 35%, 0.05);
+$shadow-eldritch-lg: 0 0 30px hsla(165, 60%, 35%, 0.35), inset 0 0 60px hsla(165, 60%, 35%, 0.08);
+$shadow-blood: 0 0 12px hsla(0, 65%, 35%, 0.3);
+$shadow-blood-pulse: 0 0 20px hsla(0, 70%, 45%, 0.5);
+$shadow-sanity: 0 0 12px hsla(260, 50%, 45%, 0.3);
+$shadow-ritual: 0 0 12px hsla(42, 70%, 50%, 0.3);
+$shadow-mana: 0 0 12px hsla(210, 60%, 45%, 0.3);
+$shadow-ink: 0 1px 3px hsla(220, 20%, 4%, 0.6), 0 0 0 1px hsla(220, 14%, 16%, 0.6);
+$shadow-ink-lg: 0 4px 16px hsla(220, 20%, 4%, 0.5), 0 0 0 1px hsla(220, 14%, 16%, 0.5);
+$shadow-inner-glow: inset 0 0 40px hsla(165, 60%, 35%, 0.04);
