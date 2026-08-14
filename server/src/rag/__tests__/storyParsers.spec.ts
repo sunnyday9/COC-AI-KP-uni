@@ -3,9 +3,16 @@
  * Migrated from original/ai-trpg-web/electron/rag/__tests__/storyParsers.spec.ts.
  * Only html/extension dispatch is exercised (docx/epub/pdf would need real
  * fixture files — same scope as the original spec).
+ *
+ * ADDED (task-5-brief decision 8): parsePdfWithOcr text-path test using a
+ * pdf-lib-generated in-memory PDF fixture (Task 4 review Minor). The OCR
+ * path (embedded images + tesseract) is marked skip — it needs the real
+ * chi_sim+eng traineddata in server/assets/tesseract and takes seconds; run
+ * manually when required.
  */
 import { describe, it, expect } from 'vitest'
-import { parseHtml, parseByExtension } from '../storyParsers.js'
+import { parseHtml, parseByExtension, parsePdfWithOcr } from '../storyParsers.js'
+import { makePdfWithText } from '../../../test/helpers/pdfFixture.js'
 
 describe('rag/storyParsers', () => {
   describe('parseHtml', () => {
@@ -41,6 +48,31 @@ describe('rag/storyParsers', () => {
       const html = '<p>HTM file content</p>'
       const result = await parseByExtension('.htm', html)
       expect(result).toContain('HTM file content')
+    })
+  })
+
+  describe('parsePdfWithOcr', () => {
+    it('extracts the text layer from a pdf-lib generated PDF (no OCR)', async () => {
+      const pdf = await makePdfWithText('Hello COC PDF world 123')
+      const text = await parsePdfWithOcr(pdf)
+      expect(text).toContain('Hello COC PDF world')
+      expect(text).toContain('123')
+    })
+
+    it('returns the main text even when the buffer exceeds the 50MB guard', async () => {
+      const pdf = await makePdfWithText('small but oversized guard text')
+      const padded = Buffer.concat([pdf, Buffer.alloc(50 * 1024 * 1024 + 1)])
+      const text = await parsePdfWithOcr(padded)
+      expect(text).toContain('oversized guard text')
+    })
+
+    it.skip('OCR path smoke (embedded image): requires real chi_sim+eng traineddata', async () => {
+      // Enable manually: renders tesseract workers against
+      // server/assets/tesseract (langPath) — takes several seconds and needs
+      // the traineddata staged; CI-safe default is skip.
+      // Build a PDF embedding a JPEG/PNG, call parsePdfWithOcr, expect no
+      // throw and main text retained.
+      expect(true).toBe(true)
     })
   })
 })

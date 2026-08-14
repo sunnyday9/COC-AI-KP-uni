@@ -11,6 +11,9 @@ export class BadRequestError extends Error {}
 /** Conflict (e.g. duplicate username) → HTTP 409. */
 export class ConflictError extends Error {}
 
+/** Resource not found (missing story/script/save) → HTTP 404. */
+export class NotFoundError extends Error {}
+
 /** Authentication failure → HTTP 401. */
 export class UnauthorizedError extends Error {}
 
@@ -37,6 +40,10 @@ export function sendError(res: Response, err: unknown): void {
   }
   if (err instanceof ConflictError) {
     res.status(409).json({ error: err.message })
+    return
+  }
+  if (err instanceof NotFoundError) {
+    res.status(404).json({ error: err.message })
     return
   }
   if (err instanceof UpstreamError) {

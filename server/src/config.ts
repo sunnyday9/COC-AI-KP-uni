@@ -45,3 +45,21 @@ export const MODELS_DIR = process.env.MODELS_DIR
 export const TESSERACT_DATA_DIR = process.env.TESSERACT_DATA_DIR
   ? path.resolve(process.env.TESSERACT_DATA_DIR)
   : path.resolve(fileURLToPath(new URL('../assets/tesseract', import.meta.url)))
+
+/**
+ * Uploaded-file root (task-5-brief decision 2): per-user story/script files
+ * live under `UPLOADS_DIR/<userId>/stories|scripts/`. `UPLOADS_DIR` env
+ * overrides the default (tests point it at a per-worker temp dir).
+ */
+export const UPLOADS_DIR = process.env.UPLOADS_DIR
+  ? path.resolve(process.env.UPLOADS_DIR)
+  : path.resolve(fileURLToPath(new URL('../uploads', import.meta.url)))
+
+/**
+ * Max upload size in bytes (api-contract §10: stories/scripts uploads ≤ 50MB;
+ * the original Electron dialog had no limit but parsePdfWithOcr defends at
+ * 50MB too). Enforced by the multer `limits.fileSize` option. `MAX_UPLOAD_BYTES`
+ * env overrides (tests mock this constant to exercise the limit without
+ * allocating 50MB buffers).
+ */
+export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 50 * 1024 * 1024)

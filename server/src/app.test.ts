@@ -38,21 +38,13 @@ describe('app smoke', () => {
     ['GET', '/api/rag/health'],
     ['POST', '/api/rag/index'],
     ['POST', '/api/rag/query'],
-  ])('%s %s without token returns 401', async (method, route) => {
-    const res = await request(createApp())[method.toLowerCase() as 'get'](route)
-    expect(res.status).toBe(401)
-    expect(res.body.error).toBeDefined()
-  })
-
-  // Remaining routes stay unimplemented until their task lands (501).
-  it.each([
     ['GET', '/api/stories'],
     ['POST', '/api/stories/upload'],
     ['GET', '/api/scripts'],
     ['GET', '/api/saves'],
-  ])('%s %s returns 501 not implemented', async (method, route) => {
+  ])('%s %s without token returns 401', async (method, route) => {
     const res = await request(createApp())[method.toLowerCase() as 'get'](route)
-    expect(res.status).toBe(501)
-    expect(res.body).toEqual({ error: 'not implemented' })
+    expect(res.status).toBe(401)
+    expect(res.body.error).toBeDefined()
   })
 })
