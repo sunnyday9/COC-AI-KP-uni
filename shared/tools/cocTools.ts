@@ -1,4 +1,27 @@
-const COC_KP_TOOLS = [
+/**
+ * COC KP tool definitions — SINGLE SOURCE OF TRUTH (Task 10).
+ *
+ * Migrated verbatim from `shared/tools/cocTools.cjs` (which itself was
+ * extracted byte-identical from `original/ai-trpg-web/electron/ipc/
+ * aiHandlers.cjs` COC_KP_TOOLS in Task 1). name/description/parameters are
+ * preserved word-for-word — do not "improve" wording, it must stay aligned
+ * with the server-side AI function-calling semantics and prompt wording.
+ *
+ * Consumers:
+ *  - server (kpAgentService → chatForAgent tools, aiService ChatTool type)
+ *  - client (toolCalling orchestrator name validation, consistency tests)
+ */
+
+export interface KpToolDef {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+export const COC_KP_TOOLS: KpToolDef[] = [
   {
     type: 'function',
     function: {
@@ -294,4 +317,5 @@ const COC_KP_TOOLS = [
   },
 ]
 
-module.exports = { COC_KP_TOOLS }
+/** Derived tool name list (single source for client-side name validation/display). */
+export const COC_TOOL_NAMES: string[] = COC_KP_TOOLS.map((t) => t.function.name)

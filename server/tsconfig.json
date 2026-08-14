@@ -13,6 +13,6 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "../shared/constants/**/*.ts"],
+  "include": ["src/**/*.ts", "../shared/constants/**/*.ts", "../shared/tools/**/*.ts"],
   "exclude": ["src/**/*.test.ts", "dist", "node_modules"]
 }

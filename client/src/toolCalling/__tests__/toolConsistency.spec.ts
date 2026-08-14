@@ -1,18 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { createRequire } from 'module'
 
-import cocToolNames from '../cocToolNames.json'
+import { COC_TOOL_NAMES } from '../../../../shared/tools/cocTools'
 import { checkHandler } from '../handlers/checkHandler'
 import { combatHandler } from '../handlers/combatHandler'
 import { sanityHandler } from '../handlers/sanityHandler'
 import { resourceHandler } from '../handlers/resourceHandler'
 import { narrativeHandler } from '../handlers/narrativeHandler'
 
-const require = createRequire(import.meta.url)
-const { COC_KP_TOOLS } = require('../../../../shared/tools/cocTools.cjs') as {
-  COC_KP_TOOLS: Array<{ function?: { name?: string } }>
-}
-
+/**
+ * Tool name consistency (Task 10 单一来源化后改版):
+ * 数据源从 `cocToolNames.json` + `require(shared/tools/cocTools.cjs)` 双来源
+ * 改为唯一的 `shared/tools/cocTools.ts` 导出 COC_TOOL_NAMES（server COC_KP_TOOLS
+ * 同源）。原断言「json 与后端工具名集合一致」退化为同源自比较，因此测试语义改为：
+ * 1) COC_TOOL_NAMES 无重复（server 端工具定义逐字迁移的守卫）；
+ * 2) client 全部 handler 覆盖的工具名与 COC_TOOL_NAMES 完全一致（无遗漏、无多余）。
+ */
 function toSet(list: string[]): Set<string> {
   return new Set(list.filter((s) => typeof s === 'string' && s.length > 0))
 }
@@ -24,14 +26,13 @@ function expectSameSet(a: Set<string>, b: Set<string>) {
 }
 
 describe('toolCalling: tool name consistency', () => {
-  it('backend tools, tool name list, and renderer handlers match exactly', () => {
-    const backend = toSet(
-      (COC_KP_TOOLS || [])
-        .map((t) => String(t?.function?.name ?? '').trim())
-        .filter(Boolean)
-    )
+  it('COC_TOOL_NAMES (shared single source) has no duplicates', () => {
+    const list = toSet(COC_TOOL_NAMES)
+    expect(COC_TOOL_NAMES.length).toBe(list.size)
+  })
 
-    const list = toSet((cocToolNames as unknown as string[]) ?? [])
+  it('renderer handler tool names match COC_TOOL_NAMES exactly', () => {
+    const list = toSet(COC_TOOL_NAMES)
 
     const handlerNames = toSet([
       ...checkHandler.toolNames,
@@ -41,11 +42,6 @@ describe('toolCalling: tool name consistency', () => {
       ...narrativeHandler.toolNames,
     ])
 
-    // No duplicates in the source-of-truth list.
-    expect((cocToolNames as unknown as string[]).length).toBe(list.size)
-
-    expectSameSet(backend, list)
     expectSameSet(handlerNames, list)
   })
 })
-

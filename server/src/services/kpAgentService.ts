@@ -5,7 +5,7 @@ import {
   type KpToolCall,
   type KpTraceEvent,
 } from '../agent/kpGraph.js'
-import { COC_KP_TOOLS } from '../agent/cocTools.js'
+import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
 import { chatForAgent } from './aiService.js'
 import { getAiConfig } from './settingsService.js'
 import { BadRequestError, UpstreamError, errorMessage } from '../utils/errors.js'

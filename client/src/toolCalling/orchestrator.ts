@@ -1,16 +1,17 @@
 /**
  * Orchestrator: routes each tool call to the owning handler and aggregates results.
- * 工具名单以 cocToolNames.json 为单一来源，与主进程 COC_KP_TOOLS 保持一致。
+ * 工具名单以 shared/tools/cocTools.ts 的 COC_TOOL_NAMES 为单一来源（与 server 端
+ * COC_KP_TOOLS 同源，取代原 cocToolNames.json，Task 10）。
  */
 import type { ToolCall, ToolHandler, ToolHandlerContext, ToolHandlerResult } from './types'
 import type { Message } from '../types/game'
 import { traceBus } from '../services/tracing'
+import { COC_TOOL_NAMES } from '../../../shared/tools/cocTools'
 import { checkHandler } from './handlers/checkHandler'
 import { combatHandler } from './handlers/combatHandler'
 import { sanityHandler } from './handlers/sanityHandler'
 import { resourceHandler } from './handlers/resourceHandler'
 import { narrativeHandler } from './handlers/narrativeHandler'
-import cocToolNames from './cocToolNames.json'
 
 const HANDLERS: ToolHandler[] = [
   checkHandler,
@@ -30,12 +31,11 @@ const NAME_TO_HANDLER: Map<string, ToolHandler> = (() => {
   return m
 })()
 
-/** 校验：cocToolNames.json 中的每个工具均有对应 handler，避免前后端工具不一致 */
-const _toolNamesList = cocToolNames as string[]
+/** 校验：COC_TOOL_NAMES（shared 单一来源）中的每个工具均有对应 handler，避免前后端工具不一致 */
 if (import.meta.env?.DEV) {
-  const missing = _toolNamesList.filter((name) => !NAME_TO_HANDLER.has(name))
+  const missing = COC_TOOL_NAMES.filter((name) => !NAME_TO_HANDLER.has(name))
   if (missing.length) {
-    console.warn('[toolCalling] 以下工具在 cocToolNames.json 中定义但缺少前端 handler:', missing)
+    console.warn('[toolCalling] 以下工具在 COC_TOOL_NAMES 中定义但缺少前端 handler:', missing)
   }
 }
 

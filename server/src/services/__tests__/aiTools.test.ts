@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { register } from '../authService.js'
 import { saveSettings } from '../settingsService.js'
 import { chatForAgent } from '../aiService.js'
-import { COC_KP_TOOLS } from '../../agent/cocTools.js'
+import { COC_KP_TOOLS } from '../../../../shared/tools/cocTools.js'
 import { BadRequestError } from '../../utils/errors.js'
 
 /**

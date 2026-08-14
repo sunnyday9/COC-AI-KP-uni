@@ -9,6 +9,7 @@ import {
   type ModelOption,
 } from '../../../shared/constants/providers.js'
 import { getAiConfig } from './settingsService.js'
+import type { KpToolDef } from '../../../shared/tools/cocTools.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError, UpstreamError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
@@ -44,15 +45,11 @@ export interface ChatMessage {
   tool_call_id?: string
 }
 
-/** OpenAI-format tool definition (as defined in shared/tools/cocTools.cjs). */
-export interface ChatTool {
-  type: 'function'
-  function: {
-    name: string
-    description: string
-    parameters: Record<string, unknown>
-  }
-}
+/**
+ * OpenAI-format tool definition — single source: shared/tools/cocTools.ts
+ * (same shape as the original shared/tools/cocTools.cjs).
+ */
+export type ChatTool = KpToolDef
 
 /** Normalized tool call emitted by adapters (mirrors original aiHandlers.cjs). */
 export interface ToolCallResult {
