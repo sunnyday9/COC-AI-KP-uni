@@ -16,3 +16,32 @@ export const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me'
 export const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.resolve(fileURLToPath(new URL('../data', import.meta.url)))
+
+/**
+ * RAG persistence root (Task 4): per-user RAG data lives under
+ * `RAG_DATA_DIR/<userId>/` (rag_index / graph_index / ...), mirroring the
+ * original `userData/rag_index` + `userData/graph_index` layout with the
+ * user dimension added (task-4-brief decision 1). `RAG_DATA_DIR` env
+ * overrides the default (tests isolate per-worker into a temp dir).
+ */
+export const RAG_DATA_DIR = process.env.RAG_DATA_DIR
+  ? path.resolve(process.env.RAG_DATA_DIR)
+  : path.resolve(fileURLToPath(new URL('../data/rag', import.meta.url)))
+
+/**
+ * Local embedding model cache (task-4-brief decision 2): @huggingface/
+ * transformers downloads the builtin model here on first use.
+ */
+export const MODELS_DIR = process.env.MODELS_DIR
+  ? path.resolve(process.env.MODELS_DIR)
+  : path.resolve(fileURLToPath(new URL('../data/models', import.meta.url)))
+
+/**
+ * OCR language data (task-4-brief decision 4/5): chi_sim + eng traineddata
+ * copied into `server/assets/tesseract/`; pointed to by tesseract.js via
+ * `langPath`. The build script copies `server/assets` into `dist/server/assets`
+ * so the relative URL resolution works in dev (tsx) and prod (dist) alike.
+ */
+export const TESSERACT_DATA_DIR = process.env.TESSERACT_DATA_DIR
+  ? path.resolve(process.env.TESSERACT_DATA_DIR)
+  : path.resolve(fileURLToPath(new URL('../assets/tesseract', import.meta.url)))
