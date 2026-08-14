@@ -139,7 +139,11 @@ export class WSService {
     return this.openSocket()
   }
 
-  /** User-initiated shutdown (logout / app teardown). No reconnect. */
+  /**
+   * User-initiated shutdown (logout / app teardown). No reconnect.
+   * In-flight streams are failed with a terminal error so callers waiting
+   * on a stream never hang (task-7 minor fix ①).
+   */
   close(): void {
     this.closedByUser = true
     this.stopHeartbeat()
@@ -148,7 +152,7 @@ export class WSService {
       this.reconnectTimer = null
     }
     this.dropPendingConnect(new Error('Bridge: WebSocket 已关闭'))
-    this.streams.clear()
+    this.failActiveStreams('连接已关闭')
     this.errorTerminal.clear()
     this.backoffMs = 0
     const socket = this.socket

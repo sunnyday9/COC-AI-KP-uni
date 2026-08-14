@@ -53,10 +53,6 @@ function isBridgeError(err: unknown): err is BridgeError {
   return err instanceof BridgeError || (typeof err === 'object' && err !== null && (err as { isBridgeError?: unknown }).isBridgeError === true)
 }
 
-function asError(err: unknown): Error {
-  return isBridgeError(err) ? err : err instanceof Error ? err : new Error(String(err))
-}
-
 function parseBody<T>(data: unknown): T {
   if (typeof data === 'string') {
     try {
@@ -276,19 +272,19 @@ export class PlatformBridge implements Bridge {
     return unwrapContent(data)
   }
 
+  /** Threads the server's actual response through (task-7 minor fix ③). */
   async saveScript(id: string, content: string): Promise<{ ok: boolean }> {
-    await request<{ ok: true }>('PUT', `/api/scripts/${encodeURIComponent(id)}`, { content })
-    return { ok: true }
+    return request<{ ok: boolean }>('PUT', `/api/scripts/${encodeURIComponent(id)}`, { content })
   }
 
   /**
    * PUT /api/scripts/:id is an upsert — the server sanitizes the id
    * (fileNames.sanitizeFilename); the stored id is not guaranteed to equal
-   * `name` verbatim, so it is omitted here (callers can listScripts()).
+   * `name` verbatim, so it may be omitted here (callers can listScripts()).
+   * The server response (currently `{ ok: true }`) is returned as-is.
    */
   async saveScriptToLibrary(name: string, content: string): Promise<{ ok: boolean; id?: string }> {
-    await request<{ ok: true }>('PUT', `/api/scripts/${encodeURIComponent(name)}`, { content })
-    return { ok: true }
+    return request<{ ok: boolean; id?: string }>('PUT', `/api/scripts/${encodeURIComponent(name)}`, { content })
   }
 
   async deleteScript(id: string): Promise<void> {
@@ -330,7 +326,14 @@ export class PlatformBridge implements Bridge {
   async kpInvokeStream(params: {
     messages: { role: string; content: string }[]
   }): Promise<{ streamId: string }> {
-    await this.ws.connect()
+    try {
+      await this.ws.connect()
+    } catch (err) {
+      // WS-layer failures (not logged in / connect failure / closed) surface
+      // as BridgeError so `isBridgeError` checks stay uniform everywhere
+      // (task-7 minor fix ②).
+      throw err instanceof BridgeError ? err : new BridgeError(err instanceof Error ? err.message : String(err))
+    }
     const streamId = generateStreamId()
     this.ws.subscribe(streamId, {
       onChunk: (chunk) => this.fanOut({ streamId, type: 'chunk', chunk }),
@@ -341,7 +344,7 @@ export class PlatformBridge implements Bridge {
       this.ws.sendInvoke(streamId, params.messages)
     } catch (err) {
       this.ws.unsubscribe(streamId)
-      throw asError(err)
+      throw err instanceof BridgeError ? err : new BridgeError(err instanceof Error ? err.message : String(err))
     }
     return { streamId }
   }
