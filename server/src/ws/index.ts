@@ -5,6 +5,7 @@ import { invokeKpStream } from '../services/kpAgentService.js'
 import type { KpMessage } from '../agent/kpGraph.js'
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
+import { registerProgressSocket, unregisterProgressSocket } from './progress.js'
 
 /**
  * WebSocket endpoint `ws://<host>/ws?token=<JWT>` (api-contract §4).
@@ -16,7 +17,9 @@ import { logger } from '../utils/logging.js'
  *   with the same streamId (mirrors the original `kp:stream` IPC events).
  *   Concurrent streams on one connection are independent — every invocation
  *   closes over its own streamId and sends are guarded by readyState.
- * - `rag:progress` is server→client only (Task 4); unknown types are ignored.
+ * - `rag:progress` is server→client only (Task 4): connected sockets are
+ *   registered per user (see ./progress.ts) so long RAG tasks can push
+ *   `{ type: 'rag:progress', payload }` frames; unknown client types ignored.
  * - JSON text frames only (no binary frames).
  */
 export function createWsServer(httpServer: Server): WebSocketServer {
@@ -37,6 +40,7 @@ export function createWsServer(httpServer: Server): WebSocketServer {
       return
     }
     logger.info('ws client connected', { userId })
+    registerProgressSocket(userId, socket)
 
     socket.on('message', (data) => {
       let msg: unknown
@@ -64,10 +68,12 @@ export function createWsServer(httpServer: Server): WebSocketServer {
     })
 
     socket.on('close', () => {
+      unregisterProgressSocket(socket)
       logger.info('ws client disconnected', { userId })
     })
 
     socket.on('error', (err) => {
+      unregisterProgressSocket(socket)
       logger.warn('ws socket error', { userId, error: String(err) })
     })
   })

@@ -645,15 +645,18 @@ async function doGoogle(
 /**
  * Resolve the user's AI settings into a provider config, asserting the
  * outbound URL safety gate BEFORE any request is made.
+ * `modelOverride` (used by RAG graph extraction) replaces the settings model
+ * without requiring settings.ai.model to be set — mirrors the original
+ * invokeChat's `model: model || ai.model` precedence.
  */
-function resolveAiConfig(userId: number): { config: AIProviderConfig; protocol: string } {
+function resolveAiConfig(userId: number, modelOverride?: string): { config: AIProviderConfig; protocol: string } {
   const ai = getAiConfig(userId)
   const provider = ai.provider as AIProviderType
   if (!provider) throw new BadRequestError('请先在设置中配置 AI 提供商')
 
   const def = getProviderDef(provider)
   if (!def) throw new BadRequestError(`Unknown provider: ${provider}. 请在设置中选择正确的提供商。`)
-  if (!ai.model) throw new BadRequestError('请先在设置中选择或输入模型名称')
+  if (!ai.model && !modelOverride) throw new BadRequestError('请先在设置中选择或输入模型名称')
   const baseUrl = (ai.baseUrl || def.defaultBaseUrl || '').replace(/\/$/, '')
   if (!baseUrl) throw new BadRequestError('请在设置中填写 Base URL')
 
@@ -667,7 +670,7 @@ function resolveAiConfig(userId: number): { config: AIProviderConfig; protocol: 
   return {
     config: {
       provider,
-      model: ai.model,
+      model: modelOverride || ai.model,
       baseUrl,
       apiKey: ai.apiKey,
       temperature: ai.temperature,
@@ -787,6 +790,41 @@ export async function chatForAgent(
 }
 
 /* ═══════════════════ Model listing ═══════════════════ */
+
+/**
+ * RAG-path chat (Task 4 GraphRAG extraction / community summaries): like
+ * `chatForAgent` but non-streaming only and with a `model` override that
+ * takes precedence over settings.ai.model (mirrors the original invokeChat
+ * used by ragHandlers.cjs: `model: model || ai.model`). Every outbound
+ * request passes assertSafeOutboundUrl via resolveAiConfig.
+ */
+export async function chatForRag(
+  userId: number,
+  params: {
+    messages: ChatMessage[]
+    model?: string
+    temperature?: number
+    maxTokens?: number
+  },
+): Promise<{ content: string }> {
+  const messages = params.messages
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new BadRequestError('messages must be a non-empty array')
+  }
+
+  const { config, protocol } = resolveAiConfig(userId, params.model)
+  const temp = params.temperature ?? config.temperature ?? 0.7
+  const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
+
+  try {
+    const result = await dispatchChat(protocol, config, messages, false, temp, maxTokens)
+    return { content: result.content ?? '' }
+  } catch (err) {
+    if (err instanceof BadRequestError) throw err
+    logger.warn('rag graph LLM call failure', { provider: config.provider, error: err instanceof Error ? err.message : String(err) })
+    throw new UpstreamError(err instanceof Error ? err.message : String(err))
+  }
+}
 
 /**
  * List models for the user's configured provider (api-contract §3).

@@ -35,6 +35,9 @@ describe('app smoke', () => {
     ['POST', '/api/ai/chat'],
     ['GET', '/api/ai/models'],
     ['POST', '/api/kp/invoke'],
+    ['GET', '/api/rag/health'],
+    ['POST', '/api/rag/index'],
+    ['POST', '/api/rag/query'],
   ])('%s %s without token returns 401', async (method, route) => {
     const res = await request(createApp())[method.toLowerCase() as 'get'](route)
     expect(res.status).toBe(401)
@@ -47,8 +50,6 @@ describe('app smoke', () => {
     ['POST', '/api/stories/upload'],
     ['GET', '/api/scripts'],
     ['GET', '/api/saves'],
-    ['GET', '/api/rag/health'],
-    ['POST', '/api/rag/index'],
   ])('%s %s returns 501 not implemented', async (method, route) => {
     const res = await request(createApp())[method.toLowerCase() as 'get'](route)
     expect(res.status).toBe(501)
