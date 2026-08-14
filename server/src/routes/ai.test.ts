@@ -218,8 +218,16 @@ describe('ai models', () => {
     expect(res.body).toEqual([])
   })
 
-  it('empty settings (no provider) returns []', async () => {
+  it('listModels with default settings returns [] without real network (stubbed upstream 401)', async () => {
     const token = await registerToken('ai_jack')
+    // Fresh user → server merges DEFAULT_SETTINGS (provider 'openai', baseUrl
+    // resolved to https://api.openai.com/v1), which would trigger a real
+    // outbound /models fetch. Stub it to answer 401 → empty list, keeping the
+    // exercised code path (fetch + !ok → []) identical without network.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 401 })),
+    )
     const res = await request(createApp())
       .get('/api/ai/models')
       .set('Authorization', `Bearer ${token}`)
