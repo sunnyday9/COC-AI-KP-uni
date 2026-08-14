@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+dist-ssr/
+unpackage/
+**/dist/
+
+# Reference: original repo clone (not part of the project)
+original/
+
+# Logs
+*.log
+npm-debug.log*
+debug-trace/
+
+# Env
+.env
+.env.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+
+# Test coverage
+coverage/
+**/coverage/
+
+# SDD workspace (ledger/briefs/reports)
+.superpowers/
+
+# Mimosa hook runtime state
+.mimosa/
+
+# SQLite data files
+*.db
+*.db-journal
+server/data/
+
+# Uploaded user files (runtime)
+server/uploads/
+server/storage/
