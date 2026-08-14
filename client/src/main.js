@@ -12,6 +12,25 @@ export function createApp() {
 		import('./platform/index').then(({ getBridge }) => {
 			window.__bridge = getBridge();
 		});
+		// Task 7 smoke: expose the stores on a dedicated pinia instance so the
+		// full store flows (login/settings/sendPlayerMessage/save) can be
+		// driven from the console against a real backend. Dev-only, tree-shaken.
+		Promise.all([
+			import('pinia'),
+			import('./stores/settingsStore'),
+			import('./stores/gameStore'),
+			import('./stores/storyStore'),
+			import('./stores/debugStore'),
+		]).then(([piniaMod, settings, game, story, debug]) => {
+			const { createPinia, setActivePinia } = piniaMod;
+			setActivePinia(createPinia());
+			window.__stores = {
+				settings: settings.useSettingsStore,
+				game: game.useGameStore,
+				story: story.useStoryStore,
+				debug: debug.useDebugStore,
+			};
+		});
 	}
 	return {
 		app,
