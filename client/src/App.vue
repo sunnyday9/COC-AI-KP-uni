@@ -4,10 +4,13 @@ import { getToken } from './platform/token'
 export default {
   onLaunch: function () {
     // Task 8：启动时若有本地 token，恢复登录态并预载服务端设置（settings 页可立即使用）。
+    // Task 9（Task 8 Minor ②）：me() 恢复 isAuthenticated（401 静默 → settings 页显示登录表单）。
     // 动态 import 避免 pinia 实例化时序问题；失败静默（settings 页会自行处理）。
     if (getToken()) {
       import('./stores/settingsStore').then(({ useSettingsStore }) => {
-        useSettingsStore().load().catch(() => {})
+        const store = useSettingsStore()
+        store.me().catch(() => {})
+        store.load().catch(() => {})
       })
     }
   },
@@ -33,6 +36,16 @@ body {
   color: hsl(38, 40%, 78%);
   font-family: $font-body;
 }
+
+/* 噪点纹理（原 style.css body 背景，Task 9 / Task 8 Minor ⑤）：
+   数据 URI 为 SVG（~0.6KB，体积可忽略），但 WXSS background-image 不支持
+   SVG 渲染（会静默失效）→ 仅 H5 保留；MP 端使用纯色背景。 */
+// #ifdef H5
+page,
+body {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+}
+// #endif
 
 /* 大气滚动条（H5；小程序使用原生滚动条） */
 ::-webkit-scrollbar {
@@ -104,6 +117,28 @@ button {
   color: hsl(38, 25%, 55%);
   border: 1px solid hsl(220, 14%, 16%);
 }
+
+/* hover 态（Task 9 / Task 8 Minor ⑤）：H5 保留（原 style.css hover 规则），
+   MP 端无 :hover 概念，跳过（MP 用 hover-class 按压态，见各页关键按钮） */
+// #ifdef H5
+.gothic-card:hover {
+  border-color: hsla(220, 14%, 22%, 0.8);
+  background: hsla(220, 16%, 12%, 0.92);
+}
+.gothic-btn:hover:not(:disabled) {
+  background: hsla(165, 50%, 25%, 0.85);
+  border-color: hsl(165, 60%, 35%);
+}
+.gothic-btn-danger:hover:not(:disabled) {
+  background: hsla(0, 60%, 25%, 0.85);
+  border-color: hsl(0, 65%, 35%);
+}
+.gothic-btn-secondary:hover:not(:disabled) {
+  background: hsla(220, 16%, 14%, 0.9);
+  color: hsl(38, 40%, 78%);
+  border-color: hsl(220, 12%, 22%);
+}
+// #endif
 
 /* ── 输入框：羊皮纸聚焦 ── */
 .gothic-input {

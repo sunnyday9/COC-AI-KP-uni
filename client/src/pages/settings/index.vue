@@ -227,7 +227,9 @@ watch(
 let offUnauthorized: (() => void) | null = null
 onLoad(() => {
   offUnauthorized = onUnauthorized(() => {
-    toast.warning('登录已过期，请重新登录')
+    // Task 9（Task 8 Minor ①）：首次访问（未登录）401 → "请先登录"；
+    // 已有登录态中途过期 → "登录已过期，请重新登录"
+    toast.warning(settingsStore.isAuthenticated ? '登录已过期，请重新登录' : '请先登录')
     resetAuthForm()
   })
   // 已有登录态或本地有 token：恢复会话并加载设置
@@ -305,7 +307,7 @@ const authed = computed(() => settingsStore.isAuthenticated)
 </script>
 
 <template>
-  <app-layout active="settings" bg="/static/bg/bg_archives.png" :overlay="0.8">
+  <app-layout active="settings" bg="/static/bg/bg_archives.webp" :overlay="0.8">
     <view class="page-root">
       <view class="page-head">
         <text class="page-title">设置</text>
@@ -480,21 +482,21 @@ const authed = computed(() => settingsStore.isAuthenticated)
                 <text v-if="modelListError" class="field-warn">{{ modelListError }}</text>
               </view>
 
-              <!-- 高级参数 -->
+              <!-- 高级参数（Task 9：恢复原 step/min/max —— Task 8 Minor ⑥） -->
               <view class="param-grid">
                 <view>
                   <text class="field-label">Temperature</text>
-                  <input v-model.number="settings.ai.temperature" type="number" class="gothic-input" />
+                  <input v-model.number="settings.ai.temperature" type="number" step="0.1" min="0" max="2" class="gothic-input" />
                 </view>
                 <view>
                   <text class="field-label">Max Tokens</text>
-                  <input v-model.number="settings.ai.maxTokens" type="number" class="gothic-input" />
+                  <input v-model.number="settings.ai.maxTokens" type="number" step="256" min="256" max="32768" class="gothic-input" />
                 </view>
               </view>
 
               <!-- 操作 -->
               <view class="actions-row">
-                <button class="gothic-btn" @click="handleSave">保存设置</button>
+                <button class="gothic-btn" hover-class="gothic-btn-press" @click="handleSave">保存设置</button>
                 <button
                   class="gothic-btn-secondary"
                   :class="{ 'is-disabled': testStatus === 'loading' }"
@@ -593,7 +595,7 @@ const authed = computed(() => settingsStore.isAuthenticated)
                   placeholder-class="gothic-ph"
                 />
               </view>
-              <button class="gothic-btn" @click="handleSave">保存</button>
+              <button class="gothic-btn" hover-class="gothic-btn-press" @click="handleSave">保存</button>
             </view>
           </view>
 
@@ -614,8 +616,13 @@ const authed = computed(() => settingsStore.isAuthenticated)
                 </view>
               </view>
               <view class="kbd-hint">快捷键：在游戏房间按 Ctrl+Shift+D 打开/关闭 Debug Panel（H5）</view>
-              <view class="kbd-hint">RAG Inspector：访问 /rag-inspector 检查 RAG 索引和 GraphRAG 提取结果（Task 9）</view>
-              <button class="gothic-btn" @click="handleSave">保存</button>
+              <!-- #ifdef H5 -->
+              <view class="kbd-hint">RAG Inspector：H5 端访问 /#/pages/rag-inspector/index（检查 RAG 索引与 GraphRAG 结果；小程序不包含此页）</view>
+              <!-- #endif -->
+              <!-- #ifndef H5 -->
+              <view class="kbd-hint">图谱检查工具仅 H5 端可用（小程序不包含此页）</view>
+              <!-- #endif -->
+              <button class="gothic-btn" hover-class="gothic-btn-press" @click="handleSave">保存</button>
             </view>
           </view>
 
@@ -866,6 +873,11 @@ const authed = computed(() => settingsStore.isAuthenticated)
   gap: 12px;
   flex-wrap: wrap;
   padding-top: 8px;
+}
+/* 保存主 CTA 按压态（Task 9 / Task 8 Minor ③：MP 端 :active 不生效 → hover-class） */
+.gothic-btn-press {
+  background: hsla(165, 50%, 25%, 0.85);
+  border-color: hsl(165, 60%, 35%);
 }
 .ok-text {
   font-size: 12px;
