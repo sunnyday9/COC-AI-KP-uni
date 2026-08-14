@@ -8,11 +8,13 @@
   },
   "scripts": {
     "dev": "tsx watch src/app.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"require('fs').cpSync('../shared/tools','dist/shared/tools',{recursive:true})\"",
     "start": "node dist/server/src/app.js",
     "test": "vitest run"
   },
   "dependencies": {
+    "@langchain/core": "^1.2.8",
+    "@langchain/langgraph": "^1.4.9",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

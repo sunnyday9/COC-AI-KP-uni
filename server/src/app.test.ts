@@ -34,6 +34,7 @@ describe('app smoke', () => {
     ['PUT', '/api/settings'],
     ['POST', '/api/ai/chat'],
     ['GET', '/api/ai/models'],
+    ['POST', '/api/kp/invoke'],
   ])('%s %s without token returns 401', async (method, route) => {
     const res = await request(createApp())[method.toLowerCase() as 'get'](route)
     expect(res.status).toBe(401)
@@ -42,7 +43,6 @@ describe('app smoke', () => {
 
   // Remaining routes stay unimplemented until their task lands (501).
   it.each([
-    ['POST', '/api/kp/invoke'],
     ['GET', '/api/stories'],
     ['POST', '/api/stories/upload'],
     ['GET', '/api/scripts'],
