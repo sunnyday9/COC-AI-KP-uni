@@ -42,8 +42,20 @@ export function createApp(): Express {
     res.status(404).json({ error: 'not found' })
   })
 
-  // Unified error handler — { error } + status code
+  // Unified error handler — { error } + status code.
+  // Body-parser (malformed JSON / payload too large) and other 4xx errors
+  // keep their status; everything else is a generic 500 (no stack traces).
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const status = typeof (err as { status?: unknown }).status === 'number' ? (err as { status: number }).status : 0
+    if (status >= 400 && status < 500) {
+      const type = (err as { type?: unknown }).type
+      const message =
+        typeof type === 'string' && (type.startsWith('entity.parse') || type === 'entity.too.large')
+          ? 'invalid request body'
+          : 'bad request'
+      res.status(status).json({ error: message })
+      return
+    }
     logger.error('unhandled error', { error: String(err) })
     res.status(500).json({ error: 'internal server error' })
   })

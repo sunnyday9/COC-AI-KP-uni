@@ -1,0 +1,173 @@
+import { describe, expect, it } from 'vitest'
+import request from 'supertest'
+import { createApp } from '../app.js'
+import { getDb } from '../db/index.js'
+import { decryptSecret } from '../utils/crypto.js'
+import type { EncryptedSecret } from '../utils/crypto.js'
+
+/**
+ * Settings route tests (api-contract §2).
+ * Covers: default structure, PUT→GET persistence (no apiKey leak),
+ * ciphertext at rest, apiKey keep-on-omit, invalid provider → 400.
+ */
+
+async function registerToken(username: string) {
+  const res = await request(createApp()).post('/api/auth/register').send({ username, password: 'secret123' })
+  return res.body.token as string
+}
+
+function getSettings(token: string) {
+  return request(createApp()).get('/api/settings').set('Authorization', `Bearer ${token}`)
+}
+
+function putSettings(token: string, body: unknown) {
+  return request(createApp())
+    .put('/api/settings')
+    .set('Authorization', `Bearer ${token}`)
+    .set('Content-Type', 'application/json')
+    .send(body as string | object)
+}
+
+const DEFAULT_AI = {
+  provider: 'openai',
+  baseUrl: '',
+  model: '',
+  temperature: 0.7,
+  maxTokens: 2048,
+}
+
+const DEFAULT_RAG = {
+  useEmbeddings: true,
+  provider: 'builtin',
+  model: 'text-embedding-3-small',
+  useGraphRAG: true,
+  extractionModel: '',
+}
+
+describe('settings routes', () => {
+  it('GET without token returns 401', async () => {
+    const res = await request(createApp()).get('/api/settings')
+    expect(res.status).toBe(401)
+  })
+
+  it('GET returns default AppSettings structure for a fresh user (no apiKey field)', async () => {
+    const token = await registerToken('s_alice')
+    const res = await getSettings(token)
+    expect(res.status).toBe(200)
+    expect(res.body.ai).toEqual(DEFAULT_AI)
+    expect(res.body.rag).toEqual(DEFAULT_RAG)
+    expect(res.body.syncServerUrl).toBe('http://localhost:3000')
+    expect('apiKey' in res.body.ai).toBe(false)
+  })
+
+  it('PUT then GET persists settings and never returns apiKey', async () => {
+    const token = await registerToken('s_bob')
+    const put = await putSettings(token, {
+      ai: {
+        provider: 'deepseek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat',
+        apiKey: 'sk-test-123456',
+        temperature: 0.5,
+        maxTokens: 1024,
+      },
+      rag: { useEmbeddings: false, provider: 'api', model: 'text-embedding-3-large' },
+      syncServerUrl: 'https://sync.example.com',
+      debugMode: true,
+    })
+    expect(put.status).toBe(200)
+    expect(put.body).toEqual({ ok: true })
+
+    const got = await getSettings(token)
+    expect(got.status).toBe(200)
+    expect(got.body.ai).toEqual({
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-chat',
+      temperature: 0.5,
+      maxTokens: 1024,
+    })
+    expect('apiKey' in got.body.ai).toBe(false)
+    expect(got.body.rag).toEqual({
+      useEmbeddings: false,
+      provider: 'api',
+      model: 'text-embedding-3-large',
+      useGraphRAG: true,
+      extractionModel: '',
+    })
+    expect(got.body.syncServerUrl).toBe('https://sync.example.com')
+    expect(got.body.debugMode).toBe(true)
+  })
+
+  it('apiKey is stored as AES-256-GCM ciphertext and round-trips via decryptSecret', async () => {
+    const token = await registerToken('s_carol')
+    await putSettings(token, { ai: { apiKey: 'sk-super-secret-key' } })
+
+    const row = getDb().prepare('SELECT data FROM settings WHERE user_id = (SELECT id FROM users WHERE username = ?)').get('s_carol') as {
+      data: string
+    }
+    const stored = JSON.parse(row.data) as { ai: { apiKey: EncryptedSecret } }
+    expect(stored.ai.apiKey).toMatchObject({ v: 1 })
+    expect(typeof stored.ai.apiKey.iv).toBe('string')
+    expect(typeof stored.ai.apiKey.tag).toBe('string')
+    expect(stored.ai.apiKey.data).not.toContain('sk-super-secret-key')
+    expect(decryptSecret(stored.ai.apiKey)).toBe('sk-super-secret-key')
+  })
+
+  it('PUT without apiKey keeps the previously stored key (still decryptable)', async () => {
+    const token = await registerToken('s_dave')
+    await putSettings(token, { ai: { provider: 'openai', apiKey: 'sk-keep-me' } })
+
+    // second PUT omits apiKey entirely
+    const put2 = await putSettings(token, {
+      ai: { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'gpt-4o' },
+    })
+    expect(put2.status).toBe(200)
+
+    const row = getDb().prepare('SELECT data FROM settings WHERE user_id = (SELECT id FROM users WHERE username = ?)').get('s_dave') as {
+      data: string
+    }
+    const stored = JSON.parse(row.data) as { ai: { apiKey: EncryptedSecret } }
+    expect(decryptSecret(stored.ai.apiKey)).toBe('sk-keep-me')
+    expect(stored.ai.provider).toBe('openrouter')
+  })
+
+  it('PUT with masked placeholder *** keeps the stored key (legacy client behavior)', async () => {
+    const token = await registerToken('s_erin')
+    await putSettings(token, { ai: { apiKey: 'sk-masked-keep' } })
+    await putSettings(token, { ai: { apiKey: '***' } })
+    const row = getDb().prepare('SELECT data FROM settings WHERE user_id = (SELECT id FROM users WHERE username = ?)').get('s_erin') as {
+      data: string
+    }
+    const stored = JSON.parse(row.data) as { ai: { apiKey: EncryptedSecret } }
+    expect(decryptSecret(stored.ai.apiKey)).toBe('sk-masked-keep')
+  })
+
+  it('PUT with invalid provider returns 400', async () => {
+    const token = await registerToken('s_frank')
+    const res = await putSettings(token, { ai: { provider: 'not-a-provider' } })
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ error: 'invalid provider' })
+  })
+
+  it('PUT with out-of-range temperature returns 400', async () => {
+    const token = await registerToken('s_grace')
+    const res = await putSettings(token, { ai: { provider: 'openai', temperature: 3 } })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/temperature/)
+  })
+
+  it('PUT with non-integer maxTokens returns 400', async () => {
+    const token = await registerToken('s_heidi')
+    const res = await putSettings(token, { ai: { provider: 'openai', maxTokens: 10.5 } })
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/maxTokens/)
+  })
+
+  it('PUT with a non-object JSON body returns 400 (rejected by body-parser strict mode)', async () => {
+    const token = await registerToken('s_ivan')
+    const res = await putSettings(token, '123')
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBeDefined()
+  })
+})

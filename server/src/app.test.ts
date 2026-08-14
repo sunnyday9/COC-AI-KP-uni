@@ -14,14 +14,34 @@ describe('app smoke', () => {
     expect(res.headers['content-type']).toMatch(/application\/json/)
   })
 
+  // Task 2 implemented routes: auth (no auth needed for register/login),
+  // protected endpoints answer 401 without a token, invalid bodies 400.
+  it('POST /api/auth/register with empty body returns 400', async () => {
+    const res = await request(createApp()).post('/api/auth/register').send({})
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBeDefined()
+  })
+
+  it('POST /api/auth/login with empty body returns 400', async () => {
+    const res = await request(createApp()).post('/api/auth/login').send({})
+    expect(res.status).toBe(400)
+    expect(res.body.error).toBeDefined()
+  })
+
   it.each([
-    ['POST', '/api/auth/register'],
-    ['POST', '/api/auth/login'],
     ['GET', '/api/auth/me'],
     ['GET', '/api/settings'],
     ['PUT', '/api/settings'],
     ['POST', '/api/ai/chat'],
     ['GET', '/api/ai/models'],
+  ])('%s %s without token returns 401', async (method, route) => {
+    const res = await request(createApp())[method.toLowerCase() as 'get'](route)
+    expect(res.status).toBe(401)
+    expect(res.body.error).toBeDefined()
+  })
+
+  // Remaining routes stay unimplemented until their task lands (501).
+  it.each([
     ['POST', '/api/kp/invoke'],
     ['GET', '/api/stories'],
     ['POST', '/api/stories/upload'],
