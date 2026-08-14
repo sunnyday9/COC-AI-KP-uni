@@ -9,5 +9,5 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["types/**/*.ts", "tools/**/*.cjs"]
+  "include": ["types/**/*.ts", "constants/**/*.ts", "tools/**/*.cjs"]
 }
