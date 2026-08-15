@@ -9,7 +9,7 @@ import { narrativeHandler } from '../handlers/narrativeHandler'
 
 /**
  * Tool name consistency (Task 10 单一来源化后改版):
- * 数据源从 `cocToolNames.json` + `require(shared/tools/cocTools.cjs)` 双来源
+ * 数据源从 `cocToolNames.json` + 动态加载 shared/tools/cocTools.cjs 的双来源
  * 改为唯一的 `shared/tools/cocTools.ts` 导出 COC_TOOL_NAMES（server COC_KP_TOOLS
  * 同源）。原断言「json 与后端工具名集合一致」退化为同源自比较，因此测试语义改为：
  * 1) COC_TOOL_NAMES 无重复（server 端工具定义逐字迁移的守卫）；

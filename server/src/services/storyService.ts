@@ -27,7 +27,7 @@ import path from 'node:path'
 import { UPLOADS_DIR } from '../config.js'
 import { assertId, sanitizeFilename } from '../utils/fileNames.js'
 import { readFileOr404, unlinkOr404 } from '../utils/fsSafe.js'
-import { resolveFileInDir } from '../utils/pathSafety.js'
+import { assertPathInDir, resolveFileInDir } from '../utils/pathSafety.js'
 import * as storyParsers from '../rag/storyParsers.js'
 
 /** Story extensions — mirrors STORY_EXTENSIONS in fileHandlers.cjs verbatim. */
@@ -58,6 +58,11 @@ function resolveStoryFile(userId: number, id: string): string {
   return resolveFileInDir(storiesDir(userId), id, 'story file')
 }
 
+/** Resolve and re-assert containment right at the fs sink (defense in depth). */
+function assertStorySinkPath(userId: number, safePath: string): string {
+  return assertPathInDir(storiesDir(userId), safePath, 'story file (sink)')
+}
+
 function isStoryFile(name: string): boolean {
   const lower = name.toLowerCase()
   return STORY_EXTENSIONS.some((ext) => lower.endsWith(ext))
@@ -86,7 +91,7 @@ export async function listStories(userId: number): Promise<StoryListItem[]> {
 /** file:readStory — raw text for txt/md/json, parsed text for pdf/docx/epub/html. */
 export async function readStory(userId: number, id: string): Promise<{ name: string; content: string }> {
   assertId(id, 'story id')
-  const safePath = resolveStoryFile(userId, id)
+  const safePath = assertStorySinkPath(userId, resolveStoryFile(userId, id))
   const ext = path.extname(safePath).toLowerCase()
   if (ext === '.pdf') {
     const dataBuffer = await readFileOr404(safePath, 'story')
@@ -123,7 +128,7 @@ export async function readStory(userId: number, id: string): Promise<{ name: str
  */
 export async function readStoryForRag(userId: number, id: string): Promise<{ name: string; content: string }> {
   assertId(id, 'story id')
-  const safePath = resolveStoryFile(userId, id)
+  const safePath = assertStorySinkPath(userId, resolveStoryFile(userId, id))
   const ext = path.extname(safePath).toLowerCase()
   if (['.docx', '.epub'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
@@ -179,14 +184,14 @@ export async function importStory(
     id = uniqueId(id)
     target = path.join(dir, id)
   }
-  await fs.writeFile(target, file.buffer)
+  await fs.writeFile(assertStorySinkPath(userId, target), file.buffer)
   return { ok: true, name: id, id }
 }
 
 /** file:deleteStory — unlink only; NO RAG index linkage (original behavior). */
 export async function deleteStory(userId: number, id: string): Promise<void> {
   assertId(id, 'story id')
-  const safePath = resolveStoryFile(userId, id)
+  const safePath = assertStorySinkPath(userId, resolveStoryFile(userId, id))
   await unlinkOr404(safePath, 'story')
 }
 

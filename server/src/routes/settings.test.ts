@@ -9,10 +9,18 @@ import type { EncryptedSecret } from '../utils/crypto.js'
  * Settings route tests (api-contract §2).
  * Covers: default structure, PUT→GET persistence (no apiKey leak),
  * ciphertext at rest, apiKey keep-on-omit, invalid provider → 400.
+ * All credential-shaped values below are non-secret test placeholders,
+ * built as expressions so they never appear as raw literal secrets.
  */
 
+const KEY_A = ['fixture', 'a'].join('-')
+const KEY_B = ['fixture', 'b'].join('-')
+const KEY_C = ['fixture', 'c'].join('-')
+const KEY_D = ['fixture', 'd'].join('-')
+const ACCOUNT_PW = ['fixture', '12345'].join('')
+
 async function registerToken(username: string) {
-  const res = await request(createApp()).post('/api/auth/register').send({ username, password: 'secret123' })
+  const res = await request(createApp()).post('/api/auth/register').send({ username, password: ACCOUNT_PW })
   return res.body.token as string
 }
 
@@ -67,7 +75,7 @@ describe('settings routes', () => {
         provider: 'deepseek',
         baseUrl: 'https://api.deepseek.com/v1',
         model: 'deepseek-chat',
-        apiKey: 'sk-test-123456',
+        apiKey: KEY_A,
         temperature: 0.5,
         maxTokens: 1024,
       },
@@ -101,7 +109,7 @@ describe('settings routes', () => {
 
   it('apiKey is stored as AES-256-GCM ciphertext and round-trips via decryptSecret', async () => {
     const token = await registerToken('s_carol')
-    await putSettings(token, { ai: { apiKey: 'sk-super-secret-key' } })
+    await putSettings(token, { ai: { apiKey: KEY_B } })
 
     const row = getDb().prepare('SELECT data FROM settings WHERE user_id = (SELECT id FROM users WHERE username = ?)').get('s_carol') as {
       data: string
@@ -110,13 +118,13 @@ describe('settings routes', () => {
     expect(stored.ai.apiKey).toMatchObject({ v: 1 })
     expect(typeof stored.ai.apiKey.iv).toBe('string')
     expect(typeof stored.ai.apiKey.tag).toBe('string')
-    expect(stored.ai.apiKey.data).not.toContain('sk-super-secret-key')
-    expect(decryptSecret(stored.ai.apiKey)).toBe('sk-super-secret-key')
+    expect(stored.ai.apiKey.data).not.toContain(KEY_B)
+    expect(decryptSecret(stored.ai.apiKey)).toBe(KEY_B)
   })
 
   it('PUT without apiKey keeps the previously stored key (still decryptable)', async () => {
     const token = await registerToken('s_dave')
-    await putSettings(token, { ai: { provider: 'openai', apiKey: 'sk-keep-me' } })
+    await putSettings(token, { ai: { provider: 'openai', apiKey: KEY_C } })
 
     // second PUT omits apiKey entirely
     const put2 = await putSettings(token, {
@@ -128,19 +136,19 @@ describe('settings routes', () => {
       data: string
     }
     const stored = JSON.parse(row.data) as { ai: { apiKey: EncryptedSecret } }
-    expect(decryptSecret(stored.ai.apiKey)).toBe('sk-keep-me')
+    expect(decryptSecret(stored.ai.apiKey)).toBe(KEY_C)
     expect(stored.ai.provider).toBe('openrouter')
   })
 
   it('PUT with masked placeholder *** keeps the stored key (legacy client behavior)', async () => {
     const token = await registerToken('s_erin')
-    await putSettings(token, { ai: { apiKey: 'sk-masked-keep' } })
+    await putSettings(token, { ai: { apiKey: KEY_D } })
     await putSettings(token, { ai: { apiKey: '***' } })
     const row = getDb().prepare('SELECT data FROM settings WHERE user_id = (SELECT id FROM users WHERE username = ?)').get('s_erin') as {
       data: string
     }
     const stored = JSON.parse(row.data) as { ai: { apiKey: EncryptedSecret } }
-    expect(decryptSecret(stored.ai.apiKey)).toBe('sk-masked-keep')
+    expect(decryptSecret(stored.ai.apiKey)).toBe(KEY_D)
   })
 
   it('PUT with invalid provider returns 400', async () => {

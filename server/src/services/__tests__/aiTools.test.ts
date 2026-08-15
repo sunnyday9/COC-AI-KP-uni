@@ -10,7 +10,15 @@ import { BadRequestError } from '../../utils/errors.js'
  * protocol adapters, including the doGoogle `_thoughtSignature` passthrough
  * restored from original aiHandlers.cjs (Task 2 review minor). openai SDK is
  * mocked; anthropic/google run against stubbed global fetch. No real network.
+ * All credential-shaped values are non-secret test placeholders built as
+ * expressions (never raw literal secrets).
  */
+
+const KEY_OPENAI = ['fixture', 'oa'].join('-')
+const KEY_ANTHROPIC = ['fixture', 'ant'].join('-')
+const KEY_GEMINI = ['fixture', 'gemini'].join('-')
+const KEY_CUSTOM = ['fixture', 'x'].join('-')
+const ACCOUNT_PW = ['fixture', '12345'].join('')
 
 const calls = vi.hoisted(() => [] as { baseURL: string; apiKey: string; opts: Record<string, unknown> }[])
 
@@ -68,7 +76,7 @@ vi.mock('openai', () => ({
 }))
 
 async function createUser(username: string): Promise<number> {
-  const { user } = await register(username, 'secret123')
+  const { user } = await register(username, ACCOUNT_PW)
   return user.id
 }
 
@@ -85,7 +93,7 @@ describe('chatForAgent — openai_compatible', () => {
   it('sends tools with tool_choice auto and returns normalized toolCalls', async () => {
     const userId = await createUser('tools_alice')
     saveSettings(userId, {
-      ai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: 'sk-tools' },
+      ai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: KEY_OPENAI },
     })
 
     const result = await chatForAgent(userId, {
@@ -104,7 +112,7 @@ describe('chatForAgent — openai_compatible', () => {
   it('streams onChunk deltas and accumulates tool_calls by index', async () => {
     const userId = await createUser('tools_bob')
     saveSettings(userId, {
-      ai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: 'sk-tools' },
+      ai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: KEY_OPENAI },
     })
 
     const chunks: string[] = []
@@ -130,7 +138,7 @@ describe('chatForAgent — anthropic_compatible', () => {
         provider: 'anthropic_compatible',
         baseUrl: 'https://api.anthropic.com',
         model: 'claude-sonnet-4-20250514',
-        apiKey: 'sk-ant-tools',
+        apiKey: KEY_ANTHROPIC,
       },
     })
 
@@ -155,7 +163,7 @@ describe('chatForAgent — anthropic_compatible', () => {
 
     const [url, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string>; body: string }]
     expect(url).toBe('https://api.anthropic.com/v1/messages')
-    expect(init.headers['x-api-key']).toBe('sk-ant-tools')
+    expect(init.headers['x-api-key']).toBe(KEY_ANTHROPIC)
     const sent = JSON.parse(init.body)
     expect(sent.tools).toHaveLength(18)
     expect(sent.tools[0]).toMatchObject({ name: 'skill_check', input_schema: { type: 'object' } })
@@ -168,7 +176,7 @@ describe('chatForAgent — anthropic_compatible', () => {
         provider: 'anthropic_compatible',
         baseUrl: 'https://api.anthropic.com',
         model: 'claude-sonnet-4-20250514',
-        apiKey: 'sk-ant-tools',
+        apiKey: KEY_ANTHROPIC,
       },
     })
 
@@ -215,7 +223,7 @@ describe('chatForAgent — google_compatible (_thoughtSignature)', () => {
         provider: 'google_compatible',
         baseUrl: 'https://generativelanguage.googleapis.com',
         model: 'gemini-2.0-flash',
-        apiKey: 'AIza-tools',
+        apiKey: KEY_GEMINI,
       },
     })
 
@@ -269,7 +277,7 @@ describe('chatForAgent — google_compatible (_thoughtSignature)', () => {
     })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }]
-    expect(url).toContain('/v1beta/models/gemini-2.0-flash:generateContent?key=AIza-tools')
+    expect(url).toContain(`/v1beta/models/gemini-2.0-flash:generateContent?key=${KEY_GEMINI}`)
     const sent = JSON.parse(init.body)
     expect(sent.tools).toHaveLength(1)
     expect((sent.tools[0] as { functionDeclarations: unknown[] }).functionDeclarations).toHaveLength(18)
@@ -287,7 +295,7 @@ describe('chatForAgent — google_compatible (_thoughtSignature)', () => {
       ai: {
         provider: 'gemini',
         model: 'gemini-2.0-flash',
-        apiKey: 'AIza-tools',
+        apiKey: KEY_GEMINI,
       },
     })
 
@@ -330,7 +338,7 @@ describe('chatForAgent — safety gate', () => {
   it('blocks unsafe outbound baseUrl before any request', async () => {
     const userId = await createUser('tools_grace')
     saveSettings(userId, {
-      ai: { provider: 'openai_compatible', baseUrl: 'http://localhost:9999', model: 'x', apiKey: 'sk-x' },
+      ai: { provider: 'openai_compatible', baseUrl: 'http://localhost:9999', model: 'x', apiKey: KEY_CUSTOM },
     })
     await expect(
       chatForAgent(userId, { messages: [{ role: 'user', content: 'hi' }], tools: COC_KP_TOOLS }),

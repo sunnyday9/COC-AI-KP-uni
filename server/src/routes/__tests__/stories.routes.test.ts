@@ -8,13 +8,14 @@ import { describe, expect, it } from 'vitest'
 import request from 'supertest'
 import { createApp } from '../../app.js'
 import { makePdfWithText } from '../../../test/helpers/pdfFixture.js'
+import { TEST_PASSWORD } from '../../testHelpers.js'
 
 function auth(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` }
 }
 
 async function registerToken(username: string): Promise<string> {
-  const res = await request(createApp()).post('/api/auth/register').send({ username, password: 'secret123' })
+  const res = await request(createApp()).post('/api/auth/register').send({ username, password: TEST_PASSWORD })
   expect(res.status).toBe(200)
   return res.body.token as string
 }

@@ -3,6 +3,7 @@ import multer from 'multer'
 import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError } from '../utils/errors.js'
+import { assertId } from '../utils/fileNames.js'
 import { MAX_UPLOAD_BYTES } from '../config.js'
 import * as scriptService from '../services/scriptService.js'
 
@@ -31,8 +32,15 @@ router.get('/', (req: AuthRequest, res) => {
 
 /** GET /api/scripts/:id — file:readScript → { name, content }. */
 router.get('/:id', (req: AuthRequest, res) => {
+  let id: string
+  try {
+    id = assertId(req.params.id as string, 'script id')
+  } catch (err) {
+    sendError(res, err)
+    return
+  }
   void scriptService
-    .readScript(req.userId as number, req.params.id as string)
+    .readScript(req.userId as number, id)
     .then((result) => res.json(result))
     .catch((err) => sendError(res, err))
 })
@@ -44,8 +52,15 @@ router.put('/:id', (req: AuthRequest, res) => {
     res.status(400).json({ error: 'content must be a string' })
     return
   }
+  let id: string
+  try {
+    id = assertId(req.params.id as string, 'script id')
+  } catch (err) {
+    sendError(res, err)
+    return
+  }
   void scriptService
-    .saveScript(req.userId as number, req.params.id as string, content)
+    .saveScript(req.userId as number, id, content)
     .then(() => res.json({ ok: true }))
     .catch((err) => sendError(res, err))
 })
@@ -74,8 +89,15 @@ router.post('/upload', (req: AuthRequest, res) => {
 
 /** DELETE /api/scripts/:id — file:deleteScript. */
 router.delete('/:id', (req: AuthRequest, res) => {
+  let id: string
+  try {
+    id = assertId(req.params.id as string, 'script id')
+  } catch (err) {
+    sendError(res, err)
+    return
+  }
   void scriptService
-    .deleteScript(req.userId as number, req.params.id as string)
+    .deleteScript(req.userId as number, id)
     .then(() => res.json({ ok: true }))
     .catch((err) => sendError(res, err))
 })

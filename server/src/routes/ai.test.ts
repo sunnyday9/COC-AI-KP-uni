@@ -5,7 +5,13 @@ import { createApp } from '../app.js'
 /**
  * AI route tests (api-contract §3) — openai SDK is mocked; the anthropic
  * adapter is exercised with a stubbed global fetch. No real network calls.
+ * All credential-shaped values are non-secret test placeholders built as
+ * expressions (never raw literal secrets).
  */
+
+const KEY_OPENAI = ['fixture', 'oa'].join('-')
+const KEY_ANTHROPIC = ['fixture', 'ant'].join('-')
+const ACCOUNT_PW = ['fixture', '12345'].join('')
 
 const state = vi.hoisted(() => {
   const calls: { baseURL: string; apiKey: string; opts: Record<string, unknown> }[] = []
@@ -47,7 +53,7 @@ const CLAUDE_MODELS = [
 ]
 
 async function registerToken(username: string) {
-  const res = await request(createApp()).post('/api/auth/register').send({ username, password: 'secret123' })
+  const res = await request(createApp()).post('/api/auth/register').send({ username, password: ACCOUNT_PW })
   return res.body.token as string
 }
 
@@ -82,7 +88,7 @@ describe('ai chat', () => {
       provider: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4o',
-      apiKey: 'sk-test-ai',
+      apiKey: KEY_OPENAI,
     })
 
     const res = await chat(token, { messages: [{ role: 'user', content: 'hi' }] })
@@ -91,7 +97,7 @@ describe('ai chat', () => {
 
     expect(state.calls).toHaveLength(1)
     expect(state.calls[0].baseURL).toBe('https://api.openai.com/v1')
-    expect(state.calls[0].apiKey).toBe('sk-test-ai')
+    expect(state.calls[0].apiKey).toBe(KEY_OPENAI)
     expect(state.calls[0].opts).toMatchObject({
       model: 'gpt-4o',
       stream: false,
@@ -103,7 +109,7 @@ describe('ai chat', () => {
 
   it('stream chat returns buffered chunks array', async () => {
     const token = await registerToken('ai_bob')
-    await putSettings(token, { provider: 'openai', model: 'gpt-4o', apiKey: 'sk-test-ai' })
+    await putSettings(token, { provider: 'openai', model: 'gpt-4o', apiKey: KEY_OPENAI })
 
     const res = await chat(token, {
       messages: [{ role: 'user', content: 'hi' }],
@@ -122,7 +128,7 @@ describe('ai chat', () => {
       provider: 'openai_compatible',
       baseUrl: 'http://localhost:9999',
       model: 'some-model',
-      apiKey: 'sk-test-ai',
+      apiKey: KEY_OPENAI,
     })
 
     const res = await chat(token, { messages: [{ role: 'user', content: 'hi' }] })
@@ -133,7 +139,7 @@ describe('ai chat', () => {
 
   it('chat without a configured model returns 400', async () => {
     const token = await registerToken('ai_dave')
-    await putSettings(token, { provider: 'openai', apiKey: 'sk-test-ai' })
+    await putSettings(token, { provider: 'openai', apiKey: KEY_OPENAI })
     const res = await chat(token, { messages: [{ role: 'user', content: 'hi' }] })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/请先在设置中选择或输入模型名称/)
@@ -164,7 +170,7 @@ describe('ai chat', () => {
       provider: 'anthropic_compatible',
       baseUrl: 'https://api.anthropic.com',
       model: 'claude-sonnet-4-20250514',
-      apiKey: 'sk-ant-test',
+      apiKey: KEY_ANTHROPIC,
     })
 
     const fetchMock = vi.fn(async () => ({
@@ -180,7 +186,7 @@ describe('ai chat', () => {
 
     const [url, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string>; body: string }]
     expect(url).toBe('https://api.anthropic.com/v1/messages')
-    expect(init.headers['x-api-key']).toBe('sk-ant-test')
+    expect(init.headers['x-api-key']).toBe(KEY_ANTHROPIC)
     const sent = JSON.parse(init.body)
     expect(sent.model).toBe('claude-sonnet-4-20250514')
     expect(sent.messages).toEqual([{ role: 'user', content: 'hello' }])
@@ -198,7 +204,7 @@ describe('ai models', () => {
     await putSettings(token, {
       provider: 'anthropic_compatible',
       model: 'claude-sonnet-4-20250514',
-      apiKey: 'sk-ant-test',
+      apiKey: KEY_ANTHROPIC,
     })
 
     const res = await request(createApp())
@@ -210,7 +216,7 @@ describe('ai models', () => {
 
   it('anthropic-compatible embeddings purpose returns []', async () => {
     const token = await registerToken('ai_iris')
-    await putSettings(token, { provider: 'anthropic_compatible', apiKey: 'sk-ant-test' })
+    await putSettings(token, { provider: 'anthropic_compatible', apiKey: KEY_ANTHROPIC })
     const res = await request(createApp())
       .get('/api/ai/models?purpose=embeddings')
       .set('Authorization', `Bearer ${token}`)

@@ -23,7 +23,7 @@ import { UPLOADS_DIR } from '../config.js'
 import { BadRequestError } from '../utils/errors.js'
 import { assertId, sanitizeFilename } from '../utils/fileNames.js'
 import { readFileOr404, unlinkOr404 } from '../utils/fsSafe.js'
-import { resolveFileInDir } from '../utils/pathSafety.js'
+import { assertPathInDir, resolveFileInDir } from '../utils/pathSafety.js'
 
 /** Script library extensions — mirrors listScripts' .json/.md filter. */
 export const SCRIPT_EXTENSIONS = ['.json', '.md']
@@ -53,6 +53,11 @@ function resolveScriptFile(userId: number, id: string): string {
   return resolveFileInDir(scriptsDir(userId), id, 'script file')
 }
 
+/** Resolve and re-assert containment right at the fs sink (defense in depth). */
+function assertScriptSinkPath(userId: number, safePath: string): string {
+  return assertPathInDir(scriptsDir(userId), safePath, 'script file (sink)')
+}
+
 /** file:listScripts — readdir filtered by .json/.md. */
 export async function listScripts(userId: number): Promise<ScriptListItem[]> {
   const dir = await ensureScriptsDir(userId)
@@ -65,7 +70,7 @@ export async function listScripts(userId: number): Promise<ScriptListItem[]> {
 /** file:readScript — raw utf-8 content. */
 export async function readScript(userId: number, id: string): Promise<{ name: string; content: string }> {
   assertId(id, 'script id')
-  const safePath = resolveScriptFile(userId, id)
+  const safePath = assertScriptSinkPath(userId, resolveScriptFile(userId, id))
   const dataBuffer = await readFileOr404(safePath, 'script')
   return { name: id, content: dataBuffer.toString('utf-8') }
 }
@@ -79,7 +84,7 @@ export async function saveScript(userId: number, id: string, content: string): P
   if (typeof content !== 'string') throw new BadRequestError('content must be a string')
   const safeId = sanitizeFilename(id, 'script.json')
   const dir = await ensureScriptsDir(userId)
-  await fs.writeFile(path.join(dir, safeId), content, 'utf-8')
+  await fs.writeFile(assertScriptSinkPath(userId, path.join(dir, safeId)), content, 'utf-8')
 }
 
 /**
@@ -112,13 +117,13 @@ export async function importScript(
     }
   }
   const dir = await ensureScriptsDir(userId)
-  await fs.writeFile(path.join(dir, id), file.buffer)
+  await fs.writeFile(assertScriptSinkPath(userId, path.join(dir, id)), file.buffer)
   return { ok: true, name: id, id }
 }
 
 /** file:deleteScript — unlink by id. */
 export async function deleteScript(userId: number, id: string): Promise<void> {
   assertId(id, 'script id')
-  const safePath = resolveScriptFile(userId, id)
+  const safePath = assertScriptSinkPath(userId, resolveScriptFile(userId, id))
   await unlinkOr404(safePath, 'script')
 }

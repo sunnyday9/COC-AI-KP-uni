@@ -65,14 +65,5 @@ describe('rag/storyParsers', () => {
       const text = await parsePdfWithOcr(padded)
       expect(text).toContain('oversized guard text')
     })
-
-    it.skip('OCR path smoke (embedded image): requires real chi_sim+eng traineddata', async () => {
-      // Enable manually: renders tesseract workers against
-      // server/assets/tesseract (langPath) — takes several seconds and needs
-      // the traineddata staged; CI-safe default is skip.
-      // Build a PDF embedding a JPEG/PNG, call parsePdfWithOcr, expect no
-      // throw and main text retained.
-      expect(true).toBe(true)
-    })
   })
 })

@@ -9,6 +9,7 @@ import { resetBaseUrlCache } from '../config'
 import { onUnauthorized, setToken } from '../token'
 import { stubUni, type MockSocket } from './uniMock'
 import type { KpStreamPayload } from '../../../../shared/types/bridge'
+import { TEST_PASSWORD, TEST_PASSWORD_BAD, TEST_PASSWORD_SHORT, TEST_TOKEN_A, TEST_TOKEN_B } from '../../testFixtures'
 
 function openFirstSocket(state: { sockets: MockSocket[] }): MockSocket {
   const socket = state.sockets[0]
@@ -58,30 +59,30 @@ describe('PlatformBridge', () => {
 
   describe('auth', () => {
     it('login posts credentials and stores the token', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { token: 'abc.def', user: { id: '1', username: 'u1' } } })
+      state.requestResponder = () => ({ statusCode: 200, data: { token: TEST_TOKEN_A, user: { id: '1', username: 'u1' } } })
       const bridge = new PlatformBridge()
-      const result = await bridge.login({ username: 'u1', password: 'secret1' })
-      expect(result.token).toBe('abc.def')
+      const result = await bridge.login({ username: 'u1', password: TEST_PASSWORD })
+      expect(result.token).toBe(TEST_TOKEN_A)
       expect(state.requests).toHaveLength(1)
       expect(state.requests[0]).toMatchObject({
         url: '/api/auth/login',
         method: 'POST',
-        data: { username: 'u1', password: 'secret1' },
+        data: { username: 'u1', password: TEST_PASSWORD },
       })
-      expect(state.storage.get('aikp_token')).toBe('abc.def')
+      expect(state.storage.get('aikp_token')).toBe(TEST_TOKEN_A)
     })
 
     it('register posts credentials and stores the token', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { token: 'tok', user: { id: '2', username: 'u2' } } })
+      state.requestResponder = () => ({ statusCode: 200, data: { token: TEST_TOKEN_B, user: { id: '2', username: 'u2' } } })
       const bridge = new PlatformBridge()
-      await bridge.register({ username: 'u2', password: 'secret1' })
+      await bridge.register({ username: 'u2', password: TEST_PASSWORD })
       expect(state.requests[0].url).toBe('/api/auth/register')
-      expect(state.storage.get('aikp_token')).toBe('tok')
+      expect(state.storage.get('aikp_token')).toBe(TEST_TOKEN_B)
     })
 
     it('login rejects when the response lacks a token', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { user: { id: '1', username: 'u1' } } })
-      await expect(new PlatformBridge().login({ username: 'u1', password: 'x' })).rejects.toThrow('登录响应异常')
+      await expect(new PlatformBridge().login({ username: 'u1', password: TEST_PASSWORD_SHORT })).rejects.toThrow('登录响应异常')
     })
 
     it('me() calls GET /api/auth/me with the bearer header', async () => {
@@ -124,8 +125,8 @@ describe('PlatformBridge', () => {
       const off = bridgeUnauthorized(() => fired.push("unauthorized"))
       state.requestResponder = () => ({ statusCode: 401, data: { error: 'invalid credentials' } })
       const bridge = new PlatformBridge()
-      await expect(bridge.login({ username: 'u', password: 'bad' })).rejects.toThrow('invalid credentials')
-      await expect(bridge.register({ username: 'u', password: 'bad' })).rejects.toThrow('invalid credentials')
+      await expect(bridge.login({ username: 'u', password: TEST_PASSWORD_BAD })).rejects.toThrow('invalid credentials')
+      await expect(bridge.register({ username: 'u', password: TEST_PASSWORD_BAD })).rejects.toThrow('invalid credentials')
       expect(fired).toHaveLength(0)
       off()
     })

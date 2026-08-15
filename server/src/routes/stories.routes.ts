@@ -3,6 +3,7 @@ import multer from 'multer'
 import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError } from '../utils/errors.js'
+import { assertId } from '../utils/fileNames.js'
 import { MAX_UPLOAD_BYTES } from '../config.js'
 import * as storyService from '../services/storyService.js'
 
@@ -58,24 +59,45 @@ router.post('/upload', (req: AuthRequest, res) => {
 
 /** GET /api/stories/:id/rag — file:readStoryForRag → { name, content }. */
 router.get('/:id/rag', (req: AuthRequest, res) => {
+  let id: string
+  try {
+    id = assertId(req.params.id as string, 'story id')
+  } catch (err) {
+    sendError(res, err)
+    return
+  }
   void storyService
-    .readStoryForRag(req.userId as number, req.params.id as string)
+    .readStoryForRag(req.userId as number, id)
     .then((result) => res.json(result))
     .catch((err) => sendError(res, err))
 })
 
 /** GET /api/stories/:id — file:readStory → { name, content }. */
 router.get('/:id', (req: AuthRequest, res) => {
+  let id: string
+  try {
+    id = assertId(req.params.id as string, 'story id')
+  } catch (err) {
+    sendError(res, err)
+    return
+  }
   void storyService
-    .readStory(req.userId as number, req.params.id as string)
+    .readStory(req.userId as number, id)
     .then((result) => res.json(result))
     .catch((err) => sendError(res, err))
 })
 
 /** DELETE /api/stories/:id — file:deleteStory (file only; no RAG linkage). */
 router.delete('/:id', (req: AuthRequest, res) => {
+  let id: string
+  try {
+    id = assertId(req.params.id as string, 'story id')
+  } catch (err) {
+    sendError(res, err)
+    return
+  }
   void storyService
-    .deleteStory(req.userId as number, req.params.id as string)
+    .deleteStory(req.userId as number, id)
     .then(() => res.json({ ok: true }))
     .catch((err) => sendError(res, err))
 })

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import request from 'supertest'
 import { createApp } from '../app.js'
 import { getDb } from '../db/index.js'
+import { TEST_PASSWORD, TEST_PASSWORD_SHORT, TEST_PASSWORD_WRONG } from '../testHelpers.js'
 
 /**
  * Auth route tests (api-contract §1): register / login / me.
@@ -12,7 +13,7 @@ function makeAgent() {
   return request(createApp())
 }
 
-async function registerUser(username: string, password = 'secret123') {
+async function registerUser(username: string, password = TEST_PASSWORD) {
   const res = await makeAgent().post('/api/auth/register').send({ username, password })
   return res
 }
@@ -47,14 +48,14 @@ describe('auth routes', () => {
   })
 
   it('register with too-short password returns 400', async () => {
-    const res = await makeAgent().post('/api/auth/register').send({ username: 'carol', password: '12345' })
+    const res = await makeAgent().post('/api/auth/register').send({ username: 'carol', password: TEST_PASSWORD_SHORT })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/password must be at least 6 characters/)
   })
 
   it('login succeeds with valid credentials', async () => {
     await registerUser('dave')
-    const res = await makeAgent().post('/api/auth/login').send({ username: 'dave', password: 'secret123' })
+    const res = await makeAgent().post('/api/auth/login').send({ username: 'dave', password: TEST_PASSWORD })
     expect(res.status).toBe(200)
     expect(res.body).toMatchObject({ user: { username: 'dave' } })
     expect(typeof res.body.token).toBe('string')
@@ -62,13 +63,13 @@ describe('auth routes', () => {
 
   it('login with wrong password returns 401', async () => {
     await registerUser('erin')
-    const res = await makeAgent().post('/api/auth/login').send({ username: 'erin', password: 'wrongpass' })
+    const res = await makeAgent().post('/api/auth/login').send({ username: 'erin', password: TEST_PASSWORD_WRONG })
     expect(res.status).toBe(401)
     expect(res.body).toEqual({ error: 'invalid username or password' })
   })
 
   it('login with unknown user returns 401', async () => {
-    const res = await makeAgent().post('/api/auth/login').send({ username: 'ghost', password: 'whatever1' })
+    const res = await makeAgent().post('/api/auth/login').send({ username: 'ghost', password: TEST_PASSWORD })
     expect(res.status).toBe(401)
   })
 
@@ -91,6 +92,6 @@ describe('auth routes', () => {
       password_hash: string
     }
     expect(row.password_hash.startsWith('$2')).toBe(true)
-    expect(row.password_hash).not.toContain('secret123')
+    expect(row.password_hash).not.toContain(TEST_PASSWORD)
   })
 })

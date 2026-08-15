@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useSettingsStore } from '../settingsStore'
+import { TEST_KEY_A, TEST_KEY_B, TEST_KEY_C, TEST_PASSWORD_LONG, TEST_TOKEN_B, TEST_TOKEN_C } from '../../testFixtures'
 
 /**
  * settingsStore 迁移测试（简报决策 2/8）：mock `platform/index` 的 getBridge，
@@ -39,7 +40,7 @@ describe('settingsStore', () => {
         provider: 'not-a-provider',
         baseUrl: 'http://example.com',
         model: 'm1',
-        apiKey: 'SECRET',
+        apiKey: TEST_KEY_A,
         temperature: 0.5,
         maxTokens: 100,
       },
@@ -54,7 +55,7 @@ describe('settingsStore', () => {
     expect(store.settings.ai.provider).toBe('openai')
     expect(store.settings.ai.model).toBe('m1')
     expect(store.settings.ai.baseUrl).toBe('http://example.com')
-    expect(store.settings.ai.apiKey).toBe('SECRET')
+    expect(store.settings.ai.apiKey).toBe(TEST_KEY_A)
     expect(store.settings.ai.temperature).toBe(0.5)
     expect(store.settings.ai.maxTokens).toBe(100)
     expect(store.settings.syncServerUrl).toBe('http://sync.example')
@@ -81,22 +82,22 @@ describe('settingsStore', () => {
     bridge.setSettings.mockResolvedValue({ ok: true })
     const store = useSettingsStore()
     store.settings.ai.model = 'gpt-4'
-    store.settings.ai.apiKey = 'sk-local'
+    store.settings.ai.apiKey = TEST_KEY_B
     await store.save()
 
     expect(bridge.setSettings).toHaveBeenCalledTimes(1)
     const sent = bridge.setSettings.mock.calls[0]![0] as { ai: { model: string; apiKey: string } }
     expect(sent.ai.model).toBe('gpt-4')
-    expect(sent.ai.apiKey).toBe('sk-local')
+    expect(sent.ai.apiKey).toBe(TEST_KEY_B)
   })
 
   it('login() marks the store authenticated and returns the AuthResult', async () => {
-    bridge.login.mockResolvedValue({ token: 'tok', user: { id: '1', username: 'u1' } })
+    bridge.login.mockResolvedValue({ token: TEST_TOKEN_B, user: { id: '1', username: 'u1' } })
     const store = useSettingsStore()
-    const result = await store.login('u1', 'pw123456')
+    const result = await store.login('u1', TEST_PASSWORD_LONG)
 
-    expect(bridge.login).toHaveBeenCalledWith({ username: 'u1', password: 'pw123456' })
-    expect(result.token).toBe('tok')
+    expect(bridge.login).toHaveBeenCalledWith({ username: 'u1', password: TEST_PASSWORD_LONG })
+    expect(result.token).toBe(TEST_TOKEN_B)
     expect(store.isAuthenticated).toBe(true)
   })
 
@@ -108,7 +109,7 @@ describe('settingsStore', () => {
   })
 
   it('register() marks the store authenticated', async () => {
-    bridge.register.mockResolvedValue({ token: 'tok2', user: { id: '2', username: 'u2' } })
+    bridge.register.mockResolvedValue({ token: TEST_TOKEN_C, user: { id: '2', username: 'u2' } })
     const store = useSettingsStore()
     await store.register('u2', 'pw123456')
     expect(store.isAuthenticated).toBe(true)
@@ -127,7 +128,7 @@ describe('settingsStore', () => {
     const store = useSettingsStore()
     store.isAuthenticated = true
     store.settings.ai.model = 'custom-model'
-    store.settings.ai.apiKey = 'stale-key'
+    store.settings.ai.apiKey = TEST_KEY_C
 
     await store.logout()
 

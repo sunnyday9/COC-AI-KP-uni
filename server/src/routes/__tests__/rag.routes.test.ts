@@ -11,6 +11,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import request from 'supertest'
 import { createApp } from '../../app.js'
+import { TEST_PASSWORD } from '../../testHelpers.js'
 
 // Deterministic builtin embedder: 2-dim one-hot-ish vectors by content.
 // `env` must be present on the mock (embedding.ts points env.cacheDir at MODELS_DIR).
@@ -27,7 +28,7 @@ function auth(token: string): { Authorization: string } {
 }
 
 async function registerToken(username: string): Promise<string> {
-  const res = await request(createApp()).post('/api/auth/register').send({ username, password: 'secret123' })
+  const res = await request(createApp()).post('/api/auth/register').send({ username, password: TEST_PASSWORD })
   expect(res.status).toBe(200)
   return res.body.token as string
 }

@@ -13,9 +13,10 @@ vi.mock('../../config.js', async (importOriginal) => {
 
 import request from 'supertest'
 import { createApp } from '../../app.js'
+import { TEST_PASSWORD } from '../../testHelpers.js'
 
 async function registerToken(username: string): Promise<string> {
-  const res = await request(createApp()).post('/api/auth/register').send({ username, password: 'secret123' })
+  const res = await request(createApp()).post('/api/auth/register').send({ username, password: TEST_PASSWORD })
   expect(res.status).toBe(200)
   return res.body.token as string
 }
