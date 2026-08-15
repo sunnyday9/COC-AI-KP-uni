@@ -19,6 +19,7 @@
  */
 import { chatForRag } from './aiService.js'
 import { getSettings, getAiConfig } from './settingsService.js'
+import { isMockAiMode } from '../config.js'
 import type { AppSettings } from '../../../shared/types/settings.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError } from '../utils/errors.js'
@@ -42,6 +43,11 @@ const BATCH_SIZE = 3
  * BadRequestError (see module header).
  */
 async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
+  if (isMockAiMode()) {
+    // MOCK_AI (Task 11): skip the local model download entirely — TF-IDF
+    // vectorStore still indexes/queries chunks without dense embeddings.
+    return null
+  }
   const settings = getSettings(userId)
   const rag = (settings.rag || {}) as NonNullable<AppSettings["rag"]>
   const provider = rag.provider === 'api' ? 'api' : 'builtin'

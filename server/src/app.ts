@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import cors from 'cors'
 import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
-import { PORT } from './config.js'
+import { PORT, isMockAiMode } from './config.js'
 import { logger } from './utils/logging.js'
 import { createWsServer } from './ws/index.js'
 import authRoutes from './routes/auth.routes.js'
@@ -71,6 +71,9 @@ const isMain =
 if (isMain) {
   const httpServer = createApp().listen(PORT, () => {
     logger.info(`COC AI KP server listening on http://localhost:${PORT}`)
+    if (isMockAiMode()) {
+      logger.info('MOCK_AI mode enabled — all AI/LLM calls return deterministic mock responses (no API key / no outbound requests)')
+    }
   })
   createWsServer(httpServer)
 }

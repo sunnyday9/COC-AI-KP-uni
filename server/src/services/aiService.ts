@@ -9,6 +9,8 @@ import {
   type ModelOption,
 } from '../../../shared/constants/providers.js'
 import { getAiConfig } from './settingsService.js'
+import { isMockAiMode } from '../config.js'
+import { mockChat, mockChatForAgent, mockChatForRag, mockListModels } from './mockAi.js'
 import type { KpToolDef } from '../../../shared/tools/cocTools.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError, UpstreamError } from '../utils/errors.js'
@@ -719,6 +721,8 @@ function validateMessages(messages: unknown): ChatMessage[] {
 /**
  * Chat with the user's configured provider. Config comes from the server-side
  * settings (apiKey decrypted); request body carries only messages/tuning.
+ * MOCK_AI=1 (Task 11): short-circuits to the deterministic mock provider
+ * BEFORE touching settings — no API key / model / baseUrl required.
  */
 export async function chat(userId: number, body: ChatBody): Promise<ChatResult> {
   const messages = validateMessages(body.messages)
@@ -730,6 +734,10 @@ export async function chat(userId: number, body: ChatBody): Promise<ChatResult> 
     (typeof body.maxTokens !== 'number' || !Number.isInteger(body.maxTokens) || body.maxTokens < 1)
   ) {
     throw new BadRequestError('maxTokens must be a positive integer')
+  }
+
+  if (isMockAiMode()) {
+    return mockChat(body)
   }
 
   const { config, protocol } = resolveAiConfig(userId)
@@ -771,6 +779,12 @@ export async function chatForAgent(
     throw new BadRequestError('messages must be a non-empty array')
   }
 
+  if (isMockAiMode()) {
+    // Deterministic script drives the real kpGraph: classifier keyword,
+    // keyword→toolCalls sequences and tool-continuation chains (mockAi.ts).
+    return mockChatForAgent(messages, !!params.stream, params.onChunk)
+  }
+
   const { config, protocol } = resolveAiConfig(userId)
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
@@ -809,6 +823,12 @@ export async function chatForRag(
     throw new BadRequestError('messages must be a non-empty array')
   }
 
+  if (isMockAiMode()) {
+    // Fixed parseable output keeps graph extraction / community summaries
+    // working without an LLM (parseExtractOutput tolerates garbage → empty).
+    return mockChatForRag()
+  }
+
   const { config, protocol } = resolveAiConfig(userId, params.model)
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
@@ -832,6 +852,10 @@ export async function chatForRag(
  * Every fetch is preceded by assertSafeOutboundUrl.
  */
 export async function listModels(userId: number, purpose = 'chat'): Promise<ModelOption[]> {
+  if (isMockAiMode()) {
+    // One deterministic option so the settings page model picker works.
+    return mockListModels()
+  }
   const ai = getAiConfig(userId)
   const provider = ai.provider as AIProviderType
   if (!provider) return []

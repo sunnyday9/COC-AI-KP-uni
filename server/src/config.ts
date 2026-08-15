@@ -63,3 +63,18 @@ export const UPLOADS_DIR = process.env.UPLOADS_DIR
  * allocating 50MB buffers).
  */
 export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 50 * 1024 * 1024)
+
+/**
+ * MOCK_AI mode (Task 11, Phase 10): when `MOCK_AI=1` every AI/LLM call is
+ * replaced by a deterministic in-process script (see `services/mockAi.ts`) —
+ * no API key, no outbound requests, no local model downloads — so the full
+ * COC flow (settings → import → index → character → game → tool calls →
+ * save/load) can run end-to-end without any external AI service.
+ *
+ * Implemented as a function (not a constant) so server unit tests can stub
+ * `process.env.MOCK_AI` per case via `vi.stubEnv`. The non-mock path never
+ * reads this value, so behavior is bit-identical when the env var is unset.
+ */
+export function isMockAiMode(): boolean {
+  return process.env.MOCK_AI === '1'
+}
