@@ -47,6 +47,14 @@ export interface MockContextOptions {
   onSetDying?: (v: boolean) => void
   onTransitionScene?: (name: string) => void
   onAddClue?: (desc: string) => void
+  onEndGame?: (ending: {
+    outcome: string
+    title: string
+    summary: string
+    epilogueOptions?: string[]
+    keyFacts?: string[]
+    keyTurnIds?: string[]
+  }) => void
 }
 
 export function createMockContext(options: MockContextOptions = {}): ToolHandlerContext {
@@ -81,6 +89,7 @@ export function createMockContext(options: MockContextOptions = {}): ToolHandler
     setCharacterDying: (v) => options.onSetDying?.(v),
     transitionToScene: (name) => options.onTransitionScene?.(name),
     addClue: (desc) => options.onAddClue?.(desc),
+    endGame: (ending) => options.onEndGame?.(ending),
     generateId,
   }
 }

@@ -139,9 +139,9 @@ describe('rollAttributes', () => {
     const keys = ['str', 'con', 'siz', 'dex', 'app', 'int', 'pow', 'edu', 'luck']
     expect(Object.keys(r).sort()).toEqual([...keys].sort())
     keys.forEach((k) => {
-      expect(typeof (r as Record<string, number>)[k]).toBe('number')
-      expect((r as Record<string, number>)[k]).toBeGreaterThanOrEqual(1)
-      expect((r as Record<string, number>)[k]).toBeLessThanOrEqual(99)
+      expect(typeof (r as unknown as Record<string, number>)[k]).toBe('number')
+      expect((r as unknown as Record<string, number>)[k]).toBeGreaterThanOrEqual(1)
+      expect((r as unknown as Record<string, number>)[k]).toBeLessThanOrEqual(99)
     })
   })
 })
