@@ -44,3 +44,8 @@ server/data/
 # Uploaded user files (runtime)
 server/uploads/
 server/storage/
+
+# E2E runtime artifacts (screenshots, HTML dumps, logs)
+e2e/screenshots/
+e2e/*.log
+e2e/*.utf8.log

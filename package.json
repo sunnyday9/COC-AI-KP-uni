@@ -11,9 +11,16 @@
     "dev:server": "cd server && npm run dev",
     "dev:h5": "cd client && npm run dev:h5",
     "build:h5": "cd client && npm run build:h5",
-    "test": "npm run test --workspace=server"
+    "test": "npm run test --workspace=server",
+    "test:server": "npm run test --workspace=server",
+    "test:client": "npm run test --workspace=client",
+    "test:e2e:h5": "node e2e/h5.journey.mjs",
+    "test:all": "npm run test --workspace=server && npm run test --workspace=client"
   },
   "engines": {
     "node": ">=24"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.62.1"
   }
 }
