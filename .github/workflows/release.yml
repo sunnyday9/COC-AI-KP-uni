@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build H5
+        run: npm run build:h5
+
+      - name: Build WeChat mini-program
+        working-directory: client
+        run: npm run build:mp-weixin
+
+      - name: Package release assets
+        run: |
+          mkdir -p dist-artifacts
+          (cd client/dist/build/h5 && zip -qr ../../../../dist-artifacts/aikp-h5.zip .)
+          (cd client/dist/build/mp-weixin && zip -qr ../../../../dist-artifacts/aikp-mp-weixin.zip .)
+          ls -lh dist-artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist-artifacts/*.zip --generate-notes

@@ -2,8 +2,8 @@
     "name" : "COC AI KP",
     "appid" : "",
     "description" : "COC 7th 规则 AI 跑团助手（uni-app 多端版）",
-    "versionName" : "1.0.0",
-    "versionCode" : "100",
+    "versionName" : "0.1.0",
+    "versionCode" : "1",
     "transformPx" : false,
     /* 5+App特有相关 */
     "app-plus" : {
