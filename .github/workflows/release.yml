@@ -36,7 +36,12 @@ jobs:
           (cd client/dist/build/mp-weixin && zip -qr ../../../../dist-artifacts/aikp-mp-weixin.zip .)
           ls -lh dist-artifacts
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist-artifacts/*.zip --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist-artifacts/*.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist-artifacts/*.zip --generate-notes
+          fi
