@@ -118,6 +118,43 @@ npm run test:e2e:h5    # 等价于 node e2e/h5.journey.mjs
 
 失败时输出每步 PASS/FAIL 与耗时，并在 `e2e/screenshots/` 保存失败截图 + 页面 HTML dump。
 
+### 微信小程序自动化测试（开发者工具真实运行时）
+
+在微信开发者工具（游客/测试号登录）中验证小程序真实运行时，而非仅构建产物：
+
+```bash
+cd tools/mp-test
+npm i miniprogram-automator     # 首次
+node patch-automator.mjs        # 兼容新版 IDE（Tool.getInfo 返回结构变化，幂等）
+node mp-test.mjs                # 连接 ws://localhost:9420 跑冒烟断言
+```
+
+前置条件（缺一不可）：
+
+1. 微信开发者工具**以管理员身份启动**（自动化端口 9420 才会绑定）；
+2. 设置 → 安全设置 → **服务端口** 开启；
+3. 导入本项目构建产物 `client/dist/build/mp-weixin`（AppID 选测试号；构建命令见上文）。
+
+覆盖断言（实测 **7/7 通过**，2026-08-16，DevTools 2.02.2608031 游客模式）：连接自动化 → 首页渲染（关键文案"AI COC Keeper / 克苏鲁的呼唤 — 智能守密人"等）→ 首页按钮 → 设置页（登录/配置输入框与文案）→ 返回首页。
+
+踩坑记录（详见 `tools/mp-test/` 与设备端测试文档）：
+
+- 自动化端口需管理员启动开发者工具；官方 `cli.bat` 存在 setlocal 递归 bug，可用 electron bootstrap 方式调用 CLI（`cli open-other` 可绕过游客 appid 校验）；
+- 新版 IDE 的 `Tool.getInfo` 返回 `version` 字段，旧版 miniprogram-automator 的 `checkVersion` 会崩溃 → `patch-automator.mjs` 修补；
+- 小程序端 API 调用需在开发者工具勾选「不校验合法域名」或在小程序后台配置 request/uploadFile/socket 合法域名。
+
+### Android 模拟器验证（App 端）
+
+用 Android SDK 模拟器（Pixel 5 / Android 14，WHPX 加速）加载 H5 构建验证 App 端逻辑（原生壳打包见上文 App 章节）：
+
+```bash
+# 构建指向宿主机的 H5（10.0.2.2 = 模拟器访问宿主机回环）
+VITE_API_BASE=http://10.0.2.2:3000 npm --prefix client run build:h5
+# 模拟器内 Chrome 打开 http://10.0.2.2:8080（静态服务 8080 + 后端 3000 MOCK_AI）
+```
+
+实测：首页完整渲染（无报错/白屏）；`nc 10.0.2.2 3000` 返回 401 + CORS 头（后端可达）。注意：重启 WinNAT 服务会破坏模拟器 Netsim 网络栈导致崩溃，启动时加 `-feature -Netsim`。
+
 ## 构建
 
 ```bash
