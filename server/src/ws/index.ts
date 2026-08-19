@@ -8,6 +8,7 @@ import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import { registerProgressSocket, unregisterProgressSocket } from './progress.js'
+import { cleanupSocketRooms, handleRoomAction, handleRoomJoin, handleRoomLeave, handleRoomSync } from './rooms.js'
 
 /**
  * WebSocket endpoint `ws://<host>/ws?token=<JWT>` (api-contract §4).
@@ -63,6 +64,18 @@ export function createWsServer(httpServer: Server): WebSocketServer {
         case 'kp:turn':
           handleKpTurn(socket, userId as number, msg)
           break
+        case 'room:join':
+          handleRoomJoin(socket, userId as number, msg)
+          break
+        case 'room:leave':
+          handleRoomLeave(socket, String((msg as { roomId?: unknown }).roomId ?? ''))
+          break
+        case 'room:sync':
+          handleRoomSync(socket, userId as number, msg)
+          break
+        case 'room:action':
+          handleRoomAction(socket, userId as number, msg)
+          break
         case 'rag:progress':
           // Task 4: RAG index progress (server → client only)
           break
@@ -74,11 +87,13 @@ export function createWsServer(httpServer: Server): WebSocketServer {
 
     socket.on('close', () => {
       unregisterProgressSocket(socket)
+      cleanupSocketRooms(socket)
       logger.info('ws client disconnected', { userId })
     })
 
     socket.on('error', (err) => {
       unregisterProgressSocket(socket)
+      cleanupSocketRooms(socket)
       logger.warn('ws socket error', { userId, error: String(err) })
     })
   })
