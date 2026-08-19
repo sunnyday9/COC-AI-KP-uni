@@ -100,6 +100,21 @@
 
 **待用户决策**：调整门禁规则 / 接受误报豁免 / 手动提交。
 
+### D-09：DB 映射重构——门禁合规的存储模型（2026-08-20）
+
+**决策**：用户选定方式二。stories/scripts 从「id=文件名 的纯文件存储」改为 **DB 映射 + 内部文件名**：
+- `stories` 表加 `file_path` 列（幂等 ALTER）；`scripts` 表加 `file_path` 列（content 已在）
+- **外部 id（story_id/script_id）只进 DB 查询**；fs 路径只用 DB 返回的 `file_path`（服务端 `crypto.randomUUID()` 生成的内部文件名，非外部输入）
+- `saveScript` 改为**纯 DB**（scripts.content 列，零 fs 操作）
+- `listStories/listScripts` 从 DB 读；**存量文件系统数据**（旧版 id=文件名）在 list 时 readdir 扫描自动导入（跳过 uuid 文件名）
+- read/delete 的 legacy 回退**彻底移除**（外部 id 永不进入 fs 路径；存量由 list 迁移）
+
+**备选**：方式一（门禁规则调整/豁免）——用户无门禁配置权限；方式三（手动提交绕过）——不可持续。
+
+**原因**：门禁（Mimosa L3 升级版）对「外部输入 → 触达 fs 的函数调用」结构性拦截，10 种消毒模式均不识别（见 D-08）。DB 映射让污点链**断在 DB 查询处**——与 saves.routes（DB 存储）不被拦截的观察一致。**效果**：7 处高危 → 0，commit 通过（099f859）。
+
+**验证**：server 354 + client 87 单测全绿、tsc 零错误、MOCK E2E 14/14（含上传/索引/读档链路）。
+
 ---
 
 ## 验证基线记录
