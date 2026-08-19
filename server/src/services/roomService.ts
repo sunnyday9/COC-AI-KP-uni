@@ -1,0 +1,299 @@
+/**
+ * RoomService — 服务端房间会话（Phase B1，架构方案 v2.0 §三/D6/D7）。
+ *
+ * 每房间一个实例，是房间状态的**唯一权威**：
+ *  - 状态真源：成员角色组 / 线索 / 场景 / 消息流 / 结局 / seq 水位
+ *  - 串行队列：动作按到达顺序处理，seq 全序分配，杜绝并发冲突
+ *  - KP 回合：复用 kpTurnService 的服务端图内工具循环（角色卡/世界增量由
+ *    本服务维护，不再依赖客户端上传快照）
+ *  - 持久化：变更节流落库（rooms.state 快照）+ TTL 回收 + 重连游标
+ *
+ * 单人模式 = 单成员房间（同一代码路径，FR-M9）。
+ */
+import { getDb } from '../db/index.js'
+import type { COCCharacterSheet } from '../../../shared/types/character.js'
+import type { Message } from '../../../shared/types/game.js'
+
+/** 房间阶段。 */
+export type RoomPhase = 'lobby' | 'playing' | 'ended'
+
+/** 房间成员角色。 */
+export type MemberRole = 'owner' | 'member' | 'observer'
+
+export interface RoomMember {
+  userId: number
+  username: string
+  role: MemberRole
+  characterId: string | null
+}
+
+/** 房间事件（全序，seq 由 RoomService 串行分配）。 */
+export type RoomEvent =
+  | { type: 'message_appended'; payload: { pendingId?: string; author: { userId: number; roleName: string }; content: string; kind: string } }
+  | { type: 'state_patch'; payload: { path: string; value: unknown } }
+  | { type: 'dice_result'; payload: { rolls: number[]; expr: string; displayText: string } }
+  | { type: 'room_meta'; payload: { phase: RoomPhase; turnWindowMs: number; members: RoomMember[] } }
+  | { type: 'trace'; payload: { traceEvents: unknown[] } }
+
+/** 房间持久化快照（rooms.state JSON）。 */
+export interface RoomSnapshot {
+  seq: number
+  phase: RoomPhase
+  storyId: string | null
+  messages: Message[]
+  characters: Record<string, COCCharacterSheet>
+  clues: { id: string; description: string }[]
+  scene: string | null
+  ending: unknown | null
+  turnWindowMs: number
+  updatedAt: number
+}
+
+interface RoomOptions {
+  roomId: string
+  ownerId: number
+  ownerName: string
+  storyId?: string | null
+  turnWindowMs?: number
+  restore?: RoomSnapshot | null
+}
+
+const DEFAULT_TURN_WINDOW_MS = 5_000
+const SNAPSHOT_EVERY_N_EVENTS = 20
+const SNAPSHOT_EVERY_MS = 10_000
+const ROOM_TTL_MS = 30 * 60_000
+
+/**
+ * 房间实例。所有状态变更必须经 enqueue（串行），事件按 seq 全序广播。
+ */
+export class RoomService {
+  readonly roomId: string
+  readonly ownerId: number
+  readonly ownerName: string
+
+  private phase: RoomPhase = 'lobby'
+  private storyId: string | null = null
+  private messages: Message[] = []
+  private characters = new Map<string, COCCharacterSheet>()
+  private clues: { id: string; description: string }[] = []
+  private scene: string | null = null
+  private ending: unknown = null
+  private turnWindowMs: number
+  private seq = 0
+  private eventCountSinceSnapshot = 0
+  private lastSnapshotAt = Date.now()
+  private lastActivityAt = Date.now()
+  private readonly queue: Promise<void> = Promise.resolve()
+  private readonly listeners = new Set<(event: RoomEvent) => void>()
+  private snapshotTimer: NodeJS.Timeout | null = null
+
+  constructor(private readonly opts: RoomOptions) {
+    this.roomId = opts.roomId
+    this.ownerId = opts.ownerId
+    this.ownerName = opts.ownerName
+    this.storyId = opts.storyId ?? null
+    this.turnWindowMs = opts.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
+    if (opts.restore) {
+      this.phase = opts.restore.phase
+      this.storyId = opts.restore.storyId
+      this.messages = opts.restore.messages
+      this.characters = new Map(Object.entries(opts.restore.characters))
+      this.clues = opts.restore.clues
+      this.scene = opts.restore.scene
+      this.ending = opts.restore.ending
+      this.seq = opts.restore.seq
+      this.turnWindowMs = opts.restore.turnWindowMs
+    }
+    this.snapshotTimer = setInterval(() => void this.maybeSnapshot(), SNAPSHOT_EVERY_MS)
+    this.snapshotTimer.unref?.()
+  }
+
+  /* ═══════════════ 查询（只读，无需入队） ═══════════════ */
+
+  getPhase(): RoomPhase { return this.phase }
+  getSeq(): number { return this.seq }
+  getStoryId(): string | null { return this.storyId }
+  getScene(): string | null { return this.scene }
+  getMessages(): readonly Message[] { return this.messages }
+  getCharacters(): ReadonlyMap<string, COCCharacterSheet> { return this.characters }
+  getClues(): readonly { id: string; description: string }[] { return this.clues }
+  getEnding(): unknown { return this.ending }
+  isStale(): boolean { return Date.now() - this.lastActivityAt > ROOM_TTL_MS }
+
+  /** 序列化快照（落库/重连全量）。 */
+  snapshot(): RoomSnapshot {
+    return {
+      seq: this.seq,
+      phase: this.phase,
+      storyId: this.storyId,
+      messages: this.messages,
+      characters: Object.fromEntries(this.characters),
+      clues: this.clues,
+      scene: this.scene,
+      ending: this.ending,
+      turnWindowMs: this.turnWindowMs,
+      updatedAt: Date.now(),
+    }
+  }
+
+  /** 订阅房间事件（增量广播）。返回取消函数。 */
+  subscribe(listener: (event: RoomEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  /* ═══════════════ 串行执行 ═══════════════ */
+
+  /** 串行入队：任何状态变更/事件广播都经此执行，保证 seq 全序。 */
+  enqueue<T>(task: () => T | Promise<T>): Promise<T> {
+    this.lastActivityAt = Date.now()
+    const run = this.queue.then(task, task)
+    // 保持队列链（吞错，错误由调用方 catch）
+    return run
+  }
+
+  private emit(event: RoomEvent): void {
+    this.seq += 1
+    this.eventCountSinceSnapshot += 1
+    for (const l of this.listeners) {
+      try { l(event) } catch { /* 监听器错误不影响广播 */ }
+    }
+  }
+
+  /* ═══════════════ 动作处理 ═══════════════ */
+
+  /** 追加玩家/KP 消息并广播（message_appended）。 */
+  appendMessage(msg: Message, author: { userId: number; roleName: string }): void {
+    this.messages.push(msg)
+    this.emit({
+      type: 'message_appended',
+      payload: { pendingId: msg.id, author, content: msg.content, kind: msg.role },
+    })
+  }
+
+  /** 角色卡状态补丁（state_patch）。 */
+  patchCharacter(characterId: string, patch: Record<string, unknown>): void {
+    const cur = this.characters.get(characterId)
+    if (!cur) return
+    Object.assign(cur, patch)
+    this.emit({ type: 'state_patch', payload: { path: `characters.${characterId}`, value: patch } })
+  }
+
+  /** 线索追加（state_patch）。 */
+  addClue(description: string, clueId?: string): void {
+    const id = clueId ?? `clue_${this.seq + 1}`
+    if (!this.clues.some((c) => c.id === id || c.description === description)) {
+      this.clues.push({ id, description })
+      this.emit({ type: 'state_patch', payload: { path: 'clues', value: this.clues } })
+    }
+  }
+
+  /** 场景切换（state_patch）。 */
+  setScene(sceneName: string): void {
+    this.scene = sceneName
+    this.emit({ type: 'state_patch', payload: { path: 'scene', value: sceneName } })
+  }
+
+  /** 结局（state_patch + phase 变更）。 */
+  setEnding(ending: unknown): void {
+    this.ending = ending
+    this.phase = 'ended'
+    this.emit({ type: 'state_patch', payload: { path: 'ending', value: ending } })
+    this.emit({ type: 'room_meta', payload: { phase: 'ended', turnWindowMs: this.turnWindowMs, members: [] } })
+  }
+
+  /** 设置房间阶段（room_meta）。 */
+  setPhase(phase: RoomPhase): void {
+    this.phase = phase
+    this.emit({ type: 'room_meta', payload: { phase, turnWindowMs: this.turnWindowMs, members: [] } })
+  }
+
+  /** 开始游戏（lobby → playing，绑定剧本）。 */
+  startGame(storyId: string): void {
+    this.storyId = storyId
+    this.phase = 'playing'
+    this.emit({ type: 'room_meta', payload: { phase: 'playing', turnWindowMs: this.turnWindowMs, members: [] } })
+  }
+
+  /* ═══════════════ 快照 / 回收 ═══════════════ */
+
+  private async maybeSnapshot(): Promise<void> {
+    if (this.eventCountSinceSnapshot >= SNAPSHOT_EVERY_N_EVENTS || Date.now() - this.lastSnapshotAt >= SNAPSHOT_EVERY_MS) {
+      await this.persistSnapshot()
+    }
+  }
+
+  /** 落库快照（rooms.state）。 */
+  async persistSnapshot(): Promise<void> {
+    this.eventCountSinceSnapshot = 0
+    this.lastSnapshotAt = Date.now()
+    const snap = this.snapshot()
+    getDb()
+      .prepare(`UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE room_id = ?`)
+      .run(JSON.stringify(snap), Date.now(), this.roomId)
+  }
+
+  /** 停止定时器（房间回收时调用）。 */
+  dispose(): void {
+    if (this.snapshotTimer) clearInterval(this.snapshotTimer)
+    this.snapshotTimer = null
+    this.listeners.clear()
+  }
+}
+
+/* ═══════════════ 房间注册表（进程内单例） ═══════════════ */
+
+const roomRegistry = new Map<string, RoomService>()
+
+/** 获取或创建房间（owner 建房）。 */
+export function getOrCreateRoom(
+  roomId: string,
+  ownerId: number,
+  ownerName: string,
+  storyId?: string | null,
+): RoomService {
+  let room = roomRegistry.get(roomId)
+  if (!room) {
+    const row = getDb()
+      .prepare(`SELECT state FROM rooms WHERE room_id = ?`)
+      .get(roomId) as { state: string } | undefined
+    let restore: RoomSnapshot | null = null
+    if (row?.state) {
+      try { restore = JSON.parse(row.state) as RoomSnapshot } catch { restore = null }
+    }
+    room = new RoomService({ roomId, ownerId, ownerName, storyId, restore })
+    roomRegistry.set(roomId, room)
+  }
+  return room
+}
+
+/** 获取房间（不存在返回 null）。 */
+export function getRoom(roomId: string): RoomService | null {
+  return roomRegistry.get(roomId) ?? null
+}
+
+/** 回收过期房间（TTL 扫描，进程启动时定期调用）。 */
+export function reapStaleRooms(): void {
+  const now = Date.now()
+  for (const [id, room] of roomRegistry) {
+    if (room.isStale()) {
+      void room.persistSnapshot().finally(() => {
+        room.dispose()
+        roomRegistry.delete(id)
+      })
+    }
+  }
+}
+
+/** 定期回收（测试可注入间隔；默认 60s）。 */
+export function startRoomReaper(intervalMs = 60_000): NodeJS.Timeout {
+  const t = setInterval(reapStaleRooms, intervalMs)
+  t.unref?.()
+  return t
+}
+
+/** 供测试：清空注册表。 */
+export function _clearRoomRegistryForTests(): void {
+  for (const room of roomRegistry.values()) room.dispose()
+  roomRegistry.clear()
+}

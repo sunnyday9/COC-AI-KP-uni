@@ -67,6 +67,31 @@ function initSchema(database: DatabaseSync): void {
       data TEXT NOT NULL,
       PRIMARY KEY (user_id, story_id, session_id)
     );
+    CREATE TABLE IF NOT EXISTS rooms (
+      room_id TEXT PRIMARY KEY,
+      owner_id INTEGER NOT NULL,
+      invite_code TEXT NOT NULL UNIQUE,
+      story_id TEXT,
+      phase TEXT NOT NULL DEFAULT 'lobby',
+      state TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS characters (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sheet TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS room_members (
+      room_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      character_id TEXT,
+      PRIMARY KEY (room_id, user_id)
+    );
   `)
   // 幂等迁移：旧库的 stories 表没有 file_path 列（DB 映射重构，2026-08-20）。
   const storyCols = database.prepare(`PRAGMA table_info(stories)`).all() as { name: string }[]
