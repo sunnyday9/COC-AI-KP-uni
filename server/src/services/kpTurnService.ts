@@ -114,13 +114,15 @@ export interface KpTurnHandlers {
 
 /**
  * 运行一整个回合：图执行 + 服务端工具循环。
- * @param characterSheet 当前角色卡（null = 无角色，工具中依赖角色的回调自动跳过）
+ * @param characters 房间角色组（characterId → sheet；多人模式多卡，单人单卡）
+ * @param activeCharacterId 当前行动者（工具缺省 characterId 的回退目标；null = 无角色）
  * @param mutators 角色卡变更应用器（由会话/房间执行器实现）
  */
 export async function runKpTurn(
   userId: number,
   body: { messages: unknown; storyContext?: Record<string, unknown> | null },
-  characterSheet: COCCharacterSheet | null,
+  characters: Record<string, COCCharacterSheet> | null,
+  activeCharacterId: string | null,
   mutators: TurnCharacterMutators,
   handlers: KpTurnHandlers,
 ): Promise<void> {
@@ -131,8 +133,9 @@ export async function runKpTurn(
     handlers.onError(errorMessage(err))
     return
   }
+  const activeSheet = (characters && activeCharacterId ? characters[activeCharacterId] : null) ?? null
   if (messages.length === 0) {
-    handlers.onEnd({ content: '', displayMessages: [], toolCalls: [], worldDeltas: { cluesAdded: [] }, characterSheet })
+    handlers.onEnd({ content: '', displayMessages: [], toolCalls: [], worldDeltas: { cluesAdded: [] }, characterSheet: activeSheet })
     return
   }
 
@@ -184,10 +187,13 @@ export async function runKpTurn(
     }
     if (!r?.toolCalls?.length) break
 
-    // 服务端执行工具：结果注入消息（摘要 + 截断），角色卡变更通过 mutators 应用
+    // 服务端执行工具：结果注入消息（摘要 + 截断），角色卡变更通过 mutators 应用。
+    // 多人模式：每个 toolCall 按 args.characterId 选择角色卡（缺省 → 当前行动者）；
+    // characterId 不存在于角色组 → 回退行动者（归属校验，D5）。
     const toolCalls = r.toolCalls as ToolCall[]
+    const activeSheetForCtx = (characters && activeCharacterId ? characters[activeCharacterId] : null) ?? null
     const ctx = buildToolContext({
-      characterSheet,
+      characterSheet: activeSheetForCtx,
       updateCharacterHP: wrappedMutators.updateCharacterHP,
       updateCharacterMP: wrappedMutators.updateCharacterMP,
       updateCharacterSAN: wrappedMutators.updateCharacterSAN,
@@ -231,5 +237,5 @@ export async function runKpTurn(
   if (!fullContent.trim()) {
     fullContent = '守密人正在思考……请稍候再试，或换一种方式描述你的行动。'
   }
-  handlers.onEnd({ content: fullContent, displayMessages: allDisplayMessages, toolCalls: executedToolCalls, worldDeltas, characterSheet })
+  handlers.onEnd({ content: fullContent, displayMessages: allDisplayMessages, toolCalls: executedToolCalls, worldDeltas, characterSheet: activeSheet })
 }

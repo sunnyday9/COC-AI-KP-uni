@@ -115,6 +115,7 @@ function handleKpTurn(socket: WebSocket, userId: number, raw: unknown): void {
     messages?: unknown
     storyContext?: unknown
     characterSheet?: unknown
+    characters?: unknown
   }
   const streamId = typeof payload.streamId === 'string' && payload.streamId ? payload.streamId : 'unknown'
 
@@ -131,7 +132,16 @@ function handleKpTurn(socket: WebSocket, userId: number, raw: unknown): void {
   }
 
   // 角色卡：客户端不再执行规则，但回合开始时需把当前快照带上，服务端更新后随 end 帧回传。
+  // 多人模式（Phase B5）：payload.characters = { characterId: sheet }；单卡兼容 { default: sheet }。
+  const rawCharacters = (payload as { characters?: unknown }).characters as Record<string, COCCharacterSheet> | undefined
   const characterSheet = (payload.characterSheet as COCCharacterSheet | null | undefined) ?? null
+  const characters: Record<string, COCCharacterSheet> | null =
+    rawCharacters && typeof rawCharacters === 'object' && Object.keys(rawCharacters).length > 0
+      ? rawCharacters
+      : characterSheet
+        ? { default: characterSheet }
+        : null
+  const activeCharacterId = characters ? (characters.default ? 'default' : Object.keys(characters)[0] ?? null) : null
 
   try {
     void runKpTurn(
@@ -140,24 +150,25 @@ function handleKpTurn(socket: WebSocket, userId: number, raw: unknown): void {
         messages: payload.messages as KpMessage[],
         storyContext: (payload.storyContext as Record<string, unknown> | null | undefined) ?? null,
       },
-      characterSheet,
+      characters,
+      activeCharacterId,
       {
-        updateCharacterHP: (delta) => { if (characterSheet?.derived) characterSheet.derived.hp = Math.max(0, (characterSheet.derived.hp ?? 0) + delta) },
-        updateCharacterMP: (delta) => { if (characterSheet?.derived) characterSheet.derived.mp = Math.max(0, (characterSheet.derived.mp ?? 0) + delta) },
-        updateCharacterSAN: (delta) => { if (characterSheet?.derived) characterSheet.derived.san = Math.max(0, (characterSheet.derived.san ?? 0) + delta) },
-        updateCharacterLuck: (delta) => { if (characterSheet?.attributes) characterSheet.attributes.luck = Math.max(0, (characterSheet.attributes.luck ?? 0) + delta) },
-        addCharacterDailySanLoss: (amount) => { if (characterSheet) characterSheet.dailySanLoss = (characterSheet.dailySanLoss ?? 0) + amount },
+        updateCharacterHP: (delta: number) => { if (characterSheet?.derived) characterSheet.derived.hp = Math.max(0, (characterSheet.derived.hp ?? 0) + delta) },
+        updateCharacterMP: (delta: number) => { if (characterSheet?.derived) characterSheet.derived.mp = Math.max(0, (characterSheet.derived.mp ?? 0) + delta) },
+        updateCharacterSAN: (delta: number) => { if (characterSheet?.derived) characterSheet.derived.san = Math.max(0, (characterSheet.derived.san ?? 0) + delta) },
+        updateCharacterLuck: (delta: number) => { if (characterSheet?.attributes) characterSheet.attributes.luck = Math.max(0, (characterSheet.attributes.luck ?? 0) + delta) },
+        addCharacterDailySanLoss: (amount: number) => { if (characterSheet) characterSheet.dailySanLoss = (characterSheet.dailySanLoss ?? 0) + amount },
         resetCharacterDailySanLoss: () => { if (characterSheet) characterSheet.dailySanLoss = 0 },
-        updateCharacterInsanityState: (state, phobias, manias) => {
+        updateCharacterInsanityState: (state: 'normal' | 'temporary' | 'indefinite' | 'permanent', phobias?: string[], manias?: string[]) => {
           if (!characterSheet) return
           characterSheet.insanityState = state
           if (phobias) characterSheet.phobias = phobias
           if (manias) characterSheet.manias = manias
         },
-        setCharacterMajorWound: (v) => { if (characterSheet) characterSheet.hasMajorWound = v },
-        setCharacterDying: (v) => { if (characterSheet) characterSheet.isDying = v },
-        growCharacterSkill: (id, v) => { if (characterSheet?.skills) characterSheet.skills[id] = v },
-        increaseCthulhuMythos: (gain) => { if (characterSheet) characterSheet.cthulhuMythos = (characterSheet.cthulhuMythos ?? 0) + gain },
+        setCharacterMajorWound: (v: boolean) => { if (characterSheet) characterSheet.hasMajorWound = v },
+        setCharacterDying: (v: boolean) => { if (characterSheet) characterSheet.isDying = v },
+        growCharacterSkill: (id: string, v: number) => { if (characterSheet?.skills) characterSheet.skills[id] = v },
+        increaseCthulhuMythos: (gain: number) => { if (characterSheet) characterSheet.cthulhuMythos = (characterSheet.cthulhuMythos ?? 0) + gain },
         transitionToScene: () => { /* 世界增量由 kpTurnService 收集进 worldDeltas，随 end 帧回传 */ },
         addClue: () => { /* 同上 */ },
         endGame: () => { /* 同上 */ },

@@ -54,7 +54,8 @@ describe('kpTurnService (MOCK_AI 服务端图内循环)', () => {
       void runKpTurn(
         userId,
         { messages, storyContext: null },
-        MOCK_SHEET,
+        { default: MOCK_SHEET },
+        'default',
         mutators,
         {
           onChunk: (c) => chunks.push(c),
