@@ -152,6 +152,37 @@ router.post('/:id/start', (req: AuthRequest, res) => {
   res.json({ ok: true })
 })
 
+/** POST /api/rooms/:id/character — 绑定角色卡到房间（一人一卡，Phase B4）。 */
+router.post('/:id/character', (req: AuthRequest, res) => {
+  const userId = req.userId as number
+  const roomId = String(req.params.id ?? '')
+  const charId = String((req.body as { characterId?: unknown } | undefined)?.characterId ?? '')
+  const db = getDb()
+
+  // 房间成员校验
+  const memberRows = db.prepare(`SELECT role FROM room_members WHERE room_id = ? AND user_id = ?`).all(roomId, userId) as unknown as { role: string }[]
+  const member = memberRows[0]
+  if (!member) {
+    sendError(res, new NotFoundError('room not found'))
+    return
+  }
+  // 角色卡归属校验（仅本人）
+  const charRows = db.prepare(`SELECT user_id FROM characters WHERE id = ?`).all(charId) as unknown as { user_id: number }[]
+  const char = charRows[0]
+  if (!char || char.user_id !== userId) {
+    sendError(res, new NotFoundError('character not found'))
+    return
+  }
+  // 一人一卡：该角色卡已被他人绑定 → 409
+  const bound = db.prepare(`SELECT user_id FROM room_members WHERE room_id = ? AND character_id = ? AND user_id != ?`).all(roomId, charId, userId)
+  if (bound.length > 0) {
+    sendError(res, new ConflictError('character already bound to another member'))
+    return
+  }
+  db.prepare(`UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?`).run(charId, roomId, userId)
+  res.json({ ok: true, roomId, characterId: charId })
+})
+
 /** DELETE /api/rooms/:id — 房主解散。 */
 router.delete('/:id', (req: AuthRequest, res) => {
   const userId = req.userId as number

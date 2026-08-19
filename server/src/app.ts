@@ -15,6 +15,7 @@ import scriptsRoutes from './routes/scripts.routes.js'
 import savesRoutes from './routes/saves.routes.js'
 import ragRoutes from './routes/rag.routes.js'
 import roomsRoutes from './routes/rooms.routes.js'
+import charactersRoutes from './routes/characters.routes.js'
 
 /**
  * Express application factory.
@@ -38,6 +39,7 @@ export function createApp(): Express {
   app.use('/api/saves', savesRoutes)
   app.use('/api/rag', ragRoutes)
   app.use('/api/rooms', roomsRoutes)
+  app.use('/api/characters', charactersRoutes)
 
   // 404 — unified JSON error shape { error }
   app.use((_req: Request, res: Response) => {
