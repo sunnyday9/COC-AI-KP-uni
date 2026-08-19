@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useGameStore } from '../../../stores/gameStore'
-import { getSkillName } from '../../../data/coc7'
+import { getSkillName } from '../../../../../shared/coc/coc7'
 import type { COCAttributes } from '../../../types/character'
 
 const gameStore = useGameStore()

@@ -1,6 +1,6 @@
 import type { Message } from '../types/game'
 import type { COCCharacterSheet } from '../types/character'
-import { getSkillName } from '../data/coc7'
+import { getSkillName } from '../../../shared/coc/coc7'
 
 /**
  * 共享常量（Task 7 P0 修复）：原定义同时存在于 kpPromptService 与 gameStore，

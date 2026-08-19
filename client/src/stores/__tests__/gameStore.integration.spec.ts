@@ -2,14 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useGameStore } from '../gameStore'
 import { useSettingsStore } from '../settingsStore'
-import { runKpAgentLoop, hasKpAgent, runDirectChat } from '../../services/kpSessionService'
+import { runKpTurn, hasKpAgent, runDirectChat } from '../../services/kpSessionService'
 
 /**
  * gameStore 集成测试（简报决策 3/8）：mock bridge（platform/index）+
  * mock kpSessionService，验证 sendPlayerMessage 端到端流程：
- * RAG context → kpPromptService → runKpAgentLoop（返回 toolCalls）→
- * orchestrator 执行 → 状态更新（kpMemory/clues/streaming/longTermSummary），
- * 以及存档 write/read 往返。不真连后端。
+ * RAG context → kpPromptService → runKpTurn（服务端图内循环，返回
+ * content + toolCalls + displayMessages）→ 状态更新（kpMemory/clues/
+ * streaming/longTermSummary），以及存档 write/read 往返。不真连后端。
  */
 const { bridge } = vi.hoisted(() => ({
   bridge: {
@@ -30,7 +30,7 @@ vi.mock('../../platform/index', () => ({
 
 vi.mock('../../services/kpSessionService', () => ({
   hasKpAgent: vi.fn(),
-  runKpAgentLoop: vi.fn(),
+  runKpTurn: vi.fn(),
   runDirectChat: vi.fn(),
 }))
 
@@ -66,7 +66,7 @@ describe('gameStore integration (sendPlayerMessage)', () => {
     bridge.readSave.mockReset().mockResolvedValue({})
     bridge.listSaves.mockReset().mockResolvedValue([])
     vi.mocked(hasKpAgent).mockReturnValue(true)
-    vi.mocked(runKpAgentLoop).mockReset()
+    vi.mocked(runKpTurn).mockReset()
     vi.mocked(runDirectChat).mockReset()
 
     const settings = useSettingsStore()
@@ -87,18 +87,21 @@ describe('gameStore integration (sendPlayerMessage)', () => {
   it('sendPlayerMessage end-to-end: RAG → KP agent loop → toolCalls → orchestrator → state updates', async () => {
     const store = startPlaying()
 
-    vi.mocked(runKpAgentLoop).mockImplementation(async (_msgs, _aiConfig, callbacks) => {
+    vi.mocked(runKpTurn).mockImplementation(async (_msgs, _aiConfig, _storyContext, _sheet, callbacks) => {
       // simulate streaming chunk
       callbacks.onStreamChunk('守密人仔细观察')
-      // KP returns a tool call → gameStore.processToolCalls → orchestrator executes
-      const { toolResults, displayMessages } = callbacks.processToolCalls([
-        { id: 't1', name: 'grant_clue', arguments: JSON.stringify({ description: '奇怪的符号' }) },
-      ])
-      callbacks.insertMessagesBeforeLast(displayMessages as unknown[])
-      // real runKpAgentLoop delivers the final content via onStreamChunk
-      const final = '守密人发现了线索。' + String(toolResults[0]?.content ?? '')
+      // 服务端执行工具：回传 displayMessages（骰子/系统提示）与执行过的工具调用
+      const displayMessages = [
+        { id: 'd1', timestamp: Date.now(), role: 'system', content: '获得线索: 奇怪的符号' },
+      ]
+      callbacks.onDisplayMessages?.(displayMessages)
+      callbacks.onCharacterSheetUpdate?.({ derived: { hp: 10, hpMax: 10, mp: 5, mpMax: 5, san: 50, sanMax: 99 } })
+      // 服务端工具执行产生的世界增量（grant_clue → cluesAdded）
+      callbacks.onWorldDeltas?.({ cluesAdded: [{ description: '奇怪的符号', clueId: 'c1' }] })
+      // real runKpTurn delivers the final content via onStreamChunk
+      const final = '守密人发现了线索。'
       callbacks.onStreamChunk(final)
-      return final
+      return { content: final, displayMessages, toolCalls: [{ id: 't1', name: 'grant_clue', arguments: JSON.stringify({ description: '奇怪的符号' }) }], worldDeltas: { cluesAdded: [{ description: '奇怪的符号', clueId: 'c1' }] }, characterSheet: null }
     })
 
     await store.sendPlayerMessage('我去调查那扇门')
@@ -159,7 +162,7 @@ describe('gameStore integration (sendPlayerMessage)', () => {
     await store.sendPlayerMessage('你好')
 
     expect(runDirectChat).toHaveBeenCalledTimes(1)
-    expect(runKpAgentLoop).not.toHaveBeenCalled()
+    expect(runKpTurn).not.toHaveBeenCalled()
     const last = store.messages[store.messages.length - 1] as { role: string; content: string; isStreaming?: boolean }
     expect(last.content).toContain('直连回复完整')
     expect(last.isStreaming).toBe(false)
@@ -175,7 +178,7 @@ describe('gameStore integration (sendPlayerMessage)', () => {
     expect(last.content).toContain('[错误:')
     expect(last.isStreaming).toBe(false)
     expect(store.isSending).toBe(false)
-    expect(runKpAgentLoop).not.toHaveBeenCalled()
+    expect(runKpTurn).not.toHaveBeenCalled()
   })
 })
 

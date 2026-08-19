@@ -58,6 +58,16 @@ export interface KpStreamPayload {
   chunk?: string
   content?: string
   toolCalls?: ToolCallResult[]
+  /** Phase A2: 服务端图内工具循环 — 工具产生的骰子/系统展示消息。 */
+  displayMessages?: unknown[]
+  /** Phase A2: 服务端工具执行产生的世界增量（线索/场景/结局）。 */
+  worldDeltas?: {
+    cluesAdded?: { description: string; clueId?: string }[]
+    sceneChanged?: string
+    ending?: unknown
+  }
+  /** Phase A2: 服务端更新后的角色卡快照。 */
+  characterSheet?: unknown
   error?: string
   traceEvents?: unknown[]
 }

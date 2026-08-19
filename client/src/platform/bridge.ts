@@ -327,6 +327,8 @@ export class PlatformBridge implements Bridge {
   async kpInvokeStream(params: {
     messages: { role: string; content: string }[]
     storyContext?: unknown
+    /** Phase A2: 服务端图内工具循环 — 传角色卡快照，服务端执行工具并回传更新。 */
+    characterSheet?: unknown
   }): Promise<{ streamId: string }> {
     try {
       await this.ws.connect()
@@ -339,12 +341,16 @@ export class PlatformBridge implements Bridge {
     const streamId = generateStreamId()
     this.ws.subscribe(streamId, {
       onChunk: (chunk) => this.fanOut({ streamId, type: 'chunk', chunk }),
-      onEnd: (payload) => this.fanOut({ streamId, type: 'end', content: payload.content, toolCalls: payload.toolCalls }),
+      onEnd: (payload) => this.fanOut({ streamId, type: 'end', content: payload.content, toolCalls: payload.toolCalls, displayMessages: payload.displayMessages, worldDeltas: payload.worldDeltas, characterSheet: payload.characterSheet }),
       onError: (error) => this.fanOut({ streamId, type: 'error', error }),
       onTrace: (traceEvents) => this.fanOut({ streamId, type: 'trace', traceEvents }),
     })
     try {
-      this.ws.sendInvoke(streamId, params.messages, params.storyContext)
+      if (params.characterSheet !== undefined && params.characterSheet !== null) {
+        this.ws.sendTurn(streamId, params.messages, params.storyContext ?? null, params.characterSheet)
+      } else {
+        this.ws.sendInvoke(streamId, params.messages, params.storyContext)
+      }
     } catch (err) {
       this.ws.unsubscribe(streamId)
       throw err instanceof BridgeError ? err : new BridgeError(err instanceof Error ? err.message : String(err))

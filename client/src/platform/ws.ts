@@ -35,7 +35,16 @@ export interface ToolCall {
 
 export interface KpStreamHandlers {
   onChunk: (chunk: string) => void
-  onEnd: (payload: { content: string; toolCalls?: ToolCall[] }) => void
+  onEnd: (payload: {
+    content: string
+    toolCalls?: ToolCall[]
+    /** Phase A2: 服务端图内工具循环 — 工具产生的骰子/系统展示消息。 */
+    displayMessages?: unknown[]
+    /** Phase A2: 服务端工具执行产生的世界增量（线索/场景/结局）。 */
+    worldDeltas?: { cluesAdded?: { description: string; clueId?: string }[]; sceneChanged?: string; ending?: unknown }
+    /** Phase A2: 服务端更新后的角色卡快照。 */
+    characterSheet?: unknown
+  }) => void
   onError: (error: string) => void
   /** Optional: server graph trace events (delivered when the frame arrives). */
   onTrace?: (traceEvents: unknown[]) => void
@@ -88,6 +97,9 @@ interface WsFrame {
   chunk?: unknown
   content?: unknown
   toolCalls?: unknown
+  displayMessages?: unknown
+  worldDeltas?: unknown
+  characterSheet?: unknown
   error?: unknown
   traceEvents?: unknown
 }
@@ -186,6 +198,25 @@ export class WSService {
     }
     const frame: Record<string, unknown> = { type: 'kp:invoke', streamId, messages }
     if (storyContext !== undefined && storyContext !== null) frame.storyContext = storyContext
+    this.socket.send({
+      data: JSON.stringify(frame),
+      fail: () => this.handleFailure('消息发送失败'),
+    })
+  }
+
+  /** Send a `kp:turn` frame (Phase A2 服务端图内工具循环). Requires an open connection. */
+  sendTurn(
+    streamId: string,
+    messages: { role: string; content: string }[],
+    storyContext: unknown,
+    characterSheet: unknown,
+  ): void {
+    if (!this.isConnected() || !this.socket) {
+      throw new Error('Bridge: WebSocket 未连接')
+    }
+    const frame: Record<string, unknown> = { type: 'kp:turn', streamId, messages }
+    if (storyContext !== undefined && storyContext !== null) frame.storyContext = storyContext
+    if (characterSheet !== undefined && characterSheet !== null) frame.characterSheet = characterSheet
     this.socket.send({
       data: JSON.stringify(frame),
       fail: () => this.handleFailure('消息发送失败'),
@@ -412,6 +443,9 @@ export class WSService {
           handlers.onEnd({
             content: typeof frame.content === 'string' ? frame.content : '',
             toolCalls: Array.isArray(frame.toolCalls) ? (frame.toolCalls as ToolCall[]) : undefined,
+            displayMessages: Array.isArray(frame.displayMessages) ? (frame.displayMessages as unknown[]) : undefined,
+            worldDeltas: frame.worldDeltas as { cluesAdded?: { description: string; clueId?: string }[]; sceneChanged?: string; ending?: unknown } | undefined,
+            characterSheet: frame.characterSheet,
           })
         } catch {
           // see above

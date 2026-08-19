@@ -46,8 +46,11 @@ const E2E_DIR = path.join(ROOT, 'e2e')
 const SHOTS_DIR = path.join(E2E_DIR, 'screenshots')
 const FIXTURE = path.join(E2E_DIR, 'fixtures', 'demo-story.txt')
 
+// vite.config.js binds host: '127.0.0.1' (IPv4 loopback, see test-agent REPORT.md
+// for the IPv6 EACCES history) — so the web base MUST be 127.0.0.1, not
+// localhost (which may resolve to ::1 and fail to connect).
 const API_BASE = (process.env.E2E_API_BASE || 'http://localhost:3100').replace(/\/+$/, '')
-const WEB_BASE = (process.env.E2E_WEB_BASE || 'http://localhost:5175').replace(/\/+$/, '')
+const WEB_BASE = (process.env.E2E_WEB_BASE || 'http://127.0.0.1:5175').replace(/\/+$/, '')
 const SELF_START_API = !process.env.E2E_API_BASE
 const SELF_START_WEB = !process.env.E2E_WEB_BASE
 const KEEP = process.argv.includes('--keep')

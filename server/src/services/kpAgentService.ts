@@ -85,8 +85,9 @@ function isForceToolCall(msgs: KpMessage[]): boolean {
  *  - The intent-classifier call gets maxTokens 32 and no tools; force-tool
  *    calls and the classifier are never streamed.
  *  - All outbound LLM requests pass through aiService (assertSafeOutboundUrl).
+ * Exported for kpTurnService (服务端图内工具循环, Phase A2) to reuse.
  */
-function buildInvokeLLM(
+export function buildInvokeLLM(
   userId: number,
   ai: ReturnType<typeof getAiConfig>,
   opts: { stream?: boolean; onChunk?: (chunk: string) => void },
@@ -125,7 +126,8 @@ const GRAPH_CACHE_TTL_MS = 10_000
 
 const graphCache = new Map<string, { graph: ReturnType<typeof createKPGraph>; expiresAt: number }>()
 
-function getSharedGraph(invokeLLM: InvokeLLM, userId?: number, stream?: boolean): ReturnType<typeof createKPGraph> {
+/** Exported for kpTurnService (Phase A2). */
+export function getSharedGraph(invokeLLM: InvokeLLM, userId?: number, stream?: boolean): ReturnType<typeof createKPGraph> {
   if (stream) return createKPGraph(invokeLLM, userId)
   // The key includes the invokeLLM closure: the closure captures the resolved
   // AI config (settings change → new closure → new cache entry), so a config
@@ -164,6 +166,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 
 /**
  * Validate and normalize the wire-format messages.
+ * Exported for kpTurnService (Phase A2).
  *  - Non-array input is rejected with a 400-style BadRequestError (previously
  *    it silently returned `[]` → empty 200/end frame, see test-agent AW-R-01).
  *  - Every message must have string role/content (unchanged).
@@ -175,7 +178,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
  *    call (AW-R-09).
  *  - `tool` messages: `tool_call_id` must be a string.
  */
-function normalizeMessages(messages: unknown): KpMessage[] {
+export function normalizeMessages(messages: unknown): KpMessage[] {
   if (!Array.isArray(messages)) {
     throw new BadRequestError('invalid kp:invoke messages: messages must be an array')
   }

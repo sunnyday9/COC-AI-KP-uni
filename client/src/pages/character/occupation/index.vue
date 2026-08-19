@@ -8,7 +8,7 @@ import {
   OCCUPATION_CATEGORIES,
   type OccupationCategory,
   type COCOccupationDef,
-} from '../../../data/coc7'
+} from '../../../../../shared/coc/coc7'
 import AppLayout from '../../../components/layout/AppLayout.vue'
 
 const gameStore = useGameStore()

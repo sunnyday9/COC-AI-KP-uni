@@ -13,14 +13,13 @@ import {
   resolveSkillCheck as resolveSkillCheckRule,
   SUCCESS_LEVEL_RANK as SUCCESS_LEVEL_RANK_RULE,
   SKILL_CHECK_RESULT_TEXT as SKILL_CHECK_RESULT_TEXT_RULE,
-} from '../logic/coc7Rules'
-import { rollD } from '../services/diceService'
-import { getSkillName } from '../data/coc7'
+} from '../../../shared/coc/coc7Rules'
+import { rollD } from '../../../shared/coc/diceService'
+import { getSkillName } from '../../../shared/coc/coc7'
 import { useSettingsStore } from './settingsStore'
-import { processToolCalls as processToolCallsOrchestrator } from '../toolCalling'
+import { runKpTurn as runKpTurnService } from '../services/kpSessionService'
 import { summarizeLongTerm } from '../services/memoryService'
 import { extractMemoryPoints } from '../services/memoryExtractService'
-import { buildToolContext } from '../services/toolContextFactory'
 import { buildOpeningPrompt, buildTurnPrompt, buildCharacterContext as buildCharacterContextPrompt, buildMemoryBlock, buildRecentTurnsBlock, MAX_MEMORY_ENTRIES, type PromptState } from '../services/kpPromptService'
 import { SAVE_VERSION, writeSaveSnapshot, readSaveSnapshot, listSaveIds, readSaveMeta } from '../services/saveService'
 import { traceBus } from '../services/tracing'
@@ -482,11 +481,15 @@ export const useGameStore = defineStore('game', () => {
     return buildCharacterContextPrompt(toPromptState())
   }
 
-  type ToolCall = { id: string; name: string; arguments: string }
-
   let _turnHadHighImpactTool = false
 
-  function processToolCalls(toolCalls: ToolCall[]): { toolResults: { role: 'tool'; tool_call_id: string; content: string }[]; displayMessages: Message[] } {
+  /**
+   * Phase A2: 工具由服务端执行（rule-engine）。这里只做两件事：
+   * 1) 把工具执行结果上报到玩家行动图（user graph）；
+   * 2) 高影响工具标记（用于长程摘要触发）。
+   * 展示消息（骰子/系统提示）已由 runKpTurn 的 onDisplayMessages 回调插入。
+   */
+  function recordToolExecution(toolCalls: { id: string; name: string; arguments: string }[]): void {
     if (storyId.value && sessionId.value) {
       for (const tc of toolCalls) {
         try {
@@ -516,33 +519,55 @@ export const useGameStore = defineStore('game', () => {
     if (toolCalls.some(tc => HIGH_IMPACT_TOOLS.has(tc.name))) {
       _turnHadHighImpactTool = true
     }
+  }
 
-    const ctx = buildToolContext({
-      characterSheet: characterSheet.value,
-      updateCharacterHP,
-      updateCharacterMP,
-      updateCharacterSAN,
-      updateCharacterLuck,
-      addCharacterDailySanLoss,
-      resetCharacterDailySanLoss,
-      updateCharacterInsanityState,
-      setCharacterMajorWound,
-      setCharacterDying,
-      growCharacterSkill,
-      increaseCthulhuMythos,
-      transitionToScene,
-      addClue,
-      endGame: (e) => endGame({
-        outcome: (String((e as Record<string, unknown>).outcome ?? 'unknown') as GameOutcome),
-        title: String((e as Record<string, unknown>).title ?? '结局'),
-        summary: String((e as Record<string, unknown>).summary ?? ''),
-        epilogueOptions: Array.isArray((e as Record<string, unknown>).epilogueOptions) ? ((e as Record<string, unknown>).epilogueOptions as unknown[]).map(String) : [],
-        keyFacts: Array.isArray((e as Record<string, unknown>).keyFacts) ? ((e as Record<string, unknown>).keyFacts as unknown[]).map(String) : [],
-        keyTurnIds: Array.isArray((e as Record<string, unknown>).keyTurnIds) ? ((e as Record<string, unknown>).keyTurnIds as unknown[]).map(String) : [],
-      }),
-      generateId,
-    })
-    return processToolCallsOrchestrator(toolCalls, ctx)
+  /** Phase A2: 服务端回合后把世界增量（线索/场景/结局）应用到本地。 */
+  function applyServerWorldDeltas(deltas: { cluesAdded?: { description: string; clueId?: string }[]; sceneChanged?: string; ending?: unknown }): void {
+    for (const clue of deltas.cluesAdded ?? []) {
+      if (clue?.description) addClue(clue.description, clue.clueId)
+    }
+    if (deltas.sceneChanged) transitionToScene(deltas.sceneChanged)
+    if (deltas.ending) {
+      const e = deltas.ending as Record<string, unknown>
+      endGame({
+        outcome: (String(e.outcome ?? 'unknown') as GameOutcome),
+        title: String(e.title ?? '结局'),
+        summary: String(e.summary ?? ''),
+        epilogueOptions: Array.isArray(e.epilogueOptions) ? (e.epilogueOptions as unknown[]).map(String) : [],
+        keyFacts: Array.isArray(e.keyFacts) ? (e.keyFacts as unknown[]).map(String) : [],
+        keyTurnIds: Array.isArray(e.keyTurnIds) ? (e.keyTurnIds as unknown[]).map(String) : [],
+      })
+    }
+  }
+
+  /** Phase A2: 服务端回合后把更新后的角色卡快照对账到本地。 */
+  function applyServerCharacterSheet(sheet: unknown): void {
+    if (!sheet || typeof sheet !== 'object') return
+    const s = sheet as COCCharacterSheet
+    if (!s.derived || typeof s.derived !== 'object') return
+    const cur = characterSheet.value
+    if (!cur) {
+      characterSheet.value = s
+      return
+    }
+    // 逐字段对账（服务端权威）：只覆盖服务端回传的字段，保留本地未回传部分
+    if (typeof s.derived.hp === 'number') cur.derived.hp = s.derived.hp
+    if (typeof s.derived.mp === 'number') cur.derived.mp = s.derived.mp
+    if (typeof s.derived.san === 'number') cur.derived.san = s.derived.san
+    if (typeof s.attributes?.luck === 'number') cur.attributes.luck = s.attributes.luck
+    if (typeof s.dailySanLoss === 'number') cur.dailySanLoss = s.dailySanLoss
+    if (s.insanityState) cur.insanityState = s.insanityState
+    if (Array.isArray(s.phobias)) cur.phobias = s.phobias
+    if (Array.isArray(s.manias)) cur.manias = s.manias
+    if (typeof s.hasMajorWound === 'boolean') cur.hasMajorWound = s.hasMajorWound
+    if (typeof s.isDying === 'boolean') cur.isDying = s.isDying
+    if (typeof s.cthulhuMythos === 'number') cur.cthulhuMythos = s.cthulhuMythos
+    if (s.skills && typeof s.skills === 'object') {
+      for (const [k, v] of Object.entries(s.skills)) {
+        if (typeof v === 'number') cur.skills[k] = v
+      }
+    }
+    emitCharacterSnapshot('after_server_turn')
   }
 
   function buildStoryContext(): StoryContext | null {
@@ -698,11 +723,14 @@ export const useGameStore = defineStore('game', () => {
       })
 
       const fullContent = hasKpAgent()
-        ? await runKpAgentLoopService(chatMessages, aiConfig, {
-            processToolCalls,
+        ? await runKpTurnService(chatMessages, aiConfig, buildStoryContext(), characterSheet.value, {
             onStreamChunk: (preview) => updateLastMessage((m) => { if (m.role === 'kp') m.content = sanitizeKpResponse(preview) }),
-            insertMessagesBeforeLast: (msgs) => insertMessagesBeforeLast(msgs as Message[]),
-            getStoryContext: buildStoryContext,
+            onDisplayMessages: (msgs) => insertMessagesBeforeLast(msgs as Message[]),
+            onCharacterSheetUpdate: (sheet) => applyServerCharacterSheet(sheet),
+            onWorldDeltas: (deltas) => applyServerWorldDeltas(deltas),
+          }).then((r) => {
+            recordToolExecution(r.toolCalls)
+            return r.content
           })
         : await runDirectChatService(chatMessages as { role: 'system' | 'user' | 'assistant'; content: string }[], aiConfig, {
             onStreamChunk: (c) => updateLastMessage((m) => { if (m.role === 'kp') m.content = sanitizeKpResponse(c) }),
@@ -765,16 +793,18 @@ export const useGameStore = defineStore('game', () => {
       })
 
       const fullContent = hasKpAgent()
-        ? await runKpAgentLoopService(chatMessages, aiConfig, {
-            processToolCalls: (calls) => {
-              if (calls.some((c) => ['grant_clue', 'transition_scene', 'skill_check', 'san_check', 'end_game'].includes(c.name))) {
-                _turnHadProgressTool = true
-              }
-              return processToolCalls(calls)
-            },
+        ? await runKpTurnService(chatMessages, aiConfig, buildStoryContext(), characterSheet.value, {
             onStreamChunk: (preview) => updateLastMessage((m) => { if (m.role === 'kp') m.content = sanitizeKpResponse(preview) }),
-            insertMessagesBeforeLast: (msgs) => insertMessagesBeforeLast(msgs as Message[]),
-            getStoryContext: buildStoryContext,
+            onDisplayMessages: (msgs) => insertMessagesBeforeLast(msgs as Message[]),
+            onCharacterSheetUpdate: (sheet) => applyServerCharacterSheet(sheet),
+            onWorldDeltas: (deltas) => applyServerWorldDeltas(deltas),
+          }).then((r) => {
+            // 服务端已执行工具；用回传的工具调用记录 graph 事件与进度/高影响标记
+            if (r.toolCalls.some((c) => ['grant_clue', 'transition_scene', 'skill_check', 'san_check', 'end_game'].includes(c.name))) {
+              _turnHadProgressTool = true
+            }
+            recordToolExecution(r.toolCalls)
+            return r.content
           })
         : await runDirectChatService(chatMessages as { role: 'system' | 'user' | 'assistant'; content: string }[], aiConfig, {
             onStreamChunk: (c) => updateLastMessage((m) => { if (m.role === 'kp') m.content = sanitizeKpResponse(c) }),

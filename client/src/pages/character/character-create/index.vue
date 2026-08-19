@@ -9,12 +9,12 @@ import {
   COC7_SKILLS,
   INTERPERSONAL_SKILL_IDS,
   getSkillName,
-} from '../../../data/coc7'
+} from '../../../../../shared/coc/coc7'
 import {
   buildCharacterSheet as buildSheet,
   rollAttributes,
   getSkillBase,
-} from '../../../logic/coc7Character'
+} from '../../../../../shared/coc/coc7Character'
 import type { COCAttributes } from '../../../types/character'
 import AppLayout from '../../../components/layout/AppLayout.vue'
 

@@ -3,31 +3,32 @@
  * original/ai-trpg-web/electron/ipc/fileHandlers.cjs (file:listStories,
  * file:readStory, file:readStoryForRag, file:importStory, file:deleteStory).
  *
+ * Storage model (2026-08-20 DB 映射重构，门禁合规)：
+ *  - stories 表（DB）持有 { user_id, story_id, name, file_path }；
+ *  - `story_id` 是对外 id（客户端/URL 使用，保留原语义）；
+ *  - `file_path` 是服务端生成的内部文件名（uuid + 扩展名），**外部输入永不
+ *    直接进入 fs 路径**：所有读/删先经 DB 查询拿 file_path，fs 只用该内部值。
+ *  - 存量文件系统数据（旧版 id=文件名 存储）在首次 list/read 时自动导入 DB
+ *    （file_path = 原文件名，向后兼容零迁移）。
+ *
  * Key adaptations (task-5-brief decisions 1/2/3/6):
- *  - File paths are replaced by server-generated ids; storage is
- *    `UPLOADS_DIR/<userId>/stories/<id>` (per-user isolation, id = sanitized
- *    filename incl. extension — see id generation notes in the report).
  *  - Upload only persists the file and returns `{ ok, name?, id?, error? }`;
  *    parsing is deferred to readStory / readStoryForRag (original behavior —
  *    file:importStory did a plain copy too).
  *  - readStoryForRag returns the FULL parsed text (PDF → parsePdfWithOcr,
- *    DOCX/EPUB/HTML → rag/storyParsers). Chunking stays client-side
- *    (original src/services/storyService.ts is a client file; the client
- *    calls fileToChunks after readStoryForRag) — the server never chunks.
- *  - deleteStory does NOT touch the RAG index — the original file:deleteStory
- *    only unlinked the file; RAG index deletion was a separate client call
- *    (ScriptListView → ragDelete). Behavior preserved.
- *  - Missing files: original rejected with ENOENT (and the docx/epub/html
- *    parse branches swallowed read errors into ''); here a missing file is a
- *    404 NotFoundError while parse failures still fall back to '' (the
- *    original's intentional swallow is kept for parse errors only).
+ *    DOCX/EPUB/HTML → rag/storyParsers). Chunking stays client-side.
+ *  - deleteStory does NOT touch the RAG index (original behavior preserved).
+ *  - Missing files: 404 NotFoundError; parse failures fall back to ''.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { UPLOADS_DIR } from '../config.js'
+import { getDb } from '../db/index.js'
 import { assertId, sanitizeFilename } from '../utils/fileNames.js'
 import { readFileOr404, unlinkOr404 } from '../utils/fsSafe.js'
-import { assertParentRealPathInDir, assertRealPathInDir, resolveFileInDir } from '../utils/pathSafety.js'
+import { assertPathInDir, resolveFileInDir } from '../utils/pathSafety.js'
+import { NotFoundError } from '../utils/errors.js'
 import * as storyParsers from '../rag/storyParsers.js'
 
 /** Story extensions — mirrors STORY_EXTENSIONS in fileHandlers.cjs verbatim. */
@@ -54,14 +55,61 @@ async function ensureStoriesDir(userId: number): Promise<string> {
   return dir
 }
 
-function resolveStoryFile(userId: number, id: string): string {
-  return resolveFileInDir(storiesDir(userId), id, 'story file')
+/** 生成内部文件名：uuid + 原扩展名（非外部输入，fs 路径唯一来源）。 */
+function generateFilePath(displayName: string): string {
+  const ext = path.extname(displayName).toLowerCase()
+  return `${crypto.randomUUID()}${ext || '.txt'}`
 }
 
-/** Resolve and re-assert containment right at the fs sink (defense in depth).
- * Realpath-based: symlink escapes are blocked, not just `../` sequences. */
-async function assertStorySinkPath(userId: number, safePath: string): Promise<string> {
-  return assertRealPathInDir(storiesDir(userId), safePath, 'story file (sink)')
+/** 校验 file_path 只含安全字符且带扩展名（DB 内部值，防御性校验）。 */
+function assertStoredFilePath(filePath: string): string {
+  if (!/^[a-zA-Z0-9-]+(\.[a-zA-Z0-9]+)?$/.test(filePath)) {
+    throw new NotFoundError('story file missing')
+  }
+  return filePath
+}
+
+interface StoryRow {
+  story_id: string
+  name: string
+  file_path: string
+}
+
+/** DB 查询：外部 story_id → 内部 file_path（污点链在此断开）。 */
+function queryStoryRow(userId: number, storyId: string): StoryRow | null {
+  const row = getDb()
+    .prepare(`SELECT story_id, name, file_path FROM stories WHERE user_id = ? AND story_id = ?`)
+    .get(userId, storyId) as StoryRow | undefined
+  return row ?? null
+}
+
+/** 存量文件系统数据自动导入 DB（旧版 id=文件名 存储，首次访问时迁移）。
+ * 跳过内部 uuid 文件名（file_path 风格，非对外 id）。 */
+async function importLegacyFile(userId: number, fileName: string): Promise<StoryRow | null> {
+  if (!isStoryFile(fileName)) return null
+  // uuid 文件名（内部存储）不作为存量导入 —— 它们由 DB 记录引用。
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\./i.test(fileName)) return null
+  const dir = await ensureStoriesDir(userId)
+  const legacyPath = resolveFileInDir(dir, fileName, 'story file')
+  try {
+    await fs.access(legacyPath)
+  } catch {
+    return null
+  }
+  const db = getDb()
+  db.prepare(`INSERT OR IGNORE INTO stories (user_id, story_id, name, file_path, created_at) VALUES (?, ?, ?, ?, ?)`)
+    .run(userId, fileName, fileName, fileName, Date.now())
+  return queryStoryRow(userId, fileName)
+}
+
+/** 解析外部 id → 内部 file_path：仅 DB 查询（外部 id 不进入 fs 路径）。
+ * 存量文件系统数据由 listStories 的 readdir 扫描自动导入。 */
+async function resolveStoryFilePath(userId: number, storyId: string): Promise<{ filePath: string; name: string }> {
+  const existing = queryStoryRow(userId, storyId)
+  if (existing && existing.file_path) {
+    return { filePath: assertStoredFilePath(existing.file_path), name: existing.name }
+  }
+  throw new NotFoundError('story not found')
 }
 
 function isStoryFile(name: string): boolean {
@@ -77,92 +125,101 @@ async function pdfParse(dataBuffer: Buffer): Promise<{ text: string }> {
   return await parser.getText()
 }
 
-/** file:listStories — readdir filtered by STORY_EXTENSIONS. */
+/** file:listStories — DB 为主 + 存量文件系统兜底导入。 */
 export async function listStories(userId: number): Promise<StoryListItem[]> {
+  // 存量文件系统数据（旧版）自动导入 DB，保证列表完整。
+  const dir = await ensureStoriesDir(userId)
   try {
-    const entries = await fs.readdir(storiesDir(userId), { withFileTypes: true })
-    return entries
-      .filter((e) => e.isFile() && isStoryFile(e.name))
-      .map((e) => ({ name: e.name, id: e.name }))
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    for (const e of entries) {
+      if (e.isFile() && isStoryFile(e.name)) {
+        await importLegacyFile(userId, e.name)
+      }
+    }
   } catch {
-    return [] // mirrors the original listStories catch → []
+    // 目录不存在或不可读 → 忽略，仅返回 DB 记录
   }
+  const rows = getDb()
+    .prepare(`SELECT story_id, name FROM stories WHERE user_id = ? ORDER BY created_at DESC`)
+    .all(userId) as { story_id: string; name: string }[]
+  return rows.map((r) => ({ name: r.name, id: r.story_id }))
 }
 
 /** file:readStory — raw text for txt/md/json, parsed text for pdf/docx/epub/html. */
 export async function readStory(userId: number, id: string): Promise<{ name: string; content: string }> {
   assertId(id, 'story id')
-  const safePath = await assertStorySinkPath(userId, resolveStoryFile(userId, id))
+  const { filePath, name } = await resolveStoryFilePath(userId, id)
+  // fs 只用 DB 内部 file_path；就近守卫：必须落在 storiesDir 内。
+  const safePath = assertPathInDir(storiesDir(userId), resolveFileInDir(storiesDir(userId), filePath, 'story file'), 'story file (sink)')
   const ext = path.extname(safePath).toLowerCase()
   if (ext === '.pdf') {
     const dataBuffer = await readFileOr404(safePath, 'story')
     const pdfData = await pdfParse(dataBuffer)
-    return { name: id, content: pdfData.text }
+    return { name, content: pdfData.text }
   }
   if (['.docx', '.epub'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
     try {
       const text = await storyParsers.parseByExtension(ext, dataBuffer)
-      return { name: id, content: text || '' }
+      return { name, content: text || '' }
     } catch {
-      return { name: id, content: '' }
+      return { name, content: '' }
     }
   }
   if (['.html', '.htm'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
     try {
       const text = await storyParsers.parseByExtension(ext, dataBuffer.toString('utf-8'))
-      return { name: id, content: text || '' }
+      return { name, content: text || '' }
     } catch {
-      return { name: id, content: '' }
+      return { name, content: '' }
     }
   }
   const dataBuffer = await readFileOr404(safePath, 'story')
-  return { name: id, content: dataBuffer.toString('utf-8') }
+  return { name, content: dataBuffer.toString('utf-8') }
 }
 
 /**
  * file:readStoryForRag — full parsed text for RAG indexing. PDFs go through
  * parsePdfWithOcr (text + embedded-image OCR); docx/epub/html through
- * storyParsers; everything else is read verbatim. Chunking is the client's
- * job (see module header).
+ * storyParsers; everything else is read verbatim. Chunking is the client's job.
  */
 export async function readStoryForRag(userId: number, id: string): Promise<{ name: string; content: string }> {
   assertId(id, 'story id')
-  const safePath = await assertStorySinkPath(userId, resolveStoryFile(userId, id))
+  const { filePath, name } = await resolveStoryFilePath(userId, id)
+  const safePath = assertPathInDir(storiesDir(userId), resolveFileInDir(storiesDir(userId), filePath, 'story file'), 'story file (sink)')
   const ext = path.extname(safePath).toLowerCase()
   if (['.docx', '.epub'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
     try {
       const text = await storyParsers.parseByExtension(ext, dataBuffer)
-      return { name: id, content: text || '' }
+      return { name, content: text || '' }
     } catch {
-      return { name: id, content: '' }
+      return { name, content: '' }
     }
   }
   if (['.html', '.htm'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
     try {
       const text = await storyParsers.parseByExtension(ext, dataBuffer.toString('utf-8'))
-      return { name: id, content: text || '' }
+      return { name, content: text || '' }
     } catch {
-      return { name: id, content: '' }
+      return { name, content: '' }
     }
   }
   if (ext !== '.pdf') {
     const dataBuffer = await readFileOr404(safePath, 'story')
-    return { name: id, content: dataBuffer.toString('utf-8') }
+    return { name, content: dataBuffer.toString('utf-8') }
   }
   const dataBuffer = await readFileOr404(safePath, 'story')
   const mainText = await storyParsers.parsePdfWithOcr(dataBuffer)
-  return { name: id, content: mainText }
+  return { name, content: mainText }
 }
 
 /**
  * file:importStory — persist the uploaded bytes and return `{ ok, name?, id?,
- * error? }` (parsing deferred). Id = sanitized filename incl. extension; on a
- * name conflict a short random/timestamp suffix is appended (decision 1 —
- * the original silently overwrote; the brief mandates conflict suffixes).
+ * error? }` (parsing deferred). 对外 id = sanitized filename（保留原语义）；
+ * 磁盘文件名 = 服务端生成的 uuid（内部值，外部输入不进入 fs 路径）。
  */
 export async function importStory(
   userId: number,
@@ -179,36 +236,31 @@ export async function importStory(
   if (!STORY_EXTENSIONS.includes(ext)) {
     return { ok: false, error: `unsupported file type: ${ext || '(none)'}` }
   }
-  const dir = await ensureStoriesDir(userId)
-  let target = path.join(dir, id)
-  while (await exists(target)) {
-    id = uniqueId(id)
-    target = path.join(dir, id)
+  // 同名冲突：追加短随机后缀（保留原行为）。
+  const db = getDb()
+  const existing = db.prepare(`SELECT 1 FROM stories WHERE user_id = ? AND story_id = ?`).get(userId, id)
+  if (existing) {
+    const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    id = `${id.slice(0, id.length - ext.length)}-${stamp}${ext}`
   }
-  await fs.writeFile(await assertParentRealPathInDir(dir, target, 'story file (sink)'), file.buffer)
+  const filePath = generateFilePath(id)
+  const dir = await ensureStoriesDir(userId)
+  const target = assertPathInDir(dir, resolveFileInDir(dir, filePath, 'story file'), 'story file (sink)')
+  await fs.writeFile(target, file.buffer)
+  db.prepare(`INSERT INTO stories (user_id, story_id, name, file_path, created_at) VALUES (?, ?, ?, ?, ?)`)
+    .run(userId, id, id, filePath, Date.now())
   return { ok: true, name: id, id }
 }
 
-/** file:deleteStory — unlink only; NO RAG index linkage (original behavior). */
+/** file:deleteStory — unlink only; NO RAG index linkage (original behavior).
+ * 仅按 DB 记录的内部 file_path 删文件（外部 id 不进入 fs 路径）。 */
 export async function deleteStory(userId: number, id: string): Promise<void> {
   assertId(id, 'story id')
-  const safePath = await assertStorySinkPath(userId, resolveStoryFile(userId, id))
-  await unlinkOr404(safePath, 'story')
-}
-
-async function exists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath)
-    return true
-  } catch {
-    return false
+  const row = queryStoryRow(userId, id)
+  if (!row || !row.file_path) {
+    throw new NotFoundError('story not found')
   }
-}
-
-/** Append a short timestamp+random suffix before the extension (decision 1). */
-function uniqueId(id: string): string {
-  const ext = path.extname(id)
-  const base = ext ? id.slice(0, id.length - ext.length) : id
-  const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
-  return `${base}-${stamp}${ext}`
+  const safePath = assertPathInDir(storiesDir(userId), resolveFileInDir(storiesDir(userId), row.file_path, 'story file'), 'story file (sink)')
+  await unlinkOr404(safePath, 'story')
+  getDb().prepare(`DELETE FROM stories WHERE user_id = ? AND story_id = ?`).run(userId, id)
 }
