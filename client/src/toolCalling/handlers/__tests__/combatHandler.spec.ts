@@ -111,7 +111,7 @@ describe('combatHandler melee_attack', () => {
   it('调查员败方且重伤时 CON 检定失败则昏迷', () => {
     let hpDelta = 0
     const ctx = createMockContext({
-      rollSequence: [10, 80, 99],
+      rollSequence: [30, 80, 99], // rollA=30（技能50普通成功），rollB=80（失败），CON=99（失败）
       characterSheet: {
         derived: { hp: 5, hpMax: 10 },
         attributes: { con: 50 },
@@ -216,5 +216,63 @@ describe('combatHandler ranged_attack', () => {
     if (parsed.damageDealt > 0) {
       expect(hpDelta).toBe(-parsed.damageDealt)
     }
+  })
+
+  it('近战双方都失败（failure）时无人受伤（规则书 6238-6241）', () => {
+    let hpDelta = 0
+    const ctx = createMockContext({
+      rollSequence: [80, 90], // 双方普通失败（技能 50）
+      characterSheet: {
+        derived: { hp: 10, hpMax: 10 },
+        attributes: { con: 50 },
+        skills: {},
+        occupationSkillKeys: [],
+        personalInterestKeys: [],
+        playerName: '',
+        occupationId: '',
+        occupationName: '',
+      } as any,
+      onUpdateHP: (d) => { hpDelta = d },
+    })
+    const r = combatHandler.handle('melee_attack', {
+      sideAName: '调查员',
+      sideAValue: 50,
+      sideBName: 'NPC',
+      sideBValue: 50,
+      tieBreaker: 'attacker',
+      damageExpr: '1d6',
+      attackerDamageBonus: '0',
+      defenderDamageBonus: '0',
+      investigatorSide: 'A',
+    }, ctx)
+    const parsed = JSON.parse(r.content)
+    expect(parsed.winner).toBe('tie')
+    expect(parsed.damageDealt).toBe(0)
+    expect(hpDelta).toBe(0)
+  })
+
+  it('近战极难成功 + 贯穿武器：伤害取满再骰一份（规则书 6263-6285）', () => {
+    // rollA=1（critical，技能 10 → 极难阈值 2 命中），rollB=90（失败），
+    // 贯穿额外骰 1d6；mockContext 的 parseDiceExpr 取 count*ceil(sides/2)=3
+    const ctx = createMockContext({
+      rollSequence: [1, 90, 3],
+      characterSheet: null,
+    })
+    const r = combatHandler.handle('melee_attack', {
+      sideAName: '调查员',
+      sideAValue: 10,
+      sideBName: 'NPC',
+      sideBValue: 50,
+      tieBreaker: 'attacker',
+      damageExpr: '1d6',
+      attackerDamageBonus: '+1d4',
+      defenderDamageBonus: '0',
+      investigatorSide: 'A',
+      isImpaling: true,
+    }, ctx)
+    const parsed = JSON.parse(r.content)
+    expect(parsed.winner).toBe('A')
+    // 极难/大成功：1d6 取满 6 + 贯穿额外 1d6(=3) + DB +1d4 取满 4 = 13
+    expect(parsed.damageDealt).toBe(13)
   })
 })

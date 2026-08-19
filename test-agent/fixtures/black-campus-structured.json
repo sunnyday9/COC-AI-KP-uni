@@ -1,0 +1,95 @@
+{
+  "meta": {
+    "title": "重返黑色校园（结构化门控版）",
+    "author": "MasterNoah / test-agent",
+    "ruleSystem": "coc",
+    "version": "1.1"
+  },
+  "scenes": [
+    {
+      "id": "scene_001",
+      "name": "校长办公室",
+      "description": "马卡拉的办公室，调查员在这里接受任务并可以询问相关信息。",
+      "npcIds": ["npc_001", "npc_002"],
+      "clueIds": ["clue_001", "clue_002"],
+      "transitionCondition": "开场即在此场景"
+    },
+    {
+      "id": "scene_002",
+      "name": "学校资料室",
+      "description": "存放学校历年档案与地基图纸的房间，平时上锁。",
+      "npcIds": [],
+      "clueIds": ["clue_003"],
+      "transitionCondition": "调查员查看学校的资料",
+      "requiredClues": ["clue_001"]
+    },
+    {
+      "id": "scene_003",
+      "name": "男生宿舍地下入口",
+      "description": "宿舍楼后侧锈迹斑斑的铁门，通向地下排水设施。",
+      "npcIds": ["npc_003"],
+      "clueIds": ["clue_004"],
+      "transitionCondition": "调查员从地基图纸得知入口位置",
+      "requiredClues": ["clue_003"]
+    },
+    {
+      "id": "scene_004",
+      "name": "地下密室",
+      "description": "马卡拉进行邪恶仪式的场所，调查员需要在这里阻止仪式。",
+      "npcIds": ["npc_001"],
+      "clueIds": ["clue_005"],
+      "transitionCondition": "调查员进入地下密室",
+      "requiredClues": ["clue_004"]
+    }
+  ],
+  "npcs": [
+    {
+      "id": "npc_001",
+      "name": "杨·马卡拉",
+      "description": "古城福音中学的出资人兼校长，表面上是善良的神父，实则信仰邪恶神祇。",
+      "dialogueStyle": "和蔼可亲，但隐含威胁"
+    },
+    {
+      "id": "npc_002",
+      "name": "刘向圆",
+      "description": "学校的会计，知道预算账本上的异常支出，胆小怕事。",
+      "dialogueStyle": "支支吾吾，欲言又止"
+    },
+    {
+      "id": "npc_003",
+      "name": "林小雨",
+      "description": "学生，曾在校舍地下听到奇怪的歌声，但不敢告诉老师。",
+      "dialogueStyle": "紧张，低声细语"
+    }
+  ],
+  "clues": [
+    {
+      "id": "clue_001",
+      "description": "马卡拉的办公桌上放着一个相框，里面装着一张留有卷发的男子的照片，照片背面写着「1923」",
+      "obtainCondition": "调查员查看马卡拉的办公桌"
+    },
+    {
+      "id": "clue_002",
+      "description": "会计刘向圆透露预算账本上有一笔每月固定的「维护费」拨给学校地下排水系统",
+      "obtainCondition": "询问会计刘向圆"
+    },
+    {
+      "id": "clue_003",
+      "description": "学校的地基设计图显示地下有复杂的排水设施，入口在学生宿舍附近",
+      "obtainCondition": "调查员查看学校的资料",
+      "requiredClues": ["clue_001"]
+    },
+    {
+      "id": "clue_004",
+      "description": "排水入口的铁门锁孔周围有新鲜的泥土与血迹，钥匙可能在门卫室",
+      "obtainCondition": "调查员检查地下入口",
+      "requiredClues": ["clue_003"]
+    },
+    {
+      "id": "clue_005",
+      "description": "仪式祭坛上的神像与相框中的男子一模一样，祭坛下压着一本写满拉丁文的仪式书",
+      "obtainCondition": "调查员查看祭坛与神像",
+      "requiredClues": ["clue_004"]
+    }
+  ]
+}

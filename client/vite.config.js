@@ -13,6 +13,9 @@ export default defineConfig({
     // H5 dev port (Task 11): fixed so the E2E journey (e2e/h5.journey.mjs)
     // defaults to http://localhost:5175. E2E overrides with E2E_WEB_BASE.
     port: 5175,
+    // Explicit IPv4 loopback: Vite 5 defaults to `::1` on Node 17+ which can
+    // fail with EACCES (IPv6 bind restrictions) — see test-agent REPORT.md.
+    host: '127.0.0.1',
     // Dev proxy (Task 11): H5 dev defaults to same-origin /api + /ws against
     // the local backend on :3000. E2E sets VITE_API_BASE instead, which the
     // bridge prefers over these relative defaults.

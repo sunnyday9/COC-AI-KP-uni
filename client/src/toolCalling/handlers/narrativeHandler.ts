@@ -21,8 +21,9 @@ export const narrativeHandler: ToolHandler = {
 
     if (toolName === 'grant_clue') {
       const description = String(args.description ?? '')
+      const clueId = String(args.clueId ?? '')
       if (description) {
-        context.addClue(description)
+        context.addClue(description, clueId || undefined)
         displayMessages.push({ id, timestamp: ts, role: 'system', content: `获得线索: ${description}` })
         return { content: `Clue granted: ${description}`, displayMessages }
       }

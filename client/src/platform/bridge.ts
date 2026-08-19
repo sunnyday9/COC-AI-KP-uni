@@ -318,6 +318,7 @@ export class PlatformBridge implements Bridge {
 
   kpInvoke(params: {
     messages: { role: string; content: string }[]
+    storyContext?: unknown
   }): Promise<{ content?: string; toolCalls?: ToolCallResult[] }> {
     return request('POST', '/api/kp/invoke', params)
   }
@@ -325,6 +326,7 @@ export class PlatformBridge implements Bridge {
   /** Open the shared WS connection (lazy), subscribe, and send kp:invoke. */
   async kpInvokeStream(params: {
     messages: { role: string; content: string }[]
+    storyContext?: unknown
   }): Promise<{ streamId: string }> {
     try {
       await this.ws.connect()
@@ -339,9 +341,10 @@ export class PlatformBridge implements Bridge {
       onChunk: (chunk) => this.fanOut({ streamId, type: 'chunk', chunk }),
       onEnd: (payload) => this.fanOut({ streamId, type: 'end', content: payload.content, toolCalls: payload.toolCalls }),
       onError: (error) => this.fanOut({ streamId, type: 'error', error }),
+      onTrace: (traceEvents) => this.fanOut({ streamId, type: 'trace', traceEvents }),
     })
     try {
-      this.ws.sendInvoke(streamId, params.messages)
+      this.ws.sendInvoke(streamId, params.messages, params.storyContext)
     } catch (err) {
       this.ws.unsubscribe(streamId)
       throw err instanceof BridgeError ? err : new BridgeError(err instanceof Error ? err.message : String(err))
@@ -438,7 +441,7 @@ export class PlatformBridge implements Bridge {
   ragUserGraphSync(params: {
     storyId: string
     sessionId: string
-    state: { cluesObtained: string[]; currentScene: string }
+    state: { cluesObtained: { id: string; description: string }[]; currentScene: string }
   }): Promise<{ ok: boolean }> {
     return request('POST', '/api/rag/user-graph/sync', params)
   }

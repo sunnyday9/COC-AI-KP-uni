@@ -5,6 +5,7 @@ import type {
   SanCheckResult,
   InsanityResult,
 } from '../types'
+import { PHOBIA_TABLE, MANIA_TABLE, rollImmediateSymptom, rollSummarySymptom } from '../../data/insanityTables'
 
 const TOOL_NAMES = ['san_check', 'trigger_insanity', 'adjust_san', 'reset_day'] as const
 
@@ -14,7 +15,9 @@ function handleSanCheck(args: Record<string, unknown>, ctx: ToolHandlerContext):
   const failureLossExpr = String(args.failureLoss ?? '1d6')
   const roll = ctx.rollD(100)
   const passed = roll <= currentSan
-  const isFumble = roll === 100
+  // Rulebook 5445-5448: a fumble is 96-100 when the target is below 50,
+  // otherwise only 100 (matches coc7Rules fumble thresholds).
+  const isFumble = currentSan < 50 ? roll >= 96 : roll === 100
   const lossExpr = passed ? successLossExpr : failureLossExpr
   let sanLost = isFumble ? 0 : ctx.parseDiceExpr(lossExpr)
   if (isFumble) {
@@ -79,6 +82,9 @@ function handleSanCheck(args: Record<string, unknown>, ctx: ToolHandlerContext):
 function handleTriggerInsanity(args: Record<string, unknown>, ctx: ToolHandlerContext): ToolHandlerResult {
   const sanLost = Math.max(0, Math.floor(Number(args.sanLost ?? 0)))
   const intValue = Math.max(0, Math.min(99, Math.floor(Number(args.intValue ?? 50))))
+  // boutStyle: 'immediate' (有他人在场/现场, 表Ⅶ) vs 'summary' (独处/事后, 表Ⅷ).
+  // Omitted → summary (规则书默认: 发作结束后的总结症状).
+  const boutStyle = args.boutStyle === 'immediate' ? 'immediate' : 'summary'
   const c = ctx.characterSheet
   const sanAfter = c?.derived?.san ?? 0
   const currentSanBefore = sanAfter + sanLost
@@ -86,8 +92,26 @@ function handleTriggerInsanity(args: Record<string, unknown>, ctx: ToolHandlerCo
   let state: 'normal' | 'temporary' | 'indefinite' | 'permanent' = 'normal'
   let boutRoll: number | null = null
   let boutText = ''
+  let symptom: { name: string; description: string } | null = null
   let phobiaAdded: string | null = null
   let maniaAdded: string | null = null
+
+  const resolveBout = (): void => {
+    const roll = ctx.rollD(10)
+    boutRoll = roll
+    const table = boutStyle === 'immediate' ? rollImmediateSymptom(roll) : rollSummarySymptom(roll)
+    symptom = table
+    if (roll === 9) {
+      phobiaAdded = PHOBIA_TABLE[(ctx.rollD(100) - 1) % PHOBIA_TABLE.length] ?? '随机恐惧症'
+      boutText = `${table.name}：${table.description}（获得恐惧症：${phobiaAdded}）`
+    } else if (roll === 10) {
+      maniaAdded = MANIA_TABLE[(ctx.rollD(100) - 1) % MANIA_TABLE.length] ?? '随机躁狂症'
+      boutText = `${table.name}：${table.description}（获得躁狂症：${maniaAdded}）`
+    } else {
+      boutText = `${table.name}：${table.description}（持续 ${boutStyle === 'immediate' ? '1D10 轮' : '1D10 小时'}）`
+    }
+  }
+
   if (sanAfter <= 0 && sanLost > 0) {
     state = 'permanent'
     boutText = '永久疯狂'
@@ -95,20 +119,14 @@ function handleTriggerInsanity(args: Record<string, unknown>, ctx: ToolHandlerCo
     const oneFifth = Math.floor(currentSanBefore / 5)
     if (dailySanLoss >= oneFifth && oneFifth > 0) {
       state = 'indefinite'
-      boutRoll = ctx.rollD(10)
-      if (boutRoll === 9) phobiaAdded = '随机恐惧症'
-      else if (boutRoll === 10) maniaAdded = '随机躁狂症'
-      boutText = boutRoll <= 8 ? `不定性疯狂发作(1D10=${boutRoll})` : (phobiaAdded || maniaAdded || '')
+      resolveBout()
     }
     if (state === 'normal' && sanLost >= 5) {
       const intRoll = ctx.rollD(100)
       const intSuccess = intRoll <= intValue
       if (intSuccess) {
         state = 'temporary'
-        boutRoll = ctx.rollD(10)
-        if (boutRoll === 9) phobiaAdded = '随机恐惧症'
-        else if (boutRoll === 10) maniaAdded = '随机躁狂症'
-        boutText = boutRoll <= 8 ? `临时疯狂发作(1D10=${boutRoll})` : (phobiaAdded || maniaAdded || '')
+        resolveBout()
       } else {
         boutText = '压抑（INT检定失败，未陷入临时疯狂）'
       }
@@ -125,6 +143,8 @@ function handleTriggerInsanity(args: Record<string, unknown>, ctx: ToolHandlerCo
     boutText,
     phobiaAdded: phobiaAdded ?? undefined,
     maniaAdded: maniaAdded ?? undefined,
+    boutStyle,
+    symptom: symptom ?? undefined,
   }
   const displayMessages: ToolHandlerResult['displayMessages'] = [
     {

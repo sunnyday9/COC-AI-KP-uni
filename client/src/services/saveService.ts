@@ -13,7 +13,8 @@ export interface GameSaveSnapshot {
   storyName: string
   storyOverview: string
   currentScene: string
-  cluesObtained: string[]
+  /** Structured clues { id, description }; legacy saves restore plain strings. */
+  cluesObtained: { id: string; description: string }[]
   messages: Message[]
   kpMemory: string[]
   longTermSummary: string

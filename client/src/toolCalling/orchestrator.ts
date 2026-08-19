@@ -12,6 +12,7 @@ import { combatHandler } from './handlers/combatHandler'
 import { sanityHandler } from './handlers/sanityHandler'
 import { resourceHandler } from './handlers/resourceHandler'
 import { narrativeHandler } from './handlers/narrativeHandler'
+import { rulesHandler } from './handlers/rulesHandler'
 
 const HANDLERS: ToolHandler[] = [
   checkHandler,
@@ -19,6 +20,7 @@ const HANDLERS: ToolHandler[] = [
   sanityHandler,
   resourceHandler,
   narrativeHandler,
+  rulesHandler,
 ]
 
 const NAME_TO_HANDLER: Map<string, ToolHandler> = (() => {

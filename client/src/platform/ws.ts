@@ -37,6 +37,8 @@ export interface KpStreamHandlers {
   onChunk: (chunk: string) => void
   onEnd: (payload: { content: string; toolCalls?: ToolCall[] }) => void
   onError: (error: string) => void
+  /** Optional: server graph trace events (delivered when the frame arrives). */
+  onTrace?: (traceEvents: unknown[]) => void
 }
 
 export interface WSServiceOptions {
@@ -87,6 +89,7 @@ interface WsFrame {
   content?: unknown
   toolCalls?: unknown
   error?: unknown
+  traceEvents?: unknown
 }
 
 export class WSService {
@@ -177,12 +180,14 @@ export class WSService {
   }
 
   /** Send a `kp:invoke` frame. Requires an open connection. */
-  sendInvoke(streamId: string, messages: { role: string; content: string }[]): void {
+  sendInvoke(streamId: string, messages: { role: string; content: string }[], storyContext?: unknown): void {
     if (!this.isConnected() || !this.socket) {
       throw new Error('Bridge: WebSocket 未连接')
     }
+    const frame: Record<string, unknown> = { type: 'kp:invoke', streamId, messages }
+    if (storyContext !== undefined && storyContext !== null) frame.storyContext = storyContext
     this.socket.send({
-      data: JSON.stringify({ type: 'kp:invoke', streamId, messages }),
+      data: JSON.stringify(frame),
       fail: () => this.handleFailure('消息发送失败'),
     })
   }
@@ -358,7 +363,26 @@ export class WSService {
     }
     if (typeof frame !== 'object' || frame === null) return
     const type = frame.type
-    if (type === 'pong' || type === 'rag:progress' || type === 'trace') return
+    if (type === 'pong' || type === 'rag:progress') return
+
+    // trace frames are delivered to the stream's onTrace handler (the
+    // kpSessionService subscribes with a trace listener; previously they were
+    // silently dropped here, making the server's trace events dead on the
+    // wire — see test-agent REPORT).
+    if (type === 'trace') {
+      const streamId = typeof frame.streamId === 'string' ? frame.streamId : ''
+      if (!streamId || this.errorTerminal.has(streamId)) return
+      const handlers = this.streams.get(streamId)
+      if (handlers?.onTrace && Array.isArray(frame.traceEvents)) {
+        try {
+          handlers.onTrace(frame.traceEvents)
+        } catch {
+          // handler failures never break the message loop
+        }
+      }
+      return
+    }
+
     if (type !== 'chunk' && type !== 'end' && type !== 'error') return
     const streamId = typeof frame.streamId === 'string' ? frame.streamId : ''
     if (!streamId) return

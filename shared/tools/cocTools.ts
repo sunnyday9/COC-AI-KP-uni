@@ -191,6 +191,7 @@ export const COC_KP_TOOLS: KpToolDef[] = [
         type: 'object',
         properties: {
           sceneName: { type: 'string', description: 'The name of the scene/location (e.g. "昏暗的酒吧", "图书馆二楼")' },
+          sceneId: { type: 'string', description: 'Optional structured scene id from the script (when known)' },
         },
         required: ['sceneName'],
       },
@@ -205,6 +206,7 @@ export const COC_KP_TOOLS: KpToolDef[] = [
         type: 'object',
         properties: {
           description: { type: 'string', description: 'Natural language description of the clue (e.g. "日记本中记载了1923年的神秘仪式")' },
+          clueId: { type: 'string', description: 'Optional structured clue id from the script (when known)' },
         },
         required: ['description'],
       },
@@ -291,6 +293,7 @@ export const COC_KP_TOOLS: KpToolDef[] = [
           sideAPenaltyDice: { type: 'integer' },
           sideBBonusDice: { type: 'integer' },
           sideBPenaltyDice: { type: 'integer' },
+          isImpaling: { type: 'boolean', description: 'True for impaling weapons (blades, spears): on an extreme success the damage dice AND damage bonus are maxed, plus one extra roll of the weapon damage. Non-impaling (blunt) weapons max the dice and bonus only. Omit for normal damage.' },
         },
         required: ['sideAName', 'sideAValue', 'sideBName', 'sideBValue', 'tieBreaker', 'damageExpr', 'investigatorSide'],
       },
@@ -300,7 +303,7 @@ export const COC_KP_TOOLS: KpToolDef[] = [
     type: 'function',
     function: {
       name: 'ranged_attack',
-      description: 'COC 7th ranged: skill check to hit (e.g. 手枪), then on success roll damage and subtract target armor. If targetIsInvestigator, HP and major wound/dying are applied automatically.',
+      description: 'COC 7th ranged: skill check to hit (e.g. 手枪), then on success roll damage and subtract target armor. If targetIsInvestigator, HP and major wound/dying are applied automatically. Extreme success deals impaling damage (see isImpaling).',
       parameters: {
         type: 'object',
         properties: {
@@ -310,8 +313,117 @@ export const COC_KP_TOOLS: KpToolDef[] = [
           damageExpr: { type: 'string', description: 'Weapon damage (e.g. "1d10")' },
           targetArmor: { type: 'integer', description: 'Target armor value' },
           targetIsInvestigator: { type: 'boolean', description: 'True if the investigator is the target (takes damage)' },
+          bonusDice: { type: 'integer', description: 'Bonus dice (0-2): point-blank, aiming, larger target' },
+          penaltyDice: { type: 'integer', description: 'Penalty dice (0-2): cover, firing into melee, moving target, handgun burst' },
+          damageBonus: { type: 'string', description: 'Damage bonus for thrown weapons / bows (half DB added to damage). Omit for firearms.' },
+          isImpaling: { type: 'boolean', description: 'True for bullets/arrows/other impaling projectiles: extreme success maxes damage (and bonus) plus one extra weapon-damage roll; beyond extreme range only a critical (01) impales.' },
         },
         required: ['skillName', 'skillValue', 'damageExpr', 'targetIsInvestigator'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'inspiration_check',
+      description: 'COC 7th 灵感检定 (idea roll): an INT check whose difficulty is INVERTED by how much the clue was mentioned (never mentioned → regular; mentioned not emphasized → hard; already pointed out/discussed → extreme). Success or failure BOTH advance the story: success weaves the clue into the narrative; failure gives the clue anyway while putting the investigator in the worst possible spot ("千钧一发"). Use when the party is stuck or missed a key clue.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skillValue: { type: 'integer', description: 'The investigator INT value (0-99)' },
+          difficulty: { type: 'string', enum: ['regular', 'hard', 'extreme'], description: 'Inverted difficulty by clue mention (see description)' },
+          clueDescription: { type: 'string', description: 'The clue that surfaces (given on both success and failure)' },
+          setback: { type: 'string', description: 'On failure: the additional setback that puts the investigator in a worse position' },
+        },
+        required: ['skillValue', 'clueDescription'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cast_spell',
+      description: 'COC 7th 施法: deduct MP (overflow into HP 1:1), on FIRST cast require a hard POW check (success → spell works; failure → may push; pushed failure → spell STILL works but caster pays 1D6× the cost as backlash). A spell always succeeds when cast; the check only measures how badly the caster is hurt. Interrupted casting still pays the costs. Non-believers cannot cast.',
+      parameters: {
+        type: 'object',
+        properties: {
+          spellName: { type: 'string', description: 'Name of the spell (use its in-world alias, not the rulebook name)' },
+          costMp: { type: 'integer', description: 'MP cost (deducted; overflow reduces HP 1:1)' },
+          costSan: { type: 'integer', description: 'SAN cost paid when casting' },
+          costPow: { type: 'integer', description: 'Optional POW cost (if the spell demands it)' },
+          powValue: { type: 'integer', description: 'Caster POW value (0-99), used for the hard POW check' },
+          firstCast: { type: 'boolean', description: 'True if casting this spell for the first time (requires the hard POW check). Omit/false for repeat casts.' },
+          push: { type: 'boolean', description: 'True if pushing after a failed first-cast check (backlash 1D6× cost)' },
+        },
+        required: ['spellName', 'costMp', 'costSan', 'powValue'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_tome',
+      description: 'COC 7th 阅读神话典籍: browse (泛读) grants the tome\'s CMI mythos gain + automatic SAN loss (no check) + reveals contained spells; study (精读, months) compares the reader\'s mythos to the tome\'s MR: below MR gains CMF, at/above gains only CMI, plus language growth marks; consult (查资料) is a 1D100 ≤ MR roll to find mythos knowledge. Reading loss can trigger insanity; non-believers lose max SAN, not current SAN.',
+      parameters: {
+        type: 'object',
+        properties: {
+          tomeId: { type: 'string', description: 'Tome name/id (e.g. "死灵之书", "伊波恩之书")' },
+          mode: { type: 'string', enum: ['browse', 'study', 'consult'], description: 'browse=泛读, study=精读, consult=查资料' },
+          languageSkill: { type: 'integer', description: 'Reader\'s language skill value (0-99), used for the browse language check (KP may auto-succeed)' },
+          mythosCurrent: { type: 'integer', description: 'Reader\'s current Cthulhu Mythos skill value (0-99)' },
+          mythosGain: { type: 'integer', description: 'CMI/CMF mythos gain granted by the tome (browse) or by MR comparison (study)' },
+          sanLossExpr: { type: 'string', description: 'SAN loss dice expression for reading (e.g. "1d6")' },
+        },
+        required: ['tomeId', 'mode', 'mythosCurrent'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'chase_turn',
+      description: 'COC 7th 追逐轮: resolves one chase round. Each participant has a position on the location map and action points (1 + MOV above the slowest). Moving 1 location costs 1 AP; hazards/obstacles may be crossed with a skill check (failure = damage + 1D3 AP loss); attacks only against targets in the same location. No push allowed in chases. Returns updated positions and AP.',
+      parameters: {
+        type: 'object',
+        properties: {
+          participants: { type: 'array', description: 'Participants: [{name, mov, dex, actionPoints, location}]' },
+          map: { type: 'array', description: 'Locations: [{id, hazard?, obstacle?}] where hazard = {skill, damageExpr, difficulty} and obstacle = {durability}' },
+          actions: { type: 'array', description: 'Actions this round: [{name, action: "move"|"attack"|"cast"|"other", targetLocation?, skillName?, skillValue?, difficulty?}]' },
+          speedChecksDone: { type: 'boolean', description: 'True once the opening CON/drive speed checks (MOV ±1, start 2 locations apart) were made. Omit on the first round.' },
+        },
+        required: ['participants', 'map', 'actions'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'environment_damage',
+      description: 'COC 7th 环境伤害 (Table III): resolves falling/fire/drowning/poison damage. Falling: 1D3 (mud) / 1D6 (grass) / 1D10 (concrete) per 10 feet. Fire: 1D6 (torch) / 1D10 (flamethrower, burning room per round). Drowning: CON check each round, failure takes damage. Poison: 1D10 weak / 2D10 strong / 4D10 lethal; extreme CON success halves, critical success negates.',
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['fall', 'fire', 'drowning', 'poison'], description: 'Damage kind' },
+          severity: { type: 'string', enum: ['mild', 'moderate', 'severe', 'lethal', 'terminal', 'gory'], description: 'Severity (fall/fire: per 10 feet / per round; poison: weak/moderate/severe/lethal map to mild…lethal)' },
+          conValue: { type: 'integer', description: 'Investigator CON value for drowning/poison saves' },
+          targetIsInvestigator: { type: 'boolean', description: 'True if the investigator is the target (HP applied automatically)' },
+        },
+        required: ['kind', 'severity', 'targetIsInvestigator'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'development_phase',
+      description: 'COC 7th 幕间成长 (interlude/development): for each skill marked for growth, roll 1D100; if the result is greater than the current skill value OR greater than 95, the skill increases by 1D10 (may exceed 100%). Cthulhu Mythos and Credit Rating never grow. Any skill reaching 90%+ grants +2D6 SAN (confidence reward). Then all growth marks are cleared. Also resolves indefinite-insanity recovery if the keeper allows.',
+      parameters: {
+        type: 'object',
+        properties: {
+          growthSkills: { type: 'array', description: 'Skills marked for growth: [{name, value}] (value = current skill value 0-99)' },
+          cthulhuMythosGain: { type: 'integer', description: 'Optional Cthulhu Mythos gain from tomes/encounters (added directly, no roll)' },
+        },
+        required: ['growthSkills'],
       },
     },
   },

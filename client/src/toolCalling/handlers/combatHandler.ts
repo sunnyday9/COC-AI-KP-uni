@@ -11,6 +11,29 @@ import type {
 
 const TOOL_NAMES = ['melee_attack', 'ranged_attack', 'adjust_hp', 'apply_major_wound', 'first_aid', 'medicine'] as const
 
+/** Max possible total of a dice expression like "2d6" → 12 (impaling damage). */
+function maxDiceTotal(expr: string): number {
+  const s = String(expr).trim().toLowerCase()
+  const match = s.match(/^(\d+)?d(\d+)$/)
+  if (match) {
+    const count = Math.max(1, Math.min(10, parseInt(match[1] || '1', 10)))
+    const sides = Math.max(1, Math.min(100, parseInt(match[2]!, 10)))
+    return count * sides
+  }
+  return Math.max(0, Math.floor(Number(s)) || 0)
+}
+
+/** Max value of a damage bonus string: "+1D4" → 4, "-2" → -2, "0" → 0. */
+function maxDamageBonus(db: string): number {
+  const s = String(db ?? '0').trim().toUpperCase()
+  if (s === '' || s === '0') return 0
+  const neg = s.match(/^-(\d+)$/)
+  if (neg) return -Math.min(2, parseInt(neg[1]!, 10))
+  const plus = s.match(/^\+(\d+)?D(\d+)$/)
+  if (plus) return parseInt(plus[2]!, 10) * Math.max(1, parseInt(plus[1] || '1', 10))
+  return 0
+}
+
 function handleMeleeAttack(args: Record<string, unknown>, ctx: ToolHandlerContext): ToolHandlerResult {
   const sideAName = String(args.sideAName ?? 'A')
   const sideAValue = Math.max(0, Math.min(99, Math.floor(Number(args.sideAValue ?? 50))))
@@ -41,19 +64,32 @@ function handleMeleeAttack(args: Record<string, unknown>, ctx: ToolHandlerContex
   const rankA = ctx.SUCCESS_LEVEL_RANK[resA.result] ?? 0
   const rankB = ctx.SUCCESS_LEVEL_RANK[resB.result] ?? 0
   let winner: 'A' | 'B' | 'tie' = 'tie'
-  if (rankA !== rankB) winner = rankA > rankB ? 'A' : 'B'
-  else if (sideAValue !== sideBValue) winner = sideAValue > sideBValue ? 'A' : 'B'
-  else winner = tieBreaker === 'attacker' ? 'A' : 'B'
+  // Rulebook 6238-6241 / 6255-6256: when BOTH sides fail (failure/fumble,
+  // i.e. neither succeeded), no one is hurt.
+  const bothFailed = rankA <= 2 && rankB <= 2
+  if (!bothFailed) {
+    if (rankA !== rankB) winner = rankA > rankB ? 'A' : 'B'
+    else if (sideAValue !== sideBValue) winner = sideAValue > sideBValue ? 'A' : 'B'
+    else winner = tieBreaker === 'attacker' ? 'A' : 'B'
+  }
 
   let damageDealt = 0
+  // Impaling / extreme-success damage (rulebook 6263-6285): on an extreme
+  // success (or better) the damage dice AND damage bonus are maxed; impaling
+  // weapons additionally roll one extra weapon-damage die. Normal hits roll
+  // the dice as usual. The rule applies to the winner's attack.
+  const isImpaling = !!args.isImpaling
+  const extremeHit = (winner === 'A' && resA.result === 'extreme_success') || (winner === 'B' && resB.result === 'extreme_success')
+  const criticalHit = (winner === 'A' && resA.result === 'critical_success') || (winner === 'B' && resB.result === 'critical_success')
+  const maxed = extremeHit || criticalHit
   if (winner === 'A') {
-    const base = ctx.parseDiceExpr(damageExpr)
     const bonus = ctx.rollDamageBonus(attackerDamageBonus)
-    damageDealt = Math.max(0, base + bonus - defenderArmor)
+    const base = maxed ? maxDiceTotal(damageExpr) + (isImpaling ? ctx.parseDiceExpr(damageExpr) : 0) : ctx.parseDiceExpr(damageExpr)
+    damageDealt = Math.max(0, base + (maxed ? maxDamageBonus(attackerDamageBonus) : bonus) - defenderArmor)
   } else if (winner === 'B') {
-    const base = ctx.parseDiceExpr(damageExpr)
     const bonus = ctx.rollDamageBonus(defenderDamageBonus)
-    damageDealt = Math.max(0, base + bonus - attackerArmor)
+    const base = maxed ? maxDiceTotal(damageExpr) + (isImpaling ? ctx.parseDiceExpr(damageExpr) : 0) : ctx.parseDiceExpr(damageExpr)
+    damageDealt = Math.max(0, base + (maxed ? maxDamageBonus(defenderDamageBonus) : bonus) - attackerArmor)
   }
 
   const investigatorIsLoser =
@@ -114,14 +150,22 @@ function handleRangedAttack(args: Record<string, unknown>, ctx: ToolHandlerConte
   const damageExpr = String(args.damageExpr ?? '1d6')
   const targetArmor = Math.max(0, Math.floor(Number(args.targetArmor ?? 0)))
   const targetIsInvestigator = !!args.targetIsInvestigator
+  const bonusDice = Math.max(0, Math.min(2, Math.floor(Number(args.bonusDice ?? 0))))
+  const penaltyDice = Math.max(0, Math.min(2, Math.floor(Number(args.penaltyDice ?? 0))))
+  const damageBonus = String(args.damageBonus ?? '0')
+  const isImpaling = !!args.isImpaling
 
-  const roll = ctx.rollD(100)
+  const roll = bonusDice || penaltyDice ? ctx.rollD100WithModifiers(bonusDice, penaltyDice) : ctx.rollD(100)
   const { threshold, result: checkResult } = ctx.resolveSkillCheck(roll, skillValue, difficulty)
   const hit = ['critical_success', 'extreme_success', 'hard_success', 'regular_success'].includes(checkResult)
+  const maxed = checkResult === 'extreme_success' || checkResult === 'critical_success'
   let damageDealt = 0
   if (hit) {
-    const base = ctx.parseDiceExpr(damageExpr)
-    damageDealt = Math.max(0, base - targetArmor)
+    // Impaling damage (rulebook 6263-6285 / 6700-6702): extreme success maxes
+    // damage (and any damage bonus) plus one extra weapon-damage roll.
+    const base = maxed ? maxDiceTotal(damageExpr) + (isImpaling ? ctx.parseDiceExpr(damageExpr) : 0) : ctx.parseDiceExpr(damageExpr)
+    const bonus = ctx.rollDamageBonus(damageBonus)
+    damageDealt = Math.max(0, base + (maxed ? maxDamageBonus(damageBonus) : bonus) - targetArmor)
   }
 
   const displayMessages: ToolHandlerResult['displayMessages'] = []

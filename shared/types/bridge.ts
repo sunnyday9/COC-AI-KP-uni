@@ -54,11 +54,12 @@ export interface ToolCallResult {
 
 export interface KpStreamPayload {
   streamId: string
-  type: 'chunk' | 'end' | 'error'
+  type: 'chunk' | 'end' | 'error' | 'trace'
   chunk?: string
   content?: string
   toolCalls?: ToolCallResult[]
   error?: string
+  traceEvents?: unknown[]
 }
 
 export interface Bridge {
@@ -165,7 +166,7 @@ export interface Bridge {
   ragUserGraphSync?: (params: {
     storyId: string
     sessionId: string
-    state: { cluesObtained: string[]; currentScene: string }
+    state: { cluesObtained: { id: string; description: string }[]; currentScene: string }
   }) => Promise<{ ok: boolean }>
   ragUserGraphSummary?: (params: { storyId: string; sessionId: string }) => Promise<{ summary: string }>
 }

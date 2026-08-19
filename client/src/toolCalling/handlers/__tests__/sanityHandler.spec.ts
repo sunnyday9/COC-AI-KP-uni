@@ -142,7 +142,8 @@ describe('sanityHandler trigger_insanity', () => {
     const r = sanityHandler.handle('trigger_insanity', { sanLost: 0, intValue: 50 }, ctx)
     const parsed = JSON.parse(r.content)
     expect(parsed.insanityState).toBe('indefinite')
-    expect(parsed.phobiaAdded).toBe('随机恐惧症')
+    expect(parsed.phobiaAdded).toBeTruthy()
+    expect(parsed.phobiaAdded).not.toBe('随机恐惧症')
   })
 
   it('不定性疯狂 1D10=10 时添加躁狂症', () => {
@@ -167,7 +168,8 @@ describe('sanityHandler trigger_insanity', () => {
     const r = sanityHandler.handle('trigger_insanity', { sanLost: 0, intValue: 50 }, ctx)
     const parsed = JSON.parse(r.content)
     expect(parsed.insanityState).toBe('indefinite')
-    expect(parsed.maniaAdded).toBe('随机躁狂症')
+    expect(parsed.maniaAdded).toBeTruthy()
+    expect(parsed.maniaAdded).not.toBe('随机躁狂症')
   })
 
   it('临时疯狂 1D10=9 时添加恐惧症', () => {
@@ -192,7 +194,8 @@ describe('sanityHandler trigger_insanity', () => {
     const r = sanityHandler.handle('trigger_insanity', { sanLost: 6, intValue: 50 }, ctx)
     const parsed = JSON.parse(r.content)
     expect(parsed.insanityState).toBe('temporary')
-    expect(parsed.phobiaAdded).toBe('随机恐惧症')
+    expect(parsed.phobiaAdded).toBeTruthy()
+    expect(parsed.phobiaAdded).not.toBe('随机恐惧症')
     expect(state).toBe('temporary')
   })
 
@@ -216,7 +219,8 @@ describe('sanityHandler trigger_insanity', () => {
     const r = sanityHandler.handle('trigger_insanity', { sanLost: 6, intValue: 50 }, ctx)
     const parsed = JSON.parse(r.content)
     expect(parsed.insanityState).toBe('temporary')
-    expect(parsed.maniaAdded).toBe('随机躁狂症')
+    expect(parsed.maniaAdded).toBeTruthy()
+    expect(parsed.maniaAdded).not.toBe('随机躁狂症')
   })
 
   it('sanLost>=5 且 INT 检定失败为压抑', () => {

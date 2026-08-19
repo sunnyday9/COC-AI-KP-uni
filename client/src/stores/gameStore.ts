@@ -36,6 +36,18 @@ const LONG_TERM_SUMMARY_EVERY_N_TURNS = 5
 /** Number of recent messages to include in long-term summarization input. */
 const SUMMARIZE_RECENT_MESSAGES = 20
 
+/**
+ * Adaptive summarization interval (perf: long conversations degrade because
+ * the tool-chain history re-sent each turn grows without bound). Shorten the
+ * interval as the turn count grows so the long-term summary stays fresh:
+ *   < 20 turns → every 5; ≥ 20 → every 3; ≥ 40 → every 2.
+ */
+export function dynamicSummaryInterval(playerTurnCount: number): number {
+  if (playerTurnCount >= 40) return 2
+  if (playerTurnCount >= 20) return 3
+  return LONG_TERM_SUMMARY_EVERY_N_TURNS
+}
+
 type SummarizationTrigger = 'scene_change' | 'periodic' | 'high_impact_tool'
 
 const HIGH_IMPACT_TOOLS = new Set(['grant_clue', 'melee_attack', 'ranged_attack', 'san_check', 'trigger_insanity'])
@@ -69,8 +81,10 @@ export const useGameStore = defineStore('game', () => {
   const storyOverview = ref<string>('')
   /** Current scene name (narrative tracking, not script-enforced) */
   const currentScene = ref<string>('')
-  /** Clues the investigator has obtained (descriptions) */
-  const cluesObtained = ref<string[]>([])
+  /** Clues the investigator has obtained. Structured since the script-gating
+   * work: { id, description }; legacy saves restored plain strings, which
+   * `toClueId`/`toClueDescription` normalize on the fly. */
+  const cluesObtained = ref<{ id: string; description: string }[]>([])
   const messages = ref<Message[]>([])
   const kpMemory = ref<string[]>([])
   /** Long-term session summary (key events, scenes, clues); updated on scene change / periodically. */
@@ -194,9 +208,10 @@ export const useGameStore = defineStore('game', () => {
     if (snap) traceBus.emit('state_update', 'character_snapshot', { ...snap, label } as CharacterSnapshot)
   }
 
-  function addClue(description: string) {
-    if (!cluesObtained.value.includes(description)) cluesObtained.value.push(description)
-    traceBus.emit('state_update', 'clue_added', { description })
+  function addClue(description: string, clueId?: string) {
+    const exists = cluesObtained.value.some((c) => c.description === description || (clueId && c.id === clueId))
+    if (!exists) cluesObtained.value.push({ id: clueId ?? '', description })
+    traceBus.emit('state_update', 'clue_added', { description, clueId })
     if (storyId.value && sessionId.value) {
       addUserGraphEvent({
         storyId: storyId.value,
@@ -291,12 +306,12 @@ export const useGameStore = defineStore('game', () => {
           sc.act ? `幕次/阶段: ${sc.act}` : '',
           sc.sanity?.currentSan != null ? `SAN: ${sc.sanity.currentSan}` : '',
           sc.sanity?.dailySanLoss != null ? `当日SAN损失: ${sc.sanity.dailySanLoss}` : '',
-          cluesObtained.value.length ? `已获得线索: ${cluesObtained.value.slice(0, 12).join('；')}` : '',
+          cluesObtained.value.length ? `已获得线索: ${cluesObtained.value.slice(0, 12).map((c) => c.description).join('；')}` : '',
         ].filter(Boolean).join('\n')
       : ''
     const sid = storyId.value
     const sessId = sessionId.value
-    const clueKeywords = cluesObtained.value.slice(0, 5).map(c => c.slice(0, 15)).join(' ')
+    const clueKeywords = cluesObtained.value.slice(0, 5).map((c) => c.description.slice(0, 15)).join(' ')
     const ragQuery = [currentScene.value, clueKeywords].filter(Boolean).join(' ') || '当前场景'
     const triggerType = trigger || (currentScene.value !== '' ? 'scene_change' : 'periodic')
     // 原 TraceEventMap 的 trigger 仅含 scene_change|periodic，high_impact_tool 属原类型缺口（运行时不变）
@@ -367,6 +382,9 @@ export const useGameStore = defineStore('game', () => {
     characterSheet.value = { ...c, derived: { ...c.derived, san: newSan } }
     derivedStatsVersion.value += 1
     if (newSan <= 0) {
+      // Keep insanityState consistent before the ending snapshot is built
+      // (previously only endGame ran, leaving insanityState 'normal').
+      updateCharacterInsanityState('permanent')
       endGame({
         outcome: 'defeat',
         title: '永久疯狂',
@@ -382,6 +400,24 @@ export const useGameStore = defineStore('game', () => {
     if (!c?.skills) return
     const nextSkills = { ...c.skills, [skillId]: Math.max(0, Math.min(99, newValue)) }
     characterSheet.value = { ...c, skills: nextSkills }
+  }
+
+  /** 幕间成长专用：技能可超过 100%（规则书 5739-5742），仅下限 0。 */
+  function growCharacterSkill(skillId: string, newValue: number) {
+    const c = characterSheet.value
+    if (!c?.skills) return
+    const nextSkills = { ...c.skills, [skillId]: Math.max(0, newValue) }
+    characterSheet.value = { ...c, skills: nextSkills }
+  }
+
+  /** 克苏鲁神话技能增长（书籍阅读/神话遭遇）；同时触发最大理智下调（99 - mythos）。 */
+  function increaseCthulhuMythos(gain: number) {
+    const c = characterSheet.value
+    if (!c || gain <= 0) return
+    const current = typeof c.cthulhuMythos === 'number' ? c.cthulhuMythos : 0
+    const next = Math.min(99, current + Math.floor(gain))
+    characterSheet.value = { ...c, cthulhuMythos: next }
+    derivedStatsVersion.value += 1
   }
 
   function updateCharacterLuck(delta: number) {
@@ -492,6 +528,8 @@ export const useGameStore = defineStore('game', () => {
       updateCharacterInsanityState,
       setCharacterMajorWound,
       setCharacterDying,
+      growCharacterSkill,
+      increaseCthulhuMythos,
       transitionToScene,
       addClue,
       endGame: (e) => endGame({
@@ -514,6 +552,10 @@ export const useGameStore = defineStore('game', () => {
       ctx.sceneId = scene
       ctx.sceneName = scene
       ctx.sceneType = 'investigation'
+    }
+    if (storyId.value) {
+      ctx.scriptId = storyId.value
+      ctx.openClues = cluesObtained.value.map((c) => ({ id: c.id, description: c.description }))
     }
     if (characterSheet.value) {
       const c = characterSheet.value
@@ -591,7 +633,15 @@ export const useGameStore = defineStore('game', () => {
     if (typeof data.storyName === 'string') storyName.value = data.storyName
     if (typeof data.storyOverview === 'string') storyOverview.value = data.storyOverview
     if (typeof data.currentScene === 'string') currentScene.value = data.currentScene
-    if (Array.isArray(data.cluesObtained)) cluesObtained.value = data.cluesObtained as string[]
+    if (Array.isArray(data.cluesObtained)) {
+      cluesObtained.value = (data.cluesObtained as unknown[]).map((c) => {
+        if (typeof c === 'string') return { id: '', description: c } // legacy save
+        if (typeof c === 'object' && c !== null && typeof (c as { description?: unknown }).description === 'string') {
+          return { id: typeof (c as { id?: unknown }).id === 'string' ? (c as { id: string }).id : '', description: (c as { description: string }).description }
+        }
+        return { id: '', description: String(c) }
+      })
+    }
     if (Array.isArray(data.messages)) messages.value = data.messages as Message[]
     if (Array.isArray(data.kpMemory)) kpMemory.value = data.kpMemory as string[]
     if (v === SAVE_VERSION) {
@@ -614,8 +664,7 @@ export const useGameStore = defineStore('game', () => {
         sessionId: sessionId.value,
         state: { cluesObtained: cluesObtained.value, currentScene: currentScene.value },
       }).catch(() => {})
-    }
-  }
+    }  }
 
   async function listSaves(): Promise<string[]> {
     return await listSaveIds()
@@ -749,7 +798,7 @@ export const useGameStore = defineStore('game', () => {
       narrativeStall.value = _turnHadProgressTool ? 0 : Math.min(10, narrativeStall.value + 1)
       if (_turnHadHighImpactTool) {
         runLongTermSummarization('high_impact_tool')
-      } else if (playerTurnCount.value >= LONG_TERM_SUMMARY_EVERY_N_TURNS && playerTurnCount.value % LONG_TERM_SUMMARY_EVERY_N_TURNS === 0) {
+      } else if (playerTurnCount.value >= dynamicSummaryInterval(playerTurnCount.value) && playerTurnCount.value % dynamicSummaryInterval(playerTurnCount.value) === 0) {
         runLongTermSummarization('periodic')
       }
     } catch (e) {

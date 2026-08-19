@@ -37,7 +37,12 @@ export function readSave(userId: number, saveId: string): unknown {
     .prepare('SELECT data FROM saves WHERE user_id = ? AND save_id = ?')
     .get(userId, saveId) as { data: string } | undefined
   if (!row) throw new NotFoundError('save not found')
-  return JSON.parse(row.data)
+  try {
+    return JSON.parse(row.data)
+  } catch {
+    // Corrupted row (should not happen via writeSave) → 400, not a 500.
+    throw new BadRequestError('save data corrupted')
+  }
 }
 
 /** save:write — upsert the snapshot document. */

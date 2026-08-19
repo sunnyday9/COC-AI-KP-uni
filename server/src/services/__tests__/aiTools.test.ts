@@ -104,7 +104,7 @@ describe('chatForAgent — openai_compatible', () => {
     expect(result.toolCalls).toEqual([{ id: 'tc-9', name: 'roll_dice', arguments: '{"sides":6}' }])
 
     expect(calls).toHaveLength(1)
-    expect(calls[0].opts.tools).toHaveLength(18)
+    expect(calls[0].opts.tools).toHaveLength(24)
     expect(calls[0].opts.tool_choice).toBe('auto')
     expect(calls[0].opts.stream).toBe(false)
   })
@@ -165,7 +165,7 @@ describe('chatForAgent — anthropic_compatible', () => {
     expect(url).toBe('https://api.anthropic.com/v1/messages')
     expect(init.headers['x-api-key']).toBe(KEY_ANTHROPIC)
     const sent = JSON.parse(init.body)
-    expect(sent.tools).toHaveLength(18)
+    expect(sent.tools).toHaveLength(24)
     expect(sent.tools[0]).toMatchObject({ name: 'skill_check', input_schema: { type: 'object' } })
   })
 
@@ -280,7 +280,7 @@ describe('chatForAgent — google_compatible (_thoughtSignature)', () => {
     expect(url).toContain(`/v1beta/models/gemini-2.0-flash:generateContent?key=${KEY_GEMINI}`)
     const sent = JSON.parse(init.body)
     expect(sent.tools).toHaveLength(1)
-    expect((sent.tools[0] as { functionDeclarations: unknown[] }).functionDeclarations).toHaveLength(18)
+    expect((sent.tools[0] as { functionDeclarations: unknown[] }).functionDeclarations).toHaveLength(24)
     // request-side passthrough (restored from original aiHandlers.cjs)
     const modelPart = sent.contents.find(
       (c: { role: string }) => c.role === 'model',

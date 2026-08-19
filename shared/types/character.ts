@@ -74,6 +74,8 @@ export interface COCCharacterSheet {
   isDying?: boolean
   /** 武器列表（名称、伤害、射程等） */
   weapons?: COCWeapon[]
+  /** 克苏鲁神话技能值（0-99；规则书：最大理智 = 99 - 神话值） */
+  cthulhuMythos?: number
 }
 
 export type GamePhase =

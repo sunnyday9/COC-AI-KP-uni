@@ -23,8 +23,10 @@ export interface ToolContextDeps {
   ): void
   setCharacterMajorWound(hasMajorWound: boolean): void
   setCharacterDying(isDying: boolean): void
+  growCharacterSkill(skillId: string, newValue: number): void
+  increaseCthulhuMythos(gain: number): void
   transitionToScene(sceneName: string): void
-  addClue(description: string): void
+  addClue(description: string, clueId?: string): void
   endGame(ending: { outcome: string; title: string; summary: string; epilogueOptions?: string[]; keyFacts?: string[]; keyTurnIds?: string[] }): void
   generateId(): string
 }
@@ -101,6 +103,8 @@ export function buildToolContext(deps: ToolContextDeps): ToolHandlerContext {
     updateCharacterInsanityState: deps.updateCharacterInsanityState,
     setCharacterMajorWound: deps.setCharacterMajorWound,
     setCharacterDying: deps.setCharacterDying,
+    growCharacterSkill: deps.growCharacterSkill,
+    increaseCthulhuMythos: deps.increaseCthulhuMythos,
     transitionToScene: deps.transitionToScene,
     addClue: deps.addClue,
     endGame: deps.endGame,

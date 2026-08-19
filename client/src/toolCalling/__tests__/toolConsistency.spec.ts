@@ -6,6 +6,7 @@ import { combatHandler } from '../handlers/combatHandler'
 import { sanityHandler } from '../handlers/sanityHandler'
 import { resourceHandler } from '../handlers/resourceHandler'
 import { narrativeHandler } from '../handlers/narrativeHandler'
+import { rulesHandler } from '../handlers/rulesHandler'
 
 /**
  * Tool name consistency (Task 10 单一来源化后改版):
@@ -40,6 +41,7 @@ describe('toolCalling: tool name consistency', () => {
       ...sanityHandler.toolNames,
       ...resourceHandler.toolNames,
       ...narrativeHandler.toolNames,
+      ...rulesHandler.toolNames,
     ])
 
     expectSameSet(handlerNames, list)

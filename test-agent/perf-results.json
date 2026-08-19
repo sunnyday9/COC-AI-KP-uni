@@ -1,0 +1,71 @@
+{
+  "llm": "mimo-v2.5",
+  "ts": "2026-08-18T18:28:08.294Z",
+  "samples": [
+    {
+      "name": "AW-P-01",
+      "values": [
+        7370,
+        5968,
+        14104
+      ],
+      "avg": 9147
+    },
+    {
+      "name": "AW-P-02",
+      "value": 12642,
+      "rounds": 2,
+      "chain": [
+        "skill_check"
+      ]
+    },
+    {
+      "name": "AW-P-03",
+      "traceCount": 6,
+      "traceTypes": {
+        "intent_classified": 1,
+        "agent_routed": 1,
+        "tool_plan_created": 1,
+        "llm_generate_start": 1,
+        "llm_generate_end": 1,
+        "validation_result": 1
+      },
+      "ms": 10950
+    },
+    {
+      "name": "AW-P-04",
+      "values": [
+        {
+          "round": 1,
+          "ms": 23855,
+          "toolChain": [
+            "transition_scene"
+          ]
+        },
+        {
+          "round": 3,
+          "ms": 50108,
+          "toolChain": [
+            "skill_check",
+            "grant_clue"
+          ]
+        },
+        {
+          "round": 5,
+          "ms": 94025,
+          "toolChain": [
+            "grant_clue",
+            "skill_check",
+            "grant_clue"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AW-P-05",
+      "chunks": 349,
+      "hasChunks": true,
+      "ms": 20801
+    }
+  ]
+}

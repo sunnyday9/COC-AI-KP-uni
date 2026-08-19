@@ -49,3 +49,6 @@ server/storage/
 e2e/screenshots/
 e2e/*.log
 e2e/*.utf8.log
+
+# Local plans (ZCode)
+.zcode/

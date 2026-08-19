@@ -121,7 +121,7 @@ export async function addUserGraphEvent(params: {
 export async function syncUserGraphFromState(params: {
   storyId: string
   sessionId: string
-  state: { cluesObtained: string[]; currentScene: string }
+  state: { cluesObtained: { id: string; description: string }[]; currentScene: string }
 }): Promise<void> {
   const fn = getBridge().ragUserGraphSync
   if (!fn) return

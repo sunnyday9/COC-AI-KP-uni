@@ -72,7 +72,7 @@ export interface TraceEventMap {
   character_delta: { field: string; before: unknown; after: unknown }
   memory_updated: { kpMemoryLength: number; newEntryPreview: string }
   scene_changed: { from: string; to: string }
-  clue_added: { description: string }
+  clue_added: { description: string; clueId?: string }
 
   // Long-term summary span
   summary_triggered: { trigger: 'scene_change' | 'periodic'; playerTurnCount: number }
@@ -80,7 +80,7 @@ export interface TraceEventMap {
   summary_output: { newSummaryLength: number; newSummaryPreview: string }
 
   // Error events
-  trace_error: { source: string; message: string; stack?: string }
+  trace_error: { source: string; message: string; stack?: string; iteration?: number }
 }
 
 export type TraceEventType = keyof TraceEventMap

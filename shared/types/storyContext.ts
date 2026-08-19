@@ -23,9 +23,12 @@ export interface StoryContext {
   sceneName?: string
   sceneType?: string
   act?: string
-  openClues?: string[]
+  /** Structured open clues: entries may be plain descriptions (legacy) or { id, description }. */
+  openClues?: (string | { id: string; description: string })[]
   activeNPCs?: StoryContextNPC[]
   sanity?: StoryContextSanity
   /** If true, narrative agent should force a scene transition (anti-stall). */
   forceTransitionScene?: boolean
+  /** Script (story) id whose structured scene/clue graph gates transitions. */
+  scriptId?: string
 }

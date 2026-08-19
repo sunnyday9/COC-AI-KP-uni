@@ -87,11 +87,13 @@ describe('invokeKp (REST path)', () => {
     expect(result.toolCalls).toBeDefined()
     expect(result.toolCalls![0].name).toBe('skill_check')
 
-    // classifier call: maxTokens 32, no tools; generate + forceTools: tools present
-    expect(state.calls[0].maxTokens).toBe(32)
-    expect(state.calls[0].tools).toBeUndefined()
-    expect(state.calls[0].stream).toBe(false)
-    expect(state.calls.slice(1).every((c) => Array.isArray(c.tools) && c.tools.length === 18)).toBe(true)
+    // Rule-first classification (perf A1): "我攻击他" hits the combat rule,
+    // so the classifier LLM call is skipped entirely; generate + forceTools
+    // still receive the 24 tools. First call is the main generate.
+    expect(state.calls[0].maxTokens).toBe(2048)
+    expect(state.calls[0].tools).toBeDefined()
+    expect(state.calls[0].tools!.length).toBe(24)
+    expect(state.calls.slice(1).every((c) => Array.isArray(c.tools) && c.tools.length === 24)).toBe(true)
     // REST path never streams
     expect(state.calls.every((c) => c.stream === false)).toBe(true)
   })
@@ -191,10 +193,11 @@ describe('invokeKpStream (WS path)', () => {
     const end = events[3].payload as { content: string; toolCalls?: { name: string }[] }
     expect(end.content).toBe('战斗剧情。')
     expect(end.toolCalls?.[0].name).toBe('skill_check')
-    // streaming enabled only for the generate call, not classifier/forceTools
-    expect(state.calls[0].stream).toBe(false)
-    expect(state.calls[1].stream).toBe(true)
-    expect(state.calls[2].stream).toBe(false)
+    // streaming enabled only for the generate call; rule-first classification
+    // (perf A1) skips the classifier LLM, so first call is generate (stream),
+    // second is the non-streaming forceTools retry.
+    expect(state.calls[0].stream).toBe(true)
+    expect(state.calls[1].stream).toBe(false)
   })
 
   it('emits end with empty content for empty messages (no LLM calls)', async () => {

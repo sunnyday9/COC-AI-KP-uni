@@ -67,9 +67,15 @@ function handleOpposedCheck(args: Record<string, unknown>, ctx: ToolHandlerConte
   const rankA = ctx.SUCCESS_LEVEL_RANK[resA.result] ?? 0
   const rankB = ctx.SUCCESS_LEVEL_RANK[resB.result] ?? 0
   let winner: 'A' | 'B' | 'tie' = 'tie'
-  if (rankA !== rankB) winner = rankA > rankB ? 'A' : 'B'
-  else if (sideAValue !== sideBValue) winner = sideAValue > sideBValue ? 'A' : 'B'
-  else winner = tieBreaker === 'attacker' ? 'A' : 'B'
+  // Rulebook 6238-6241 / 6255-6256: if BOTH sides fail the opposed check,
+  // nobody wins — no one is hurt, the action just misses. Only resolve the
+  // tie-breaker when at least one side succeeded (rank > failure).
+  const bothFailed = rankA <= 2 && rankB <= 2
+  if (!bothFailed) {
+    if (rankA !== rankB) winner = rankA > rankB ? 'A' : 'B'
+    else if (sideAValue !== sideBValue) winner = sideAValue > sideBValue ? 'A' : 'B'
+    else winner = tieBreaker === 'attacker' ? 'A' : 'B'
+  }
   const content = JSON.stringify({
     rollA,
     rollB,
@@ -80,6 +86,7 @@ function handleOpposedCheck(args: Record<string, unknown>, ctx: ToolHandlerConte
     sideBName,
     sideBValue,
     winner,
+    bothFailed,
   })
   const modLabelA =
     sideABonusDice || sideAPenaltyDice

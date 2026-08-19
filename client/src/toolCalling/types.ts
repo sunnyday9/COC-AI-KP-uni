@@ -65,6 +65,10 @@ export interface InsanityResult {
   boutText: string
   phobiaAdded?: string
   maniaAdded?: string
+  /** Which symptom table was used: immediate (表Ⅶ, 1D10 轮) vs summary (表Ⅷ, 1D10 小时). */
+  boutStyle?: 'immediate' | 'summary'
+  /** The resolved symptom from the table (name + description). */
+  symptom?: { name: string; description: string }
 }
 
 /** Resolve skill check result and threshold for a single roll. */
@@ -108,9 +112,13 @@ export interface ToolHandlerContext {
   ) => void
   setCharacterMajorWound: (hasMajorWound: boolean) => void
   setCharacterDying: (isDying: boolean) => void
+  /** 幕间成长：技能值可超过 100%（规则书 5739-5742）。 */
+  growCharacterSkill: (skillId: string, newValue: number) => void
+  /** 克苏鲁神话技能增长（书籍/遭遇），触发最大理智下调。 */
+  increaseCthulhuMythos: (gain: number) => void
   /** Session / world. */
   transitionToScene: (sceneName: string) => void
-  addClue: (description: string) => void
+  addClue: (description: string, clueId?: string) => void
   /** End game and enter ending UI. */
   endGame: (ending: {
     outcome: string

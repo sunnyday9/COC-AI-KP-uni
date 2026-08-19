@@ -45,6 +45,8 @@ export interface MockContextOptions {
   onInsanityState?: (state: 'normal' | 'temporary' | 'indefinite' | 'permanent', phobias?: string[], manias?: string[]) => void
   onSetMajorWound?: (v: boolean) => void
   onSetDying?: (v: boolean) => void
+  onGrowCharacterSkill?: (skillId: string, newValue: number) => void
+  onIncreaseCthulhuMythos?: (gain: number) => void
   onTransitionScene?: (name: string) => void
   onAddClue?: (desc: string) => void
   onEndGame?: (ending: {
@@ -87,6 +89,8 @@ export function createMockContext(options: MockContextOptions = {}): ToolHandler
       options.onInsanityState?.(state, phobias, manias),
     setCharacterMajorWound: (v) => options.onSetMajorWound?.(v),
     setCharacterDying: (v) => options.onSetDying?.(v),
+    growCharacterSkill: (id, v) => options.onGrowCharacterSkill?.(id, v),
+    increaseCthulhuMythos: (gain) => options.onIncreaseCthulhuMythos?.(gain),
     transitionToScene: (name) => options.onTransitionScene?.(name),
     addClue: (desc) => options.onAddClue?.(desc),
     endGame: (ending) => options.onEndGame?.(ending),

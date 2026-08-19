@@ -20,7 +20,8 @@ export interface EndingState {
     insanityState?: string
     dailySanLoss?: number
   }
-  cluesObtained: string[]
+  /** Clues obtained at the end: structured { id, description } (legacy strings normalized on load). */
+  cluesObtained: { id: string; description: string }[]
   scenesVisited: string[]
   storyId?: string
   storyName?: string

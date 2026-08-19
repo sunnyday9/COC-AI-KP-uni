@@ -29,6 +29,16 @@ const { bridge } = vi.hoisted(() => ({
   },
 }))
 
+/**
+ * Tool messages now carry a `【结果摘要】…` head (kpSessionService perf A4)
+ * followed by the JSON body; parse the JSON part only.
+ */
+function parseToolContent(content: string | undefined | null): Record<string, unknown> {
+  const s = String(content ?? '{}')
+  const jsonStart = s.indexOf('{')
+  return JSON.parse(jsonStart >= 0 ? s.slice(jsonStart) : '{}') as Record<string, unknown>
+}
+
 vi.mock('../../platform/index', () => ({
   getBridge: () => bridge,
 }))
@@ -133,7 +143,7 @@ describe('toolLoop integration (sendPlayerMessage → runKpAgentLoop → handler
     expect(asst1?.tool_calls?.[0]?.function?.name).toBe('skill_check')
     const tool1 = round2Msgs.find((m) => m.role === 'tool' && m.tool_call_id === 'tc1')
     expect(tool1).toBeDefined()
-    const skillResult = JSON.parse(tool1!.content ?? '{}') as { roll: number; skillName: string; skillValue: number; result: string }
+    const skillResult = parseToolContent(tool1!.content) as { roll: number; skillName: string; skillValue: number; result: string }
     expect(skillResult.skillName).toBe('侦查')
     expect(skillResult.skillValue).toBe(50)
     expect(skillResult.roll).toBeGreaterThanOrEqual(1)
@@ -142,7 +152,7 @@ describe('toolLoop integration (sendPlayerMessage → runKpAgentLoop → handler
     // 第三轮：携带 roll_dice 结果
     const tool2 = round3Msgs.find((m) => m.role === 'tool' && m.tool_call_id === 'tc2')
     expect(tool2).toBeDefined()
-    const diceResult = JSON.parse(tool2!.content ?? '{}') as { roll: number; sides: number }
+    const diceResult = parseToolContent(tool2!.content) as { roll: number; sides: number }
     expect(diceResult.sides).toBe(6)
     expect(diceResult.roll).toBeGreaterThanOrEqual(1)
     expect(diceResult.roll).toBeLessThanOrEqual(6)
@@ -156,7 +166,7 @@ describe('toolLoop integration (sendPlayerMessage → runKpAgentLoop → handler
     expect(tool4?.content).toBe('HP adjusted by -3')
 
     // 3) 状态更新：线索（grant_clue → addClue）与角色卡（adjust_hp → HP 10-3）
-    expect(store.cluesObtained).toContain('壁炉后的暗格')
+    expect(store.cluesObtained.some((c) => c.description === '壁炉后的暗格')).toBe(true)
     expect((store.characterSheet as any).derived.hp).toBe(7)
 
     // 4) 消息序列：系统展示消息（骰子/线索/HP）在 kp 消息前插入，kp 终态含累积内容

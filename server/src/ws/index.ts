@@ -87,19 +87,28 @@ export function createWsServer(httpServer: Server): WebSocketServer {
  * Never throws into the socket message handler.
  */
 function handleKpInvoke(socket: WebSocket, userId: number, raw: unknown): void {
-  const payload = raw as { streamId?: unknown; messages?: unknown }
+  const payload = raw as { streamId?: unknown; messages?: unknown; storyContext?: unknown }
   const streamId = typeof payload.streamId === 'string' && payload.streamId ? payload.streamId : 'unknown'
 
   const send = (obj: unknown): void => {
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(obj))
+    if (socket.readyState !== WebSocket.OPEN) return
+    let frame: string
+    try {
+      frame = JSON.stringify(obj)
+    } catch (err) {
+      logger.warn('ws send serialization failed, frame dropped', { streamId, error: errorMessage(err) })
+      return
     }
+    socket.send(frame)
   }
 
   try {
     void invokeKpStream(
       userId,
-      { messages: payload.messages as KpMessage[] },
+      {
+        messages: payload.messages as KpMessage[],
+        storyContext: (payload.storyContext as Record<string, unknown> | null | undefined) ?? null,
+      },
       {
         onChunk: (chunk) => send({ type: 'chunk', streamId, chunk }),
         onTrace: (traceEvents) => send({ type: 'trace', streamId, traceEvents }),

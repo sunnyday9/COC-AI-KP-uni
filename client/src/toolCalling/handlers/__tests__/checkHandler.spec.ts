@@ -88,7 +88,7 @@ describe('checkHandler opposed_check', () => {
     expect(parsed.winner).toBe('B')
   })
 
-  it('同级且技能值不同时按技能值高者胜', () => {
+  it('双方同级失败（failure）时无人获胜（规则书 6238-6241）', () => {
     const ctx = createMockContext({ rollSequence: [70, 70] })
     const r = checkHandler.handle('opposed_check', {
       sideAName: 'A',
@@ -99,7 +99,8 @@ describe('checkHandler opposed_check', () => {
     }, ctx)
     const parsed = JSON.parse(r.content)
     expect(parsed.resultA).toBe(parsed.resultB)
-    expect(parsed.winner).toBe('B')
+    expect(parsed.bothFailed).toBe(true)
+    expect(parsed.winner).toBe('tie')
   })
 
   it('带奖惩骰时 displayMessage 含奖/惩标注', () => {

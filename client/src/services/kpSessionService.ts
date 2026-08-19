@@ -42,15 +42,16 @@ export async function kpInvokeOnce(
   storyContext?: StoryContext | null
 ): Promise<{ content?: string; toolCalls?: ToolCall[] }> {
   const api = getKpApi()
-  // Adjustment (api-contract §4): AI config (provider/model/baseUrl/apiKey/
-  // temperature/maxTokens) and storyContext are no longer sent — the server
-  // runs the LangGraph KP agent with the user's stored AI settings and its
-  // own session state.
-  const params = {
+  const params: {
+    messages: { role: string; content: string }[]
+    storyContext?: unknown
+  } = {
     messages: msgs as { role: string; content: string }[],
   }
-  void aiConfig
-  void storyContext
+  // Structured story state (scriptId / open clues / scene) — the server uses
+  // it for clue gating (scriptContext) and sanity forcing. Optional: absent
+  // → server falls back to history extraction.
+  if (storyContext) params.storyContext = storyContext
 
   if (api?.kpInvokeStream && api?.onKpStream) {
     const { streamId } = await api.kpInvokeStream(params)
@@ -85,6 +86,42 @@ export async function kpInvokeOnce(
 
 const MAX_TOOL_ITERATIONS = 8
 
+/** Cap the tool-result payload echoed back into the conversation (long-chain
+ * degradation guard): the trace bus already keeps the full result, so the
+ * LLM only needs the head of the JSON. */
+const MAX_TOOL_RESULT_CHARS = 600
+/** Head of a tool result: first-level key/value pairs, for the LLM to see the
+ * outcome at a glance without the full JSON (long tool chains echo history). */
+const MAX_TOOL_RESULT_SUMMARY_CHARS = 120
+
+function truncateToolResult(content: string): string {
+  if (content.length <= MAX_TOOL_RESULT_CHARS) return content
+  return `${content.slice(0, MAX_TOOL_RESULT_CHARS)}\n…(truncated)`
+}
+
+/** Build a compact `{success, skillName, roll, …}` summary head for tool results. */
+function summarizeToolResult(content: string): string {
+  try {
+    const data = JSON.parse(content) as Record<string, unknown>
+    if (data === null || typeof data !== 'object') return ''
+    const pairs: string[] = []
+    for (const [k, v] of Object.entries(data)) {
+      if (v === undefined || v === null || v === '') continue
+      const s = typeof v === 'object' ? JSON.stringify(v) : String(v)
+      pairs.push(`${k}: ${s.slice(0, 40)}`)
+      if (pairs.length >= 6) break
+    }
+    if (pairs.length === 0) return ''
+    let head = `【结果摘要】${pairs.join('；')}`
+    if (head.length > MAX_TOOL_RESULT_SUMMARY_CHARS) {
+      head = `${head.slice(0, MAX_TOOL_RESULT_SUMMARY_CHARS)}…`
+    }
+    return head + '\n'
+  } catch {
+    return ''
+  }
+}
+
 export async function runKpAgentLoop(
   chatMessages: unknown[],
   aiConfig: AIProviderConfig,
@@ -103,11 +140,23 @@ export async function runKpAgentLoop(
     let iter = ''
     const storyContext = callbacks.getStoryContext?.() ?? null
     const genStart = Date.now()
-    const r = await kpInvokeOnce(msgs, aiConfig, (chunk) => {
-      iter += chunk
-      const preview = base ? base + '\n\n' + iter : iter
-      callbacks.onStreamChunk(preview)
-    }, storyContext)
+    let r: { content?: string; toolCalls?: ToolCall[] }
+    try {
+      r = await kpInvokeOnce(msgs, aiConfig, (chunk) => {
+        iter += chunk
+        const preview = base ? base + '\n\n' + iter : iter
+        callbacks.onStreamChunk(preview)
+      }, storyContext)
+    } catch (err) {
+      // A failed iteration must not burn the remaining retries: record and
+      // stop, keeping whatever narrative was produced so far.
+      traceBus.emit('kp_agent', 'trace_error', {
+        source: 'kp_agent_loop',
+        message: err instanceof Error ? err.message : String(err),
+        iteration: loop,
+      })
+      break
+    }
 
     const endContent = r?.content
     const iterFinal = (endContent !== undefined && endContent !== null ? endContent : iter) || ''
@@ -139,7 +188,7 @@ export async function runKpAgentLoop(
           ...((t as Record<string, unknown>)._thoughtSignature ? { _thoughtSignature: (t as Record<string, unknown>)._thoughtSignature } : {}),
         })),
       },
-      ...toolResults,
+      ...toolResults.map((tr) => ({ ...tr, content: summarizeToolResult(tr.content) + truncateToolResult(tr.content) })),
     ]
   }
 

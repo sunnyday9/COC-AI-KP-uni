@@ -1,4 +1,5 @@
 import {
+  createKPGraph,
   invokeKPAgent,
   type InvokeLLM,
   type KpMessage,
@@ -32,6 +33,8 @@ export const GRAPH_TIMEOUT_MS = 120_000
 
 export interface KpInvokeBody {
   messages: KpMessage[]
+  /** Optional structured story state (scriptId / clues / scene); null/absent → current behavior. */
+  storyContext?: Record<string, unknown> | null
 }
 
 export interface KpInvokeResult {
@@ -85,11 +88,10 @@ function isForceToolCall(msgs: KpMessage[]): boolean {
  */
 function buildInvokeLLM(
   userId: number,
+  ai: ReturnType<typeof getAiConfig>,
   opts: { stream?: boolean; onChunk?: (chunk: string) => void },
 ): InvokeLLM {
   return async (msgs: KpMessage[]) => {
-    const ai = getAiConfig(userId)
-
     const isClassifier = isIntentClassifierCall(msgs)
     const isForceTool = isForceToolCall(msgs)
     const canStream = !!opts.stream && !isClassifier && !isForceTool
@@ -106,6 +108,42 @@ function buildInvokeLLM(
       ? { content: result.content ?? '', toolCalls: result.toolCalls }
       : (result?.content ?? '')
   }
+}
+
+/* ═══════════════════ Graph instance cache (perf) ═══════════════════ */
+
+/**
+ * createKPGraph rebuilds the whole StateGraph per invoke. The graph is
+ * stateless (all state comes from the invoke payload), so a short-TTL cache
+ * avoids the rebuild cost inside a tool chain (up to 8 invokes per turn).
+ *
+ * Streaming invokes are NEVER cached: the generate node's closure captures
+ * the per-request onChunk callback, and reusing a stale closure would stream
+ * chunks into a dead connection.
+ */
+const GRAPH_CACHE_TTL_MS = 10_000
+
+const graphCache = new Map<string, { graph: ReturnType<typeof createKPGraph>; expiresAt: number }>()
+
+function getSharedGraph(invokeLLM: InvokeLLM, userId?: number, stream?: boolean): ReturnType<typeof createKPGraph> {
+  if (stream) return createKPGraph(invokeLLM, userId)
+  // The key includes the invokeLLM closure: the closure captures the resolved
+  // AI config (settings change → new closure → new cache entry), so a config
+  // update can never be served a stale graph.
+  const key = `${String(userId ?? 'anon')}:${String(invokeLLM)}`
+  const now = Date.now()
+  const hit = graphCache.get(key)
+  if (hit && hit.expiresAt > now) {
+    return hit.graph
+  }
+  const graph = createKPGraph(invokeLLM, userId)
+  graphCache.set(key, { graph, expiresAt: now + GRAPH_CACHE_TTL_MS })
+  if (graphCache.size > 50) {
+    for (const [k, v] of graphCache) {
+      if (v.expiresAt <= now) graphCache.delete(k)
+    }
+  }
+  return graph
 }
 
 /* ═══════════════════ Timeout guard ═══════════════════ */
@@ -125,13 +163,22 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 /* ═══════════════════ Entry points ═══════════════════ */
 
 /**
- * Validate the wire-format messages. Mirrors the original's
- * `!Array.isArray(messages) || messages.length === 0` → empty result handling;
- * malformed entries (non-string role/content) are rejected with a 400-style
- * BadRequestError instead of failing inside the graph.
+ * Validate and normalize the wire-format messages.
+ *  - Non-array input is rejected with a 400-style BadRequestError (previously
+ *    it silently returned `[]` → empty 200/end frame, see test-agent AW-R-01).
+ *  - Every message must have string role/content (unchanged).
+ *  - `assistant` messages: `tool_calls` must be an array whose entries have
+ *    string `id` / `function.name` / `function.arguments`; structurally
+ *    invalid entries → 400. Unparseable `arguments` JSON is downgraded to
+ *    `'{}'` (mirrors the client orchestrator's per-tool error handling) so a
+ *    malformed argument payload never crashes the graph or the upstream LLM
+ *    call (AW-R-09).
+ *  - `tool` messages: `tool_call_id` must be a string.
  */
 function normalizeMessages(messages: unknown): KpMessage[] {
-  if (!Array.isArray(messages)) return []
+  if (!Array.isArray(messages)) {
+    throw new BadRequestError('invalid kp:invoke messages: messages must be an array')
+  }
   for (const m of messages) {
     if (
       typeof m !== 'object' ||
@@ -141,8 +188,55 @@ function normalizeMessages(messages: unknown): KpMessage[] {
     ) {
       throw new BadRequestError('invalid kp:invoke messages: each message must have a string role and content')
     }
+    const role = (m as { role: string }).role
+    if (role === 'assistant') {
+      const toolCalls = (m as { tool_calls?: unknown }).tool_calls
+      if (toolCalls !== undefined) {
+        if (!Array.isArray(toolCalls)) {
+          throw new BadRequestError('invalid kp:invoke messages: assistant tool_calls must be an array')
+        }
+        for (const tc of toolCalls) {
+          if (
+            typeof tc !== 'object' ||
+            tc === null ||
+            typeof (tc as { id?: unknown }).id !== 'string' ||
+            typeof (tc as { function?: unknown }).function !== 'object' ||
+            (tc as { function?: unknown }).function === null ||
+            typeof ((tc as { function: { name?: unknown } }).function).name !== 'string' ||
+            typeof ((tc as { function: { arguments?: unknown } }).function).arguments !== 'string'
+          ) {
+            throw new BadRequestError('invalid kp:invoke messages: assistant tool_calls must have string id and function.name/arguments')
+          }
+        }
+      }
+    } else if (role === 'tool') {
+      if (typeof (m as { tool_call_id?: unknown }).tool_call_id !== 'string') {
+        throw new BadRequestError('invalid kp:invoke messages: tool message requires a string tool_call_id')
+      }
+    }
   }
-  return messages as KpMessage[]
+  return messages.map((m) => {
+    if ((m as { role: string }).role === 'assistant') {
+      const toolCalls = (m as { tool_calls?: { function: { name?: unknown; arguments: string } }[] }).tool_calls
+      if (Array.isArray(toolCalls)) {
+        let changed = false
+        const normalized = toolCalls.map((tc) => {
+          try {
+            JSON.parse(tc.function.arguments)
+            return tc
+          } catch {
+            changed = true
+            logger.warn('kp:invoke tool_calls arguments not valid JSON, downgraded to {}', {
+              toolName: tc.function.name,
+            })
+            return { ...tc, function: { ...tc.function, arguments: '{}' } }
+          }
+        })
+        return changed ? { ...m, tool_calls: normalized } : m
+      }
+    }
+    return m
+  }) as KpMessage[]
 }
 
 /** REST path (api-contract §4): single non-streamed graph run. */
@@ -152,10 +246,11 @@ export async function invokeKp(userId: number, body: KpInvokeBody): Promise<KpIn
     return { content: '' }
   }
 
-  const invokeLLM = buildInvokeLLM(userId, {})
+  const ai = getAiConfig(userId)
+  const invokeLLM = buildInvokeLLM(userId, ai, {})
   let result: Awaited<ReturnType<typeof invokeKPAgent>>
   try {
-    result = await withTimeout(invokeKPAgent(messages, invokeLLM), GRAPH_TIMEOUT_MS, 'KP graph invoke')
+    result = await withTimeout(invokeKPAgent(messages, invokeLLM, body?.storyContext ?? null, userId, getSharedGraph(invokeLLM, userId, false)), GRAPH_TIMEOUT_MS, 'KP graph invoke')
   } catch (err) {
     logger.warn('KP graph invoke failed', { userId, error: errorMessage(err) })
     throw new UpstreamError(errorMessage(err))
@@ -179,9 +274,10 @@ export async function invokeKpStream(
     return
   }
 
-  const invokeLLM = buildInvokeLLM(userId, { stream: true, onChunk: handlers.onChunk })
+  const ai = getAiConfig(userId)
+  const invokeLLM = buildInvokeLLM(userId, ai, { stream: true, onChunk: handlers.onChunk })
   try {
-    const result = await withTimeout(invokeKPAgent(messages, invokeLLM), GRAPH_TIMEOUT_MS, 'KP graph stream')
+    const result = await withTimeout(invokeKPAgent(messages, invokeLLM, body?.storyContext ?? null, userId, getSharedGraph(invokeLLM, userId, true)), GRAPH_TIMEOUT_MS, 'KP graph stream')
     if (result._traceEvents && result._traceEvents.length > 0) {
       handlers.onTrace(result._traceEvents)
     }

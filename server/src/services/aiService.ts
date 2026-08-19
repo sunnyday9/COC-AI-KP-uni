@@ -84,6 +84,25 @@ interface AdapterResult {
 
 type OnChunk = (chunk: string) => void
 
+/**
+ * Per-request timeout for NON-streaming LLM calls (perf guard). A hung single
+ * call would otherwise consume the whole 120s graph budget (kpAgentService
+ * GRAPH_TIMEOUT_MS) shared by up to 3 serial calls. Streaming calls are NOT
+ * time-limited: chunk activity is the liveness signal and long narratives
+ * must not be killed by a fixed clock.
+ */
+export const LLM_REQUEST_TIMEOUT_MS = 60_000
+
+/** Race a promise against the request timeout (exported for tests). */
+export async function withRequestTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`)), LLM_REQUEST_TIMEOUT_MS)
+    }),
+  ])
+}
+
 /* ═══════════════════ OpenAI Compatible (openai SDK) ═══════════════════ */
 
 async function doOpenAICompat(
@@ -746,7 +765,9 @@ export async function chat(userId: number, body: ChatBody): Promise<ChatResult> 
   const stream = !!body.stream
 
   try {
-    const result = await dispatchChat(protocol, config, messages, stream, temp, maxTokens)
+    const result = stream
+      ? await dispatchChat(protocol, config, messages, stream, temp, maxTokens)
+      : await withRequestTimeout(dispatchChat(protocol, config, messages, stream, temp, maxTokens), 'ai chat')
     // Contract §3 response shape only — strip toolCalls (chat never sends tools).
     if (result.stream) return { stream: true, chunks: result.chunks ?? [] }
     return { stream: false, content: result.content ?? '' }
@@ -791,7 +812,9 @@ export async function chatForAgent(
   const stream = !!params.stream
 
   try {
-    const result = await dispatchChat(protocol, config, messages, stream, temp, maxTokens, params.tools, params.onChunk)
+    const result = stream
+      ? await dispatchChat(protocol, config, messages, stream, temp, maxTokens, params.tools, params.onChunk)
+      : await withRequestTimeout(dispatchChat(protocol, config, messages, stream, temp, maxTokens, params.tools, params.onChunk), 'kp agent LLM')
     return { content: result.content ?? '', toolCalls: result.toolCalls }
   } catch (err) {
     if (err instanceof BadRequestError) throw err
@@ -834,7 +857,7 @@ export async function chatForRag(
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
 
   try {
-    const result = await dispatchChat(protocol, config, messages, false, temp, maxTokens)
+    const result = await withRequestTimeout(dispatchChat(protocol, config, messages, false, temp, maxTokens), 'rag graph LLM')
     return { content: result.content ?? '' }
   } catch (err) {
     if (err instanceof BadRequestError) throw err

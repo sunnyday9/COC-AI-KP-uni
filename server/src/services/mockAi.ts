@@ -87,8 +87,14 @@ function findLastUserText(messages: ChatMessage[]): string {
 }
 
 function parseJsonContent(content: string): Record<string, unknown> | null {
+  // The client prepends a `【结果摘要】…` head to echoed tool results
+  // (kpSessionService perf A4); parse from the first `{` so the JSON body
+  // is still readable.
+  const s = String(content ?? '').trim()
+  const jsonStart = s.indexOf('{')
+  const candidate = jsonStart >= 0 ? s.slice(jsonStart) : s
   try {
-    const v = JSON.parse(content) as unknown
+    const v = JSON.parse(candidate) as unknown
     return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
   } catch {
     return null
@@ -169,8 +175,8 @@ function mockContinuation(messages: ChatMessage[]): { content: string; toolCalls
     }
     return { content: MOCK_NARRATIVE }
   }
-  if (raw.startsWith('HP adjusted') || raw.startsWith('Clue granted')) {
-    return { content: raw.startsWith('HP adjusted') ? '（测试模式）你受到了伤害，HP 下降。' : '（测试模式）线索已记录。' }
+  if (raw.includes('HP adjusted') || raw.includes('Clue granted')) {
+    return { content: raw.includes('HP adjusted') ? '（测试模式）你受到了伤害，HP 下降。' : '（测试模式）线索已记录。' }
   }
   return { content: MOCK_NARRATIVE }
 }

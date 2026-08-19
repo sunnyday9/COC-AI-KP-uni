@@ -125,8 +125,8 @@ describe('gameStore integration (sendPlayerMessage)', () => {
     expect(system.role).toBe('system')
     expect(system.content).toContain('获得线索: 奇怪的符号')
 
-    // orchestrator executed grant_clue → addClue
-    expect(store.cluesObtained).toContain('奇怪的符号')
+    // orchestrator executed grant_clue → addClue (structured {id, description})
+    expect(store.cluesObtained.some((c) => c.description === '奇怪的符号')).toBe(true)
     // user graph event pushed for the clue
     expect(bridge.ragUserGraphAdd).toHaveBeenCalledWith({
       storyId: 'story.md',
@@ -202,7 +202,7 @@ describe('gameStore saves roundtrip (bridge listSaves/writeSave/readSave)', () =
     expect(payload.version).toBe(1)
     expect(payload.name).toBe('存档1')
     expect(payload.storyId).toBe('story.md')
-    expect(payload.cluesObtained).toEqual(['线索A'])
+    expect(payload.cluesObtained).toEqual([{ id: '', description: '线索A' }])
     expect(payload.longTermSummary).toBe('LT')
     expect(payload.kpMemory).toEqual(['k1'])
 
@@ -229,7 +229,7 @@ describe('gameStore saves roundtrip (bridge listSaves/writeSave/readSave)', () =
 
     await store.loadGame('s1')
     expect(store.currentScene).toBe('图书馆')
-    expect(store.cluesObtained).toEqual(['c1'])
+    expect(store.cluesObtained).toEqual([{ id: '', description: 'c1' }])
     expect(store.kpMemory).toEqual(['k2'])
     expect(store.longTermSummary).toBe('LT2')
     expect(store.isInGame).toBe(true)
