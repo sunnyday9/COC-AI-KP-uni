@@ -196,11 +196,10 @@ async function main() {
       assert(evA.seq === evB.seq, `seq mismatch: A=${evA.seq} B=${evB.seq}`)
     })
 
-    await step('B room:sync → 全量快照含消息', async () => {
-      // 记录 B 已见的最新 seq，sync 后的 state 必须更新（避免匹配 join 时的旧快照）
-      const lastSeq = wsB.frames.filter((f) => f.type === 'room:state').reduce((m, f) => Math.max(m, f.seq ?? 0), 0)
-      wsB.socket.send(JSON.stringify({ type: 'room:sync', roomId, lastSeq }))
-      const state = await wsB.waitFor((f) => f.type === 'room:state' && f.roomId === roomId && (f.seq ?? 0) > lastSeq, 10_000, 'B sync state')
+    await step('B room:sync lastSeq=0 → 全量快照兜底', async () => {
+      // lastSeq=0（缺口超过事件日志窗口）→ 全量快照兜底
+      wsB.socket.send(JSON.stringify({ type: 'room:sync', roomId, lastSeq: 0 }))
+      const state = await wsB.waitFor((f) => f.type === 'room:state' && f.roomId === roomId && (f.seq ?? 0) > 0, 10_000, 'B sync full state')
       const msgs = state.snapshot?.messages ?? []
       assert(msgs.some((m) => m.content === '我调查一下书架。'), `snapshot missing chat message; msgs=${JSON.stringify(msgs).slice(0, 120)}`)
     })
@@ -228,6 +227,25 @@ async function main() {
         'B dice display',
       )
       assert(dice.payload.content.includes('侦查'), `dice content mismatch: ${dice.payload.content}`)
+    })
+
+    await step('B room:sync 增量补齐（lastSeq 后的事件，非全量）', async () => {
+      // B 记当前最新 seq（KP 回合后），A 再发一条消息
+      const beforeSeq = wsB.frames.filter((f) => f.type === 'room:event').reduce((m, f) => Math.max(m, f.seq ?? 0), 0)
+      wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我检查一下门。' } } }))
+      // 等 B 实时收到这条消息（确认 seq 已前进）
+      await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我检查一下门。', 15_000, 'B live msg')
+      // B 用「错过」的 lastSeq sync → 服务端增量补发（room:event，非全量 state）
+      wsB.socket.send(JSON.stringify({ type: 'room:sync', roomId, lastSeq: beforeSeq }))
+      await wsB.waitFor((f) => f.type === 'room:sync:done' && f.roomId === roomId, 10_000, 'B sync done')
+      // 增量路径验证：sync 后 B 又收到一条「我检查一下门。」（增量补发，与实时那条重复）
+      const msgCount = wsB.frames.filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我检查一下门。').length
+      assert(msgCount >= 2, `expected >=2 copies (live + incremental), got ${msgCount}`)
+      // 且增量 sync 未触发全量 state（增量窗口内）
+      const statesAtSyncStart = wsB.frames.filter((f) => f.type === 'room:state').length
+      await new Promise((r) => setTimeout(r, 300))
+      const statesAtSyncEnd = wsB.frames.filter((f) => f.type === 'room:state').length
+      assert(statesAtSyncEnd === statesAtSyncStart, `unexpected full snapshot on incremental sync: ${statesAtSyncEnd} != ${statesAtSyncStart}`)
     })
 
     await step('A/B room:leave 清理', async () => {

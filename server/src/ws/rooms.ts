@@ -116,7 +116,7 @@ export function handleRoomLeave(socket: WebSocket, roomId: string): void {
   unsubscribeSocket(socket, roomId)
 }
 
-/** 处理 room:sync — lastSeq 之后的增量（事件流未持久化时：缺口 → 全量快照）。 */
+/** 处理 room:sync — lastSeq 之后的增量补齐；缺口过大（事件日志淘汰）→ 全量快照。 */
 export function handleRoomSync(socket: WebSocket, userId: number, raw: unknown): void {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
   if (!roomId || !isRoomMember(userId, roomId)) {
@@ -128,9 +128,18 @@ export function handleRoomSync(socket: WebSocket, userId: number, raw: unknown):
     send(socket, { type: 'room:error', roomId, error: 'room not active' })
     return
   }
-  // 事件流未持久化：同步 = 全量快照（客户端按 seq 对账）。
-  // 增量补齐（lastSeq → 全量）在事件日志落地后实现（Phase C1）。
-  send(socket, { type: 'room:state', roomId, snapshot: room.snapshot(), seq: room.getSeq() })
+  const lastSeq = Number((raw as { lastSeq?: unknown }).lastSeq ?? 0)
+  const deltas = room.getEventsSince(lastSeq)
+  if (deltas === null || deltas.length === 0) {
+    // 缺口过大或无需增量 → 全量快照（客户端按 seq 对账）
+    send(socket, { type: 'room:state', roomId, snapshot: room.snapshot(), seq: room.getSeq() })
+    return
+  }
+  // 增量补齐：补发 lastSeq 之后的事件（客户端按 seq 应用）
+  for (const d of deltas) {
+    send(socket, { type: 'room:event', roomId, seq: d.seq, eventType: d.event.type, payload: d.event.payload })
+  }
+  send(socket, { type: 'room:sync:done', roomId, seq: room.getSeq() })
 }
 
 /** 处理 room:action — 聊天（触发 KP 回合）/ 表态，串行入队（RoomService.enqueue）。 */

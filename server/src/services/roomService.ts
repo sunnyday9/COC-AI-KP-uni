@@ -62,6 +62,8 @@ const DEFAULT_TURN_WINDOW_MS = 5_000
 const SNAPSHOT_EVERY_N_EVENTS = 20
 const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
+/** 事件日志环形容量（Phase C1：重连增量窗口；超出 → 全量快照兜底）。 */
+const MAX_EVENT_LOG = 200
 
 /**
  * 房间实例。所有状态变更必须经 enqueue（串行），事件按 seq 全序广播。
@@ -87,6 +89,9 @@ export class RoomService {
   private lastActivityAt = Date.now()
   private queue: Promise<unknown> = Promise.resolve()
   private readonly listeners = new Set<(event: RoomEvent) => void>()
+  /** 事件日志（Phase C1）：带 seq 的增量事件，环形保留最近 MAX_EVENT_LOG 条。 */
+  private eventLog: { seq: number; event: RoomEvent }[] = []
+  private eventLogStartSeq = 0
   private snapshotTimer: NodeJS.Timeout | null = null
 
   constructor(private readonly opts: RoomOptions) {
@@ -159,9 +164,22 @@ export class RoomService {
   private emit(event: RoomEvent): void {
     this.seq += 1
     this.eventCountSinceSnapshot += 1
+    // 事件日志（环形缓冲，Phase C1 重连增量）：保留最近 MAX_EVENT_LOG 条。
+    this.eventLog.push({ seq: this.seq, event })
+    if (this.eventLog.length > MAX_EVENT_LOG) {
+      this.eventLog.shift()
+    }
+    this.eventLogStartSeq = this.eventLog[0]?.seq ?? this.seq
     for (const l of this.listeners) {
       try { l(event) } catch { /* 监听器错误不影响广播 */ }
     }
+  }
+
+  /** 增量事件（lastSeq 之后；返回 null 表示缺口过大需全量快照）。
+   * lastSeq=0（客户端无状态）或 < 日志起始 seq → 全量。 */
+  getEventsSince(lastSeq: number): { seq: number; event: RoomEvent }[] | null {
+    if (lastSeq < this.eventLogStartSeq) return null
+    return this.eventLog.filter((e) => e.seq > lastSeq)
   }
 
   /* ═══════════════ 动作处理 ═══════════════ */
