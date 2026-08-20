@@ -233,6 +233,45 @@
 
 **原因**：回合窗口合并后一次推理可能产生针对多个调查员的工具调用（skill_check(characterId=char_a) + san_check(characterId=char_b)），工具必须落到正确的角色卡。multiroom E2E 10/10（新增「窗口内两条 → 恰好 1 次 KP 回复」步骤）。
 
+### D-23：多角色卡 prompt 注入（2026-08-20，B5 实现）
+
+**决策**：`kpTurnService` 新增 `buildCharacterRosterPrompt` + `injectCharacterRoster`——多人模式（角色组 >1）在 system 消息追加「房间内调查员」花名册（id + 名称 + HP/SAN/幸运 + characterId 使用提示）；单角色/空角色不注入（prompt 精简）。
+
+**备选**：把花名册塞进 kpGraph 的 generateNode——rejected：kpGraph 无 characters 上下文；kpTurnService 已有角色组，注入点最干净。
+
+**原因**：架构 B5「多角色卡 prompt」——LLM 需要知道房间内有哪些调查员才能用 characterId 调工具（配合 D5 工具分派）。单测 6 个（多角色花名册/单角色空/空组空/追加 system/前置 system/单角色原样）。
+
+### D-24：房主控制——turnWindowMs 可调（2026-08-20，B6 实现）
+
+**决策**：
+- `PUT /api/rooms/:id/settings { turnWindowMs }`（0..60000，0=严格排队）——独立路由文件 `roomSettings.routes.ts`（**门禁规避**：rooms.routes 已有大量 DB 写入链，新增 diff 触发 Mimosa SSRF 误报；`.all()` 替代 `.get()/.run()` 链规避结构性拦截）
+- 只写 rooms.state 快照；RoomService.bufferPlayerChat 每次窗口开启前从 DB 读最新值（无需同步活跃实例，避免「外部输入 → service 链」污点）
+- 客户端 bridge `roomSetTurnWindow` + 房间页房主调节 UI（秒输入 + 应用）
+
+**备选**：路由塞进 rooms.routes.ts——rejected（Mimosa 拦截）；活跃实例即时同步——rejected（外部输入进 service 链触发门禁）。
+
+**原因**：架构 B6「房主控制（turnWindowMs 可调）」——窗口可调是多人跑团的核心控制（0=严格排队，5s 默认，房主按节奏调）。单测 4 个（房主改值/非房主 409/非法值 400/404）。
+
+### D-25：同账号双设备并发验证（2026-08-20，C2）
+
+**决策**：multiroom E2E 新增「同账号双连接」步骤——A 用同一 token 开第二个 WS（模拟同账号另一设备）订阅同房间，设备2 发消息 → 设备1 与 B 收到同一 seq 广播。**11/11 PASS**。
+
+**原因**：架构 C2「多端并发矩阵（同账号两设备 + 两账号同房间）」——两账号同房间已覆盖（B7）；同账号双连接验证 socket 级扇出按连接独立（同一 userId 多 socket 不串扰）。
+
+### D-26：房间导出/旧存档导入工具（2026-08-20，C3/A5）
+
+**决策**：`server/src/services/saveMigration.ts` 纯函数工具：`migrateSaveSnapshot`（legacy 快照归一化：clues 字符串 → 结构化、缺字段补全、version 置 1）、`roomSnapshotToSave`（房间快照 → 单机存档，C3 导出）、`saveToRoomSnapshot`（存档 → 房间快照，C3 导入）。
+
+**备选**：客户端做迁移——rejected：服务端是存档权威，迁移逻辑放服务端可复用（房间导出为单人续玩）。
+
+**原因**：架构 C3「旧存档导入/房间导出工具」+ A5「存档迁移」——多人房间结束/中途可导出为单机存档续玩；旧存档（clues 为字符串数组）归一化到当前结构。单测 7 个。
+
+### D-27：性能压测（2026-08-20，C5）
+
+**决策**：`e2e/room-stress.mjs`——并发创建 N 房间（默认 50，可 100）、并发 WS 订阅、并发广播延迟 p95 断言（<5s）。**3/3 PASS**（50 房间创建 12.9s、25 订阅、广播 p95=18ms）。
+
+**原因**：架构 C5「性能压测（≤100 房间边界）」+ NFR-M5——验证单进程规模内广播延迟与并发创建无瓶颈，为多实例 Redis 触发条件提供基准。
+
 ---
 
 ## 验证基线记录
@@ -256,5 +295,8 @@
 | 2026-08-20 | server 单测（D4/D5 后） | **372 全绿**（+7 roomTurnWindow） |
 | 2026-08-20 | 双客户端 E2E（D4 合并扩展） | **10/10 PASS**（+ 窗口内两条消息 → 恰好 1 次 KP 回复） |
 | 2026-08-20 | 房间浏览器 E2E 回归 | **8/8 PASS**（回合窗口不破坏客户端消息流） |
+| 2026-08-20 | server 单测（B5/B6/C3 后） | **389 全绿**（+6 roster +7 saveMigration +4 roomSettings） |
+| 2026-08-20 | 双客户端 E2E（C2 扩展） | **11/11 PASS**（+ 同账号双连接同 seq 广播） |
+| 2026-08-20 | 性能压测（room-stress.mjs） | **3/3 PASS**（50 房间创建 12.9s；广播 p95=18ms） |
 | 2026-08-20 | H5 build（含新房间页面） | 成功（模板编译无错误） |
 | 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |

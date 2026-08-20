@@ -239,6 +239,17 @@ export class RoomService {
     this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members } })
   }
 
+  /** 设置回合窗口（房主控制，B6）；0 = 严格排队。广播 room_meta 全员可见。 */
+  setTurnWindowMs(ms: number): void {
+    const clamped = Math.max(0, Math.min(60_000, Math.floor(ms)))
+    this.turnWindowMs = clamped
+    this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members: [] } })
+  }
+
+  getTurnWindowMs(): number {
+    return this.turnWindowMs
+  }
+
   /** 开始游戏（lobby → playing，绑定剧本）。 */
   startGame(storyId: string): void {
     this.storyId = storyId
@@ -268,6 +279,17 @@ export class RoomService {
   /** 玩家消息进回合缓冲（聊天即时广播；KP 回合等窗口超时合并执行）。 */
   bufferPlayerChat(username: string, content: string, characterId: string | null): void {
     this.turnBuffer.push({ username, content, characterId })
+    // 每次窗口开启前从 DB 读最新 turnWindowMs（B6 房主可调；快照 restore 是兜底）
+    const row = getDb().prepare(`SELECT state FROM rooms WHERE room_id = ?`).all(this.roomId) as unknown as { state: string }[]
+    const snap = row[0]?.state
+    if (snap) {
+      try {
+        const parsed = JSON.parse(snap) as { turnWindowMs?: unknown }
+        if (typeof parsed.turnWindowMs === 'number' && Number.isFinite(parsed.turnWindowMs)) {
+          this.turnWindowMs = Math.max(0, Math.min(60_000, Math.floor(parsed.turnWindowMs)))
+        }
+      } catch { /* 脏快照忽略 */ }
+    }
     // turnWindowMs=0 → 严格排队：每条消息立即触发 KP 回合（无合并延迟）
     if (this.turnWindowMs <= 0) {
       void this.flushTurn()

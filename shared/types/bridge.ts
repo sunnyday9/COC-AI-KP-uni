@@ -136,6 +136,7 @@ export interface Bridge {
     createdAt: number
   }>
   roomStart?: (roomId: string, storyId: string) => Promise<{ ok: boolean }>
+  roomSetTurnWindow?: (roomId: string, turnWindowMs: number) => Promise<{ ok: boolean; turnWindowMs?: number }>
   roomBindCharacter?: (roomId: string, characterId: string) => Promise<{ ok: boolean }>
   roomDelete?: (roomId: string) => Promise<{ ok: boolean }>
   onRoomFrame?: (handler: (frame: unknown) => void) => () => void

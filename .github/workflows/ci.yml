@@ -63,6 +63,12 @@ jobs:
           E2E_BROWSER: /usr/bin/google-chrome
         timeout-minutes: 15
 
+      - name: E2E — Room stress (≤100 rooms boundary, MOCK_AI)
+        run: node e2e/room-stress.mjs
+        env:
+          STRESS_ROOMS: "50"
+        timeout-minutes: 10
+
       - name: Upload E2E artifacts (screenshots + log)
         if: always()
         uses: actions/upload-artifact@v4

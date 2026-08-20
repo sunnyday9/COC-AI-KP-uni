@@ -90,6 +90,24 @@ async function dissolveRoom() {
   }
 }
 
+/** B6 房主控制：回合窗口调节（秒，0=严格排队）。 */
+const turnWindowSec = ref(5)
+
+async function applyTurnWindow() {
+  const ms = Math.round(Number(turnWindowSec.value) * 1000)
+  if (!Number.isFinite(ms) || ms < 0 || ms > 60_000) {
+    uni.showToast({ title: '回合窗口需在 0~60 秒之间', icon: 'none' })
+    return
+  }
+  try {
+    const r = await getBridge().roomSetTurnWindow!(roomId.value, ms)
+    uni.showToast({ title: '回合窗口已更新', icon: 'success' })
+    if (typeof r.turnWindowMs === 'number') turnWindowSec.value = Math.round(r.turnWindowMs / 1000)
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message : String(e), icon: 'none' })
+  }
+}
+
 function openCharPicker() {
   showCharPicker.value = true
 }
@@ -147,6 +165,20 @@ onMounted(() => scrollToBottom())
           </view>
         </view>
         <button class="mini-btn bind-btn" @click="openCharPicker">绑定角色卡</button>
+
+        <!-- B6 房主控制：回合窗口 -->
+        <view v-if="roomStore.isOwner" class="turn-window">
+          <text class="turn-label">回合窗口（秒，0=严格排队）</text>
+          <view class="turn-row">
+            <input
+              v-model.number="turnWindowSec"
+              class="turn-input"
+              type="number"
+              placeholder="5"
+            />
+            <button class="mini-btn start-btn" @click="applyTurnWindow">应用</button>
+          </view>
+        </view>
       </view>
 
       <!-- 右侧：消息流 + 输入 -->
@@ -324,6 +356,31 @@ onMounted(() => scrollToBottom())
 .bind-btn {
   margin-top: 16px;
   width: 100%;
+}
+.turn-window {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid hsla(220, 14%, 16%, 0.8);
+}
+.turn-label {
+  display: block;
+  font-size: 12px;
+  color: hsl(220, 10%, 45%);
+  margin-bottom: 8px;
+}
+.turn-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.turn-input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid hsla(220, 14%, 20%, 0.8);
+  border-radius: 0.5rem;
+  color: hsl(38, 40%, 80%);
+  padding: 8px 10px;
+  font-size: 0.875rem;
 }
 
 .main-panel {

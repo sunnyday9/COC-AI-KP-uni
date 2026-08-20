@@ -185,14 +185,29 @@ async function main() {
       ])
     })
 
+    await step('C2：同账号双连接（A 设备2）订阅同房间 → 收到同一广播', async () => {
+      // A 用同一 token 开第二个 WS（模拟同账号另一设备）
+      const wsA2 = openWs(userA.token)
+      await wsA2.opened
+      wsA2.socket.send(JSON.stringify({ type: 'room:join', roomId }))
+      await wsA2.waitFor((f) => f.type === 'room:state' && f.roomId === roomId, 10_000, 'A2 room:state')
+      // A2 发消息 → A1 与 B 都收到同一 seq
+      wsA2.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '设备2 发来的消息。' } } }))
+      const evA1 = await wsA.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '设备2 发来的消息。', 15_000, 'A1 sees A2 msg')
+      const evB2 = await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '设备2 发来的消息。', 15_000, 'B sees A2 msg')
+      assert(evA1.seq === evB2.seq, `seq mismatch across devices: A1=${evA1.seq} B=${evB2.seq}`)
+      wsA2.socket.send(JSON.stringify({ type: 'room:leave', roomId }))
+      wsA2.socket.close()
+    })
+
     await step('A 发 chat → B 收到 message_appended（同 seq）', async () => {
       wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我调查一下书架。' } } }))
-      const evB = await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended', 15_000, 'B message event')
+      const evB = await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我调查一下书架。', 15_000, 'B message event')
       assert(evB.payload.content === '我调查一下书架。', `content mismatch: ${evB.payload.content}`)
       assert(evB.payload.author.userId === userA.userId, `author mismatch: ${evB.payload.author.userId} != ${userA.userId}`)
       assert(typeof evB.seq === 'number' && evB.seq > 0, 'seq missing')
       // A 自己也应收到（全序广播）
-      const evA = await wsA.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended', 15_000, 'A message event')
+      const evA = await wsA.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我调查一下书架。', 15_000, 'A message event')
       assert(evA.seq === evB.seq, `seq mismatch: A=${evA.seq} B=${evB.seq}`)
     })
 

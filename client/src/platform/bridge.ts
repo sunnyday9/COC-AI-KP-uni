@@ -393,6 +393,10 @@ export class PlatformBridge implements Bridge {
   roomStart(roomId: string, storyId: string): Promise<{ ok: boolean }> {
     return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/start`, { storyId })
   }
+  /** B6 房主控制：修改回合窗口（0..60000，0=严格排队）。 */
+  roomSetTurnWindow(roomId: string, turnWindowMs: number): Promise<{ ok: boolean; turnWindowMs?: number }> {
+    return request('PUT', `/api/rooms/${encodeURIComponent(roomId)}/settings`, { turnWindowMs })
+  }
   roomBindCharacter(roomId: string, characterId: string): Promise<{ ok: boolean }> {
     return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/character`, { characterId })
   }
