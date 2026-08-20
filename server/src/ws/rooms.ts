@@ -23,6 +23,9 @@ const socketRooms = new Map<WebSocket, Set<string>>()
 /** 房间 → 订阅 socket 集合（扇出目标）。 */
 const roomSockets = new Map<string, Set<WebSocket>>()
 
+/** 已挂接广播的 RoomService 实例（防止重复 subscribe 产生重复回调）。 */
+const roomBroadcastAttached = new Set<object>()
+
 function send(socket: WebSocket, obj: unknown): void {
   if (socket.readyState !== 1 /* WebSocket.OPEN */) return
   let frame: string
@@ -85,10 +88,27 @@ export function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown):
     return
   }
   const room = getRoom(roomId) ?? getOrCreateRoom(roomId, userId, `user_${userId}`)
+  // 挂接广播：RoomService 事件 → 房间订阅组扇出（幂等：subscribe 去重由 Set 保证，
+  // 但多次挂接会产生重复回调 → 用标记位防止重复订阅）。
+  if (!roomBroadcastAttached.has(room)) {
+    roomBroadcastAttached.add(room)
+    room.subscribe((event: RoomEvent) => {
+      broadcast(roomId, event, room.getSeq())
+    })
+  }
   subscribeSocket(socket, roomId)
   // 全量快照（加入时）
   send(socket, { type: 'room:state', roomId, snapshot: room.snapshot(), seq: room.getSeq() })
   logger.info('room join', { roomId, userId })
+}
+
+/** 供 ws/index.ts：广播房间事件（RoomService 订阅回调）。 */
+export function attachRoomBroadcast(roomId: string): void {
+  const room = getRoom(roomId)
+  if (!room) return
+  room.subscribe((event: RoomEvent) => {
+    broadcast(roomId, event, room.getSeq())
+  })
 }
 
 /** 处理 room:leave — 取消订阅。 */
@@ -158,13 +178,4 @@ export function cleanupSocketRooms(socket: WebSocket): void {
     }
   }
   socketRooms.delete(socket)
-}
-
-/** 供 ws/index.ts：广播房间事件（RoomService 订阅回调）。 */
-export function attachRoomBroadcast(roomId: string): void {
-  const room = getRoom(roomId)
-  if (!room) return
-  room.subscribe((event: RoomEvent) => {
-    broadcast(roomId, event, room.getSeq())
-  })
 }

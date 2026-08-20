@@ -94,15 +94,15 @@ export class RoomService {
     this.storyId = opts.storyId ?? null
     this.turnWindowMs = opts.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
     if (opts.restore) {
-      this.phase = opts.restore.phase
-      this.storyId = opts.restore.storyId
-      this.messages = opts.restore.messages
-      this.characters = new Map(Object.entries(opts.restore.characters))
-      this.clues = opts.restore.clues
-      this.scene = opts.restore.scene
-      this.ending = opts.restore.ending
-      this.seq = opts.restore.seq
-      this.turnWindowMs = opts.restore.turnWindowMs
+      this.phase = opts.restore.phase ?? 'lobby'
+      this.storyId = opts.restore.storyId ?? null
+      this.messages = Array.isArray(opts.restore.messages) ? opts.restore.messages : []
+      this.characters = new Map(Object.entries(opts.restore.characters ?? {}))
+      this.clues = Array.isArray(opts.restore.clues) ? opts.restore.clues : []
+      this.scene = opts.restore.scene ?? null
+      this.ending = opts.restore.ending ?? null
+      this.seq = typeof opts.restore.seq === 'number' ? opts.restore.seq : 0
+      this.turnWindowMs = opts.restore.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
     }
     this.snapshotTimer = setInterval(() => void this.maybeSnapshot(), SNAPSHOT_EVERY_MS)
     this.snapshotTimer.unref?.()
