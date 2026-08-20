@@ -115,6 +115,36 @@
 
 **验证**：server 354 + client 87 单测全绿、tsc 零错误、MOCK E2E 14/14（含上传/索引/读档链路）。
 
+### D-10：RoomService 每房间实例 + 串行队列（2026-08-20，Phase B1）
+
+**决策**：每房间一个 `RoomService` 实例（进程内注册表），状态真源 + 串行 enqueue + 全序 seq + 事件广播 + 节流快照落库 + TTL 回收。
+
+**备选**：全局单例 + 房间 ID 参数；事件溯源（event sourcing）全量持久化。
+
+**原因**：v2.0 D6/D7——房间内串行保证全序（小房间人数无需 CRDT）；内存 + 节流快照满足崩溃恢复且零新增基础设施；事件日志留待 Phase C。
+
+### D-11：rooms 路由 + 邀请码 + 权限（2026-08-20，Phase B1）
+
+**决策**：`/api/rooms/*`（创建/列表/加入/详情/开始/解散）+ 6 位邀请码（去易混字符）+ owner 权限（开始/解散 409）。
+
+**备选**：无邀请码（仅房主拉人）；8 位邀请码。
+
+**原因**：v2.0 FR-M1/M11 + D11 权限模型。6 位邀请码（33 字符集 ≈ 12 亿组合）足够防猜测；owner 校验在路由层强制。
+
+### D-12：双客户端 E2E 采用 WS 直连（2026-08-20，Phase B7）
+
+**决策**：`e2e/multiroom.journey.mjs` 用两个 WS 客户端（ws 库）直连服务端验证房间链路：建房→加入→双订阅→A chat→B 收同 seq 事件→sync 快照→leave。**7/7 PASS**。
+
+**备选**：浏览器双 page（UI 级）——需要客户端 RoomClient（A4 未做）。
+
+**原因**：v2.0 验收「两页对同一动作观察到完全相同事件序列」——WS 级验证**服务端多人权威**（事件全序 + 扇出 + 快照恢复），UI 级留给 RoomClient 落地后补。Node 24 原生 WebSocket 在 Windows 连 ws:// 不稳定（1006）→ 用 ws 库（server 依赖）。
+
+### D-13：RoomService restore 空快照防御（2026-08-20，Phase B3 修复）
+
+**决策**：restore 快照所有字段加默认值（messages/clues/characters/seq 等）。
+
+**原因**：新房间 `state='{}'` → JSON.parse 得 `{}` → `Object.entries(undefined)` 崩溃（双客户端 E2E 暴露）。防御性默认值使任意脏快照可恢复。
+
 ---
 
 ## 验证基线记录
@@ -128,3 +158,7 @@
 | 2026-08-19 | tsc（server/client） | 零错误 |
 | 2026-08-19 | MOCK H5 E2E（h5.journey.mjs） | **14/14 PASS**（侦查 190ms、战斗 189ms，服务端循环） |
 | 2026-08-19 | Mimosa security_scan | 1 finding（storyService:183，已修），seal 已生成 |
+| 2026-08-20 | server 单测（Phase B 后） | **365 全绿**（+6 rooms +5 characters） |
+| 2026-08-20 | 双客户端 E2E（multiroom.journey.mjs） | **7/7 PASS**（建房/加入/双订阅/chat 同 seq 广播/sync 恢复/leave） |
+| 2026-08-20 | MOCK H5 E2E 回归 | **14/14 PASS**（服务端改动无回归） |
+| 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |
