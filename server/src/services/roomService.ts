@@ -75,6 +75,8 @@ export class RoomService {
   private storyId: string | null = null
   private messages: Message[] = []
   private characters = new Map<string, COCCharacterSheet>()
+  /** characterId → 绑定它的成员 userId（D5 归属校验）。 */
+  private characterOwner = new Map<string, number>()
   private clues: { id: string; description: string }[] = []
   private scene: string | null = null
   private ending: unknown = null
@@ -83,7 +85,7 @@ export class RoomService {
   private eventCountSinceSnapshot = 0
   private lastSnapshotAt = Date.now()
   private lastActivityAt = Date.now()
-  private readonly queue: Promise<void> = Promise.resolve()
+  private queue: Promise<unknown> = Promise.resolve()
   private readonly listeners = new Set<(event: RoomEvent) => void>()
   private snapshotTimer: NodeJS.Timeout | null = null
 
@@ -145,10 +147,12 @@ export class RoomService {
   /* ═══════════════ 串行执行 ═══════════════ */
 
   /** 串行入队：任何状态变更/事件广播都经此执行，保证 seq 全序。 */
+  /** 串行入队：任何状态变更/事件广播都经此执行，保证 seq 全序。 */
   enqueue<T>(task: () => T | Promise<T>): Promise<T> {
     this.lastActivityAt = Date.now()
-    const run = this.queue.then(task, task)
-    // 保持队列链（吞错，错误由调用方 catch）
+    const run = this.queue.then(() => task())
+    // 队列链必须更新（否则并发任务并行执行，破坏全序）；吞错避免队列卡死。
+    this.queue = run.catch(() => undefined)
     return run
   }
 
@@ -213,6 +217,106 @@ export class RoomService {
     this.storyId = storyId
     this.phase = 'playing'
     this.emit({ type: 'room_meta', payload: { phase: 'playing', turnWindowMs: this.turnWindowMs, members: [] } })
+  }
+
+  /** 绑定角色卡（成员 → 房间角色组，Phase B4/B6）。 */
+  bindCharacter(memberUserId: number, characterId: string, sheet: COCCharacterSheet): void {
+    this.characterOwner.set(characterId, memberUserId)
+    this.characters.set(characterId, sheet)
+    this.emit({ type: 'state_patch', payload: { path: `characters.${characterId}`, value: sheet } })
+  }
+
+  /** 角色卡归属查询（D5：工具 characterId 归属校验）。 */
+  characterOwnerOf(characterId: string): number | null {
+    return this.characterOwner.get(characterId) ?? null
+  }
+
+  /** 取房间角色组（characterId → sheet，供 KP 回合）。 */
+  getCharacterMap(): Record<string, COCCharacterSheet> {
+    return Object.fromEntries(this.characters)
+  }
+
+  /**
+   * 房间内 KP 回合（Phase B6）：复用 kpTurnService 的服务端图内工具循环。
+   * - characters = 房间角色组（多人多卡）；activeCharacterId = 行动者
+   * - 工具执行的世界增量（线索/场景/结局）直接应用到房间状态并广播
+   * - KP 回复追加消息流（message_appended）
+   * - 角色卡变更 → state_patch 广播（所有成员实时可见）
+   */
+  async runKpTurnForRoom(
+    ownerUserId: number,
+    messages: unknown[],
+    storyContext: Record<string, unknown> | null,
+    activeCharacterId: string | null,
+    onChunk: (chunk: string) => void,
+  ): Promise<void> {
+    const { runKpTurn } = await import('./kpTurnService.js')
+    const characterMap = this.getCharacterMap()
+
+    // mutators：更新房间角色组 + 世界增量应用 + 广播
+    const applyCharPatch = (characterId: string, patch: Record<string, unknown>): void => {
+      const cur = this.characters.get(characterId)
+      if (!cur) return
+      Object.assign(cur, patch)
+      this.emit({ type: 'state_patch', payload: { path: `characters.${characterId}`, value: patch } })
+    }
+    const mutateActive = (fn: (sheet: COCCharacterSheet) => void): void => {
+      const sheet = activeCharacterId ? this.characters.get(activeCharacterId) : null
+      if (sheet) {
+        fn(sheet)
+        this.emit({ type: 'state_patch', payload: { path: `characters.${activeCharacterId}`, value: sheet } })
+      }
+    }
+
+    const mutators = {
+      updateCharacterHP: (delta: number) => mutateActive((s) => { if (s.derived) s.derived.hp = Math.max(0, (s.derived.hp ?? 0) + delta) }),
+      updateCharacterMP: (delta: number) => mutateActive((s) => { if (s.derived) s.derived.mp = Math.max(0, (s.derived.mp ?? 0) + delta) }),
+      updateCharacterSAN: (delta: number) => mutateActive((s) => { if (s.derived) s.derived.san = Math.max(0, (s.derived.san ?? 0) + delta) }),
+      updateCharacterLuck: (delta: number) => mutateActive((s) => { if (s.attributes) s.attributes.luck = Math.max(0, (s.attributes.luck ?? 0) + delta) }),
+      addCharacterDailySanLoss: (amount: number) => mutateActive((s) => { s.dailySanLoss = (s.dailySanLoss ?? 0) + amount }),
+      resetCharacterDailySanLoss: () => mutateActive((s) => { s.dailySanLoss = 0 }),
+      updateCharacterInsanityState: (state: 'normal' | 'temporary' | 'indefinite' | 'permanent', phobias?: string[], manias?: string[]) =>
+        mutateActive((s) => {
+          s.insanityState = state
+          if (phobias) s.phobias = phobias
+          if (manias) s.manias = manias
+        }),
+      setCharacterMajorWound: (v: boolean) => mutateActive((s) => { s.hasMajorWound = v }),
+      setCharacterDying: (v: boolean) => mutateActive((s) => { s.isDying = v }),
+      growCharacterSkill: (skillId: string, newValue: number) => mutateActive((s) => { if (s.skills) s.skills[skillId] = newValue }),
+      increaseCthulhuMythos: (gain: number) => mutateActive((s) => { s.cthulhuMythos = (s.cthulhuMythos ?? 0) + gain }),
+      transitionToScene: (sceneName: string) => this.setScene(sceneName),
+      addClue: (description: string, clueId?: string) => this.addClue(description, clueId),
+      endGame: (ending: { outcome: string; title: string; summary: string; epilogueOptions?: string[]; keyFacts?: string[]; keyTurnIds?: string[] }) => this.setEnding(ending),
+      generateId: () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    }
+
+    const activeSheet = activeCharacterId ? this.characters.get(activeCharacterId) ?? null : null
+    await runKpTurn(
+      ownerUserId,
+      { messages, storyContext },
+      characterMap,
+      activeCharacterId,
+      mutators,
+      {
+        onChunk,
+        onEnd: (result) => {
+          // KP 回复追加消息流
+          if (result.content?.trim()) {
+            this.appendMessage(
+              { id: `kp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'kp', content: result.content },
+              { userId: ownerUserId, roleName: 'KP' },
+            )
+          }
+          // 工具展示消息（骰子/系统提示）追加消息流
+          for (const dm of result.displayMessages ?? []) {
+            this.appendMessage(dm as Message, { userId: ownerUserId, roleName: 'KP' })
+          }
+          void activeSheet
+        },
+        onError: () => { /* 回合错误由调用方处理（不中断房间） */ },
+      },
+    )
   }
 
   /* ═══════════════ 快照 / 回收 ═══════════════ */

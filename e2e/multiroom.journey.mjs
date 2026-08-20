@@ -205,6 +205,31 @@ async function main() {
       assert(msgs.some((m) => m.content === '我调查一下书架。'), `snapshot missing chat message; msgs=${JSON.stringify(msgs).slice(0, 120)}`)
     })
 
+    await step('A 发侦查 → B 收到 KP 回合回复（message_appended kp）', async () => {
+      wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我侦查一下书架。' } } }))
+      // B 应收到：玩家消息 + KP 回复（mock 侦查 → skill_check → grant_clue → 收尾）
+      const kpMsg = await wsB.waitFor(
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp',
+        20_000,
+        'B kp reply',
+      )
+      assert(kpMsg.payload.content.length > 0, 'kp reply empty')
+      // A 也应收到同一 KP 回复（全序广播）
+      const kpMsgA = await wsA.waitFor(
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp',
+        20_000,
+        'A kp reply',
+      )
+      assert(kpMsgA.seq === kpMsg.seq, `kp seq mismatch: A=${kpMsgA.seq} B=${kpMsg.seq}`)
+      // 骰子展示消息（skill_check 的 displayMessage）也应广播
+      const dice = await wsB.waitFor(
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && typeof f.payload?.content === 'string' && f.payload.content.includes('检定'),
+        20_000,
+        'B dice display',
+      )
+      assert(dice.payload.content.includes('侦查'), `dice content mismatch: ${dice.payload.content}`)
+    })
+
     await step('A/B room:leave 清理', async () => {
       wsA.socket.send(JSON.stringify({ type: 'room:leave', roomId }))
       wsB.socket.send(JSON.stringify({ type: 'room:leave', roomId }))
