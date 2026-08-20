@@ -53,6 +53,10 @@ jobs:
           E2E_BROWSER: /usr/bin/google-chrome
         timeout-minutes: 15
 
+      - name: E2E — Multi-client room journey (MOCK_AI, dual WS)
+        run: node e2e/multiroom.journey.mjs
+        timeout-minutes: 10
+
       - name: Upload E2E artifacts (screenshots + log)
         if: always()
         uses: actions/upload-artifact@v4
