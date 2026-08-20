@@ -248,6 +248,34 @@ async function main() {
       assert(statesAtSyncEnd === statesAtSyncStart, `unexpected full snapshot on incremental sync: ${statesAtSyncEnd} != ${statesAtSyncStart}`)
     })
 
+    await step('A/B 窗口内各发一条 → 合并为一次 KP 回合（D4）', async () => {
+      // 记录当前最大 kp 回复 seq（避免与上一回合的回复混淆）
+      const kpMaxSeq = wsB.frames
+        .filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp')
+        .reduce((m, f) => Math.max(m, f.seq ?? 0), 0)
+      // A、B 在默认 5s 窗口内先后发消息
+      wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我搜索书架。' } } }))
+      await new Promise((r) => setTimeout(r, 300))
+      wsB.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我查看窗户。' } } }))
+      // 等窗口 flush 后的 KP 回合回复（seq 必须大于步骤开始时的水位）
+      const kpReply = await wsB.waitFor(
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp' && (f.seq ?? 0) > kpMaxSeq,
+        20_000,
+        'merged kp reply',
+      )
+      assert(kpReply.payload.content.length > 0, 'merged kp reply empty')
+      // 合并窗口只触发一次 KP 回合（窗口内两条 → 1 次推理）；等窗口稳定后再断言
+      await new Promise((r) => setTimeout(r, 6_000))
+      const kpAfter = wsB.frames
+        .filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp' && (f.seq ?? 0) > kpMaxSeq)
+        .length
+      assert(kpAfter === 1, `expected exactly 1 merged kp reply, got ${kpAfter}`)
+      // 两条玩家消息都实时广播了（聊天即时可见）
+      const aSeen = wsB.frames.some((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我搜索书架。')
+      const bSeen = wsB.frames.some((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我查看窗户。')
+      assert(aSeen && bSeen, `both player msgs should be broadcast (A=${aSeen} B=${bSeen})`)
+    })
+
     await step('A/B room:leave 清理', async () => {
       wsA.socket.send(JSON.stringify({ type: 'room:leave', roomId }))
       wsB.socket.send(JSON.stringify({ type: 'room:leave', roomId }))

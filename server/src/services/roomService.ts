@@ -93,6 +93,10 @@ export class RoomService {
   private eventLog: { seq: number; event: RoomEvent }[] = []
   private eventLogStartSeq = 0
   private snapshotTimer: NodeJS.Timeout | null = null
+  /** 回合窗口（D4）：缓冲窗口内玩家消息，超时合并进一次 KP 回合。 */
+  private turnBuffer: { username: string; content: string; characterId: string | null }[] = []
+  private turnTimer: NodeJS.Timeout | null = null
+  private turnFlushing = false
 
   constructor(private readonly opts: RoomOptions) {
     this.roomId = opts.roomId
@@ -259,12 +263,73 @@ export class RoomService {
     return Object.fromEntries(this.characters)
   }
 
+  /* ═══════════════ 回合窗口合并（D4） ═══════════════ */
+
+  /** 玩家消息进回合缓冲（聊天即时广播；KP 回合等窗口超时合并执行）。 */
+  bufferPlayerChat(username: string, content: string, characterId: string | null): void {
+    this.turnBuffer.push({ username, content, characterId })
+    // turnWindowMs=0 → 严格排队：每条消息立即触发 KP 回合（无合并延迟）
+    if (this.turnWindowMs <= 0) {
+      void this.flushTurn()
+      return
+    }
+    if (!this.turnTimer) {
+      this.turnTimer = setTimeout(() => {
+        this.turnTimer = null
+        void this.flushTurn()
+      }, this.turnWindowMs)
+      this.turnTimer.unref?.()
+    }
+  }
+
+  /** 合并缓冲内玩家消息 → 一次 KP 回合（窗口超时/严格排队时调用）。 */
+  async flushTurn(): Promise<void> {
+    if (this.turnFlushing) return
+    const batch = this.turnBuffer
+    this.turnBuffer = []
+    if (this.turnTimer) {
+      clearTimeout(this.turnTimer)
+      this.turnTimer = null
+    }
+    if (batch.length === 0) return
+
+    this.turnFlushing = true
+    try {
+      // 合并为带行动者标记的 user 消息（D4：一次 LLM 推理覆盖多人行动）
+      const merged = batch.map((b) => `【${b.username}】${b.content}`).join('\n')
+      // 缺省工具 characterId 回退目标 = 最后一位行动者
+      const activeCharacterId = batch[batch.length - 1]?.characterId ?? null
+      await this.runKpTurnForRoom(
+        this.ownerId,
+        [
+          { role: 'system', content: '你是这个房间的守秘人（KP）。房间内有多名调查员，请分别回应他们的行动。' },
+          { role: 'user', content: merged },
+        ],
+        this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
+        activeCharacterId,
+        () => { /* 流式块：可扩展为 kp:chunk 帧 */ },
+      )
+    } finally {
+      this.turnFlushing = false
+    }
+  }
+
+  /** 清理回合窗口状态（房间回收时）。 */
+  private clearTurnWindow(): void {
+    if (this.turnTimer) {
+      clearTimeout(this.turnTimer)
+      this.turnTimer = null
+    }
+    this.turnBuffer = []
+  }
+
   /**
-   * 房间内 KP 回合（Phase B6）：复用 kpTurnService 的服务端图内工具循环。
-   * - characters = 房间角色组（多人多卡）；activeCharacterId = 行动者
+   * 房间内 KP 回合（Phase B6 + D4/D5）：复用 kpTurnService 的服务端图内工具循环。
+   * - characters = 房间角色组（多人多卡）；activeCharacterId = 缺省行动者
    * - 工具执行的世界增量（线索/场景/结局）直接应用到房间状态并广播
    * - KP 回复追加消息流（message_appended）
    * - 角色卡变更 → state_patch 广播（所有成员实时可见）
+   * - mutators 按 characterId 分派（D5）：工具 args.characterId → 对应角色卡
    */
   async runKpTurnForRoom(
     ownerUserId: number,
@@ -276,43 +341,37 @@ export class RoomService {
     const { runKpTurn } = await import('./kpTurnService.js')
     const characterMap = this.getCharacterMap()
 
-    // mutators：更新房间角色组 + 世界增量应用 + 广播
-    const applyCharPatch = (characterId: string, patch: Record<string, unknown>): void => {
-      const cur = this.characters.get(characterId)
-      if (!cur) return
-      Object.assign(cur, patch)
-      this.emit({ type: 'state_patch', payload: { path: `characters.${characterId}`, value: patch } })
-    }
-    const mutateActive = (fn: (sheet: COCCharacterSheet) => void): void => {
-      const sheet = activeCharacterId ? this.characters.get(activeCharacterId) : null
+    // mutators：按 characterId 路由到目标角色卡（D5）；缺省 → 行动者
+    const mutate = (characterId: string | null, fn: (sheet: COCCharacterSheet) => void): void => {
+      const target = characterId ?? activeCharacterId
+      const sheet = target ? this.characters.get(target) : null
       if (sheet) {
         fn(sheet)
-        this.emit({ type: 'state_patch', payload: { path: `characters.${activeCharacterId}`, value: sheet } })
+        this.emit({ type: 'state_patch', payload: { path: `characters.${target}`, value: sheet } })
       }
     }
-
-    const mutators = {
-      updateCharacterHP: (delta: number) => mutateActive((s) => { if (s.derived) s.derived.hp = Math.max(0, (s.derived.hp ?? 0) + delta) }),
-      updateCharacterMP: (delta: number) => mutateActive((s) => { if (s.derived) s.derived.mp = Math.max(0, (s.derived.mp ?? 0) + delta) }),
-      updateCharacterSAN: (delta: number) => mutateActive((s) => { if (s.derived) s.derived.san = Math.max(0, (s.derived.san ?? 0) + delta) }),
-      updateCharacterLuck: (delta: number) => mutateActive((s) => { if (s.attributes) s.attributes.luck = Math.max(0, (s.attributes.luck ?? 0) + delta) }),
-      addCharacterDailySanLoss: (amount: number) => mutateActive((s) => { s.dailySanLoss = (s.dailySanLoss ?? 0) + amount }),
-      resetCharacterDailySanLoss: () => mutateActive((s) => { s.dailySanLoss = 0 }),
+    const makeCharacterMutators = (characterId: string | null) => ({
+      updateCharacterHP: (delta: number) => mutate(characterId, (s) => { if (s.derived) s.derived.hp = Math.max(0, (s.derived.hp ?? 0) + delta) }),
+      updateCharacterMP: (delta: number) => mutate(characterId, (s) => { if (s.derived) s.derived.mp = Math.max(0, (s.derived.mp ?? 0) + delta) }),
+      updateCharacterSAN: (delta: number) => mutate(characterId, (s) => { if (s.derived) s.derived.san = Math.max(0, (s.derived.san ?? 0) + delta) }),
+      updateCharacterLuck: (delta: number) => mutate(characterId, (s) => { if (s.attributes) s.attributes.luck = Math.max(0, (s.attributes.luck ?? 0) + delta) }),
+      addCharacterDailySanLoss: (amount: number) => mutate(characterId, (s) => { s.dailySanLoss = (s.dailySanLoss ?? 0) + amount }),
+      resetCharacterDailySanLoss: () => mutate(characterId, (s) => { s.dailySanLoss = 0 }),
       updateCharacterInsanityState: (state: 'normal' | 'temporary' | 'indefinite' | 'permanent', phobias?: string[], manias?: string[]) =>
-        mutateActive((s) => {
+        mutate(characterId, (s) => {
           s.insanityState = state
           if (phobias) s.phobias = phobias
           if (manias) s.manias = manias
         }),
-      setCharacterMajorWound: (v: boolean) => mutateActive((s) => { s.hasMajorWound = v }),
-      setCharacterDying: (v: boolean) => mutateActive((s) => { s.isDying = v }),
-      growCharacterSkill: (skillId: string, newValue: number) => mutateActive((s) => { if (s.skills) s.skills[skillId] = newValue }),
-      increaseCthulhuMythos: (gain: number) => mutateActive((s) => { s.cthulhuMythos = (s.cthulhuMythos ?? 0) + gain }),
+      setCharacterMajorWound: (v: boolean) => mutate(characterId, (s) => { s.hasMajorWound = v }),
+      setCharacterDying: (v: boolean) => mutate(characterId, (s) => { s.isDying = v }),
+      growCharacterSkill: (skillId: string, newValue: number) => mutate(characterId, (s) => { if (s.skills) s.skills[skillId] = newValue }),
+      increaseCthulhuMythos: (gain: number) => mutate(characterId, (s) => { s.cthulhuMythos = (s.cthulhuMythos ?? 0) + gain }),
       transitionToScene: (sceneName: string) => this.setScene(sceneName),
       addClue: (description: string, clueId?: string) => this.addClue(description, clueId),
       endGame: (ending: { outcome: string; title: string; summary: string; epilogueOptions?: string[]; keyFacts?: string[]; keyTurnIds?: string[] }) => this.setEnding(ending),
       generateId: () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-    }
+    })
 
     const activeSheet = activeCharacterId ? this.characters.get(activeCharacterId) ?? null : null
     await runKpTurn(
@@ -320,7 +379,7 @@ export class RoomService {
       { messages, storyContext },
       characterMap,
       activeCharacterId,
-      mutators,
+      makeCharacterMutators(activeCharacterId),
       {
         onChunk,
         onEnd: (result) => {
@@ -339,6 +398,7 @@ export class RoomService {
         },
         onError: () => { /* 回合错误由调用方处理（不中断房间） */ },
       },
+      makeCharacterMutators, // D5：按 characterId 分派变更应用器
     )
   }
 
@@ -364,6 +424,7 @@ export class RoomService {
   dispose(): void {
     if (this.snapshotTimer) clearInterval(this.snapshotTimer)
     this.snapshotTimer = null
+    this.clearTurnWindow()
     this.listeners.clear()
   }
 }

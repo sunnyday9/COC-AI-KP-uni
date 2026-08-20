@@ -117,6 +117,8 @@ export interface KpTurnHandlers {
  * @param characters 房间角色组（characterId → sheet；多人模式多卡，单人单卡）
  * @param activeCharacterId 当前行动者（工具缺省 characterId 的回退目标；null = 无角色）
  * @param mutators 角色卡变更应用器（由会话/房间执行器实现）
+ * @param characterMutatorFactory 按 characterId 构造变更应用器（D5 多角色分派）；
+ *        缺省时全部工具作用于 mutators（单卡/兼容路径）
  */
 export async function runKpTurn(
   userId: number,
@@ -125,6 +127,7 @@ export async function runKpTurn(
   activeCharacterId: string | null,
   mutators: TurnCharacterMutators,
   handlers: KpTurnHandlers,
+  characterMutatorFactory?: (characterId: string | null) => TurnCharacterMutators,
 ): Promise<void> {
   let messages: KpMessage[]
   try {
@@ -188,31 +191,48 @@ export async function runKpTurn(
     if (!r?.toolCalls?.length) break
 
     // 服务端执行工具：结果注入消息（摘要 + 截断），角色卡变更通过 mutators 应用。
-    // 多人模式：每个 toolCall 按 args.characterId 选择角色卡（缺省 → 当前行动者）；
-    // characterId 不存在于角色组 → 回退行动者（归属校验，D5）。
+    // 多人模式（D5）：每个 toolCall 按 args.characterId 选择角色卡（缺省 → 当前行动者）；
+    // characterId 不存在于角色组 → 回退行动者（归属校验）。逐调用构造上下文，
+    // 使同批工具可作用于多个角色卡。
     const toolCalls = r.toolCalls as ToolCall[]
-    const activeSheetForCtx = (characters && activeCharacterId ? characters[activeCharacterId] : null) ?? null
-    const ctx = buildToolContext({
-      characterSheet: activeSheetForCtx,
-      updateCharacterHP: wrappedMutators.updateCharacterHP,
-      updateCharacterMP: wrappedMutators.updateCharacterMP,
-      updateCharacterSAN: wrappedMutators.updateCharacterSAN,
-      updateCharacterLuck: wrappedMutators.updateCharacterLuck,
-      addCharacterDailySanLoss: wrappedMutators.addCharacterDailySanLoss,
-      resetCharacterDailySanLoss: wrappedMutators.resetCharacterDailySanLoss,
-      updateCharacterInsanityState: wrappedMutators.updateCharacterInsanityState,
-      setCharacterMajorWound: wrappedMutators.setCharacterMajorWound,
-      setCharacterDying: wrappedMutators.setCharacterDying,
-      growCharacterSkill: wrappedMutators.growCharacterSkill,
-      increaseCthulhuMythos: wrappedMutators.increaseCthulhuMythos,
-      transitionToScene: wrappedMutators.transitionToScene,
-      addClue: wrappedMutators.addClue,
-      endGame: wrappedMutators.endGame,
-      generateId,
-    })
-    const { toolResults, displayMessages } = processToolCalls(toolCalls, ctx, {
-      onToolExecuted: handlers.onToolExecuted,
-    })
+    const results: { role: 'tool'; tool_call_id: string; content: string }[] = []
+    const iterDisplay: Message[] = []
+    for (const tc of toolCalls) {
+      let targetId = activeCharacterId
+      try {
+        const args = JSON.parse(tc.arguments || '{}') as { characterId?: unknown }
+        if (typeof args.characterId === 'string' && args.characterId && characters && characters[args.characterId]) {
+          targetId = args.characterId
+        }
+      } catch { /* 参数解析失败 → 行动者 */ }
+      const targetSheet = (targetId && characters ? characters[targetId] : null) ?? null
+      const m = characterMutatorFactory ? characterMutatorFactory(targetId) : wrappedMutators
+      const ctx = buildToolContext({
+        characterSheet: targetSheet,
+        updateCharacterHP: m.updateCharacterHP,
+        updateCharacterMP: m.updateCharacterMP,
+        updateCharacterSAN: m.updateCharacterSAN,
+        updateCharacterLuck: m.updateCharacterLuck,
+        addCharacterDailySanLoss: m.addCharacterDailySanLoss,
+        resetCharacterDailySanLoss: m.resetCharacterDailySanLoss,
+        updateCharacterInsanityState: m.updateCharacterInsanityState,
+        setCharacterMajorWound: m.setCharacterMajorWound,
+        setCharacterDying: m.setCharacterDying,
+        growCharacterSkill: m.growCharacterSkill,
+        increaseCthulhuMythos: m.increaseCthulhuMythos,
+        transitionToScene: m.transitionToScene,
+        addClue: m.addClue,
+        endGame: m.endGame,
+        generateId,
+      })
+      const { toolResults: tr, displayMessages: dm } = processToolCalls([tc], ctx, {
+        onToolExecuted: handlers.onToolExecuted,
+      })
+      results.push(...tr)
+      iterDisplay.push(...dm)
+    }
+    const toolResults = results
+    const displayMessages = iterDisplay
     allDisplayMessages.push(...displayMessages)
     executedToolCalls.push(...toolCalls.map((t) => ({ id: t.id, name: t.name, arguments: t.arguments })))
 

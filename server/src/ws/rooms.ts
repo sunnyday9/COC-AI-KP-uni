@@ -171,22 +171,14 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
         { id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'player', playerName: username, content },
         { userId, roleName: username },
       )
-      // Phase B6：玩家消息触发 KP 回合（服务端图内循环，回复与工具事件广播全员）。
-      // 单人房间 = 单成员（FR-M9）；行动者 = 该成员绑定的角色卡（无绑定则 null）。
+      // Phase B6 + D4：玩家消息触发 KP 回合——回合窗口合并（窗口内多人行动合并进
+      // 一次推理）；行动者 = 成员绑定的角色卡（无绑定则 null）。
+      // 单人房间 = 单成员（FR-M9）；turnWindowMs=0 时立即处理（严格排队）。
       const memberRow = getDb()
         .prepare(`SELECT character_id FROM room_members WHERE room_id = ? AND user_id = ?`)
         .all(roomId, userId) as unknown as { character_id: string | null }[]
       const activeCharacterId = memberRow[0]?.character_id ?? null
-      await room.runKpTurnForRoom(
-        room.ownerId,
-        [
-          { role: 'system', content: '你是这个房间的守秘人（KP）。' },
-          { role: 'user', content: `【${username}】${content}` },
-        ],
-        room.getStoryId() ? { scriptId: room.getStoryId(), sceneId: room.getScene() ?? undefined } : null,
-        activeCharacterId,
-        (chunk) => { /* 流式块：可扩展为 kp:chunk 帧 */ },
-      )
+      room.bufferPlayerChat(username, content, activeCharacterId)
     } else {
       send(socket, { type: 'room:error', roomId, error: `unknown action type: ${action.type}` })
       return

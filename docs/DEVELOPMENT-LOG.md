@@ -210,6 +210,29 @@
 
 **原因**：浏览器级 E2E 暴露——B 加入后 A 的成员列表停留在 1 人（成员加入只写 DB，不广播）。成员变化必须实时可见（房间看板核心体验），且事件流全序一致性由 RoomService.emit 保证。
 
+### D-21：回合窗口合并落地（2026-08-20，D4 实现）
+
+**决策**：
+- `RoomService.bufferPlayerChat(username, content, characterId)`：玩家消息进回合缓冲（聊天消息仍由 ws 层即时 appendMessage 广播，即时可见）；turnWindowMs 计时器超时 → `flushTurn()` 合并缓冲内所有消息为 `【玩家A】…【玩家B】…` 一条 user 消息 → **一次 runKpTurn**
+- 缺省工具 characterId 回退目标 = 窗口内最后一位行动者
+- `turnWindowMs=0` → 严格排队：每条消息立即 flush（无合并延迟，与改造前行为等价）
+- `dispose()` 清理窗口定时器；`turnFlushing` 防重入
+- ws/rooms.ts 的 chat 分支：appendMessage 后调 bufferPlayerChat（不再直接 runKpTurnForRoom）
+
+**备选**：维持每条消息一次 KP 回合——rejected：多人同时行动时多次 LLM 推理、叙事割裂（架构 D4 明确反对）。
+
+**原因**：架构 v2.0 D4「多人消息进图：回合窗口合并」落地——一次 LLM 推理覆盖多人行动，叙事连续；单人无感知延迟（单条消息窗口超时即处理）。单测 7 个（窗口收集/合并格式/严格排队/即时广播/空缓冲/dispose/多角色分派）。
+
+### D-22：多角色工具分派（2026-08-20，D5 实现）
+
+**决策**：
+- `runKpTurn` 新增第 7 参 `characterMutatorFactory(characterId)`：工具执行循环**逐调用**解析 `args.characterId`（存在则用，不存在/非法回退行动者），用目标卡 sheet + 该卡的 mutator 集构造独立 toolContext，再调 `processToolCalls([tc], ctx)`——同批工具可作用于多个角色卡
+- `RoomService.makeCharacterMutators(characterId)`：按 characterId 路由到目标角色卡（state_patch 广播对应卡）
+
+**备选**：工具上下文持有全部角色卡、handler 内自选——rejected：破坏 handler 单卡假设，改动面大；逐调用构造上下文是 D5「characterId 必填于多人」的最小实现。
+
+**原因**：回合窗口合并后一次推理可能产生针对多个调查员的工具调用（skill_check(characterId=char_a) + san_check(characterId=char_b)），工具必须落到正确的角色卡。multiroom E2E 10/10（新增「窗口内两条 → 恰好 1 次 KP 回复」步骤）。
+
 ---
 
 ## 验证基线记录
@@ -230,5 +253,8 @@
 | 2026-08-20 | MOCK H5 E2E 回归 | **14/14 PASS**（服务端改动无回归） |
 | 2026-08-20 | client 单测（C2 后） | **97 全绿**（+10 roomStore） |
 | 2026-08-20 | 房间浏览器 E2E（rooms.journey.mjs） | **8/8 PASS**（注册建房/邀请码加入/成员互见 2 人/双向聊天广播/KP 回合/断线重连增量补齐/重连后会话恢复） |
+| 2026-08-20 | server 单测（D4/D5 后） | **372 全绿**（+7 roomTurnWindow） |
+| 2026-08-20 | 双客户端 E2E（D4 合并扩展） | **10/10 PASS**（+ 窗口内两条消息 → 恰好 1 次 KP 回复） |
+| 2026-08-20 | 房间浏览器 E2E 回归 | **8/8 PASS**（回合窗口不破坏客户端消息流） |
 | 2026-08-20 | H5 build（含新房间页面） | 成功（模板编译无错误） |
 | 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |
