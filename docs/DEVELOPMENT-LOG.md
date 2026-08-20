@@ -145,6 +145,24 @@
 
 **原因**：新房间 `state='{}'` → JSON.parse 得 `{}` → `Object.entries(undefined)` 崩溃（双客户端 E2E 暴露）。防御性默认值使任意脏快照可恢复。
 
+### D-14：房间内 KP 回合 + enqueue 串行链修复（2026-08-20，Phase B6）
+
+**决策**：
+- `RoomService.runKpTurnForRoom`：房间角色组（characters map）→ kpTurnService 服务端图内循环；mutators 把工具执行的世界增量（线索/场景/结局）和角色卡变更应用到房间状态并广播 state_patch；KP 回复 + 骰子展示消息追加消息流（message_appended）
+- `room:action chat` 触发 KP 回合（行动者 = 成员绑定角色卡，无绑定 null）
+- `bindCharacter`/`characterOwnerOf`（D5 归属校验）
+- **enqueue 队列链修复**：原实现 `this.queue.then(task, task)` 未更新队列 → 并发任务并行执行破坏全序；改为 `this.queue = run.catch(...)` 链式更新
+
+**备选**：回合窗口合并（v2.0 D4，同轮多人消息合并进图）——留作增强。
+
+**原因**：v2.0 D3/D5。房间内 KP 回合是多人跑团核心玩法（消息→图内循环→全员广播）；双客户端 E2E 验证 A 侦查 → B 收到 KP 回复 + 骰子事件（同 seq）。
+
+### D-15：双客户端 E2E 扩展 KP 回合断言（2026-08-20，Phase B6 验收）
+
+**决策**：multiroom.journey.mjs 增加「A 发侦查 → B 收到 KP 回复（kind=kp）+ 骰子检定消息，A/B 同 seq」步骤。
+
+**原因**：v2.0 验收「两页对同一动作观察到完全相同事件序列」——KP 回合的广播一致性是多人权威的核心证明。**8/8 PASS**。
+
 ---
 
 ## 验证基线记录
@@ -160,5 +178,6 @@
 | 2026-08-19 | Mimosa security_scan | 1 finding（storyService:183，已修），seal 已生成 |
 | 2026-08-20 | server 单测（Phase B 后） | **365 全绿**（+6 rooms +5 characters） |
 | 2026-08-20 | 双客户端 E2E（multiroom.journey.mjs） | **7/7 PASS**（建房/加入/双订阅/chat 同 seq 广播/sync 恢复/leave） |
+| 2026-08-20 | 双客户端 E2E（B6 扩展） | **8/8 PASS**（+ A 侦查 → B 收 KP 回复 + 骰子事件，同 seq） |
 | 2026-08-20 | MOCK H5 E2E 回归 | **14/14 PASS**（服务端改动无回归） |
 | 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |
