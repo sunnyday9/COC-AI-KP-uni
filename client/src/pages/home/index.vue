@@ -29,6 +29,10 @@ async function goToSetup(story: IndexedStory) {
 function goScripts() {
   uni.navigateTo({ url: '/pages/scripts/index' })
 }
+
+function goRooms() {
+  uni.navigateTo({ url: '/pages/game/rooms/index' })
+}
 </script>
 
 <template>
@@ -99,6 +103,16 @@ function goScripts() {
           <view class="empty-divider ink-divider" />
           <button class="gothic-btn empty-btn" @click="goScripts">
             前往故事管理
+            <text class="arrow">→</text>
+          </button>
+        </view>
+
+        <!-- 多人联机入口 -->
+        <view class="gothic-card multiplayer-card">
+          <text class="multi-title">多人联机</text>
+          <text class="multi-hint">与朋友组队，在同一房间共历恐怖</text>
+          <button class="gothic-btn multi-btn" @click="goRooms">
+            进入房间大厅
             <text class="arrow">→</text>
           </button>
         </view>
@@ -351,5 +365,33 @@ function goScripts() {
 }
 .arrow {
   margin-left: 4px;
+}
+
+/* ── 多人联机入口 ── */
+.multiplayer-card {
+  margin-top: 16px;
+  padding: 20px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.5);
+  border-left: 3px solid hsla(165, 60%, 35%, 0.5);
+}
+.multi-title {
+  display: block;
+  font-family: $font-display;
+  font-size: 1rem;
+  font-weight: bold;
+  color: hsl(38, 50%, 88%);
+  letter-spacing: 0.08em;
+}
+.multi-hint {
+  display: block;
+  margin: 8px 0 16px;
+  font-size: 0.8125rem;
+  font-family: $font-serif;
+  font-style: italic;
+  color: hsl(220, 10%, 45%);
+}
+.multi-btn {
+  background: rgba(0, 0, 0, 0.6);
 }
 </style>

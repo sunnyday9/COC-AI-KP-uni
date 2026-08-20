@@ -72,9 +72,10 @@ npm run dev:h5       # :5175（vite dev）
 - [ ] `MOCK_AI` 未设置（或显式 `0`）
 - [ ] `JWT_SECRET` 设为强随机值
 - [ ] `npm run test:server` 全绿（365）
-- [ ] `npm run test:client` 全绿（87）
+- [ ] `npm run test:client` 全绿（97）
 - [ ] `node e2e/h5.journey.mjs` 14/14（真实浏览器）
-- [ ] `node e2e/multiroom.journey.mjs` 7/7（双客户端房间链路）
+- [ ] `node e2e/multiroom.journey.mjs` 9/9（双客户端房间链路）
+- [ ] `node e2e/rooms.journey.mjs` 8/8（双浏览器多人房间 UI 链路）
 - [ ] H5 构建 + 小程序构建成功
 - [ ] 出网策略放行 LLM 提供商域名（SSRF 守卫会拒绝内网/保留地址）
 - [ ] 反向代理配置 WebSocket 升级（`/ws`）

@@ -26,6 +26,7 @@
  */
 import { getWsBaseUrl } from './config'
 import { getToken } from './token'
+import type { RoomServerFrame } from '../../../shared/types/room'
 
 export interface ToolCall {
   id: string
@@ -49,6 +50,9 @@ export interface KpStreamHandlers {
   /** Optional: server graph trace events (delivered when the frame arrives). */
   onTrace?: (traceEvents: unknown[]) => void
 }
+
+/** Phase B3: 房间帧监听器（room:state / room:event / room:sync:done / room:error）。 */
+export type RoomFrameHandler = (frame: RoomServerFrame) => void
 
 export interface WSServiceOptions {
   /** Heartbeat ping interval (default 30s). */
@@ -112,6 +116,7 @@ export class WSService {
   private rejectConnect: ((err: Error) => void) | null = null
   private streams = new Map<string, KpStreamHandlers>()
   private errorTerminal = new Map<string, number>()
+  private roomHandlers = new Set<RoomFrameHandler>()
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private backoffMs = 0
@@ -220,6 +225,27 @@ export class WSService {
     this.socket.send({
       data: JSON.stringify(frame),
       fail: () => this.handleFailure('消息发送失败'),
+    })
+  }
+
+  // ── Phase B3: 房间帧（与 KP 流共享同一连接，逐帧转发） ───────────────
+
+  /** 订阅房间帧（room:state/event/sync:done/error）。返回取消函数。 */
+  onRoomFrame(handler: RoomFrameHandler): () => void {
+    this.roomHandlers.add(handler)
+    return () => {
+      this.roomHandlers.delete(handler)
+    }
+  }
+
+  /** 发送 room:* 帧（join/leave/sync/action）。Requires an open connection. */
+  sendRoomFrame(type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>): void {
+    if (!this.isConnected() || !this.socket) {
+      throw new Error('Bridge: WebSocket 未连接')
+    }
+    this.socket.send({
+      data: JSON.stringify({ type, ...body }),
+      fail: () => this.handleFailure('房间消息发送失败'),
     })
   }
 
@@ -395,6 +421,18 @@ export class WSService {
     if (typeof frame !== 'object' || frame === null) return
     const type = frame.type
     if (type === 'pong' || type === 'rag:progress') return
+
+    // Phase B3: 房间帧（room:*) 逐帧转发给订阅者（roomStore）；与 KP 流路由无关。
+    if (type === 'room:state' || type === 'room:event' || type === 'room:sync:done' || type === 'room:error') {
+      for (const h of this.roomHandlers) {
+        try {
+          h(frame as unknown as RoomServerFrame)
+        } catch {
+          // a handler must never break the message loop
+        }
+      }
+      return
+    }
 
     // trace frames are delivered to the stream's onTrace handler (the
     // kpSessionService subscribes with a trace listener; previously they were

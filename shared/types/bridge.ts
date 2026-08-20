@@ -121,6 +121,32 @@ export interface Bridge {
   readSave: (saveId: string) => Promise<unknown>
   writeSave: (saveId: string, data: unknown) => Promise<void>
 
+  // ── Rooms（Phase B3 多人联机）─────────────────────────────────
+  roomCreate?: (storyId?: string) => Promise<{ ok: boolean; roomId: string; inviteCode: string; ownerId: number; ownerName: string }>
+  roomList?: () => Promise<{ roomId: string; inviteCode: string; storyId: string | null; phase: string; updatedAt: number }[]>
+  roomJoin?: (inviteCode: string) => Promise<{ ok: boolean; roomId: string }>
+  roomDetail?: (roomId: string) => Promise<{
+    roomId: string
+    inviteCode: string
+    storyId: string | null
+    phase: string
+    ownerId: number
+    members: { userId: number; username: string; role: string; characterId: string | null }[]
+    state: Record<string, unknown>
+    createdAt: number
+  }>
+  roomStart?: (roomId: string, storyId: string) => Promise<{ ok: boolean }>
+  roomBindCharacter?: (roomId: string, characterId: string) => Promise<{ ok: boolean }>
+  roomDelete?: (roomId: string) => Promise<{ ok: boolean }>
+  onRoomFrame?: (handler: (frame: unknown) => void) => () => void
+  sendRoomFrame?: (type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>) => void
+
+  // ── Characters（Phase B4 角色卡持久化）───────────────────────
+  characterCreate?: (name: string, sheet: unknown) => Promise<{ ok: boolean; id: string; name: string }>
+  characterList?: () => Promise<{ id: string; name: string; sheet: Record<string, unknown>; updatedAt: number }[]>
+  characterDetail?: (id: string) => Promise<{ id: string; name: string; sheet: Record<string, unknown>; updatedAt: number }>
+  characterDelete?: (id: string) => Promise<{ ok: boolean }>
+
   // ── RAG（与 ragHandlers.cjs 一致）─────────────────────────────
   ragHealth: () => Promise<{ status: string; service: string }>
   ragTestEmbedding: () => Promise<{ ok: boolean; vectorLength?: number; error?: string }>

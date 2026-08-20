@@ -174,6 +174,42 @@
 
 **原因**：v2.0 C1「lastSeq 增量 + 快照兜底 + TTL 恢复」。边界修正：`lastSeq=0` 必须走全量（客户端无状态），`lastSeq ≥ 起始 seq` 才增量（E2E 暴露 0 < 0 边界 bug）。**双客户端 E2E 9/9 PASS**（lastSeq=0 全量 + 错过窗口增量两条路径都验证）。
 
+### D-17：RoomClient 采用独立 roomStore 事件驱动视图模型（2026-08-20，Phase C2）
+
+**决策**：客户端新增 `stores/roomStore.ts`，与单机 `gameStore` 完全分离；WS 层在共享连接上透传 `room:*` 帧（`WSService.onRoomFrame` + `sendRoomFrame`，KP 流路由不动）；bridge 增加房间 REST 方法（roomCreate/Join/Start/BindCharacter 等）。
+
+**备选**：把多人状态并入 gameStore 或复用 kpSessionService 的流式订阅——rejected：单机与多人是两种数据权威模型（本地计算 vs 服务端广播全序），混入同一 store 会引入双状态同步 bug；每房间一个流式订阅会与共享连接复用冲突。
+
+**原因**：v2.0 §6.3 客户端 RoomClient。事件驱动视图模型 = 客户端不产生任何房间状态，全部由服务端广播（全序 seq）回灌，`room:action` 无乐观 UI（消息经 `room:event` 回灌，UI 以服务端为准）——单一权威，无对账冲突。房间帧与 KP 流共享同一 WS 连接（单连接多路复用），roomStore 只订阅、不参与 KP 流路由。
+
+### D-18：roomStore 增量对账 + 幂等去重（2026-08-20，Phase C2）
+
+**决策**：
+- 维护 `lastSeq` 水位：`seq <= lastSeq` 的重复/乱序帧直接丢弃（C1 增量重放会重复广播已实时收到的事件）
+- `room:state` 全量快照整体替换本地视图；`room:event` 按 seq 应用
+- `room:sync {lastSeq}` 断线重连增量补齐（缺口过大 → 服务端回全量快照兜底）
+- `characters.<id>` 补丁按 sheet 全量合并（保留本地展示字段）
+
+**备选**：客户端做消息 id 去重（而非 seq）——rejected：seq 是服务端全序唯一标识，比内容哈希/消息 id 更可靠（id 由服务端生成，去重窗口天然对齐事件日志）。
+
+**原因**：C1 服务端增量重放设计（D-16）要求客户端幂等消费；E2E 验证重连后消息不重复、不丢失。
+
+### D-19：房间页面独立于单机游戏页（2026-08-20，Phase C2）
+
+**决策**：新增 `pages/game/rooms/index.vue`（大厅：创建/加入/我的房间）+ `pages/game/rooms/room.vue`（看板：成员列表/消息流/聊天输入/房主开始/解散/绑定角色卡），放 game 子包（复用 ChatMessage 组件，避免主包引用子包组件）；首页加「多人联机」入口卡片。
+
+**备选**：把多人入口塞进单机游戏页/复用 game/index.vue——rejected：单机页的会话状态（kpMemory/长程摘要）与房间广播状态正交，混合会污染上下文。
+
+**原因**：多人联机是独立玩法入口（建房/加入/看板），服务端 RoomService 已就绪（B1-B6），客户端 RoomClient 是最后一块拼图。UI 以服务端广播为准（无乐观 UI），成员列表由 room_meta 事件 + REST 刷新兜底。
+
+### D-20：成员加入/绑定角色 → room_meta 广播（2026-08-20，Phase C2 修复）
+
+**决策**：`rooms.routes` 的 join / :id/character / :id/start 成功后，若房间有活跃实例（getRoom 非空），调用 `RoomService.broadcastMembers()` 广播最新成员列表（room_meta 事件）。
+
+**备选**：客户端轮询 REST 刷新成员列表——rejected：违背事件驱动单一权威；成员变化是低频事件，广播成本可忽略。
+
+**原因**：浏览器级 E2E 暴露——B 加入后 A 的成员列表停留在 1 人（成员加入只写 DB，不广播）。成员变化必须实时可见（房间看板核心体验），且事件流全序一致性由 RoomService.emit 保证。
+
 ---
 
 ## 验证基线记录
@@ -192,4 +228,7 @@
 | 2026-08-20 | 双客户端 E2E（B6 扩展） | **8/8 PASS**（+ A 侦查 → B 收 KP 回复 + 骰子事件，同 seq） |
 | 2026-08-20 | 双客户端 E2E（C1 扩展） | **9/9 PASS**（+ lastSeq=0 全量兜底 + 错过窗口增量重放） |
 | 2026-08-20 | MOCK H5 E2E 回归 | **14/14 PASS**（服务端改动无回归） |
+| 2026-08-20 | client 单测（C2 后） | **97 全绿**（+10 roomStore） |
+| 2026-08-20 | 房间浏览器 E2E（rooms.journey.mjs） | **8/8 PASS**（注册建房/邀请码加入/成员互见 2 人/双向聊天广播/KP 回合/断线重连增量补齐/重连后会话恢复） |
+| 2026-08-20 | H5 build（含新房间页面） | 成功（模板编译无错误） |
 | 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |

@@ -43,6 +43,18 @@
 					"style": {
 						"navigationBarTitleText": "结局总结"
 					}
+				},
+				{
+					"path": "rooms/index",
+					"style": {
+						"navigationBarTitleText": "多人房间"
+					}
+				},
+				{
+					"path": "rooms/room",
+					"style": {
+						"navigationBarTitleText": "房间"
+					}
 				}
 			]
 		},

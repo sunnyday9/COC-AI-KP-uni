@@ -20,6 +20,7 @@
  *   shared/ — no runtime import, so no bundling concerns).
  */
 import type { AppSettings } from '../../../shared/types/settings'
+import type { RoomServerFrame, RoomSnapshot, RoomAction, RoomListItem, RoomDetail, CharacterListItem } from '../../../shared/types/room'
 import type {
   AuthResult,
   Bridge,
@@ -374,6 +375,51 @@ export class PlatformBridge implements Bridge {
         // a listener must never break delivery to the others
       }
     }
+  }
+
+  // ── Rooms（Phase B3，多人联机）──────────────────────────────────────────
+  roomCreate(storyId?: string): Promise<{ ok: boolean; roomId: string; inviteCode: string; ownerId: number; ownerName: string }> {
+    return request('POST', '/api/rooms', { ...(storyId ? { storyId } : {}) })
+  }
+  roomList(): Promise<RoomListItem[]> {
+    return request<RoomListItem[]>('GET', '/api/rooms')
+  }
+  roomJoin(inviteCode: string): Promise<{ ok: boolean; roomId: string }> {
+    return request('POST', '/api/rooms/join', { inviteCode })
+  }
+  roomDetail(roomId: string): Promise<RoomDetail> {
+    return request<RoomDetail>('GET', `/api/rooms/${encodeURIComponent(roomId)}`)
+  }
+  roomStart(roomId: string, storyId: string): Promise<{ ok: boolean }> {
+    return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/start`, { storyId })
+  }
+  roomBindCharacter(roomId: string, characterId: string): Promise<{ ok: boolean }> {
+    return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/character`, { characterId })
+  }
+  roomDelete(roomId: string): Promise<{ ok: boolean }> {
+    return request('DELETE', `/api/rooms/${encodeURIComponent(roomId)}`)
+  }
+  /** 房间 WS 帧：订阅（返回取消函数）。 */
+  onRoomFrame(handler: (frame: RoomServerFrame) => void): () => void {
+    return this.ws.onRoomFrame(handler)
+  }
+  /** 房间 WS 帧：发送（join/leave/sync/action）。 */
+  sendRoomFrame(type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>): void {
+    this.ws.sendRoomFrame(type, body)
+  }
+
+  // ── Characters（Phase B4，角色卡持久化）───────────────────────────────
+  characterCreate(name: string, sheet: unknown): Promise<{ ok: boolean; id: string; name: string }> {
+    return request('POST', '/api/characters', { name, sheet })
+  }
+  characterList(): Promise<CharacterListItem[]> {
+    return request<CharacterListItem[]>('GET', '/api/characters')
+  }
+  characterDetail(id: string): Promise<CharacterListItem> {
+    return request<CharacterListItem>('GET', `/api/characters/${encodeURIComponent(id)}`)
+  }
+  characterDelete(id: string): Promise<{ ok: boolean }> {
+    return request('DELETE', `/api/characters/${encodeURIComponent(id)}`)
   }
 
   // ── Saves ────────────────────────────────────────────────────────────────

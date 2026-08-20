@@ -13,6 +13,7 @@ import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError, NotFoundError, BadRequestError, ConflictError } from '../utils/errors.js'
 import { getDb } from '../db/index.js'
+import { getRoom } from '../services/roomService.js'
 
 const router = Router()
 
@@ -37,6 +38,27 @@ function ensureUniqueInviteCode(): string {
     if (!hit) return code
   }
   throw new Error('failed to generate unique invite code')
+}
+
+/** 房间成员列表（DB 权威）——用于活跃房间实例的 room_meta 广播（Phase C2）。 */
+function loadMembers(roomId: string): { userId: number; username: string; role: string; characterId: string | null }[] {
+  return getDb()
+    .prepare(`SELECT m.user_id, m.role, m.character_id, u.username
+              FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ?`)
+    .all(roomId) as unknown as { userId: number; username: string; role: string; characterId: string | null }[]
+}
+
+/** 若房间有活跃实例，广播最新成员列表（成员加入/绑定角色后调用）。 */
+function broadcastMemberMeta(roomId: string): void {
+  const room = getRoom(roomId)
+  if (!room) return
+  const members = loadMembers(roomId).map((m) => ({
+    userId: m.userId,
+    username: m.username,
+    role: m.role as 'owner' | 'member' | 'observer',
+    characterId: m.characterId,
+  }))
+  room.broadcastMembers(members)
 }
 
 interface RoomRow {
@@ -92,6 +114,7 @@ router.post('/join', (req: AuthRequest, res) => {
   }
   db.prepare(`INSERT OR IGNORE INTO room_members (room_id, user_id, role, character_id) VALUES (?, ?, 'member', NULL)`)
     .run(room.room_id, userId)
+  broadcastMemberMeta(room.room_id)
   res.json({ ok: true, roomId: room.room_id })
 })
 
@@ -149,6 +172,7 @@ router.post('/:id/start', (req: AuthRequest, res) => {
   }
   db.prepare(`UPDATE rooms SET story_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`)
     .run(storyId, Date.now(), roomId)
+  broadcastMemberMeta(roomId)
   res.json({ ok: true })
 })
 
@@ -180,6 +204,7 @@ router.post('/:id/character', (req: AuthRequest, res) => {
     return
   }
   db.prepare(`UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?`).run(charId, roomId, userId)
+  broadcastMemberMeta(roomId)
   res.json({ ok: true, roomId, characterId: charId })
 })
 

@@ -230,6 +230,11 @@ export class RoomService {
     this.emit({ type: 'room_meta', payload: { phase, turnWindowMs: this.turnWindowMs, members: [] } })
   }
 
+  /** 广播成员列表（room_meta）——成员加入/离开/绑定角色后调用（Phase C2）。 */
+  broadcastMembers(members: RoomMember[]): void {
+    this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members } })
+  }
+
   /** 开始游戏（lobby → playing，绑定剧本）。 */
   startGame(storyId: string): void {
     this.storyId = storyId
