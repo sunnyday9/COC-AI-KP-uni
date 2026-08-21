@@ -94,7 +94,7 @@ export class RoomService {
   private eventLogStartSeq = 0
   private snapshotTimer: NodeJS.Timeout | null = null
   /** 回合窗口（D4）：缓冲窗口内玩家消息，超时合并进一次 KP 回合。 */
-  private turnBuffer: { username: string; content: string; characterId: string | null }[] = []
+  private turnBuffer: { username: string; content: string; characterId: string | null; authorUserId: number }[] = []
   private turnTimer: NodeJS.Timeout | null = null
   private turnFlushing = false
 
@@ -225,13 +225,13 @@ export class RoomService {
     this.ending = ending
     this.phase = 'ended'
     this.emit({ type: 'state_patch', payload: { path: 'ending', value: ending } })
-    this.emit({ type: 'room_meta', payload: { phase: 'ended', turnWindowMs: this.turnWindowMs, members: [] } })
+    this.emit({ type: 'room_meta', payload: { phase: 'ended', turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
   }
 
   /** 设置房间阶段（room_meta）。 */
   setPhase(phase: RoomPhase): void {
     this.phase = phase
-    this.emit({ type: 'room_meta', payload: { phase, turnWindowMs: this.turnWindowMs, members: [] } })
+    this.emit({ type: 'room_meta', payload: { phase, turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
   }
 
   /** 广播成员列表（room_meta）——成员加入/离开/绑定角色后调用（Phase C2）。 */
@@ -239,11 +239,25 @@ export class RoomService {
     this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members } })
   }
 
+  /** 从 DB 加载成员列表（room_meta 事件携带真实 members，避免清空客户端列表——审查修复）。 */
+  private membersFromDb(): RoomMember[] {
+    const rows = getDb()
+      .prepare(`SELECT m.user_id, m.role, m.character_id, u.username
+                FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ?`)
+      .all(this.roomId) as unknown as { user_id: number; role: string; character_id: string | null; username: string }[]
+    return rows.map((r) => ({
+      userId: r.user_id,
+      username: r.username,
+      role: r.role as MemberRole,
+      characterId: r.character_id,
+    }))
+  }
+
   /** 设置回合窗口（房主控制，B6）；0 = 严格排队。广播 room_meta 全员可见。 */
   setTurnWindowMs(ms: number): void {
     const clamped = Math.max(0, Math.min(60_000, Math.floor(ms)))
     this.turnWindowMs = clamped
-    this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members: [] } })
+    this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
   }
 
   getTurnWindowMs(): number {
@@ -254,7 +268,36 @@ export class RoomService {
   startGame(storyId: string): void {
     this.storyId = storyId
     this.phase = 'playing'
-    this.emit({ type: 'room_meta', payload: { phase: 'playing', turnWindowMs: this.turnWindowMs, members: [] } })
+    this.emit({ type: 'room_meta', payload: { phase: 'playing', turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
+  }
+
+  /**
+   * 从 DB 权威状态同步活跃实例（审查修复 #1/#3）：
+   * REST start/绑定角色只写 DB，此处把 storyId/phase/characters map 同步进内存实例，
+   * 使 KP 回合拿到剧本上下文、多角色分派拿到角色组。
+   */
+  syncFromDb(): void {
+    const row = getDb()
+      .prepare(`SELECT story_id, phase, state FROM rooms WHERE room_id = ?`)
+      .all(this.roomId) as unknown as { story_id: string | null; phase: string; state: string }[]
+    const r = row[0]
+    if (!r) return
+    if (typeof r.story_id === 'string') this.storyId = r.story_id
+    if (typeof r.phase === 'string' && (r.phase === 'lobby' || r.phase === 'playing' || r.phase === 'ended')) {
+      this.phase = r.phase
+    }
+    // 角色组：从 DB 绑定关系加载 sheet（characters 表是 sheet 权威）
+    const binds = getDb()
+      .prepare(`SELECT m.character_id, m.user_id, c.sheet FROM room_members m
+                JOIN characters c ON c.id = m.character_id WHERE m.room_id = ? AND m.character_id IS NOT NULL`)
+      .all(this.roomId) as unknown as { character_id: string; user_id: number; sheet: string }[]
+    for (const b of binds) {
+      try {
+        const sheet = JSON.parse(b.sheet) as COCCharacterSheet
+        this.characters.set(b.character_id, sheet)
+        this.characterOwner.set(b.character_id, b.user_id)
+      } catch { /* 脏 sheet 忽略 */ }
+    }
   }
 
   /** 绑定角色卡（成员 → 房间角色组，Phase B4/B6）。 */
@@ -277,8 +320,8 @@ export class RoomService {
   /* ═══════════════ 回合窗口合并（D4） ═══════════════ */
 
   /** 玩家消息进回合缓冲（聊天即时广播；KP 回合等窗口超时合并执行）。 */
-  bufferPlayerChat(username: string, content: string, characterId: string | null): void {
-    this.turnBuffer.push({ username, content, characterId })
+  bufferPlayerChat(username: string, content: string, characterId: string | null, authorUserId: number): void {
+    this.turnBuffer.push({ username, content, characterId, authorUserId })
     // 每次窗口开启前从 DB 读最新 turnWindowMs（B6 房主可调；快照 restore 是兜底）
     const row = getDb().prepare(`SELECT state FROM rooms WHERE room_id = ?`).all(this.roomId) as unknown as { state: string }[]
     const snap = row[0]?.state
@@ -321,6 +364,8 @@ export class RoomService {
       const merged = batch.map((b) => `【${b.username}】${b.content}`).join('\n')
       // 缺省工具 characterId 回退目标 = 最后一位行动者
       const activeCharacterId = batch[batch.length - 1]?.characterId ?? null
+      // D5 归属校验：窗口内行动者可用的角色卡 id 集（各自绑定的卡）
+      const allowedCharacterIds = new Set(batch.map((b) => b.characterId).filter((id): id is string => !!id))
       await this.runKpTurnForRoom(
         this.ownerId,
         [
@@ -330,9 +375,22 @@ export class RoomService {
         this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
         activeCharacterId,
         () => { /* 流式块：可扩展为 kp:chunk 帧 */ },
+        allowedCharacterIds,
       )
     } finally {
       this.turnFlushing = false
+      // 审查修复：flush 期间到达的新消息补触发（否则挂起到下一条消息）
+      if (this.turnBuffer.length > 0) {
+        if (this.turnWindowMs <= 0) {
+          void this.flushTurn()
+        } else {
+          this.turnTimer = setTimeout(() => {
+            this.turnTimer = null
+            void this.flushTurn()
+          }, this.turnWindowMs)
+          this.turnTimer.unref?.()
+        }
+      }
     }
   }
 
@@ -359,6 +417,7 @@ export class RoomService {
     storyContext: Record<string, unknown> | null,
     activeCharacterId: string | null,
     onChunk: (chunk: string) => void,
+    allowedCharacterIds?: Set<string>,
   ): Promise<void> {
     const { runKpTurn } = await import('./kpTurnService.js')
     const characterMap = this.getCharacterMap()
@@ -421,6 +480,7 @@ export class RoomService {
         onError: () => { /* 回合错误由调用方处理（不中断房间） */ },
       },
       makeCharacterMutators, // D5：按 characterId 分派变更应用器
+      allowedCharacterIds, // D5：归属校验（窗口内行动者可用的角色卡集）
     )
   }
 
@@ -464,12 +524,33 @@ export function getOrCreateRoom(
 ): RoomService {
   let room = roomRegistry.get(roomId)
   if (!room) {
+    // DB 权威：列（story_id/phase）优先于 state 快照（审查修复 #1：
+    // REST start 只更新列，实例 restore 必须拿到最新 storyId/phase）
     const row = getDb()
-      .prepare(`SELECT state FROM rooms WHERE room_id = ?`)
-      .get(roomId) as { state: string } | undefined
+      .prepare(`SELECT story_id, phase, state FROM rooms WHERE room_id = ?`)
+      .all(roomId) as unknown as { story_id: string | null; phase: string; state: string }[]
+    const r = row[0]
     let restore: RoomSnapshot | null = null
-    if (row?.state) {
-      try { restore = JSON.parse(row.state) as RoomSnapshot } catch { restore = null }
+    if (r?.state) {
+      try { restore = JSON.parse(r.state) as RoomSnapshot } catch { restore = null }
+    }
+    if (restore) {
+      // 列是权威：覆盖快照中的过期值
+      if (typeof r?.story_id === 'string') restore.storyId = r.story_id
+      if (r?.phase === 'lobby' || r?.phase === 'playing' || r?.phase === 'ended') restore.phase = r.phase
+    } else if (r) {
+      restore = {
+        seq: 0,
+        phase: (r.phase === 'lobby' || r.phase === 'playing' || r.phase === 'ended') ? r.phase : 'lobby',
+        storyId: typeof r.story_id === 'string' ? r.story_id : null,
+        messages: [],
+        characters: {},
+        clues: [],
+        scene: null,
+        ending: null,
+        turnWindowMs: DEFAULT_TURN_WINDOW_MS,
+        updatedAt: Date.now(),
+      }
     }
     room = new RoomService({ roomId, ownerId, ownerName, storyId, restore })
     roomRegistry.set(roomId, room)

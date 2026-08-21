@@ -75,8 +75,8 @@ describe('RoomService 回合窗口合并（D4）', () => {
     room.bindCharacter(1, 'char_a', makeSheet('char_a'))
     room.bindCharacter(2, 'char_b', makeSheet('char_b'))
 
-    room.bufferPlayerChat('alice', '我搜索书架。', 'char_a')
-    room.bufferPlayerChat('bob', '我撬开箱子。', 'char_b')
+    room.bufferPlayerChat('alice', '我搜索书架。', 'char_a', 1)
+    room.bufferPlayerChat('bob', '我撬开箱子。', 'char_b', 2)
     expect(runKpTurnMock).not.toHaveBeenCalled() // 窗口未超时
 
     await new Promise((r) => setTimeout(r, 350)) // 等窗口超时 flush
@@ -93,7 +93,7 @@ describe('RoomService 回合窗口合并（D4）', () => {
   })
 
   it('窗口超时立即处理；无多人时单条消息等价即时', async () => {
-    room.bufferPlayerChat('alice', '我看看门。', null)
+    room.bufferPlayerChat('alice', '我看看门。', null, 1)
     await new Promise((r) => setTimeout(r, 350))
     expect(runKpTurnMock).toHaveBeenCalledTimes(1)
     const userMsg = [...(runKpTurnMock.mock.calls[0]![1] as { messages: { role: string; content: string }[] }).messages].reverse().find((m) => m.role === 'user')
@@ -103,9 +103,9 @@ describe('RoomService 回合窗口合并（D4）', () => {
   it('turnWindowMs=0 → 严格排队：每条消息立即触发（无合并）', async () => {
     const strict = new RoomService({ roomId: 'room_strict', ownerId: 1, ownerName: 'alice', turnWindowMs: 0 })
     try {
-      strict.bufferPlayerChat('alice', '第一条', null)
+      strict.bufferPlayerChat('alice', '第一条', null, 1)
       await new Promise((r) => setTimeout(r, 50))
-      strict.bufferPlayerChat('bob', '第二条', null)
+      strict.bufferPlayerChat('bob', '第二条', null, 2)
       await new Promise((r) => setTimeout(r, 50))
       expect(runKpTurnMock).toHaveBeenCalledTimes(2)
     } finally {
@@ -121,7 +121,7 @@ describe('RoomService 回合窗口合并（D4）', () => {
       { id: 'msg_1', timestamp: Date.now(), role: 'player', playerName: 'alice', content: '即时可见' },
       { userId: 1, roleName: 'alice' },
     )
-    room.bufferPlayerChat('alice', '即时可见', null)
+    room.bufferPlayerChat('alice', '即时可见', null, 1)
 
     const appended = listener.mock.calls
       .map((c) => c[0] as { type: string; payload?: { content?: string } })
@@ -154,8 +154,46 @@ describe('RoomService 回合窗口合并（D4）', () => {
     expect(typeof m.updateCharacterHP).toBe('function')
   })
 
+  it('D5 归属校验：flushTurn 传入 allowedCharacterIds（窗口内行动者的卡集）', async () => {
+    room.bindCharacter(1, 'char_a', makeSheet('char_a'))
+    room.bindCharacter(2, 'char_b', makeSheet('char_b'))
+    room.bufferPlayerChat('alice', '行动1', 'char_a', 1)
+    room.bufferPlayerChat('bob', '行动2', 'char_b', 2)
+    await new Promise((r) => setTimeout(r, 350))
+    expect(runKpTurnMock).toHaveBeenCalledTimes(1)
+    const allowed = runKpTurnMock.mock.calls[0]![7] as Set<string> | undefined
+    expect(allowed).toBeDefined()
+    expect(allowed!.has('char_a')).toBe(true)
+    expect(allowed!.has('char_b')).toBe(true)
+    // 未绑定角色卡的消息（characterId=null）不进入允许集
+    expect(allowed!.has('')).toBe(false)
+  })
+
+  it('flush 竞态修复：flush 进行中到达的消息补触发（不挂起）', async () => {
+    // 用延迟 Promise 模拟慢 LLM：第一次 flush 进行中，第二条消息到达
+    let resolveFirst: (() => void) | null = null
+    runKpTurnMock.mockImplementationOnce(async (...args) => {
+      const handlers = args[5] as { onEnd: (r: unknown) => void }
+      await new Promise<void>((r) => { resolveFirst = r })
+      handlers.onEnd({ content: '第一次回复', displayMessages: [], toolCalls: [], worldDeltas: { cluesAdded: [] }, characterSheet: null })
+    })
+    const strict = new RoomService({ roomId: 'room_race', ownerId: 1, ownerName: 'alice', turnWindowMs: 0 })
+    try {
+      strict.bufferPlayerChat('alice', '第一条', null, 1)
+      // 等第一次 flush 开始（turnFlushing=true）
+      await new Promise((r) => setTimeout(r, 50))
+      strict.bufferPlayerChat('bob', '第二条（flush 期间到达）', null, 2)
+      resolveFirst!()
+      // 等补触发 flush 处理第二条
+      await new Promise((r) => setTimeout(r, 100))
+      expect(runKpTurnMock).toHaveBeenCalledTimes(2)
+    } finally {
+      strict.dispose()
+    }
+  })
+
   it('dispose 清理回合窗口定时器', async () => {
-    room.bufferPlayerChat('alice', '触发窗口', null)
+    room.bufferPlayerChat('alice', '触发窗口', null, 1)
     room.dispose()
     // dispose 后不应再有 flush（timer 清理）
     await new Promise((r) => setTimeout(r, 350))

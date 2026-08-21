@@ -280,6 +280,35 @@ describe('WSService', () => {
       vi.advanceTimersByTime(10_000)
       expect(state.sockets).toHaveLength(1)
     })
+
+    it('onReconnect fires once after an automatic reconnect succeeds (not on first connect)', async () => {
+      const ws = makeWs({ baseBackoffMs: 1_000 })
+      const onReconnect = vi.fn()
+      ws.onReconnect(onReconnect)
+      const p = ws.connect()
+      state.sockets[0].emitOpen()
+      await p
+      expect(onReconnect).not.toHaveBeenCalled() // first connect is not a reconnect
+
+      state.sockets[0].emitClose()
+      vi.advanceTimersByTime(1_000)
+      state.sockets[1].emitOpen()
+      expect(onReconnect).toHaveBeenCalledTimes(1)
+    })
+
+    it('onReconnect unsubscribe works', async () => {
+      const ws = makeWs({ baseBackoffMs: 1_000 })
+      const onReconnect = vi.fn()
+      const off = ws.onReconnect(onReconnect)
+      off()
+      const p = ws.connect()
+      state.sockets[0].emitOpen()
+      await p
+      state.sockets[0].emitClose()
+      vi.advanceTimersByTime(1_000)
+      state.sockets[1].emitOpen()
+      expect(onReconnect).not.toHaveBeenCalled()
+    })
   })
 
   describe('failure handling', () => {

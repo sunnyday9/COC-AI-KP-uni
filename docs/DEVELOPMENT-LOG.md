@@ -272,6 +272,16 @@
 
 **原因**：架构 C5「性能压测（≤100 房间边界）」+ NFR-M5——验证单进程规模内广播延迟与并发创建无瓶颈，为多实例 Redis 触发条件提供基准。
 
+### D-28：代码审查修复包（2026-08-21，审查发现 3 高 + 3 中）
+
+**决策**（针对 /code-review 审查发现）：
+- **#1 REST 生命周期接线**：`RoomService.syncFromDb()` + routes `syncActiveRoom()`——REST start/绑定角色后把 DB 权威状态（storyId/phase/角色组）同步进活跃实例；`getOrCreateRoom` restore 改为**列优先**（story_id/phase 列覆盖 state 快照），KP 回合拿到剧本上下文、客户端 phase 正确更新
+- **#2 断线重连接线**：`WSService.onReconnect()` + bridge 透传 + roomStore 订阅——自动重连成功后重发 room:join + refreshMeta（原 C1 增量补齐是死代码，重连后房间失明）
+- **#3 D5 归属校验**：`runKpTurn` 第 8 参 `allowedCharacterIds`——flushTurn 构造窗口内行动者卡集，工具 characterId 不在集内回退行动者（防跨角色篡改）；`characterOwnerOf` 由 syncFromDb 接线
+- **顺修**：flushTurn 结束后 buffer 非空补触发（原竞态挂起）；room_meta members 真实化（membersFromDb 替代硬编码 []，防清空客户端成员列表）；roomSettings 同步活跃实例（turnWindowMs 立即生效 + 广播）
+
+**原因**：审查发现多人房间 REST 生命周期与内存 RoomService 实例断链（start/绑定/settings 不触碰活跃实例）、断线重连增量补齐死代码、归属校验缺失——B5/B6/D5 核心能力在真实 UI 流程未接通。**验证：server 393 / client 99 全绿；multiroom 11/11 + rooms 8/8 回归；新增 6 个测试（归属校验/竞态补触发/onReconnect/restore 列优先/角色组同步）。**
+
 ---
 
 ## 验证基线记录
@@ -298,5 +308,9 @@
 | 2026-08-20 | server 单测（B5/B6/C3 后） | **389 全绿**（+6 roster +7 saveMigration +4 roomSettings） |
 | 2026-08-20 | 双客户端 E2E（C2 扩展） | **11/11 PASS**（+ 同账号双连接同 seq 广播） |
 | 2026-08-20 | 性能压测（room-stress.mjs） | **3/3 PASS**（50 房间创建 12.9s；广播 p95=18ms） |
+| 2026-08-21 | server 单测（D-28 审查修复后） | **393 全绿**（+4：restore 列优先/角色组同步/归属校验/竞态补触发） |
+| 2026-08-21 | client 单测（D-28 后） | **99 全绿**（+2 onReconnect） |
+| 2026-08-21 | E2E 回归（D-28 后） | multiroom **11/11** + rooms **8/8** |
+| 2026-08-21 | H5 build | 成功（模板编译无错误） |
 | 2026-08-20 | H5 build（含新房间页面） | 成功（模板编译无错误） |
 | 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |

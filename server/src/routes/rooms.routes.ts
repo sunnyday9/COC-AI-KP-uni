@@ -61,6 +61,15 @@ function broadcastMemberMeta(roomId: string): void {
   room.broadcastMembers(members)
 }
 
+/** 审查修复 #1/#3：把 DB 权威状态（storyId/phase/角色组）同步进活跃实例 + 广播成员。
+ * REST start/绑定角色只写 DB，此函数让内存 RoomService 实例与 DB 一致。 */
+function syncActiveRoom(roomId: string): void {
+  const room = getRoom(roomId)
+  if (!room) return
+  room.syncFromDb()
+  broadcastMemberMeta(roomId)
+}
+
 interface RoomRow {
   room_id: string
   owner_id: number
@@ -172,7 +181,7 @@ router.post('/:id/start', (req: AuthRequest, res) => {
   }
   db.prepare(`UPDATE rooms SET story_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`)
     .run(storyId, Date.now(), roomId)
-  broadcastMemberMeta(roomId)
+  syncActiveRoom(roomId)
   res.json({ ok: true })
 })
 
@@ -204,7 +213,7 @@ router.post('/:id/character', (req: AuthRequest, res) => {
     return
   }
   db.prepare(`UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?`).run(charId, roomId, userId)
-  broadcastMemberMeta(roomId)
+  syncActiveRoom(roomId)
   res.json({ ok: true, roomId, characterId: charId })
 })
 

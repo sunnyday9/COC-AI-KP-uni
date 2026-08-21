@@ -140,6 +140,7 @@ export interface Bridge {
   roomBindCharacter?: (roomId: string, characterId: string) => Promise<{ ok: boolean }>
   roomDelete?: (roomId: string) => Promise<{ ok: boolean }>
   onRoomFrame?: (handler: (frame: unknown) => void) => () => void
+  onReconnect?: (handler: () => void) => () => void
   sendRoomFrame?: (type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>) => void
 
   // ── Characters（Phase B4 角色卡持久化）───────────────────────

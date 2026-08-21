@@ -407,6 +407,10 @@ export class PlatformBridge implements Bridge {
   onRoomFrame(handler: (frame: RoomServerFrame) => void): () => void {
     return this.ws.onRoomFrame(handler)
   }
+  /** 断线自动重连通知（roomStore 重新订阅房间）。返回取消函数。 */
+  onReconnect(handler: () => void): () => void {
+    return this.ws.onReconnect(handler)
+  }
   /** 房间 WS 帧：发送（join/leave/sync/action）。 */
   sendRoomFrame(type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>): void {
     this.ws.sendRoomFrame(type, body)

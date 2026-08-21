@@ -12,6 +12,7 @@ import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError, NotFoundError, BadRequestError, ConflictError } from '../utils/errors.js'
 import { getDb } from '../db/index.js'
+import { getRoom } from '../services/roomService.js'
 
 const router = Router()
 
@@ -53,6 +54,11 @@ router.put('/:id/settings', (req: AuthRequest, res) => {
   }
   db.prepare(`UPDATE rooms SET state = ?, updated_at = ? WHERE room_id = ?`)
     .run(JSON.stringify(state), Date.now(), roomId)
+  // 审查修复：同步活跃实例（turnWindowMs 立即生效 + room_meta 广播全员可见）
+  const activeRoom = getRoom(roomId)
+  if (activeRoom && typeof state.turnWindowMs === 'number') {
+    activeRoom.setTurnWindowMs(state.turnWindowMs)
+  }
   res.json({ ok: true, turnWindowMs: typeof state.turnWindowMs === 'number' ? state.turnWindowMs : undefined })
 })
 

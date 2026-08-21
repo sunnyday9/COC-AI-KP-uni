@@ -117,6 +117,10 @@ export class WSService {
   private streams = new Map<string, KpStreamHandlers>()
   private errorTerminal = new Map<string, number>()
   private roomHandlers = new Set<RoomFrameHandler>()
+  /** 重连成功后通知（roomStore 据此重新订阅房间——审查修复 #2）。 */
+  private reconnectListeners = new Set<() => void>()
+  /** 上次连接是否因故障断开（区分首次连接与重连）。 */
+  private wasDisconnected = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private backoffMs = 0
@@ -166,6 +170,7 @@ export class WSService {
    */
   close(): void {
     this.closedByUser = true
+    this.wasDisconnected = false
     this.stopHeartbeat()
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -238,6 +243,14 @@ export class WSService {
     }
   }
 
+  /** 订阅重连通知（断线自动重连成功后触发）。返回取消函数。 */
+  onReconnect(handler: () => void): () => void {
+    this.reconnectListeners.add(handler)
+    return () => {
+      this.reconnectListeners.delete(handler)
+    }
+  }
+
   /** 发送 room:* 帧（join/leave/sync/action）。Requires an open connection. */
   sendRoomFrame(type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>): void {
     if (!this.isConnected() || !this.socket) {
@@ -299,8 +312,10 @@ export class WSService {
 
     socket.onOpen(() => {
       if (this.socket !== socket) return
+      const isReconnect = this.wasDisconnected
       this.socketOpen = true
       this.failed = false
+      this.wasDisconnected = false
       this.backoffMs = 0
       this.startHeartbeat()
       const resolve = this.resolveConnect
@@ -308,6 +323,16 @@ export class WSService {
       this.rejectConnect = null
       this.connectPromise = null
       resolve?.()
+      if (isReconnect) {
+        // 审查修复 #2：自动重连成功后通知订阅者（roomStore 重新 room:join）
+        for (const l of [...this.reconnectListeners]) {
+          try {
+            l()
+          } catch {
+            // listener failures never break the reconnect loop
+          }
+        }
+      }
     })
 
     socket.onMessage((res) => {
@@ -333,6 +358,7 @@ export class WSService {
   private handleFailure(reason: string): void {
     if (this.failed) return
     this.failed = true
+    this.wasDisconnected = true
     this.socketOpen = false
     this.stopHeartbeat()
 

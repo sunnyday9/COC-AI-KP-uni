@@ -105,4 +105,45 @@ describe('rooms routes', () => {
     const after = await request(app).get(`/api/rooms/${roomId}`).set(...auth(tokenA))
     expect(after.status).toBe(404)
   })
+
+  it('审查修复 #1：REST start 后活跃实例 restore 到 storyId/phase（KP 拿剧本上下文）', async () => {
+    const created = await request(app).post('/api/rooms').set(...auth(tokenA)).send({})
+    const roomId = (created.body as { roomId: string }).roomId
+    // 先 REST start（此时无活跃实例——syncActiveRoom 静默跳过）
+    const start = await request(app).post(`/api/rooms/${roomId}/start`).set(...auth(tokenA)).send({ storyId: 'story_x' })
+    expect(start.status).toBe(200)
+    // 之后 WS join 创建活跃实例 → getOrCreateRoom restore 应拿到 DB 的 storyId/phase
+    const { getOrCreateRoom, _clearRoomRegistryForTests } = await import('../../services/roomService.js')
+    const room = getOrCreateRoom(roomId, 1, 'alice')
+    expect(room.getStoryId()).toBe('story_x')
+    expect(room.getPhase()).toBe('playing')
+    room.dispose()
+    _clearRoomRegistryForTests()
+  })
+
+  it('审查修复 #3：REST 绑定角色后 syncFromDb 加载角色组 + 归属', async () => {
+    const created = await request(app).post('/api/rooms').set(...auth(tokenA)).send({})
+    const roomId = (created.body as { roomId: string }).roomId
+    // 建角色卡
+    const sheet = {
+      playerName: '艾琳', occupationId: 'occ1', occupationName: '侦探',
+      derived: { hp: 10, hpMax: 12, mp: 5, mpMax: 5, san: 60, sanMax: 99 },
+      attributes: { luck: 50 }, skills: {}, occupationSkillKeys: [], personalInterestKeys: [],
+    }
+    const char = await request(app).post('/api/characters').set(...auth(tokenA)).send({ name: '艾琳', sheet })
+    expect(char.status).toBe(200)
+    const charId = (char.body as { id: string }).id
+
+    // 创建活跃实例 + 绑定
+    const { getOrCreateRoom, _clearRoomRegistryForTests } = await import('../../services/roomService.js')
+    const room = getOrCreateRoom(roomId, 1, 'alice')
+    const bind = await request(app).post(`/api/rooms/${roomId}/character`).set(...auth(tokenA)).send({ characterId: charId })
+    expect(bind.status).toBe(200)
+    // syncActiveRoom → syncFromDb 加载角色组
+    const charMap = room.getCharacterMap()
+    expect(Object.keys(charMap)).toContain(charId)
+    expect(room.characterOwnerOf(charId)).toBe(1)
+    room.dispose()
+    _clearRoomRegistryForTests()
+  })
 })

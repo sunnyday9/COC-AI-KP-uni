@@ -162,6 +162,8 @@ export interface KpTurnHandlers {
  * @param mutators 角色卡变更应用器（由会话/房间执行器实现）
  * @param characterMutatorFactory 按 characterId 构造变更应用器（D5 多角色分派）；
  *        缺省时全部工具作用于 mutators（单卡/兼容路径）
+ * @param allowedCharacterIds 归属校验（D5）：工具 characterId 必须在此集内，
+ *        否则回退行动者（防跨角色篡改）；缺省 = 不限制（单卡路径）
  */
 export async function runKpTurn(
   userId: number,
@@ -171,6 +173,7 @@ export async function runKpTurn(
   mutators: TurnCharacterMutators,
   handlers: KpTurnHandlers,
   characterMutatorFactory?: (characterId: string | null) => TurnCharacterMutators,
+  allowedCharacterIds?: Set<string>,
 ): Promise<void> {
   let messages: KpMessage[]
   try {
@@ -247,7 +250,11 @@ export async function runKpTurn(
       try {
         const args = JSON.parse(tc.arguments || '{}') as { characterId?: unknown }
         if (typeof args.characterId === 'string' && args.characterId && characters && characters[args.characterId]) {
-          targetId = args.characterId
+          // 归属校验（D5）：显式 characterId 必须在本回合行动者可用的角色集内，
+          // 否则回退行动者（防跨角色篡改他人角色卡）
+          if (!allowedCharacterIds || allowedCharacterIds.has(args.characterId)) {
+            targetId = args.characterId
+          }
         }
       } catch { /* 参数解析失败 → 行动者 */ }
       const targetSheet = (targetId && characters ? characters[targetId] : null) ?? null

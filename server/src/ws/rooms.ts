@@ -178,7 +178,7 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
         .prepare(`SELECT character_id FROM room_members WHERE room_id = ? AND user_id = ?`)
         .all(roomId, userId) as unknown as { character_id: string | null }[]
       const activeCharacterId = memberRow[0]?.character_id ?? null
-      room.bufferPlayerChat(username, content, activeCharacterId)
+      room.bufferPlayerChat(username, content, activeCharacterId, userId)
     } else {
       send(socket, { type: 'room:error', roomId, error: `unknown action type: ${action.type}` })
       return

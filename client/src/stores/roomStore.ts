@@ -26,6 +26,7 @@ export type RoomConnectionState = 'idle' | 'joining' | 'joined' | 'error'
 /** 全局帧订阅只挂接一次（roomStore 是 pinia 单例，多页面复用同一实例）。 */
 let frameBridgeWired = false
 let frameBridgeOff: (() => void) | null = null
+let reconnectOff: (() => void) | null = null
 
 interface RoomMessageRecord {
   id: string
@@ -232,11 +233,25 @@ type RoomEventPayload = RoomMessageAppendedPayload | RoomStatePatchPayload | Roo
       if (roomId.value === rid) return
     }
     leaveRoom()
-    // 首次使用时挂接全局帧路由（一次）
+    // 首次使用时挂接全局帧路由 + 重连通知（一次）
     if (!frameBridgeWired) {
       frameBridgeWired = true
       frameBridgeOff = getBridge().onRoomFrame((frame) => {
         handleServerFrame(frame)
+      })
+      // 审查修复 #2：断线自动重连成功后重新订阅房间（服务端 socket 订阅已丢）
+      reconnectOff = getBridge().onReconnect(() => {
+        const rid2 = roomId.value
+        if (!rid2 || connectionState.value !== 'joined') return
+        connectionState.value = 'joining'
+        isSyncing.value = true
+        try {
+          getBridge().sendRoomFrame('room:join', { roomId: rid2 })
+          void refreshMeta()
+        } catch {
+          connectionState.value = 'error'
+          isSyncing.value = false
+        }
       })
     }
     roomId.value = rid
