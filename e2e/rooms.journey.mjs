@@ -155,6 +155,9 @@ function cleanup() {
       if (process.platform === 'win32') {
         spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore' })
       } else {
+        // 递归杀子进程树（tsx/uni wrapper 的 node 子进程不会随 SIGTERM 退出，
+        // 残留占用 3100 端口导致后续 E2E 失败）
+        try { spawn('pkill', ['-TERM', '-P', String(c.pid)], { stdio: 'ignore' }) } catch { /* ignore */ }
         c.kill('SIGTERM')
       }
     } catch { /* ignore */ }
