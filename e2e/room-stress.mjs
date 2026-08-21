@@ -86,6 +86,14 @@ async function main() {
   const children = []
   let tmpDir = ''
   if (SELF_START_API) {
+    // preflight：端口被残留进程占用时 server 会 EADDRINUSE 崩溃 → 先检查
+    try {
+      const probe = await fetch(`${API_BASE}/api/auth/me`, { signal: AbortSignal.timeout(1500) })
+      throw new Error(`port ${new URL(API_BASE).port} already has a server (${probe.status}) — stop it first or set E2E_API_BASE`)
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('already has a server')) throw err
+      /* connection refused → free, good */
+    }
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stress-e2e-'))
     const server = spawn(process.execPath, ['--import', 'tsx', 'server/src/app.ts'], {
       cwd: ROOT,
@@ -99,6 +107,9 @@ async function main() {
     children.push(server)
     server.stdout.on('data', (d) => fs.appendFileSync(path.join(tmpDir, 'server.log'), d))
     server.stderr.on('data', (d) => fs.appendFileSync(path.join(tmpDir, 'server.log'), d))
+    server.on('exit', (code, signal) => {
+      fs.appendFileSync(path.join(tmpDir, 'server.log'), `\n[server exited code=${code} signal=${signal}]\n`)
+    })
     const deadline = Date.now() + 30_000
     for (;;) {
       try { const r = await fetch(`${API_BASE}/api/auth/me`); if (r.status < 500) break } catch { /* retry */ }
