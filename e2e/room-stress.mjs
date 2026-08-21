@@ -32,11 +32,17 @@ const WS_URL = (API_BASE.replace(/^http/, 'ws')).replace('localhost', '127.0.0.1
 function assert(cond, msg) { if (!cond) throw new Error(msg) }
 
 async function api(method, p, body, token) {
-  const res = await fetch(`${API_BASE}${p}`, {
-    method,
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  let res
+  try {
+    res = await fetch(`${API_BASE}${p}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch (err) {
+    const cause = err && typeof err === 'object' && 'cause' in err ? String((err as { cause?: unknown }).cause) : ''
+    throw new Error(`fetch failed for ${method} ${p}: ${err instanceof Error ? err.message : String(err)}${cause ? ` (cause: ${cause})` : ''}`)
+  }
   const data = await res.json().catch(() => ({}))
   return { status: res.status, data }
 }
@@ -112,6 +118,13 @@ async function main() {
     } catch (e) {
       results.push({ name, pass: false, ms: Date.now() - t0, error: e.message })
       console.error(`  [FAIL] ${name} (${Date.now() - t0}ms): ${e.message}`)
+      // dump server log tail for diagnosis
+      if (tmpDir) {
+        try {
+          const log = fs.readFileSync(path.join(tmpDir, 'server.log'), 'utf-8')
+          console.error(`--- server.log tail ---\n${log.slice(-2000)}`)
+        } catch { /* no log */ }
+      }
       throw e
     }
   }
