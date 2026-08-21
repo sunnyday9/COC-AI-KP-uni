@@ -23,9 +23,10 @@ import { createRequire } from 'node:module'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 const WsImpl = require('ws')
-const API_BASE = (process.env.E2E_API_BASE || 'http://localhost:3100').replace(/\/+$/, '')
+const API_BASE = (process.env.E2E_API_BASE || 'http://127.0.0.1:3100').replace(/\/+$/, '')
 const SELF_START_API = !process.env.E2E_API_BASE
 const STRESS_ROOMS = Number(process.env.STRESS_ROOMS || 50)
+// Node 原生 fetch 连 localhost 可能解析 ::1（IPv6）而 server 绑 IPv4 → 显式 127.0.0.1
 const WS_URL = (API_BASE.replace(/^http/, 'ws')).replace('localhost', '127.0.0.1')
 
 function assert(cond, msg) { if (!cond) throw new Error(msg) }
