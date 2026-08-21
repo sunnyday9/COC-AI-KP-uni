@@ -40,7 +40,7 @@ async function api(method, p, body, token) {
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch (err) {
-    const cause = err && typeof err === 'object' && 'cause' in err ? String((err as { cause?: unknown }).cause) : ''
+    const cause = err && typeof err === 'object' && 'cause' in err ? String(err.cause) : ''
     throw new Error(`fetch failed for ${method} ${p}: ${err instanceof Error ? err.message : String(err)}${cause ? ` (cause: ${cause})` : ''}`)
   }
   const data = await res.json().catch(() => ({}))
