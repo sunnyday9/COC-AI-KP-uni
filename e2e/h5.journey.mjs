@@ -265,22 +265,27 @@ async function pollUrl(url, timeoutMs = 120_000, label = url) {
   throw new Error(`Timed out waiting for ${label}\n--- server log ---\n${tail(logs.server)}\n--- web log ---\n${tail(logs.web)}`)
 }
 
-function cleanup() {
+async function cleanup() {
+  const exits = []
   for (const c of children) {
     try {
       if (process.platform === 'win32') {
         // npm runs through a shell → kill the whole process tree.
         spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore' })
       } else {
-        // 递归杀子进程树（tsx/uni wrapper 的 node 子进程不随 SIGTERM 退出，
-        // 残留占用端口导致后续 E2E 失败）
+        // 递归杀子进程树 + 等退出（残留占用端口导致后续 E2E 失败）
         try { spawn('pkill', ['-TERM', '-P', String(c.pid)], { stdio: 'ignore' }) } catch { /* ignore */ }
         c.kill('SIGTERM')
       }
+      exits.push(new Promise((resolve) => {
+        const t = setTimeout(resolve, 3000)
+        c.once('exit', () => { clearTimeout(t); resolve() })
+      }))
     } catch {
       /* ignore */
     }
   }
+  await Promise.all(exits)
 }
 
 /* ═══════════════════ Journey ═══════════════════ */
@@ -536,8 +541,10 @@ async function main() {
     } else {
       console.log(`[E2E] --keep: temp data kept at ${tmpRoot}`)
     }
-    cleanup()
+    await cleanup()
     if (failed > 0) process.exitCode = 1
+    // browser 等 handle 会阻止进程自然退出 → 显式退出
+    process.exit(process.exitCode ?? 0)
   }
 }
 
@@ -546,8 +553,9 @@ function pLoc(sel) {
   return page.locator(sel)
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error('[E2E] FATAL', err)
   process.exitCode = 1
-  cleanup()
+  await cleanup()
+  process.exit(1)
 })

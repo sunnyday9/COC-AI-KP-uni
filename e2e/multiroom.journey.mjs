@@ -305,22 +305,31 @@ async function main() {
     const failed = results.filter((r) => !r.pass)
     if (failed.length > 0) {
       console.error(`[E2E] ${results.length - failed.length} passed, ${failed.length} failed`)
-      process.exit(1)
+      process.exitCode = 1
+    } else {
+      console.log(`[E2E] ${results.length} passed, 0 failed`)
     }
-    console.log(`[E2E] ${results.length} passed, 0 failed`)
-    process.exit(0)
   } finally {
+    // 等子进程退出（process.exit 会跳过此处导致残留占用端口）
+    const exits = []
     for (const c of children) {
       try {
         if (process.platform === 'win32') {
           spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore' })
         } else {
-          // 递归杀子进程树（残留占用端口导致后续 E2E 失败）
+          // 递归杀子进程树 + 等退出
           try { spawn('pkill', ['-TERM', '-P', String(c.pid)], { stdio: 'ignore' }) } catch { /* ignore */ }
           c.kill()
         }
+        exits.push(new Promise((resolve) => {
+          const t = setTimeout(resolve, 3000)
+          c.once('exit', () => { clearTimeout(t); resolve() })
+        }))
       } catch { /* ignore */ }
     }
+    await Promise.all(exits)
+    // ws 连接等 handle 会阻止进程自然退出 → 显式退出
+    process.exit(process.exitCode ?? 0)
   }
 }
 

@@ -200,16 +200,27 @@ async function main() {
     console.log('[STRESS] RESULTS')
     for (const r of results) console.log(`  ${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.error ? `  → ${r.error}` : ''}`)
     const failed = results.filter((r) => !r.pass)
-    if (failed.length) { console.error(`[STRESS] ${results.length - failed.length} passed, ${failed.length} failed`); process.exit(1) }
-    console.log(`[STRESS] ${results.length} passed, 0 failed`)
-    process.exit(0)
+    if (failed.length) {
+      console.error(`[STRESS] ${results.length - failed.length} passed, ${failed.length} failed`)
+      process.exitCode = 1
+    } else {
+      console.log(`[STRESS] ${results.length} passed, 0 failed`)
+    }
   } finally {
+    // 等子进程退出（process.exit 跳过此处会残留占用端口）
+    const exits = []
     for (const c of children) {
       try {
         if (process.platform === 'win32') spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore' })
         else c.kill()
+        exits.push(new Promise((resolve) => {
+          const t = setTimeout(resolve, 3000)
+          c.once('exit', () => { clearTimeout(t); resolve() })
+        }))
       } catch { /* ignore */ }
     }
+    await Promise.all(exits)
+    process.exit(process.exitCode ?? 0)
   }
 }
 
