@@ -119,7 +119,12 @@ async function main() {
     await step(`并发创建 ${STRESS_ROOMS} 房间（独立用户）`, async () => {
       const users = []
       for (let i = 0; i < STRESS_ROOMS; i++) users.push(await registerUser(`r${i}`))
-      const rooms = await Promise.all(users.map((u) => api('POST', '/api/rooms', {}, u.token)))
+      // 分批并发建房（每批 10），避免 CI 上 fetch 并发连接限制
+      const rooms = []
+      for (let i = 0; i < users.length; i += 10) {
+        const batch = await Promise.all(users.slice(i, i + 10).map((u) => api('POST', '/api/rooms', {}, u.token)))
+        rooms.push(...batch)
+      }
       const ok = rooms.filter((r) => r.status === 200).length
       assert(ok === STRESS_ROOMS, `only ${ok}/${STRESS_ROOMS} rooms created`)
       return `${ok}/${STRESS_ROOMS} ok`
