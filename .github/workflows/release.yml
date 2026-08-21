@@ -20,7 +20,13 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # onnxruntime-node postinstall 下载 GPU 二进制偶发 ECONNRESET → 重试 3 次
+        run: |
+          for i in 1 2 3; do
+            if npm ci; then break; fi
+            echo "npm ci attempt $i failed, retrying..."
+            sleep 5
+          done
 
       - name: Build H5
         run: npm run build:h5
