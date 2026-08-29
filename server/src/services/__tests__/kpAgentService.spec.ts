@@ -127,43 +127,7 @@ describe('invokeKp (REST path)', () => {
   })
 })
 
-describe('POST /api/kp/invoke (route)', () => {
-  it('requires auth (401 without token)', async () => {
-    const res = await request(createApp()).post('/api/kp/invoke').send({ messages: [{ role: 'user', content: 'hi' }] })
-    expect(res.status).toBe(401)
-  })
-
-  it('returns { content: "" } for empty messages', async () => {
-    const { token } = await register('kp_erin', 'secret123')
-    const res = await request(createApp())
-      .post('/api/kp/invoke')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ messages: [] })
-    expect(res.status).toBe(200)
-    expect(res.body).toEqual({ content: '' })
-  })
-
-  it('returns 400 for malformed messages', async () => {
-    const { token } = await register('kp_frank', 'secret123')
-    const res = await request(createApp())
-      .post('/api/kp/invoke')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ messages: [{ role: 'user' }] })
-    expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/invalid kp:invoke messages/)
-  })
-
-  it('maps graph failure to 502 { error }', async () => {
-    state.failGenerate = true
-    const { token } = await register('kp_grace', 'secret123')
-    const res = await request(createApp())
-      .post('/api/kp/invoke')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ messages: [{ role: 'user', content: '我攻击他' }] })
-    expect(res.status).toBe(502)
-    expect(res.body.error).toMatch(/upstream boom/)
-  })
-})
+// POST /api/kp/invoke 路由测试已随路由退役删除（ADR-0002 / T4）。
 
 describe('invokeKpStream (WS path)', () => {
   it('emits chunk → trace → end in order with the graph result', async () => {

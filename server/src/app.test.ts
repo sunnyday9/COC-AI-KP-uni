@@ -34,7 +34,6 @@ describe('app smoke', () => {
     ['PUT', '/api/settings'],
     ['POST', '/api/ai/chat'],
     ['GET', '/api/ai/models'],
-    ['POST', '/api/kp/invoke'],
     ['GET', '/api/rag/health'],
     ['POST', '/api/rag/index'],
     ['POST', '/api/rag/query'],

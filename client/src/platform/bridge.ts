@@ -10,10 +10,8 @@
  *   `Authorization: Bearer`. A 401 (except on login/register, where it means
  *   bad credentials) clears the token and fires `onUnauthorized` — the bridge
  *   only emits the event; page navigation is the page layer's job (Task 8).
- * - Streaming KP: kpInvokeStream returns a fresh streamId, lazily opens the
- *   shared WSService connection, and all chunk/end/error frames fan out to
- *   every onKpStream listener (callers filter by streamId, mirroring the
- *   original kpSessionService pattern).
+ * - KP 回合只走房间协议（ADR-0002）：room:action{chat} → room:event 回灌；
+ *   kp: 前缀帧与 /api/kp/invoke 已退役。
  * - Uploads (importStory / importScript): uni.uploadFile multipart field
  *   `file`; responses parsed to `{ ok, name?, id?, error? }`.
  * - Runtime dependencies: none beyond uni globals (type-only imports from
@@ -26,12 +24,10 @@ import type {
   Bridge,
   BridgeUser,
   IndexedStory,
-  KpStreamPayload,
   Platform,
   RAGContextParams,
   RAGIndexParams,
   RAGQueryParams,
-  ToolCallResult,
 } from '../../../shared/types/bridge'
 import { getBaseUrl, getPlatform, joinApiUrl } from './config'
 import { clearToken, emitUnauthorized, getToken, setToken } from './token'
@@ -72,11 +68,6 @@ function extractError(data: unknown, fallback: string): string {
   }
   if (typeof data === 'string' && data) return data.slice(0, 200)
   return fallback
-}
-
-function generateStreamId(): string {
-  const s4 = (): string => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0')
-  return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`
 }
 
 // Return types derived from the Bridge contract (avoids drift with shared/).
@@ -174,7 +165,6 @@ export class PlatformBridge implements Bridge {
   readonly platform: Platform = getPlatform()
 
   private readonly ws: WSService
-  private readonly kpListeners = new Set<(payload: KpStreamPayload) => void>()
   private pendingImportPath: string | null = null
 
   constructor(ws?: WSService) {
@@ -313,68 +303,6 @@ export class PlatformBridge implements Bridge {
   aiListModels(params: { purpose?: 'chat' | 'embeddings' } = {}): Promise<{ value: string; label: string }[]> {
     const purpose = params.purpose ?? 'chat'
     return request('GET', `/api/ai/models?purpose=${encodeURIComponent(purpose)}`)
-  }
-
-  // ── KP Agent ─────────────────────────────────────────────────────────────
-
-  kpInvoke(params: {
-    messages: { role: string; content: string }[]
-    storyContext?: unknown
-  }): Promise<{ content?: string; toolCalls?: ToolCallResult[] }> {
-    return request('POST', '/api/kp/invoke', params)
-  }
-
-  /** Open the shared WS connection (lazy), subscribe, and send kp:invoke. */
-  async kpInvokeStream(params: {
-    messages: { role: string; content: string }[]
-    storyContext?: unknown
-    /** Phase A2: 服务端图内工具循环 — 传角色卡快照，服务端执行工具并回传更新。 */
-    characterSheet?: unknown
-  }): Promise<{ streamId: string }> {
-    try {
-      await this.ws.connect()
-    } catch (err) {
-      // WS-layer failures (not logged in / connect failure / closed) surface
-      // as BridgeError so `isBridgeError` checks stay uniform everywhere
-      // (task-7 minor fix ②).
-      throw err instanceof BridgeError ? err : new BridgeError(err instanceof Error ? err.message : String(err))
-    }
-    const streamId = generateStreamId()
-    this.ws.subscribe(streamId, {
-      onChunk: (chunk) => this.fanOut({ streamId, type: 'chunk', chunk }),
-      onEnd: (payload) => this.fanOut({ streamId, type: 'end', content: payload.content, toolCalls: payload.toolCalls, displayMessages: payload.displayMessages, worldDeltas: payload.worldDeltas, characterSheet: payload.characterSheet }),
-      onError: (error) => this.fanOut({ streamId, type: 'error', error }),
-      onTrace: (traceEvents) => this.fanOut({ streamId, type: 'trace', traceEvents }),
-    })
-    try {
-      if (params.characterSheet !== undefined && params.characterSheet !== null) {
-        this.ws.sendTurn(streamId, params.messages, params.storyContext ?? null, params.characterSheet)
-      } else {
-        this.ws.sendInvoke(streamId, params.messages, params.storyContext)
-      }
-    } catch (err) {
-      this.ws.unsubscribe(streamId)
-      throw err instanceof BridgeError ? err : new BridgeError(err instanceof Error ? err.message : String(err))
-    }
-    return { streamId }
-  }
-
-  /** Register a stream listener; returns an unsubscribe function. */
-  onKpStream(handler: (payload: KpStreamPayload) => void): () => void {
-    this.kpListeners.add(handler)
-    return () => {
-      this.kpListeners.delete(handler)
-    }
-  }
-
-  private fanOut(payload: KpStreamPayload): void {
-    for (const listener of [...this.kpListeners]) {
-      try {
-        listener(payload)
-      } catch {
-        // a listener must never break delivery to the others
-      }
-    }
   }
 
   // ── Rooms（Phase B3，多人联机）──────────────────────────────────────────

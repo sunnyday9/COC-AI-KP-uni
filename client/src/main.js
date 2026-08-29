@@ -20,15 +20,13 @@ export function createApp() {
 			import('./stores/settingsStore'),
 			import('./stores/roomStore'),
 			import('./stores/storyStore'),
-			import('./stores/debugStore'),
-		]).then(([piniaMod, settings, room, story, debug]) => {
+		]).then(([piniaMod, settings, room, story]) => {
 			const { createPinia, setActivePinia } = piniaMod;
 			setActivePinia(createPinia());
 			window.__stores = {
 				settings: settings.useSettingsStore,
 				room: room.useRoomStore,
 				story: story.useStoryStore,
-				debug: debug.useDebugStore,
 			};
 		});
 	}

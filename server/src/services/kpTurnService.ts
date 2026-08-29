@@ -7,8 +7,8 @@
  *     工具链不再每次重建图）；
  *   - 工具执行：复用 rule-engine（processToolCalls + buildToolContext），角色卡
  *     更新回调由本服务维护（sessionCharacter 快照）；
- *   - 一次 kp:turn 调用内完成 ≤8 轮，LLM 工具结果不再经网络往返；
- *   - 工具结果摘要/截断策略从 kpSessionService 原样迁移（防长链劣化）。
+ *   - 一次 runKpTurn 调用内完成 ≤8 轮，LLM 工具结果不再经网络往返；
+ *   - 工具结果摘要/截断策略原样保留（防长链劣化）。
  */
 import { invokeKPAgent } from '../agent/kpGraph.js'
 import { buildInvokeLLM, normalizeMessages, GRAPH_TIMEOUT_MS, getSharedGraph } from './kpAgentService.js'

@@ -393,7 +393,7 @@ export class RoomService {
         chatMessages,
         this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
         activeCharacterId,
-        () => { /* 流式块：可扩展为 kp:chunk 帧 */ },
+        () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
         allowedCharacterIds,
       )
     } finally {
@@ -579,7 +579,7 @@ export class RoomService {
         chatMessages,
         this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
         firstCharacterId,
-        () => { /* 流式块：可扩展为 kp:chunk 帧 */ },
+        () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
       )
     } catch {
       // opening 失败不阻塞（ADR-0002）

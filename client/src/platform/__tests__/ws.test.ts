@@ -1,13 +1,11 @@
 /**
- * WSService unit tests (Task 6) — connection state machine, heartbeat,
- * backoff reconnect, streamId routing, ignore-after-error. All socket
- * behavior is driven through the uni stub (no real WebSocket).
+ * WSService unit tests (Task 6; ADR-0002 更新) — connection state machine,
+ * heartbeat, backoff reconnect, room-frame routing. All socket behavior is
+ * driven through the uni stub (no real WebSocket). kp: 前缀流已退役。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WSService, type KpStreamHandlers, type WSServiceOptions } from '../ws'
+import { WSService, type WSServiceOptions } from '../ws'
 import { stubUni } from './uniMock'
-
-const noopHandlers = (): KpStreamHandlers => ({ onChunk: () => {}, onEnd: () => {}, onError: () => {} })
 
 describe('WSService', () => {
   let state: ReturnType<typeof stubUni>['state']
@@ -31,6 +29,14 @@ describe('WSService', () => {
       maxBackoffMs: 3_000,
       ...overrides,
     })
+  }
+
+  async function openWs(overrides: Partial<WSServiceOptions> = {}): Promise<{ ws: WSService; socket: ReturnType<typeof stubUni>['state']['sockets'][number] }> {
+    const ws = makeWs(overrides)
+    const p = ws.connect()
+    state.sockets[0].emitOpen()
+    await p
+    return { ws, socket: state.sockets[0] }
   }
 
   describe('connect', () => {
@@ -81,134 +87,64 @@ describe('WSService', () => {
 
   describe('heartbeat', () => {
     it('sends { type: ping } every 30s while open', async () => {
-      const ws = makeWs({ heartbeatMs: 30_000 })
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
+      const { ws, socket } = await openWs({ heartbeatMs: 30_000 })
       expect(socket.sent).toHaveLength(0)
       vi.advanceTimersByTime(30_000)
       expect(socket.sent).toHaveLength(1)
       expect(JSON.parse(socket.sent[0])).toEqual({ type: 'ping' })
       vi.advanceTimersByTime(30_000)
       expect(socket.sent).toHaveLength(2)
+      ws.close()
     })
 
     it('stops heartbeating after close()', async () => {
-      const ws = makeWs({ heartbeatMs: 30_000 })
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
+      const { ws, socket } = await openWs({ heartbeatMs: 30_000 })
       ws.close()
       vi.advanceTimersByTime(120_000)
       expect(socket.sent).toHaveLength(0)
     })
   })
 
-  describe('routing', () => {
-    it('delivers chunk / end / error frames to the matching stream handlers', async () => {
-      const ws = makeWs()
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
-      const chunks: string[] = []
-      const end: Array<{ content: string; toolCalls?: unknown[] }> = []
-      const errors: string[] = []
-      ws.subscribe('s1', { onChunk: (c) => chunks.push(c), onEnd: (e) => end.push(e), onError: (e) => errors.push(e) })
+  describe('room-frame routing', () => {
+    it('forwards room:state / room:event / room:sync:done / room:error to handlers', async () => {
+      const { ws, socket } = await openWs()
+      const frames: unknown[] = []
+      const off = ws.onRoomFrame((f) => frames.push(f))
 
-      socket.emitMessage({ type: 'chunk', streamId: 's1', chunk: 'a' })
-      socket.emitMessage({ type: 'chunk', streamId: 's1', chunk: 'b' })
-      socket.emitMessage({ type: 'end', streamId: 's1', content: 'ab', toolCalls: [{ id: 't', name: 'n', arguments: '{}' }] })
+      socket.emitMessage({ type: 'room:state', roomId: 'r1', seq: 0, snapshot: {} })
+      socket.emitMessage({ type: 'room:event', roomId: 'r1', seq: 1, eventType: 'room_meta', payload: {} })
+      socket.emitMessage({ type: 'room:sync:done', roomId: 'r1', seq: 2 })
+      socket.emitMessage({ type: 'room:error', roomId: 'r1', error: 'boom' })
+      expect(frames).toHaveLength(4)
 
-      expect(chunks).toEqual(['a', 'b'])
-      expect(end).toEqual([{ content: 'ab', toolCalls: [{ id: 't', name: 'n', arguments: '{}' }] }])
-      expect(errors).toHaveLength(0)
+      off()
+      socket.emitMessage({ type: 'room:event', roomId: 'r1', seq: 3, eventType: 'room_meta', payload: {} })
+      expect(frames).toHaveLength(4)
     })
 
-    it('delivers error frames and removes the handler', async () => {
-      const ws = makeWs()
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
-      const errors: string[] = []
-      const h = noopHandlers()
-      h.onError = (e) => errors.push(e)
-      ws.subscribe('s1', h)
-      socket.emitMessage({ type: 'error', streamId: 's1', error: 'boom' })
-      expect(errors).toEqual(['boom'])
-      // handler removed: late frames are dropped
-      socket.emitMessage({ type: 'end', streamId: 's1', content: 'late' })
-      socket.emitMessage({ type: 'chunk', streamId: 's1', chunk: 'late' })
-      expect(errors).toHaveLength(1)
+    it('a handler failure never breaks the message loop', async () => {
+      const { ws, socket } = await openWs()
+      const seen: string[] = []
+      ws.onRoomFrame(() => {
+        throw new Error('handler bug')
+      })
+      ws.onRoomFrame((f) => seen.push((f as { type: string }).type))
+      socket.emitMessage({ type: 'room:state', roomId: 'r1', seq: 0, snapshot: {} })
+      expect(seen).toEqual(['room:state'])
     })
 
-    it('ignores ALL subsequent frames for a streamId after its error frame', async () => {
-      const ws = makeWs()
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
-      const chunks: string[] = []
-      const ends: unknown[] = []
-      const errors: string[] = []
-      ws.subscribe('s1', { onChunk: (c) => chunks.push(c), onEnd: (e) => ends.push(e), onError: (e) => errors.push(e) })
-
-      socket.emitMessage({ type: 'error', streamId: 's1', error: 'timeout' })
-      socket.emitMessage({ type: 'chunk', streamId: 's1', chunk: 'racer' })
-      socket.emitMessage({ type: 'end', streamId: 's1', content: 'racer' })
-      socket.emitMessage({ type: 'error', streamId: 's1', error: 'again' })
-      expect(chunks).toHaveLength(0)
-      expect(ends).toHaveLength(0)
-      expect(errors).toEqual(['timeout'])
-    })
-
-    it('does not deliver frames for unsubscribed streams', async () => {
-      const ws = makeWs()
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
-      const chunks: string[] = []
-      ws.subscribe('s1', { onChunk: (c) => chunks.push(c), onEnd: () => {}, onError: () => {} })
-      ws.unsubscribe('s1')
-      socket.emitMessage({ type: 'chunk', streamId: 's1', chunk: 'x' })
-      expect(chunks).toHaveLength(0)
-    })
-
-    it('routes concurrent streams independently', async () => {
-      const ws = makeWs()
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
-      const a: string[] = []
-      const b: string[] = []
-      ws.subscribe('a', { onChunk: (c) => a.push(c), onEnd: () => {}, onError: () => {} })
-      ws.subscribe('b', { onChunk: (c) => b.push(c), onEnd: () => {}, onError: () => {} })
-      socket.emitMessage({ type: 'chunk', streamId: 'a', chunk: 'A1' })
-      socket.emitMessage({ type: 'chunk', streamId: 'b', chunk: 'B1' })
-      socket.emitMessage({ type: 'chunk', streamId: 'a', chunk: 'A2' })
-      expect(a).toEqual(['A1', 'A2'])
-      expect(b).toEqual(['B1'])
-    })
-
-    it('ignores non-stream frames (pong, rag:progress, trace, unknown) without crashing', async () => {
-      const ws = makeWs()
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
-      const errors: string[] = []
-      ws.subscribe('s1', { ...noopHandlers(), onError: (e) => errors.push(e) })
+    it('ignores non-room frames (pong, rag:progress, kp:*, unknown) without crashing', async () => {
+      const { socket } = await openWs()
+      const frames: unknown[] = []
+      // (listener registered via a fresh service would see nothing here anyway)
       socket.emitMessage({ type: 'pong' })
       socket.emitMessage({ type: 'rag:progress', payload: { done: 1 } })
-      socket.emitMessage({ type: 'trace', streamId: 's1', traceEvents: [] })
+      socket.emitMessage({ type: 'kp:turn', streamId: 's1' }) // 已退役帧
+      socket.emitMessage({ type: 'chunk', streamId: 's1', chunk: 'x' })
+      socket.emitMessage({ type: 'end', streamId: 's1', content: 'x' })
       socket.emitMessage({ type: 'nope' })
       socket.emitMessage('not json')
-      expect(errors).toHaveLength(0)
+      expect(frames).toHaveLength(0)
     })
   })
 
@@ -312,56 +248,18 @@ describe('WSService', () => {
   })
 
   describe('failure handling', () => {
-    it('fails active streams with the drop reason when the connection dies', async () => {
-      const ws = makeWs()
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const errors: string[] = []
-      ws.subscribe('s1', { ...noopHandlers(), onError: (e) => errors.push(e) })
-      state.sockets[0].emitClose()
-      expect(errors).toEqual(['连接已断开'])
-    })
-
-    it('a failed send triggers failure handling and a reconnect', async () => {
-      const ws = makeWs()
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
-      socket.failNextSend = true
-      ws.sendInvoke('s1', [{ role: 'user', content: 'hi' }])
+    it('a failed room send triggers failure handling and a reconnect', async () => {
+      const { ws } = await openWs()
+      state.sockets[0].failNextSend = true
+      ws.sendRoomFrame('room:join', { roomId: 'r1' })
       expect(ws.isConnected()).toBe(false)
       vi.advanceTimersByTime(1_000)
       expect(state.sockets).toHaveLength(2)
     })
 
-    it('sendInvoke throws when not connected', () => {
+    it('sendRoomFrame throws when not connected', () => {
       const ws = makeWs()
-      expect(() => ws.sendInvoke('s1', [])).toThrow('未连接')
-    })
-  })
-
-  describe('error-terminal pruning', () => {
-    it('bounds the error-marker map and prunes entries older than 10 minutes', async () => {
-      let fakeNow = 1_000_000
-      const ws = makeWs({ now: () => fakeNow })
-      const p = ws.connect()
-      state.sockets[0].emitOpen()
-      await p
-      const socket = state.sockets[0]
-
-      for (let i = 0; i < 130; i++) {
-        ws.subscribe(`sid${i}`, noopHandlers())
-        socket.emitMessage({ type: 'error', streamId: `sid${i}`, error: 'e' })
-      }
-      // nothing pruned yet (markers younger than TTL) — late frame still ignored
-      socket.emitMessage({ type: 'end', streamId: 'sid0', content: 'late' })
-      fakeNow += 11 * 60_000
-      ws.subscribe('fresh', noopHandlers())
-      socket.emitMessage({ type: 'error', streamId: 'fresh', error: 'e' })
-      // old markers pruned, fresh one retained — and no frames were ever sent
-      expect(socket.sent).toHaveLength(0)
+      expect(() => ws.sendRoomFrame('room:join', { roomId: 'r1' })).toThrow('未连接')
     })
   })
 })

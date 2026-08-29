@@ -334,6 +334,18 @@
 
 ---
 
+### D-35：A4 单人=单成员房间 + 回合协议收敛（2026-08-29，ADR-0002，#2 spec / #3-#7 票）
+
+**决策**（ADR-0002 + spec #2，grilling 全按推荐）：单人游戏 = `kind='solo'` 的单成员房间；wire 协议与 multi 完全一致，无 solo 专用帧；上下文注入（提示词/RAG/记忆）收口服务端；客户端只消费 RoomClient（roomStore）。落地分五票：
+
+- **T1（#3）**：rooms 表 `kind` 列（幂等迁移）+ `createSoloRoom` 一体领域动作（落角色卡+建 solo 房+绑卡+start，出生即 playing、turnWindowMs=0 进 state、懒激活保持）+ `listRoomsForUser` 过滤 solo + `listSoloRoomsForUser` 继续游戏列表 + REST `POST/GET /api/rooms/solo`。
+- **T2（#4）**：`server/src/services/kpPromptService.ts`（BASE_INSTRUCTIONS/角色卡块/记忆块/近轮块 + buildRoomTurnMessages/buildRoomOpeningMessages）与 `roomMemory.ts`（extractMemoryPoints/summarizeLongTerm 走 aiService.chat）为服务端唯一份；`flushTurn` 组装 [system(基础+长期+记忆+近轮+RAG+状态), 近窗对话, 合并 user]；opening 回合由 startRoom/joinRoom 触发一次（playing+无消息），失败不阻塞；kpMemory/longTermSummary 落 rooms.state；场景切换触发摘要。**顺带修潜在 bug：getOrCreateRoom 物化即 syncFromDb**——solo 先绑后 join、TTL 回收重进时实例角色组不再为空。
+- **T3（#5）**：角色确认 → `roomCreateSolo` 直接进房（URL 参数链传 storyId/occupation）；首页「继续游戏」（进入/删除）；游戏页与结局页改吃 roomStore（selfCharacterSheet/awaitingKp/ending），存读档 UI 移除（续玩=重进房间）；乐观自己消息（pending → echo 对齐）；rooms 列表页导航 bug 修复；gameStore/useGameGuard 删除。
+- **T4（#6）删除面清单**：ws `kp:turn`/`kp:invoke` handler、`/api/kp/invoke` 路由、client `kpSessionService`（含 runDirectChat 直连兜底）、client `kpPromptService`/`memoryService`/`memoryExtractService`、client `DebugPanel`+`debugStore`、bridge `kpInvoke`/`kpInvokeStream`/`onKpStream`、ws.ts `sendInvoke`/`sendTurn`/流路由/错误终结标记。保留：server `invokeKp`/`invokeKpStream`（服务级单发图入口，零生产调用方，作 mockAi/messages spec 的测试 harness）。wire 审计：生产代码零 `kp:` 前缀帧、零 `/api/kp` 路由。
+- **T5（#7）**：solo journey 重写 + 全量绿墙（见下方基线行）。
+
+---
+
 ## 验证基线记录
 
 | 时间 | 项目 | 结果 |

@@ -8,7 +8,6 @@ import { getBridge } from '../index'
 import { resetBaseUrlCache } from '../config'
 import { onUnauthorized, setToken } from '../token'
 import { stubUni, type MockSocket } from './uniMock'
-import type { KpStreamPayload } from '../../../../shared/types/bridge'
 import { TEST_PASSWORD, TEST_PASSWORD_BAD, TEST_PASSWORD_SHORT, TEST_TOKEN_A, TEST_TOKEN_B } from '../../testFixtures'
 
 function openFirstSocket(state: { sockets: MockSocket[] }): MockSocket {
@@ -98,7 +97,7 @@ describe('PlatformBridge', () => {
     it('logout clears the token and closes the WS connection', async () => {
       setToken('tok123')
       const bridge = new PlatformBridge()
-      const p = bridge.kpInvokeStream({ messages: [] })
+      const p = bridge.connectWs()
       openFirstSocket(state)
       await p
       await bridge.logout()
@@ -287,97 +286,12 @@ describe('PlatformBridge', () => {
     })
   })
 
-  describe('kp stream (WS)', () => {
-    it('lazily opens the WS with the token query and sends kp:invoke', async () => {
-      setToken('tok-ws')
-      const bridge = new PlatformBridge()
-      const p = bridge.kpInvokeStream({ messages: [{ role: 'user', content: '你好' }] })
-      expect(state.sockets).toHaveLength(1)
-      expect(state.sockets[0].url).toBe('/ws?token=tok-ws')
-      const socket = openFirstSocket(state)
-      const { streamId } = await p
-      expect(streamId).toBeTruthy()
-      const sent = JSON.parse(socket.sent[0]) as Record<string, unknown>
-      expect(sent).toMatchObject({ type: 'kp:invoke', streamId, messages: [{ role: 'user', content: '你好' }] })
-    })
-
-    it('fan-outs chunk → end with content and toolCalls to onKpStream listeners', async () => {
-      setToken('tok')
-      const bridge = new PlatformBridge()
-      const frames: KpStreamPayload[] = []
-      const off = bridge.onKpStream((f) => frames.push(f))
-      const p = bridge.kpInvokeStream({ messages: [{ role: 'user', content: 'hi' }] })
-      const socket = openFirstSocket(state)
-      const { streamId } = await p
-
-      socket.emitMessage({ type: 'chunk', streamId, chunk: '你' })
-      socket.emitMessage({ type: 'chunk', streamId, chunk: '好' })
-      socket.emitMessage({ type: 'end', streamId, content: '你好', toolCalls: [{ id: 't1', name: 'check', arguments: '{}' }] })
-
-      expect(frames).toEqual([
-        { streamId, type: 'chunk', chunk: '你' },
-        { streamId, type: 'chunk', chunk: '好' },
-        { streamId, type: 'end', content: '你好', toolCalls: [{ id: 't1', name: 'check', arguments: '{}' }] },
-      ])
-      off()
-    })
-
-    it('routes error frames to listeners', async () => {
-      setToken('tok')
-      const bridge = new PlatformBridge()
-      const frames: KpStreamPayload[] = []
-      const off = bridge.onKpStream((f) => frames.push(f))
-      const p = bridge.kpInvokeStream({ messages: [] })
-      const socket = openFirstSocket(state)
-      const { streamId } = await p
-      socket.emitMessage({ type: 'error', streamId, error: 'KP agent timeout' })
-      expect(frames).toEqual([{ streamId, type: 'error', error: 'KP agent timeout' }])
-      off()
-    })
-
-    it('ignores all frames for a streamId after its error frame (timeout-race guard)', async () => {
-      setToken('tok')
-      const bridge = new PlatformBridge()
-      const frames: KpStreamPayload[] = []
-      const off = bridge.onKpStream((f) => frames.push(f))
-      const p = bridge.kpInvokeStream({ messages: [] })
-      const socket = openFirstSocket(state)
-      const { streamId } = await p
-
-      socket.emitMessage({ type: 'error', streamId, error: 'timeout' })
-      const afterError = frames.length
-      socket.emitMessage({ type: 'chunk', streamId, chunk: '迟到块' })
-      socket.emitMessage({ type: 'end', streamId, content: '迟到 end' })
-      socket.emitMessage({ type: 'error', streamId, error: 'second error' })
-      expect(frames.length).toBe(afterError)
-      off()
-    })
-
-    it('onKpStream unsubscribe stops delivery', async () => {
-      setToken('tok')
-      const bridge = new PlatformBridge()
-      const frames: KpStreamPayload[] = []
-      const off = bridge.onKpStream((f) => frames.push(f))
-      const p = bridge.kpInvokeStream({ messages: [] })
-      const socket = openFirstSocket(state)
-      const { streamId } = await p
-      off()
-      socket.emitMessage({ type: 'chunk', streamId, chunk: 'x' })
-      expect(frames).toHaveLength(0)
-    })
-
-    it('rejects kpInvokeStream when not logged in (no token)', async () => {
-      const bridge = new PlatformBridge()
-      await expect(bridge.kpInvokeStream({ messages: [] })).rejects.toThrow('未登录')
-      expect(state.sockets).toHaveLength(0)
-    })
-
-    it('kpInvoke posts to /api/kp/invoke (non-stream)', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { content: 'answer', toolCalls: [] } })
-      const bridge = new PlatformBridge()
-      const result = await bridge.kpInvoke({ messages: [{ role: 'user', content: 'q' }] })
-      expect(result).toEqual({ content: 'answer', toolCalls: [] })
-      expect(state.requests[0]).toMatchObject({ url: '/api/kp/invoke', method: 'POST' })
+  describe('kp stream (WS) — 退役（ADR-0002）', () => {
+    it('bridge no longer exposes kp invoke/stream surface', () => {
+      const bridge = new PlatformBridge() as unknown as Record<string, unknown>
+      expect(bridge.kpInvoke).toBeUndefined()
+      expect(bridge.kpInvokeStream).toBeUndefined()
+      expect(bridge.onKpStream).toBeUndefined()
     })
   })
 

@@ -53,26 +53,6 @@ export interface ToolCallResult {
   arguments: string
 }
 
-export interface KpStreamPayload {
-  streamId: string
-  type: 'chunk' | 'end' | 'error' | 'trace'
-  chunk?: string
-  content?: string
-  toolCalls?: ToolCallResult[]
-  /** Phase A2: 服务端图内工具循环 — 工具产生的骰子/系统展示消息。 */
-  displayMessages?: unknown[]
-  /** Phase A2: 服务端工具执行产生的世界增量（线索/场景/结局）。 */
-  worldDeltas?: {
-    cluesAdded?: { description: string; clueId?: string }[]
-    sceneChanged?: string
-    ending?: unknown
-  }
-  /** Phase A2: 服务端更新后的角色卡快照。 */
-  characterSheet?: unknown
-  error?: string
-  traceEvents?: unknown[]
-}
-
 export interface Bridge {
   platform: Platform
 
@@ -110,12 +90,7 @@ export interface Bridge {
   }) => Promise<{ stream: boolean; content?: string; chunks?: string[] }>
   aiListModels: (params: { purpose?: 'chat' | 'embeddings' }) => Promise<{ value: string; label: string }[]>
 
-  // ── KP Agent（LangGraph）──────────────────────────────────────
-  kpInvoke: (params: {
-    messages: { role: string; content: string }[]
-  }) => Promise<{ content?: string; toolCalls?: ToolCallResult[] }>
-  kpInvokeStream: (params: { messages: { role: string; content: string }[] }) => Promise<{ streamId: string }>
-  onKpStream: (handler: (payload: KpStreamPayload) => void) => () => void
+  // ── KP 回合（ADR-0002：kp: 前缀帧与 /api/kp/invoke 已退役，回合走房间协议）──
 
   // ── Saves ─────────────────────────────────────────────────────
   listSaves: () => Promise<string[]>

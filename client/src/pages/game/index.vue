@@ -1,15 +1,13 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
+import { ref, watch, nextTick, computed, onMounted } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
 import { useRoomStore } from '../../stores/roomStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import ChatMessage from './components/ChatMessage.vue'
 import PlayerStatsBar from './components/PlayerStatsBar.vue'
-import DebugPanel from './components/DebugPanel.vue'
 import AppLayout from '../../components/layout/AppLayout.vue'
 
-const isDev = import.meta.env.DEV
 const roomStore = useRoomStore()
 const settingsStore = useSettingsStore()
 
@@ -38,8 +36,6 @@ const inputText = ref('')
 const textareaFocus = ref(false)
 const lastMsgAnchor = ref('')
 const cluesPanelOpen = ref(false)
-/** Task 8（简报决策 5）：DebugPanel 仅 debugMode；开发模式默认展开（原行为） */
-const debugPanelOpen = ref(isDev)
 
 /** 消息列表自动滚底：scroll-into-view 锚点 = 最后一条消息 id（替代 scrollIntoView） */
 function scrollToBottom() {
@@ -50,18 +46,6 @@ function scrollToBottom() {
 }
 
 watch(messages, () => scrollToBottom(), { deep: true })
-
-// 键盘快捷键（Ctrl+Shift+D 切换 Debug Panel）—— H5 only（小程序无全局键盘）
-// #ifdef H5
-function handleGlobalKeydown(e: KeyboardEvent) {
-  if (e.ctrlKey && e.shiftKey && e.key === 'D') {
-    e.preventDefault()
-    debugPanelOpen.value = !debugPanelOpen.value
-  }
-}
-onMounted(() => document.addEventListener('keydown', handleGlobalKeydown))
-onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
-// #endif
 
 onLoad((options) => {
   const rid = String(options?.roomId ?? '')
@@ -74,11 +58,9 @@ onLoad((options) => {
   void roomStore.joinRoom(rid)
 })
 
-// DebugPanel 等子组件挂载后读取 debugMode 设置
+// DebugPanel 等子组件挂载后读取设置（持久化偏好）
 onMounted(() => {
-  settingsStore.load().then(() => {
-    if (settingsStore.debugMode && !isDev) debugPanelOpen.value = true
-  }).catch(() => {})
+  settingsStore.load().catch(() => {})
   scrollToBottom()
 })
 
@@ -132,9 +114,6 @@ function handleOptionSelected(opt: string) {
             </view>
           </view>
 
-          <button v-if="isDev" class="action-btn" :class="{ 'action-btn-active': debugPanelOpen }" @click="debugPanelOpen = !debugPanelOpen">
-            <text class="dbg-text">DBG</text>
-          </button>
           <button v-if="cluesObtained.length > 0" class="action-btn" @click="cluesPanelOpen = !cluesPanelOpen">
             <text>📜 线索</text>
             <text class="clue-badge">{{ cluesObtained.length }}</text>
@@ -203,11 +182,6 @@ function handleOptionSelected(opt: string) {
             <text decode>{{ clue.description }}</text>
           </view>
         </scroll-view>
-      </view>
-
-      <!-- 调试面板（仅 debugMode；开发模式默认展开，Ctrl+Shift+D 切换） -->
-      <view v-if="debugPanelOpen" class="debug-aside">
-        <debug-panel />
       </view>
     </view>
   </app-layout>

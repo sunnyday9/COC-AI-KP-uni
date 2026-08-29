@@ -4,7 +4,7 @@
  * All Task 7-10 code should access the backend via `getBridge()`.
  * `initBridge()` returns the same singleton and optionally warms the WS
  * connection when a token already exists (preconnect strategy; failures are
- * swallowed — the WSService backoff reconnects on the next kpInvokeStream).
+ * swallowed — the WSService backoff reconnects on the next connect()).
  */
 import { PlatformBridge } from './bridge'
 import { getToken } from './token'
@@ -27,7 +27,6 @@ export function initBridge(options: { preconnect?: boolean } = {}): PlatformBrid
 }
 
 export type { UploadResult } from './bridge'
-export type { KpStreamPayload, ToolCallResult } from '../../../shared/types/bridge'
 export { BridgeError } from './bridge'
 export { getBaseUrl, getWsBaseUrl, getPlatform } from './config'
 export { getToken, setToken, clearToken, onUnauthorized } from './token'

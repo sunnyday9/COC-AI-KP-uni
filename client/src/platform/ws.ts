@@ -1,5 +1,5 @@
 /**
- * WSService (Task 6) — one shared WebSocket connection for all KP streams.
+ * WSService (Task 6) — one shared WebSocket connection for the room protocol.
  *
  * State machine (per task-6-brief decision 4/5):
  *
@@ -9,47 +9,21 @@
  *                    │  cap 30s) then retry     │ (auto; not user-close)
  *                    └───────────◀──────────────┘
  *
- * - Lazy connect: the socket is only opened on the first `kpInvokeStream`
- *   (i.e. the first `connect()`/`sendInvoke`).
+ * - Lazy connect: the socket is only opened on the first `connect()`
+ *   (roomStore.joinRoom → bridge.connectWs).
  * - Heartbeat: `{ type: 'ping' }` every 30s while open; the server answers
  *   `{ type: 'pong' }` (ignored here).
- * - Routing: server frames carry `streamId`; per-stream handlers are looked
- *   up in a subscription map. Multiple streams share the one connection.
- * - Ignore-after-error: once an `error` frame is seen for a streamId, ALL
- *   subsequent frames for that streamId are dropped (timeout-race guard from
- *   the Task 3 review); markers are pruned after 10 minutes when the map
- *   grows past 128 entries.
- * - When an established connection drops, active streams are failed with a
- *   synthetic error so callers never hang; the caller may retry.
- * - Frames of unknown type (e.g. server→client `rag:progress`, `trace`) are
- *   ignored at this layer, mirroring the server's unknown-frame handling.
+ * - Routing: room frames (`room:state` / `room:event` / `room:sync:done` /
+ *   `room:error`) are forwarded to every RoomFrameHandler (ADR-0002 — the KP
+ *   `kp:` 前缀帧已退役，回合输出走房间事件流).
+ * - When an established connection drops, roomStore is notified via
+ *   onReconnect after the automatic reconnect succeeds.
+ * - Frames of unknown type (e.g. server→client `rag:progress`) are ignored at
+ *   this layer, mirroring the server's unknown-frame handling.
  */
 import { getWsBaseUrl } from './config'
 import { getToken } from './token'
 import type { RoomServerFrame } from '../../../shared/types/room'
-
-export interface ToolCall {
-  id: string
-  name: string
-  arguments: string
-}
-
-export interface KpStreamHandlers {
-  onChunk: (chunk: string) => void
-  onEnd: (payload: {
-    content: string
-    toolCalls?: ToolCall[]
-    /** Phase A2: 服务端图内工具循环 — 工具产生的骰子/系统展示消息。 */
-    displayMessages?: unknown[]
-    /** Phase A2: 服务端工具执行产生的世界增量（线索/场景/结局）。 */
-    worldDeltas?: { cluesAdded?: { description: string; clueId?: string }[]; sceneChanged?: string; ending?: unknown }
-    /** Phase A2: 服务端更新后的角色卡快照。 */
-    characterSheet?: unknown
-  }) => void
-  onError: (error: string) => void
-  /** Optional: server graph trace events (delivered when the frame arrives). */
-  onTrace?: (traceEvents: unknown[]) => void
-}
 
 /** Phase B3: 房间帧监听器（room:state / room:event / room:sync:done / room:error）。 */
 export type RoomFrameHandler = (frame: RoomServerFrame) => void
@@ -65,8 +39,6 @@ export interface WSServiceOptions {
   wsUrl?: () => string
   /** Token provider (default: token.getToken). */
   token?: () => string | null
-  /** Clock for error-marker pruning. */
-  now?: () => number
 }
 
 /**
@@ -92,20 +64,9 @@ function toSocketTask(task: unknown): SocketTaskLike {
 const DEFAULT_HEARTBEAT_MS = 30_000
 const DEFAULT_BASE_BACKOFF_MS = 1_000
 const DEFAULT_MAX_BACKOFF_MS = 30_000
-const ERROR_MARKER_TTL_MS = 10 * 60_000
-const ERROR_MARKER_CAP = 128
 
 interface WsFrame {
   type?: unknown
-  streamId?: unknown
-  chunk?: unknown
-  content?: unknown
-  toolCalls?: unknown
-  displayMessages?: unknown
-  worldDeltas?: unknown
-  characterSheet?: unknown
-  error?: unknown
-  traceEvents?: unknown
 }
 
 export class WSService {
@@ -114,8 +75,6 @@ export class WSService {
   private connectPromise: Promise<void> | null = null
   private resolveConnect: (() => void) | null = null
   private rejectConnect: ((err: Error) => void) | null = null
-  private streams = new Map<string, KpStreamHandlers>()
-  private errorTerminal = new Map<string, number>()
   private roomHandlers = new Set<RoomFrameHandler>()
   /** 重连成功后通知（roomStore 据此重新订阅房间——审查修复 #2）。 */
   private reconnectListeners = new Set<() => void>()
@@ -132,7 +91,6 @@ export class WSService {
   private readonly maxBackoffMs: number
   private readonly wsUrl: () => string
   private readonly token: () => string | null
-  private readonly now: () => number
 
   constructor(options: WSServiceOptions = {}) {
     this.heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
@@ -140,7 +98,6 @@ export class WSService {
     this.maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS
     this.wsUrl = options.wsUrl ?? getWsBaseUrl
     this.token = options.token ?? getToken
-    this.now = options.now ?? (() => Date.now())
   }
 
   isConnected(): boolean {
@@ -165,8 +122,6 @@ export class WSService {
 
   /**
    * User-initiated shutdown (logout / app teardown). No reconnect.
-   * In-flight streams are failed with a terminal error so callers waiting
-   * on a stream never hang (task-7 minor fix ①).
    */
   close(): void {
     this.closedByUser = true
@@ -177,8 +132,6 @@ export class WSService {
       this.reconnectTimer = null
     }
     this.dropPendingConnect(new Error('Bridge: WebSocket 已关闭'))
-    this.failActiveStreams('连接已关闭')
-    this.errorTerminal.clear()
     this.backoffMs = 0
     const socket = this.socket
     this.socket = null
@@ -192,48 +145,7 @@ export class WSService {
     }
   }
 
-  /** Subscribe per-stream handlers (called before sendInvoke). */
-  subscribe(streamId: string, handlers: KpStreamHandlers): void {
-    this.streams.set(streamId, handlers)
-  }
-
-  unsubscribe(streamId: string): void {
-    this.streams.delete(streamId)
-  }
-
-  /** Send a `kp:invoke` frame. Requires an open connection. */
-  sendInvoke(streamId: string, messages: { role: string; content: string }[], storyContext?: unknown): void {
-    if (!this.isConnected() || !this.socket) {
-      throw new Error('Bridge: WebSocket 未连接')
-    }
-    const frame: Record<string, unknown> = { type: 'kp:invoke', streamId, messages }
-    if (storyContext !== undefined && storyContext !== null) frame.storyContext = storyContext
-    this.socket.send({
-      data: JSON.stringify(frame),
-      fail: () => this.handleFailure('消息发送失败'),
-    })
-  }
-
-  /** Send a `kp:turn` frame (Phase A2 服务端图内工具循环). Requires an open connection. */
-  sendTurn(
-    streamId: string,
-    messages: { role: string; content: string }[],
-    storyContext: unknown,
-    characterSheet: unknown,
-  ): void {
-    if (!this.isConnected() || !this.socket) {
-      throw new Error('Bridge: WebSocket 未连接')
-    }
-    const frame: Record<string, unknown> = { type: 'kp:turn', streamId, messages }
-    if (storyContext !== undefined && storyContext !== null) frame.storyContext = storyContext
-    if (characterSheet !== undefined && characterSheet !== null) frame.characterSheet = characterSheet
-    this.socket.send({
-      data: JSON.stringify(frame),
-      fail: () => this.handleFailure('消息发送失败'),
-    })
-  }
-
-  // ── Phase B3: 房间帧（与 KP 流共享同一连接，逐帧转发） ───────────────
+  // ── 房间帧（ADR-0002：唯一的应用层帧族） ─────────────────────────────
 
   /** 订阅房间帧（room:state/event/sync:done/error）。返回取消函数。 */
   onRoomFrame(handler: RoomFrameHandler): () => void {
@@ -373,7 +285,6 @@ export class WSService {
     }
 
     this.dropPendingConnect(new Error(`Bridge: ${reason}`))
-    this.failActiveStreams(reason)
     this.scheduleReconnect()
   }
 
@@ -383,18 +294,6 @@ export class WSService {
     this.rejectConnect = null
     this.connectPromise = null
     reject?.(err)
-  }
-
-  private failActiveStreams(reason: string): void {
-    const active = [...this.streams.values()]
-    this.streams.clear()
-    for (const h of active) {
-      try {
-        h.onError(reason)
-      } catch {
-        // handler failures never break the teardown loop
-      }
-    }
   }
 
   private scheduleReconnect(): void {
@@ -448,7 +347,7 @@ export class WSService {
     const type = frame.type
     if (type === 'pong' || type === 'rag:progress') return
 
-    // Phase B3: 房间帧（room:*) 逐帧转发给订阅者（roomStore）；与 KP 流路由无关。
+    // 房间帧（room:*）逐帧转发给订阅者（roomStore）。
     if (type === 'room:state' || type === 'room:event' || type === 'room:sync:done' || type === 'room:error') {
       for (const h of this.roomHandlers) {
         try {
@@ -460,82 +359,6 @@ export class WSService {
       return
     }
 
-    // trace frames are delivered to the stream's onTrace handler (the
-    // kpSessionService subscribes with a trace listener; previously they were
-    // silently dropped here, making the server's trace events dead on the
-    // wire — see test-agent REPORT).
-    if (type === 'trace') {
-      const streamId = typeof frame.streamId === 'string' ? frame.streamId : ''
-      if (!streamId || this.errorTerminal.has(streamId)) return
-      const handlers = this.streams.get(streamId)
-      if (handlers?.onTrace && Array.isArray(frame.traceEvents)) {
-        try {
-          handlers.onTrace(frame.traceEvents)
-        } catch {
-          // handler failures never break the message loop
-        }
-      }
-      return
-    }
-
-    if (type !== 'chunk' && type !== 'end' && type !== 'error') return
-    const streamId = typeof frame.streamId === 'string' ? frame.streamId : ''
-    if (!streamId) return
-
-    // Ignore-after-error: no frames for an errored stream are delivered.
-    if (this.errorTerminal.has(streamId)) return
-
-    if (type === 'error') {
-      this.markErrorTerminal(streamId)
-      const handlers = this.streams.get(streamId)
-      this.streams.delete(streamId)
-      if (handlers) {
-        try {
-          handlers.onError(typeof frame.error === 'string' && frame.error ? frame.error : 'KP 流错误')
-        } catch {
-          // handler failures never break the message loop
-        }
-      }
-      return
-    }
-
-    if (type === 'end') {
-      const handlers = this.streams.get(streamId)
-      this.streams.delete(streamId)
-      if (handlers) {
-        try {
-          handlers.onEnd({
-            content: typeof frame.content === 'string' ? frame.content : '',
-            toolCalls: Array.isArray(frame.toolCalls) ? (frame.toolCalls as ToolCall[]) : undefined,
-            displayMessages: Array.isArray(frame.displayMessages) ? (frame.displayMessages as unknown[]) : undefined,
-            worldDeltas: frame.worldDeltas as { cluesAdded?: { description: string; clueId?: string }[]; sceneChanged?: string; ending?: unknown } | undefined,
-            characterSheet: frame.characterSheet,
-          })
-        } catch {
-          // see above
-        }
-      }
-      return
-    }
-
-    // chunk
-    const handlers = this.streams.get(streamId)
-    if (handlers && typeof frame.chunk === 'string') {
-      try {
-        handlers.onChunk(frame.chunk)
-      } catch {
-        // see above
-      }
-    }
-  }
-
-  private markErrorTerminal(streamId: string): void {
-    const now = this.now()
-    this.errorTerminal.set(streamId, now)
-    if (this.errorTerminal.size > ERROR_MARKER_CAP) {
-      for (const [sid, ts] of this.errorTerminal) {
-        if (now - ts > ERROR_MARKER_TTL_MS) this.errorTerminal.delete(sid)
-      }
-    }
+    // unknown types ignored (kp: 前缀帧已随 ADR-0002 退役)
   }
 }
