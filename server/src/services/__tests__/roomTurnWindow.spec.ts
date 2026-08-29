@@ -124,16 +124,16 @@ describe('RoomService 回合窗口合并（D4）', () => {
     room.bufferPlayerChat('alice', '即时可见', null, 1)
 
     const appended = listener.mock.calls
-      .map((c) => c[0] as { type: string; payload?: { content?: string } })
+      .map((c) => c[0] as { type: string; payload?: { message?: { content?: string } } })
       .filter((e) => e.type === 'message_appended')
-    expect(appended.some((e) => e.payload?.content === '即时可见')).toBe(true)
-    expect(appended.some((e) => e.payload?.content?.includes('KP 回应'))).toBe(false) // KP 回复未到
+    expect(appended.some((e) => e.payload?.message?.content === '即时可见')).toBe(true)
+    expect(appended.some((e) => e.payload?.message?.content?.includes('KP 回应'))).toBe(false) // KP 回复未到
 
     await new Promise((r) => setTimeout(r, 350))
     const after = listener.mock.calls
-      .map((c) => c[0] as { type: string; payload?: { content?: string } })
+      .map((c) => c[0] as { type: string; payload?: { message?: { content?: string } } })
       .filter((e) => e.type === 'message_appended')
-    expect(after.some((e) => e.payload?.content?.includes('KP 回应'))).toBe(true)
+    expect(after.some((e) => e.payload?.message?.content?.includes('KP 回应'))).toBe(true)
   })
 
   it('空缓冲 flush 不触发 KP 回合', async () => {

@@ -15,6 +15,8 @@
  *      room:error  { roomId, error }
  */
 
+import type { Message } from './game.js'
+
 /** 房间阶段（与 server RoomPhase 一致）。 */
 export type RoomPhase = 'lobby' | 'playing' | 'ended'
 
@@ -28,14 +30,28 @@ export interface RoomMemberInfo {
   characterId: string | null
 }
 
-/** 房间事件类型（与 server RoomEvent 一致）。 */
-export type RoomEventType = 'message_appended' | 'state_patch' | 'dice_result' | 'room_meta' | 'trace'
+/** 房间事件 payload 单一来源（评审候选 3）。
+ * 新增事件：在此加条目 → RoomEventType / RoomEventPayload / server RoomEvent 随之派生
+ * → server emit → client applyEvent 加 case；三处形状由编译器对齐。 */
+export interface RoomEventPayloadMap {
+  message_appended: RoomMessageAppendedPayload
+  state_patch: RoomStatePatchPayload
+  dice_result: RoomDiceResultPayload
+  room_meta: RoomMetaPayload
+  trace: RoomTracePayload
+}
+
+/** 房间事件类型（从 payload map 派生）。 */
+export type RoomEventType = keyof RoomEventPayloadMap
+
+/** 增量事件 payload 联合（客户端按 eventType 分流）。 */
+export type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
 
 export interface RoomMessageAppendedPayload {
-  pendingId?: string
+  /** 服务端完整消息（id/timestamp/role/playerName）——客户端直接 append，无需重建。 */
+  message: Message
+  /** 发言者（玩家消息 roleName=username；KP 消息 roleName='KP'）。 */
   author: { userId: number; roleName: string }
-  content: string
-  kind: string
 }
 
 export interface RoomStatePatchPayload {
@@ -64,7 +80,7 @@ export interface RoomEventFrame {
   roomId: string
   seq: number
   eventType: RoomEventType
-  payload: RoomMessageAppendedPayload | RoomStatePatchPayload | RoomDiceResultPayload | RoomMetaPayload | RoomTracePayload
+  payload: RoomEventPayload
 }
 
 /** 房间全量快照（room:state 帧；与 server RoomSnapshot 对齐）。 */
@@ -72,14 +88,7 @@ export interface RoomSnapshot {
   seq: number
   phase: RoomPhase
   storyId: string | null
-  messages: {
-    id: string
-    timestamp: number
-    role: string
-    content: string
-    playerName?: string
-    isStreaming?: boolean
-  }[]
+  messages: Message[]
   characters: Record<string, unknown>
   clues: { id: string; description: string }[]
   scene: string | null

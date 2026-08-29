@@ -17,7 +17,7 @@
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomDiceResultPayload, RoomMetaPayload, RoomTracePayload } from '../../../shared/types/room'
+import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomDiceResultPayload, RoomMetaPayload, RoomTracePayload } from '../../../shared/types/room'
 import type { Message } from '../../../shared/types/game'
 import { getBridge } from '../platform'
 
@@ -101,7 +101,7 @@ export const useRoomStore = defineStore('room', () => {
     // 成员列表来自 REST（room:state 不含 members；room_meta 事件会覆盖）
   }
 
-type RoomEventPayload = RoomMessageAppendedPayload | RoomStatePatchPayload | RoomDiceResultPayload | RoomMetaPayload | RoomTracePayload
+type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
 
   /** 应用增量事件（按 seq 严格递增，服务端已保证全序）。 */
   function applyEvent(seq: number, eventType: RoomEventType, payload: RoomEventPayload): void {
@@ -111,17 +111,9 @@ type RoomEventPayload = RoomMessageAppendedPayload | RoomStatePatchPayload | Roo
     switch (eventType) {
       case 'message_appended': {
         const p = payload as RoomMessageAppendedPayload
-        if (!p || typeof p.content !== 'string') break
-        const id = p.pendingId ?? `evt_${seq}`
-        const kind = p.kind
-        const record: RoomMessageRecord = {
-          id,
-          timestamp: Date.now(),
-          role: kind === 'player' ? 'player' : kind === 'system' ? 'system' : 'kp',
-          playerName: p.author?.roleName,
-          content: p.content,
-        }
-        messages.value.push(record)
+        if (!p?.message || typeof p.message.content !== 'string') break
+        // payload 携带服务端完整 Message（含 id/timestamp/playerName）——直接 append
+        messages.value.push(p.message)
         break
       }
       case 'state_patch': {

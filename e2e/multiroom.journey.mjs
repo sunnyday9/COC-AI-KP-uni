@@ -193,8 +193,8 @@ async function main() {
       await wsA2.waitFor((f) => f.type === 'room:state' && f.roomId === roomId, 10_000, 'A2 room:state')
       // A2 发消息 → A1 与 B 都收到同一 seq
       wsA2.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '设备2 发来的消息。' } } }))
-      const evA1 = await wsA.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '设备2 发来的消息。', 15_000, 'A1 sees A2 msg')
-      const evB2 = await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '设备2 发来的消息。', 15_000, 'B sees A2 msg')
+      const evA1 = await wsA.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '设备2 发来的消息。', 15_000, 'A1 sees A2 msg')
+      const evB2 = await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '设备2 发来的消息。', 15_000, 'B sees A2 msg')
       assert(evA1.seq === evB2.seq, `seq mismatch across devices: A1=${evA1.seq} B=${evB2.seq}`)
       wsA2.socket.send(JSON.stringify({ type: 'room:leave', roomId }))
       wsA2.socket.close()
@@ -202,12 +202,13 @@ async function main() {
 
     await step('A 发 chat → B 收到 message_appended（同 seq）', async () => {
       wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我调查一下书架。' } } }))
-      const evB = await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我调查一下书架。', 15_000, 'B message event')
-      assert(evB.payload.content === '我调查一下书架。', `content mismatch: ${evB.payload.content}`)
+      const evB = await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '我调查一下书架。', 15_000, 'B message event')
+      assert(evB.payload.message.content === '我调查一下书架。', `content mismatch: ${evB.payload.message.content}`)
       assert(evB.payload.author.userId === userA.userId, `author mismatch: ${evB.payload.author.userId} != ${userA.userId}`)
+      assert(typeof evB.payload.message.id === 'string' && typeof evB.payload.message.timestamp === 'number', '完整 Message（id/timestamp）缺失')
       assert(typeof evB.seq === 'number' && evB.seq > 0, 'seq missing')
       // A 自己也应收到（全序广播）
-      const evA = await wsA.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我调查一下书架。', 15_000, 'A message event')
+      const evA = await wsA.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '我调查一下书架。', 15_000, 'A message event')
       assert(evA.seq === evB.seq, `seq mismatch: A=${evA.seq} B=${evB.seq}`)
     })
 
@@ -223,25 +224,25 @@ async function main() {
       wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我侦查一下书架。' } } }))
       // B 应收到：玩家消息 + KP 回复（mock 侦查 → skill_check → grant_clue → 收尾）
       const kpMsg = await wsB.waitFor(
-        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp',
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp',
         20_000,
         'B kp reply',
       )
-      assert(kpMsg.payload.content.length > 0, 'kp reply empty')
+      assert(kpMsg.payload.message.content.length > 0, 'kp reply empty')
       // A 也应收到同一 KP 回复（全序广播）
       const kpMsgA = await wsA.waitFor(
-        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp',
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp',
         20_000,
         'A kp reply',
       )
       assert(kpMsgA.seq === kpMsg.seq, `kp seq mismatch: A=${kpMsgA.seq} B=${kpMsg.seq}`)
       // 骰子展示消息（skill_check 的 displayMessage）也应广播
       const dice = await wsB.waitFor(
-        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && typeof f.payload?.content === 'string' && f.payload.content.includes('检定'),
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && typeof f.payload?.message?.content === 'string' && f.payload.message.content.includes('检定'),
         20_000,
         'B dice display',
       )
-      assert(dice.payload.content.includes('侦查'), `dice content mismatch: ${dice.payload.content}`)
+      assert(dice.payload.message.content.includes('侦查'), `dice content mismatch: ${dice.payload.message.content}`)
     })
 
     await step('B room:sync 增量补齐（lastSeq 后的事件，非全量）', async () => {
@@ -249,12 +250,12 @@ async function main() {
       const beforeSeq = wsB.frames.filter((f) => f.type === 'room:event').reduce((m, f) => Math.max(m, f.seq ?? 0), 0)
       wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我检查一下门。' } } }))
       // 等 B 实时收到这条消息（确认 seq 已前进）
-      await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我检查一下门。', 15_000, 'B live msg')
+      await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '我检查一下门。', 15_000, 'B live msg')
       // B 用「错过」的 lastSeq sync → 服务端增量补发（room:event，非全量 state）
       wsB.socket.send(JSON.stringify({ type: 'room:sync', roomId, lastSeq: beforeSeq }))
       await wsB.waitFor((f) => f.type === 'room:sync:done' && f.roomId === roomId, 10_000, 'B sync done')
       // 增量路径验证：sync 后 B 又收到一条「我检查一下门。」（增量补发，与实时那条重复）
-      const msgCount = wsB.frames.filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我检查一下门。').length
+      const msgCount = wsB.frames.filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '我检查一下门。').length
       assert(msgCount >= 2, `expected >=2 copies (live + incremental), got ${msgCount}`)
       // 且增量 sync 未触发全量 state（增量窗口内）
       const statesAtSyncStart = wsB.frames.filter((f) => f.type === 'room:state').length
@@ -266,7 +267,7 @@ async function main() {
     await step('A/B 窗口内各发一条 → 合并为一次 KP 回合（D4）', async () => {
       // 记录当前最大 kp 回复 seq（避免与上一回合的回复混淆）
       const kpMaxSeq = wsB.frames
-        .filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp')
+        .filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp')
         .reduce((m, f) => Math.max(m, f.seq ?? 0), 0)
       // A、B 在默认 5s 窗口内先后发消息
       wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我搜索书架。' } } }))
@@ -274,20 +275,20 @@ async function main() {
       wsB.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我查看窗户。' } } }))
       // 等窗口 flush 后的 KP 回合回复（seq 必须大于步骤开始时的水位）
       const kpReply = await wsB.waitFor(
-        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp' && (f.seq ?? 0) > kpMaxSeq,
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp' && (f.seq ?? 0) > kpMaxSeq,
         20_000,
         'merged kp reply',
       )
-      assert(kpReply.payload.content.length > 0, 'merged kp reply empty')
+      assert(kpReply.payload.message.content.length > 0, 'merged kp reply empty')
       // 合并窗口只触发一次 KP 回合（窗口内两条 → 1 次推理）；等窗口稳定后再断言
       await new Promise((r) => setTimeout(r, 6_000))
       const kpAfter = wsB.frames
-        .filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.kind === 'kp' && (f.seq ?? 0) > kpMaxSeq)
+        .filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp' && (f.seq ?? 0) > kpMaxSeq)
         .length
       assert(kpAfter === 1, `expected exactly 1 merged kp reply, got ${kpAfter}`)
       // 两条玩家消息都实时广播了（聊天即时可见）
-      const aSeen = wsB.frames.some((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我搜索书架。')
-      const bSeen = wsB.frames.some((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.content === '我查看窗户。')
+      const aSeen = wsB.frames.some((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '我搜索书架。')
+      const bSeen = wsB.frames.some((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '我查看窗户。')
       assert(aSeen && bSeen, `both player msgs should be broadcast (A=${aSeen} B=${bSeen})`)
     })
 

@@ -120,10 +120,10 @@ describe('roomStore', () => {
   it('applies incremental events in seq order and drops duplicates', async () => {
     await joinAndSync()
 
-    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'message_appended', payload: { pendingId: 'm1', author: { userId: 2, roleName: 'bob' }, content: 'hello', kind: 'player' } })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'message_appended', payload: { message: { id: 'm1', timestamp: 1720000000000, role: 'player', playerName: 'bob', content: 'hello' }, author: { userId: 2, roleName: 'bob' } } })
     emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'state_patch', payload: { path: 'scene', value: '地下室' } })
     // duplicate seq=1 — must be ignored
-    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'message_appended', payload: { pendingId: 'm1', author: { userId: 2, roleName: 'bob' }, content: 'hello', kind: 'player' } })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'message_appended', payload: { message: { id: 'm1', timestamp: 1720000000000, role: 'player', playerName: 'bob', content: 'hello' }, author: { userId: 2, roleName: 'bob' } } })
 
     expect(store.lastSeq).toBe(2)
     expect(store.messages).toHaveLength(1)
@@ -201,7 +201,7 @@ describe('roomStore', () => {
     await joinAndSync()
     store.leaveRoom()
 
-    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'message_appended', payload: { pendingId: 'm1', author: { userId: 2, roleName: 'bob' }, content: 'late', kind: 'player' } })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'message_appended', payload: { message: { id: 'm1', timestamp: 1720000000000, role: 'player', playerName: 'bob', content: 'late' }, author: { userId: 2, roleName: 'bob' } } })
     expect(store.messages).toHaveLength(0)
     expect(store.roomId).toBeNull()
   })

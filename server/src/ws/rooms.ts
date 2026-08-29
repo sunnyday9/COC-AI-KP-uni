@@ -83,8 +83,8 @@ export function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown):
   // 但多次挂接会产生重复回调 → 用标记位防止重复订阅）。
   if (!roomBroadcastAttached.has(room)) {
     roomBroadcastAttached.add(room)
-    room.subscribe((event: RoomEvent) => {
-      broadcast(roomId, event, room.getSeq())
+    room.subscribe((event: RoomEvent, seq: number) => {
+      broadcast(roomId, event, seq)
     })
   }
   subscribeSocket(socket, roomId)
@@ -97,8 +97,8 @@ export function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown):
 export function attachRoomBroadcast(roomId: string): void {
   const room = getRoom(roomId)
   if (!room) return
-  room.subscribe((event: RoomEvent) => {
-    broadcast(roomId, event, room.getSeq())
+  room.subscribe((event: RoomEvent, seq: number) => {
+    broadcast(roomId, event, seq)
   })
 }
 

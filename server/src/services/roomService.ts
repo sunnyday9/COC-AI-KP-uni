@@ -12,29 +12,26 @@
  */
 import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
+import type {
+  RoomEventPayloadMap,
+  RoomEventType,
+  RoomMemberInfo,
+  RoomMemberRole,
+  RoomPhase as SharedRoomPhase,
+} from '../../../shared/types/room.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import type { Message } from '../../../shared/types/game.js'
 
-/** 房间阶段。 */
-export type RoomPhase = 'lobby' | 'playing' | 'ended'
+/** 房间阶段（shared 单一来源别名——评审候选 3）。 */
+export type RoomPhase = SharedRoomPhase
 
-/** 房间成员角色。 */
-export type MemberRole = 'owner' | 'member' | 'observer'
+/** 房间成员角色（shared 单一来源别名）。 */
+export type MemberRole = RoomMemberRole
 
-export interface RoomMember {
-  userId: number
-  username: string
-  role: MemberRole
-  characterId: string | null
-}
+export type RoomMember = RoomMemberInfo
 
-/** 房间事件（全序，seq 由 RoomService 串行分配）。 */
-export type RoomEvent =
-  | { type: 'message_appended'; payload: { pendingId?: string; author: { userId: number; roleName: string }; content: string; kind: string } }
-  | { type: 'state_patch'; payload: { path: string; value: unknown } }
-  | { type: 'dice_result'; payload: { rolls: number[]; expr: string; displayText: string } }
-  | { type: 'room_meta'; payload: { phase: RoomPhase; turnWindowMs: number; members: RoomMember[] } }
-  | { type: 'trace'; payload: { traceEvents: unknown[] } }
+/** 房间事件（全序，seq 由 RoomService 串行分配）；payload 单一来源 = shared RoomEventPayloadMap。 */
+export type RoomEvent = { [K in RoomEventType]: { type: K; payload: RoomEventPayloadMap[K] } }[RoomEventType]
 
 /** 房间持久化快照（rooms.state JSON）。 */
 export interface RoomSnapshot {
@@ -89,7 +86,7 @@ export class RoomService {
   private lastSnapshotAt = Date.now()
   private lastActivityAt = Date.now()
   private queue: Promise<unknown> = Promise.resolve()
-  private readonly listeners = new Set<(event: RoomEvent) => void>()
+  private readonly listeners = new Set<(event: RoomEvent, seq: number) => void>()
   /** 事件日志（Phase C1）：带 seq 的增量事件，环形保留最近 MAX_EVENT_LOG 条。 */
   private eventLog: { seq: number; event: RoomEvent }[] = []
   private eventLogStartSeq = 0
@@ -148,8 +145,8 @@ export class RoomService {
     }
   }
 
-  /** 订阅房间事件（增量广播）。返回取消函数。 */
-  subscribe(listener: (event: RoomEvent) => void): () => void {
+  /** 订阅房间事件（增量广播）。回调携带 (event, seq)——seq 不经 seam 丢失（评审候选 3）。返回取消函数。 */
+  subscribe(listener: (event: RoomEvent, seq: number) => void): () => void {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
@@ -176,7 +173,7 @@ export class RoomService {
     }
     this.eventLogStartSeq = this.eventLog[0]?.seq ?? this.seq
     for (const l of this.listeners) {
-      try { l(event) } catch { /* 监听器错误不影响广播 */ }
+      try { l(event, this.seq) } catch { /* 监听器错误不影响广播 */ }
     }
   }
 
@@ -189,12 +186,12 @@ export class RoomService {
 
   /* ═══════════════ 动作处理 ═══════════════ */
 
-  /** 追加玩家/KP 消息并广播（message_appended）。 */
+  /** 追加玩家/KP 消息并广播（message_appended，payload 携带完整 Message）。 */
   appendMessage(msg: Message, author: { userId: number; roleName: string }): void {
     this.messages.push(msg)
     this.emit({
       type: 'message_appended',
-      payload: { pendingId: msg.id, author, content: msg.content, kind: msg.role },
+      payload: { message: msg, author },
     })
   }
 

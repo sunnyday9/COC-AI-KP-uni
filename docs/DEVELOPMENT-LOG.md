@@ -310,6 +310,14 @@
 
 ---
 
+### D-32：房间事件单一来源化——RoomEventPayloadMap（2026-08-28，架构评审候选 3）
+
+**决策**：`shared/types/room.ts` 新增 **`RoomEventPayloadMap`**（事件名 → payload 的单一来源），`RoomEventType = keyof map`（字符串联合派生，消灭第三份手写）；server `RoomEvent` union 改为 map 派生的 mapped type，payload 形状不再手写；client payload 联合同样派生。server `RoomPhase`/`MemberRole`/`RoomMember` 改为 shared（`RoomPhase`/`RoomMemberRole`/`RoomMemberInfo`）的 re-export 别名；`RoomSnapshot.messages` 改引 `Message[]`。`RoomService.subscribe` 回调签名改 **`(event, seq) => void`**，`emit` 传入自身 seq，ws 层删掉 `getSeq()` 回读——「emit 同步调 listener 才能读到 seq」的隐含约定从 seam 上消失。`message_appended` payload 改为 **`{ message: Message; author }`**：`pendingId`/`kind`/`content` 三个降维副本删除，客户端 `applyEvent` 退化为直接 append——伪时间戳 `Date.now()` 与 roleName 冒充 playerName 消失。范围边界：D-16 环形日志 / seq 分配机制 / 其余四种事件形状不动。
+
+**原因**：事件类型三份定义靠注释同步、漂移 tsc 不报、新增事件改 4 处；消息经有损序列化后客户端只能猜。**验证：server 400/400 + client 99/99 全绿、双侧 tsc 零错误、multiroom E2E 11/11（E2E 断言迁移到 payload.message.*，新增完整 Message 字段断言）。**
+
+---
+
 ## 验证基线记录
 
 | 时间 | 项目 | 结果 |
@@ -344,3 +352,5 @@
 | 2026-08-28 | 单测（D-30 Bridge 收紧后） | client 99 + server 393 全绿，双侧 tsc 零错误 |
 | 2026-08-28 | server 单测（D-31 领域收口后） | **400 全绿**（+7 roomStorage 直测） |
 | 2026-08-28 | multiroom E2E（D-31 后） | **11/11 PASS**（wire 行为不变） |
+| 2026-08-28 | 单测（D-32 事件单一来源后） | server 400 + client 99 全绿，双侧 tsc 零错误 |
+| 2026-08-28 | multiroom E2E（D-32 后） | **11/11 PASS**（payload.message 断言） |
