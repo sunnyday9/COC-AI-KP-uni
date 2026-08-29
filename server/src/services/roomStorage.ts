@@ -3,7 +3,8 @@
  *
  * 拥有 rooms / room_members 两张表的**全部** SQL：RoomService 的领域方法是它的
  * 唯一调用方，REST 路由与 ws 层不接触房间表结构。users/characters 表的少量
- * 只读查询（username 解析、角色卡归属/sheet）也在此，供领域方法组装领域对象。
+ * 邻接读写（username 解析、角色卡归属/sheet、createSoloRoom 一体动作的角色卡
+ * 落库）也在此，供领域方法组装领域对象。
  * 外部 id 只作为 DB 键进入查询（D-09 DB 映射：不落 fs 路径）。
  */
 import { getDb } from '../db/index.js'
@@ -13,6 +14,7 @@ export interface RoomRow {
   owner_id: number
   invite_code: string
   story_id: string | null
+  kind: string
   phase: string
   state: string
   created_at: number
@@ -33,14 +35,28 @@ export interface RoomListItemRow {
   updatedAt: number
 }
 
+/** solo 房间列表行（继续游戏；无 inviteCode——solo 不用邀请码入房）。 */
+export interface SoloRoomListItemRow {
+  roomId: string
+  storyId: string | null
+  phase: string
+  updatedAt: number
+}
+
 /* ═══════════════ rooms 表 ═══════════════ */
 
-export function insertRoom(roomId: string, ownerId: number, inviteCode: string, storyId: string | null): void {
+export function insertRoom(
+  roomId: string,
+  ownerId: number,
+  inviteCode: string,
+  storyId: string | null,
+  kind: 'multi' | 'solo' = 'multi',
+): void {
   const now = Date.now()
   getDb()
-    .prepare(`INSERT INTO rooms (room_id, owner_id, invite_code, story_id, phase, state, version, updated_at, created_at)
-              VALUES (?, ?, ?, ?, 'lobby', '{}', 0, ?, ?)`)
-    .run(roomId, ownerId, inviteCode, storyId, now, now)
+    .prepare(`INSERT INTO rooms (room_id, owner_id, invite_code, story_id, kind, phase, state, version, updated_at, created_at)
+              VALUES (?, ?, ?, ?, ?, 'lobby', '{}', 0, ?, ?)`)
+    .run(roomId, ownerId, inviteCode, storyId, kind, now, now)
 }
 
 export function inviteCodeExists(code: string): boolean {
@@ -54,18 +70,29 @@ export function findRoomIdByInviteCode(inviteCode: string): string | null {
   return row?.room_id ?? null
 }
 
+/** 房间列表（ADR-0002：solo 房间不出现在房间列表——继续游戏走 listSoloRoomsForUser）。 */
 export function listRoomsForUser(userId: number): RoomListItemRow[] {
   const rows = getDb()
     .prepare(`SELECT r.room_id, r.invite_code, r.story_id, r.phase, r.updated_at
               FROM rooms r JOIN room_members m ON r.room_id = m.room_id
-              WHERE m.user_id = ? ORDER BY r.updated_at DESC`)
+              WHERE m.user_id = ? AND r.kind != 'solo' ORDER BY r.updated_at DESC`)
     .all(userId) as { room_id: string; invite_code: string; story_id: string | null; phase: string; updated_at: number }[]
   return rows.map((r) => ({ roomId: r.room_id, inviteCode: r.invite_code, storyId: r.story_id, phase: r.phase, updatedAt: r.updated_at }))
 }
 
+/** 未结束 solo 房间列表（继续游戏入口，ADR-0002）。 */
+export function listSoloRoomsForUser(userId: number): SoloRoomListItemRow[] {
+  const rows = getDb()
+    .prepare(`SELECT r.room_id, r.story_id, r.phase, r.updated_at
+              FROM rooms r JOIN room_members m ON r.room_id = m.room_id
+              WHERE m.user_id = ? AND r.kind = 'solo' AND r.phase != 'ended' ORDER BY r.updated_at DESC`)
+    .all(userId) as { room_id: string; story_id: string | null; phase: string; updated_at: number }[]
+  return rows.map((r) => ({ roomId: r.room_id, storyId: r.story_id, phase: r.phase, updatedAt: r.updated_at }))
+}
+
 export function getRoomRow(roomId: string): RoomRow | undefined {
   return getDb()
-    .prepare(`SELECT room_id, owner_id, invite_code, story_id, phase, state, created_at FROM rooms WHERE room_id = ?`)
+    .prepare(`SELECT room_id, owner_id, invite_code, story_id, kind, phase, state, created_at FROM rooms WHERE room_id = ?`)
     .get(roomId) as RoomRow | undefined
 }
 
@@ -152,6 +179,11 @@ export function usernameOf(userId: number): string | null {
 export function characterOwnerUserId(characterId: string): number | null {
   const rows = getDb().prepare(`SELECT user_id FROM characters WHERE id = ?`).all(characterId) as unknown as { user_id: number }[]
   return rows[0]?.user_id ?? null
+}
+
+/** 角色卡落库（createSoloRoom 一体动作；id 由领域方法生成）。 */
+export function insertCharacter(characterId: string, userId: number, name: string, sheetJson: string): void {
+  getDb().prepare(`INSERT INTO characters (id, user_id, name, sheet, updated_at) VALUES (?, ?, ?, ?, ?)`).run(characterId, userId, name, sheetJson, Date.now())
 }
 
 /** 单张角色卡 sheet（bind 后同步活跃实例用）。 */

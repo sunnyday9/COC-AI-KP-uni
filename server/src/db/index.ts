@@ -72,6 +72,7 @@ function initSchema(database: DatabaseSync): void {
       owner_id INTEGER NOT NULL,
       invite_code TEXT NOT NULL UNIQUE,
       story_id TEXT,
+      kind TEXT NOT NULL DEFAULT 'multi',
       phase TEXT NOT NULL DEFAULT 'lobby',
       state TEXT NOT NULL,
       version INTEGER NOT NULL DEFAULT 0,
@@ -101,5 +102,10 @@ function initSchema(database: DatabaseSync): void {
   const scriptCols = database.prepare(`PRAGMA table_info(scripts)`).all() as { name: string }[]
   if (!scriptCols.some((c) => c.name === 'file_path')) {
     database.exec(`ALTER TABLE scripts ADD COLUMN file_path TEXT NOT NULL DEFAULT ''`)
+  }
+  // 幂等迁移：旧库的 rooms 表没有 kind 列（ADR-0002 单人=单成员房间）。
+  const roomCols = database.prepare(`PRAGMA table_info(rooms)`).all() as { name: string }[]
+  if (!roomCols.some((c) => c.name === 'kind')) {
+    database.exec(`ALTER TABLE rooms ADD COLUMN kind TEXT NOT NULL DEFAULT 'multi'`)
   }
 }

@@ -585,6 +585,38 @@ export function listRoomsForUser(userId: number): roomStorage.RoomListItemRow[] 
   return roomStorage.listRoomsForUser(userId)
 }
 
+/** GET /api/rooms/solo —— 未结束单人局列表（继续游戏入口，ADR-0002）。 */
+export function listSoloRoomsForUser(userId: number): roomStorage.SoloRoomListItemRow[] {
+  return roomStorage.listSoloRoomsForUser(userId)
+}
+
+/** POST /api/rooms/solo —— 单人开局一体领域动作（ADR-0002）：落角色卡 + 建 solo 房 + 绑卡 + start。 */
+export function createSoloRoom(
+  userId: number,
+  input: { storyId: unknown; name: unknown; sheet: unknown },
+): { ok: true; roomId: string; inviteCode: string; characterId: string } | { ok: false; reason: 'bad-request'; message: string } {
+  const storyId = typeof input?.storyId === 'string' ? input.storyId.trim() : ''
+  const name = typeof input?.name === 'string' ? input.name.trim() : ''
+  const sheet = input?.sheet as COCCharacterSheet | undefined
+  if (!storyId) return { ok: false, reason: 'bad-request', message: 'storyId required' }
+  if (!name) return { ok: false, reason: 'bad-request', message: 'name required' }
+  if (!sheet || typeof sheet !== 'object' || !sheet.derived) {
+    return { ok: false, reason: 'bad-request', message: 'sheet required (COCCharacterSheet)' }
+  }
+  const characterId = `char_${crypto.randomUUID().slice(0, 8)}`
+  roomStorage.insertCharacter(characterId, userId, name, JSON.stringify(sheet))
+  const roomId = `room_${crypto.randomUUID().slice(0, 8)}`
+  const inviteCode = ensureUniqueInviteCode()
+  roomStorage.insertRoom(roomId, userId, inviteCode, storyId, 'solo')
+  roomStorage.insertMember(roomId, userId, 'owner')
+  roomStorage.bindMemberCharacter(roomId, userId, characterId)
+  // 出生即 playing（列权威）；turnWindowMs=0 进 state（ADR-0002：solo 恒严格排队，restore 时实例取 0）。
+  // 懒激活保持：REST 建房只持久化，不激活实例。
+  roomStorage.updateRoomStart(roomId, storyId)
+  roomStorage.updateRoomStateSettings(roomId, JSON.stringify({ turnWindowMs: 0 }))
+  return { ok: true, roomId, inviteCode, characterId }
+}
+
 /** POST /api/rooms/join —— 邀请码加入（幂等：INSERT OR IGNORE）。 */
 export function joinRoomByInviteCode(
   userId: number,

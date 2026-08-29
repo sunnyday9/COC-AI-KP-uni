@@ -17,10 +17,12 @@ import { sendError, NotFoundError, BadRequestError, ConflictError } from '../uti
 import {
   bindRoomCharacter,
   createRoom,
+  createSoloRoom,
   deleteRoomAsOwner,
   getRoomDetail,
   joinRoomByInviteCode,
   listRoomsForUser,
+  listSoloRoomsForUser,
   startRoom,
 } from '../services/roomService.js'
 
@@ -50,6 +52,23 @@ router.post('/', (req: AuthRequest, res) => {
 /** GET /api/rooms — 我的房间列表。 */
 router.get('/', (req: AuthRequest, res) => {
   res.json(listRoomsForUser(req.userId as number))
+})
+
+/** POST /api/rooms/solo — 单人开局一体动作（ADR-0002：落角色卡 + 建 solo 房 + 绑卡 + start）。 */
+router.post('/solo', (req: AuthRequest, res) => {
+  const userId = req.userId as number
+  const body = (req.body ?? {}) as { storyId?: unknown; name?: unknown; sheet?: unknown }
+  const result = createSoloRoom(userId, { storyId: body.storyId, name: body.name, sheet: body.sheet })
+  if (!result.ok) {
+    sendDomainError(res, result)
+    return
+  }
+  res.json({ ok: true, roomId: result.roomId, inviteCode: result.inviteCode, characterId: result.characterId })
+})
+
+/** GET /api/rooms/solo — 未结束单人局列表（继续游戏）。 */
+router.get('/solo', (req: AuthRequest, res) => {
+  res.json(listSoloRoomsForUser(req.userId as number))
 })
 
 /** POST /api/rooms/join — 邀请码加入。 */
