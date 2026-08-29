@@ -318,6 +318,14 @@
 
 ---
 
+### D-33：房间订阅簿——传输决策从 socket 层抽出（2026-08-28，架构评审候选 4）
+
+**决策**：新建 `server/src/ws/roomLedger.ts`（房间订阅簿）：socket↔room 订阅注册表、扇出挂接幂等（`ensureFanout`）、join/sync/action 的帧规划（`planJoin`/`planSync`/`planAction`——入参 userId/roomId/lastSeq，出参「该发什么帧」：全量快照/增量事件/错误码）；与 WebSocket 类型无关（`RoomSubscriber` 结构子集）。`ws/rooms.ts` 重写为薄 adapter（JSON 帧编解码 + socket 生命周期接线，180→120 行）；死代码 `attachRoomBroadcast` 删除。分层：「缺口过大 → 全量」的语义留在 `RoomService.getEventsSince`（D-16 领域策略），订阅簿只做帧规划；wire 帧格式不变。测试：+8 表驱动用例（真实 RoomService 实例 + 假 socket）——重复 join 幂等、重复挂接幂等、lastSeq=0 / 缺口过大 / 窗口内增量、非成员拒绝、断连清理、关闭 socket 跳过——此前这些分叉只能起双端 E2E 验证。
+
+**原因**：架构评审候选 4——订阅注册表/鉴权/帧协议/动作分派四位一体且零单测，重连与补齐的核心分叉只能 E2E 验证；本深化踩在候选 2/3 给的地基上（领域方法 + seq 不丢的 seam）。**验证：server 408/408 全绿（+8）、双侧 tsc 零错误、multiroom E2E 11/11。**
+
+---
+
 ## 验证基线记录
 
 | 时间 | 项目 | 结果 |

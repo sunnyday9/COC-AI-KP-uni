@@ -19,6 +19,9 @@
 ### 对账（reconcile）
 DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执行 `syncFromDb`（列优先：`story_id`/`phase` 列覆盖 state 快照）+ 成员广播。实例 materialize 时的 restore 同样列优先。
 
+### 房间订阅簿（RoomLedger）
+房间事件流的传输决策 module：订阅注册表（socket↔room）、扇出挂接幂等、join/sync/action 的帧规划（该发什么帧）。落点 `server/src/ws/roomLedger.ts`；`ws/rooms.ts` 只是 JSON 编解码 + socket 生命周期 adapter。「缺口过大 → 全量兜底」的语义留在领域（D-16）。
+
 ### 回合窗口（turnWindowMs）
 房主可调的 KP 回合合并窗口（0 = 严格排队）。运行时由活跃实例**唯一持有**；REST 设置经领域方法一次写库 + 同步实例，无每消息重读。
 
