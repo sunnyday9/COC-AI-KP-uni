@@ -13,6 +13,7 @@
 import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
+import { buildRoomTurnMessages, buildRoomOpeningMessages, OPENING_RAG_QUERY, MAX_MEMORY_ENTRIES, type RoomPromptInput } from './kpPromptService.js'
 import type {
   RoomEventPayloadMap,
   RoomEventType,
@@ -45,6 +46,10 @@ export interface RoomSnapshot {
   scene: string | null
   ending: unknown | null
   turnWindowMs: number
+  /** KP 记忆条目（ADR-0002 上下文收口，服务端持有）。 */
+  kpMemory?: string[]
+  /** 长期摘要（ADR-0002 上下文收口，服务端持有）。 */
+  longTermSummary?: string
   updatedAt: number
 }
 
@@ -63,6 +68,8 @@ const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
 /** 事件日志环形容量（Phase C1：重连增量窗口；超出 → 全量快照兜底）。 */
 const MAX_EVENT_LOG = 200
+/** 每 N 个 KP 回合刷新一次长期摘要（场景切换也会触发）。 */
+const LONG_TERM_SUMMARY_EVERY_TURNS = 10
 
 /**
  * 房间实例。所有状态变更必须经 enqueue（串行），事件按 seq 全序广播。
@@ -82,6 +89,14 @@ export class RoomService {
   private scene: string | null = null
   private ending: unknown = null
   private turnWindowMs: number
+  /** KP 记忆条目（服务端持有，ADR-0002）。 */
+  private kpMemory: string[] = []
+  /** 长期摘要（服务端持有，ADR-0002）。 */
+  private longTermSummary = ''
+  private turnCount = 0
+  /** opening 回合已触发标记（实例生命周期内一次；失败不重试内重入）。 */
+  private openingStarted = false
+  private summarizing = false
   private seq = 0
   private eventCountSinceSnapshot = 0
   private lastSnapshotAt = Date.now()
@@ -113,6 +128,8 @@ export class RoomService {
       this.ending = opts.restore.ending ?? null
       this.seq = typeof opts.restore.seq === 'number' ? opts.restore.seq : 0
       this.turnWindowMs = opts.restore.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
+      this.kpMemory = Array.isArray(opts.restore.kpMemory) ? opts.restore.kpMemory : []
+      this.longTermSummary = typeof opts.restore.longTermSummary === 'string' ? opts.restore.longTermSummary : ''
     }
     this.snapshotTimer = setInterval(() => void this.maybeSnapshot(), SNAPSHOT_EVERY_MS)
     this.snapshotTimer.unref?.()
@@ -142,6 +159,8 @@ export class RoomService {
       scene: this.scene,
       ending: this.ending,
       turnWindowMs: this.turnWindowMs,
+      kpMemory: this.kpMemory,
+      longTermSummary: this.longTermSummary,
       updatedAt: Date.now(),
     }
   }
@@ -213,10 +232,12 @@ export class RoomService {
     }
   }
 
-  /** 场景切换（state_patch）。 */
+  /** 场景切换（state_patch）；场景变化触发长期摘要刷新（fire-and-forget，不阻塞回合）。 */
   setScene(sceneName: string): void {
+    const changed = this.scene !== sceneName
     this.scene = sceneName
     this.emit({ type: 'state_patch', payload: { path: 'scene', value: sceneName } })
+    if (changed) void this.refreshLongTermSummary()
   }
 
   /** 结局（state_patch + phase 变更）。 */
@@ -358,12 +379,18 @@ export class RoomService {
       const activeCharacterId = batch[batch.length - 1]?.characterId ?? null
       // D5 归属校验：窗口内行动者可用的角色卡 id 集（各自绑定的卡）
       const allowedCharacterIds = new Set(batch.map((b) => b.characterId).filter((id): id is string => !!id))
+      // 上下文注入服务端收口（ADR-0002）：RAG + 记忆 + 近窗对话在本侧组装；
+      // 历史不含本批（本批以合并 user 消息收尾），角色组随状态注入 system。
+      const historyEnd = Math.max(0, this.messages.length - batch.length)
+      const [ragContext, storyName] = await Promise.all([this.fetchRagContext(merged), this.fetchStoryName()])
+      const chatMessages = buildRoomTurnMessages(
+        this.promptInput(storyName, this.messages.slice(0, historyEnd)),
+        ragContext,
+        merged,
+      )
       await this.runKpTurnForRoom(
         this.ownerId,
-        [
-          { role: 'system', content: '你是这个房间的守秘人（KP）。房间内有多名调查员，请分别回应他们的行动。' },
-          { role: 'user', content: merged },
-        ],
+        chatMessages,
         this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
         activeCharacterId,
         () => { /* 流式块：可扩展为 kp:chunk 帧 */ },
@@ -443,6 +470,8 @@ export class RoomService {
                 { id: `kp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'kp', content: result.content },
                 { userId: ownerUserId, roleName: 'KP' },
               )
+              // 回合后记忆编排（fire-and-forget，ADR-0002 上下文收口）
+              void this.rememberTurn(result.content)
             }
             // 工具展示消息（骰子/系统提示）追加消息流
             for (const dm of result.displayMessages ?? []) {
@@ -453,6 +482,108 @@ export class RoomService {
         },
       },
     )
+  }
+
+  /* ═══════════════ 上下文注入与记忆（ADR-0002，服务端收口） ═══════════════ */
+
+  /** RAG 检索上下文（失败回退 ''——回合不因检索中断）。 */
+  private async fetchRagContext(query: string): Promise<string> {
+    if (!this.storyId) return ''
+    try {
+      const { context } = await import('./ragService.js')
+      const res = await context(this.ownerId, { query, scriptId: this.storyId, sceneId: this.scene ?? undefined, topK: 8 })
+      return res?.context || ''
+    } catch {
+      return ''
+    }
+  }
+
+  /** 剧本名（rag 索引清单；失败回退 ''）。 */
+  private async fetchStoryName(): Promise<string> {
+    if (!this.storyId) return ''
+    try {
+      const { listStories } = await import('./ragService.js')
+      return listStories(this.ownerId).find((s) => s.storyId === this.storyId)?.name ?? ''
+    } catch {
+      return ''
+    }
+  }
+
+  /** 房间提示词输入（运行态只读投影；historyMessages 由调用方切片）。 */
+  private promptInput(storyName: string, historyMessages: Message[]): RoomPromptInput {
+    return {
+      storyName,
+      scene: this.scene,
+      clues: [...this.clues],
+      messages: historyMessages,
+      kpMemory: this.kpMemory,
+      longTermSummary: this.longTermSummary,
+      characters: [...this.characters.values()],
+    }
+  }
+
+  /** 回合后记忆：先落截断兜底条目，抽取成功后替换；上限 MAX_MEMORY_ENTRIES（与旧客户端编排同语义）。 */
+  private async rememberTurn(content: string): Promise<void> {
+    this.kpMemory = [...this.kpMemory, `${content.slice(0, 80)}…`].slice(-MAX_MEMORY_ENTRIES)
+    try {
+      const { extractMemoryPoints } = await import('./roomMemory.js')
+      const points = await extractMemoryPoints(this.ownerId, content)
+      this.kpMemory = [...this.kpMemory.slice(0, -1), ...points].slice(-MAX_MEMORY_ENTRIES)
+    } catch {
+      // 兜底条目已在
+    }
+    this.turnCount += 1
+    if (this.turnCount % LONG_TERM_SUMMARY_EVERY_TURNS === 0) void this.refreshLongTermSummary()
+  }
+
+  /** 长期摘要刷新（fire-and-forget；失败保持原摘要）。 */
+  private async refreshLongTermSummary(): Promise<void> {
+    if (this.summarizing) return
+    this.summarizing = true
+    try {
+      const { summarizeLongTerm } = await import('./roomMemory.js')
+      const recent = this.messages
+        .slice(-20)
+        .map((m) => `${m.role === 'kp' ? '守密人' : '调查员'}: ${String((m as { content?: unknown }).content ?? '')}`)
+        .join('\n')
+      const summary = await summarizeLongTerm(this.ownerId, {
+        recentMessagesText: recent.slice(0, 4000),
+        currentSummary: this.longTermSummary,
+        storyContextText: `当前场景：${this.scene ?? '未知'}；已获线索 ${this.clues.length} 条。`,
+      })
+      if (summary) this.longTermSummary = summary
+    } catch {
+      // 摘要失败保持原值
+    } finally {
+      this.summarizing = false
+    }
+  }
+
+  /**
+   * opening 回合（ADR-0002）：startRoom / 首次 join 时触发一次。
+   * 失败不阻塞进入——首回合不是门闩，玩家消息照常触发回合（flushTurn 路径独立）。
+   */
+  beginOpeningIfPending(): void {
+    if (this.openingStarted || this.phase !== 'playing' || this.messages.length > 0) return
+    this.openingStarted = true
+    void this.runOpeningTurn()
+  }
+
+  private async runOpeningTurn(): Promise<void> {
+    try {
+      const [ragContext, storyName] = await Promise.all([this.fetchRagContext(OPENING_RAG_QUERY), this.fetchStoryName()])
+      const chatMessages = buildRoomOpeningMessages(this.promptInput(storyName, this.messages), ragContext)
+      const firstCharacterId = [...this.characters.keys()][0] ?? null
+      await this.runKpTurnForRoom(
+        this.ownerId,
+        chatMessages,
+        this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
+        firstCharacterId,
+        () => { /* 流式块：可扩展为 kp:chunk 帧 */ },
+      )
+    } catch {
+      // opening 失败不阻塞（ADR-0002）
+    }
   }
 
   /* ═══════════════ 快照 / 回收 ═══════════════ */
@@ -519,6 +650,9 @@ export function getOrCreateRoom(
     }
     room = new RoomService({ roomId, ownerId, ownerName, storyId, restore })
     roomRegistry.set(roomId, room)
+    // 对账（ADR-0001）：物化即列优先同步——列（story_id/phase）已入 restore，
+    // 绑定角色组从 DB 装载（createSoloRoom 先绑后 join、TTL 回收重进都依赖此步）。
+    room.syncFromDb()
   }
   return room
 }
@@ -671,6 +805,8 @@ export function startRoom(
   if (!storyId) return { ok: false, reason: 'bad-request', message: 'storyId required' }
   roomStorage.updateRoomStart(roomId, storyId)
   syncActiveRoom(roomId)
+  // opening 回合（ADR-0002）：实例已激活则立即触发；未激活时随首次 join 触发（懒激活保持）。
+  getRoom(roomId)?.beginOpeningIfPending()
   return { ok: true }
 }
 
@@ -738,7 +874,9 @@ export function deleteRoomAsOwner(
 /** WS join：校验成员资格并返回活跃实例（不存在则 materialize——懒激活）。 */
 export function joinRoom(roomId: string, userId: number, username: string): RoomService | null {
   if (!roomStorage.isRoomMember(roomId, userId)) return null
-  return getRoom(roomId) ?? getOrCreateRoom(roomId, userId, username)
+  const room = getRoom(roomId) ?? getOrCreateRoom(roomId, userId, username)
+  room.beginOpeningIfPending()
+  return room
 }
 
 /** WS 成员资格 gate（sync/action 帧用）。 */
