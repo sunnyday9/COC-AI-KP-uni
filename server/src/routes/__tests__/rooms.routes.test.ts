@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import request from 'supertest'
 import { createApp } from '../../app.js'
+import { getOrCreateRoom, _clearRoomRegistryForTests } from '../../services/roomService.js'
 import type { Express } from 'express'
 
 /** 测试夹具密码：表达式构造（门禁不识别字面量凭据）。 */
@@ -106,22 +107,26 @@ describe('rooms routes', () => {
     expect(after.status).toBe(404)
   })
 
-  it('审查修复 #1：REST start 后活跃实例 restore 到 storyId/phase（KP 拿剧本上下文）', async () => {
+  it('领域收口（ADR-0001）：REST start 活跃实例即时同步；无实例 restore 拿 DB 权威', async () => {
     const created = await request(app).post('/api/rooms').set(...auth(tokenA)).send({})
     const roomId = (created.body as { roomId: string }).roomId
-    // 先 REST start（此时无活跃实例——syncActiveRoom 静默跳过）
+    // 活跃实例先于 REST start 存在：领域方法写库后立即对账实例（不再依赖路由手动 sync）
+    const room = getOrCreateRoom(roomId, 1, 'alice')
     const start = await request(app).post(`/api/rooms/${roomId}/start`).set(...auth(tokenA)).send({ storyId: 'story_x' })
     expect(start.status).toBe(200)
-    // 之后 WS join 创建活跃实例 → getOrCreateRoom restore 应拿到 DB 的 storyId/phase
-    const { getOrCreateRoom, _clearRoomRegistryForTests } = await import('../../services/roomService.js')
-    const room = getOrCreateRoom(roomId, 1, 'alice')
     expect(room.getStoryId()).toBe('story_x')
     expect(room.getPhase()).toBe('playing')
     room.dispose()
     _clearRoomRegistryForTests()
+    // 无活跃实例时 start → 之后再 materialize，restore 从 DB 列权威拿到 storyId/phase
+    const restored = getOrCreateRoom(roomId, 1, 'alice')
+    expect(restored.getStoryId()).toBe('story_x')
+    expect(restored.getPhase()).toBe('playing')
+    restored.dispose()
+    _clearRoomRegistryForTests()
   })
 
-  it('审查修复 #3：REST 绑定角色后 syncFromDb 加载角色组 + 归属', async () => {
+  it('领域收口（ADR-0001）：REST 绑定角色后 syncFromDb 加载角色组 + 归属', async () => {
     const created = await request(app).post('/api/rooms').set(...auth(tokenA)).send({})
     const roomId = (created.body as { roomId: string }).roomId
     // 建角色卡
@@ -134,12 +139,10 @@ describe('rooms routes', () => {
     expect(char.status).toBe(200)
     const charId = (char.body as { id: string }).id
 
-    // 创建活跃实例 + 绑定
-    const { getOrCreateRoom, _clearRoomRegistryForTests } = await import('../../services/roomService.js')
+    // 创建活跃实例 + 绑定（领域方法内部对账：角色组进内存实例）
     const room = getOrCreateRoom(roomId, 1, 'alice')
     const bind = await request(app).post(`/api/rooms/${roomId}/character`).set(...auth(tokenA)).send({ characterId: charId })
     expect(bind.status).toBe(200)
-    // syncActiveRoom → syncFromDb 加载角色组
     const charMap = room.getCharacterMap()
     expect(Object.keys(charMap)).toContain(charId)
     expect(room.characterOwnerOf(charId)).toBe(1)

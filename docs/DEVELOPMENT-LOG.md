@@ -300,6 +300,16 @@
 
 ---
 
+### D-31：房间领域收口——roomStorage adapter + 领域方法（2026-08-28，架构评审候选 2 / ADR-0001）
+
+**决策**：按 ADR-0001 执行领域收口（方案 c）：REST/ws 不再接触 rooms/room_members 表结构。新建 `server/src/services/roomStorage.ts` 拥有全部房间 SQL（约 25 处从 5 个文件收口）；RoomService 新增领域方法（`createRoom`/`joinRoomByInviteCode`/`getRoomDetail`/`startRoom`/`bindRoomCharacter`/`setRoomTurnWindow`/`deleteRoomAsOwner`/`joinRoom`/`submitPlayerChat`/`isRoomMember`）；rooms.routes 与 roomSettings.routes 改薄为「解析请求 → 调领域方法 → 映射响应」；对账（`syncActiveRoom` = syncFromDb + 成员广播）在领域方法内部收口；`bufferPlayerChat` 的每消息 DB 重读删除——**turnWindowMs 运行时由活跃实例唯一持有**；懒激活保持（REST 建房只持久化不激活实例）；wire 行为逐字节不变（领域方法复用 D-28 的 syncFromDb + 广播路径）。顺带修复旧路由 `loadMembers` 的 snake/camel 转换错位（REST 触发的成员广播携带 undefined userId/characterId 的潜在 bug）。首版 `CONTEXT.md`（房间存储/活跃实例/对账/回合窗口）与 `docs/adr/0001-rooms-domain-seam.md` 落盘。
+
+**原因**：架构评审候选 2——D-28 修复的是「REST 生命周期与内存实例断链」的症状，病根是持久化没有 interface、一致性靠三套人工机制维持。grilling 决策：领域收口（c）而非仅集中 SQL（a）或写后钩子（b）。
+
+**验证**：server vitest **400/400** 全绿（+7 roomStorage 直测）；server tsc 零错误；multiroom E2E **11/11 PASS**（双连接广播/同 seq/sync 增量/回合窗口合并全过）。tsc 与 E2E 联手抓出并修复 `isRoomMember` 参数序笔误（vitest 不做类型检查，单测未拦住）。
+
+---
+
 ## 验证基线记录
 
 | 时间 | 项目 | 结果 |
@@ -332,3 +342,5 @@
 | 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |
 | 2026-08-28 | client 单测（D-29 删除残骸后） | **99 全绿** + client tsc 零错误 |
 | 2026-08-28 | 单测（D-30 Bridge 收紧后） | client 99 + server 393 全绿，双侧 tsc 零错误 |
+| 2026-08-28 | server 单测（D-31 领域收口后） | **400 全绿**（+7 roomStorage 直测） |
+| 2026-08-28 | multiroom E2E（D-31 后） | **11/11 PASS**（wire 行为不变） |

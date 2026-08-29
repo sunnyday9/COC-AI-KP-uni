@@ -10,7 +10,8 @@
  *
  * 单人模式 = 单成员房间（同一代码路径，FR-M9）。
  */
-import { getDb } from '../db/index.js'
+import crypto from 'node:crypto'
+import * as roomStorage from './roomStorage.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import type { Message } from '../../../shared/types/game.js'
 
@@ -241,11 +242,7 @@ export class RoomService {
 
   /** 从 DB 加载成员列表（room_meta 事件携带真实 members，避免清空客户端列表——审查修复）。 */
   private membersFromDb(): RoomMember[] {
-    const rows = getDb()
-      .prepare(`SELECT m.user_id, m.role, m.character_id, u.username
-                FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ?`)
-      .all(this.roomId) as unknown as { user_id: number; role: string; character_id: string | null; username: string }[]
-    return rows.map((r) => ({
+    return roomStorage.listMembers(this.roomId).map((r) => ({
       userId: r.user_id,
       username: r.username,
       role: r.role as MemberRole,
@@ -277,25 +274,18 @@ export class RoomService {
    * 使 KP 回合拿到剧本上下文、多角色分派拿到角色组。
    */
   syncFromDb(): void {
-    const row = getDb()
-      .prepare(`SELECT story_id, phase, state FROM rooms WHERE room_id = ?`)
-      .all(this.roomId) as unknown as { story_id: string | null; phase: string; state: string }[]
-    const r = row[0]
+    const r = roomStorage.getRoomRow(this.roomId)
     if (!r) return
     if (typeof r.story_id === 'string') this.storyId = r.story_id
     if (typeof r.phase === 'string' && (r.phase === 'lobby' || r.phase === 'playing' || r.phase === 'ended')) {
       this.phase = r.phase
     }
     // 角色组：从 DB 绑定关系加载 sheet（characters 表是 sheet 权威）
-    const binds = getDb()
-      .prepare(`SELECT m.character_id, m.user_id, c.sheet FROM room_members m
-                JOIN characters c ON c.id = m.character_id WHERE m.room_id = ? AND m.character_id IS NOT NULL`)
-      .all(this.roomId) as unknown as { character_id: string; user_id: number; sheet: string }[]
-    for (const b of binds) {
+    for (const b of roomStorage.boundCharacterSheets(this.roomId)) {
       try {
         const sheet = JSON.parse(b.sheet) as COCCharacterSheet
-        this.characters.set(b.character_id, sheet)
-        this.characterOwner.set(b.character_id, b.user_id)
+        this.characters.set(b.characterId, sheet)
+        this.characterOwner.set(b.characterId, b.userId)
       } catch { /* 脏 sheet 忽略 */ }
     }
   }
@@ -319,20 +309,24 @@ export class RoomService {
 
   /* ═══════════════ 回合窗口合并（D4） ═══════════════ */
 
+  /** 玩家聊天（领域方法，ADR-0001）：解析身份 → 消息流广播 → 回合缓冲。 */
+  submitPlayerChat(userId: number, content: string): void {
+    const username = roomStorage.usernameOf(userId) ?? `user_${userId}`
+    const characterId = roomStorage.memberCharacterId(this.roomId, userId)
+    this.appendMessage(
+      { id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'player', playerName: username, content },
+      { userId, roleName: username },
+    )
+    // Phase B6 + D4：玩家消息触发 KP 回合——回合窗口合并；行动者 = 成员绑定的角色卡。
+    // 单人房间 = 单成员（FR-M9）；turnWindowMs=0 时立即处理（严格排队）。
+    this.bufferPlayerChat(username, content, characterId, userId)
+  }
+
   /** 玩家消息进回合缓冲（聊天即时广播；KP 回合等窗口超时合并执行）。 */
   bufferPlayerChat(username: string, content: string, characterId: string | null, authorUserId: number): void {
     this.turnBuffer.push({ username, content, characterId, authorUserId })
-    // 每次窗口开启前从 DB 读最新 turnWindowMs（B6 房主可调；快照 restore 是兜底）
-    const row = getDb().prepare(`SELECT state FROM rooms WHERE room_id = ?`).all(this.roomId) as unknown as { state: string }[]
-    const snap = row[0]?.state
-    if (snap) {
-      try {
-        const parsed = JSON.parse(snap) as { turnWindowMs?: unknown }
-        if (typeof parsed.turnWindowMs === 'number' && Number.isFinite(parsed.turnWindowMs)) {
-          this.turnWindowMs = Math.max(0, Math.min(60_000, Math.floor(parsed.turnWindowMs)))
-        }
-      } catch { /* 脏快照忽略 */ }
-    }
+    // turnWindowMs 由活跃实例唯一持有（ADR-0001）：房主设置经领域方法
+    // setRoomTurnWindow 一次写库 + 同步实例；快照 restore 是重启兜底。
     // turnWindowMs=0 → 严格排队：每条消息立即触发 KP 回合（无合并延迟）
     if (this.turnWindowMs <= 0) {
       void this.flushTurn()
@@ -496,10 +490,7 @@ export class RoomService {
   async persistSnapshot(): Promise<void> {
     this.eventCountSinceSnapshot = 0
     this.lastSnapshotAt = Date.now()
-    const snap = this.snapshot()
-    getDb()
-      .prepare(`UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE room_id = ?`)
-      .run(JSON.stringify(snap), Date.now(), this.roomId)
+    roomStorage.updateRoomStateSnapshot(this.roomId, JSON.stringify(this.snapshot()))
   }
 
   /** 停止定时器（房间回收时调用）。 */
@@ -526,10 +517,7 @@ export function getOrCreateRoom(
   if (!room) {
     // DB 权威：列（story_id/phase）优先于 state 快照（审查修复 #1：
     // REST start 只更新列，实例 restore 必须拿到最新 storyId/phase）
-    const row = getDb()
-      .prepare(`SELECT story_id, phase, state FROM rooms WHERE room_id = ?`)
-      .all(roomId) as unknown as { story_id: string | null; phase: string; state: string }[]
-    const r = row[0]
+    const r = roomStorage.getRoomRow(roomId)
     let restore: RoomSnapshot | null = null
     if (r?.state) {
       try { restore = JSON.parse(r.state) as RoomSnapshot } catch { restore = null }
@@ -561,6 +549,192 @@ export function getOrCreateRoom(
 /** 获取房间（不存在返回 null）。 */
 export function getRoom(roomId: string): RoomService | null {
   return roomRegistry.get(roomId) ?? null
+}
+
+/* ═══════════════ 领域入口（ADR-0001：REST/ws 的唯一通道，房间 SQL 不出 roomStorage） ═══════════════ */
+
+/** 6 位随机邀请码（字母数字，去易混字符）。 */
+function generateInviteCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let code = ''
+  const bytes = crypto.randomBytes(6)
+  for (let i = 0; i < 6; i++) {
+    code += chars[bytes[i]! % chars.length]
+  }
+  return code
+}
+
+function ensureUniqueInviteCode(): string {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = generateInviteCode()
+    if (!roomStorage.inviteCodeExists(code)) return code
+  }
+  throw new Error('failed to generate unique invite code')
+}
+
+/** 若房间有活跃实例：DB 权威状态同步 + 成员广播（REST 写路径的领域内对账）。 */
+function syncActiveRoom(roomId: string): void {
+  const room = getRoom(roomId)
+  if (!room) return
+  room.syncFromDb()
+  broadcastMemberMeta(roomId)
+}
+
+/** 广播 DB 权威成员列表（成员加入/绑定后）。 */
+function broadcastMemberMeta(roomId: string): void {
+  const room = getRoom(roomId)
+  if (!room) return
+  room.broadcastMembers(
+    roomStorage.listMembers(roomId).map((m) => ({
+      userId: m.user_id,
+      username: m.username,
+      role: m.role as MemberRole,
+      characterId: m.character_id,
+    })),
+  )
+}
+
+/** POST /api/rooms —— 创建房间（只持久化，不激活内存实例：懒激活，ADR-0001）。 */
+export function createRoom(userId: number, storyId: string | null): { roomId: string; inviteCode: string } {
+  const roomId = `room_${crypto.randomUUID().slice(0, 8)}`
+  const inviteCode = ensureUniqueInviteCode()
+  roomStorage.insertRoom(roomId, userId, inviteCode, storyId)
+  roomStorage.insertMember(roomId, userId, 'owner')
+  return { roomId, inviteCode }
+}
+
+/** GET /api/rooms —— 我的房间列表。 */
+export function listRoomsForUser(userId: number): roomStorage.RoomListItemRow[] {
+  return roomStorage.listRoomsForUser(userId)
+}
+
+/** POST /api/rooms/join —— 邀请码加入（幂等：INSERT OR IGNORE）。 */
+export function joinRoomByInviteCode(
+  userId: number,
+  inviteCode: string,
+): { ok: true; roomId: string } | { ok: false; reason: 'not-found'; message: string } {
+  const roomId = roomStorage.findRoomIdByInviteCode(inviteCode)
+  if (!roomId) return { ok: false, reason: 'not-found', message: 'room not found' }
+  roomStorage.insertMember(roomId, userId, 'member')
+  broadcastMemberMeta(roomId)
+  return { ok: true, roomId }
+}
+
+/** GET /api/rooms/:id —— 房间详情（成员可见；非成员与不存在同样 404，语义同旧路由）。 */
+export function getRoomDetail(
+  userId: number,
+  roomId: string,
+): { ok: true; detail: Record<string, unknown> } | { ok: false; reason: 'not-found'; message: string } {
+  if (!roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
+  const room = roomStorage.getRoomRow(roomId)
+  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+  let state: unknown = {}
+  try { state = JSON.parse(room.state) } catch { state = {} }
+  return {
+    ok: true,
+    detail: {
+      roomId: room.room_id,
+      inviteCode: room.invite_code,
+      storyId: room.story_id,
+      phase: room.phase,
+      ownerId: room.owner_id,
+      members: roomStorage.listMembers(roomId).map((m) => ({
+        userId: m.user_id,
+        username: m.username,
+        role: m.role,
+        characterId: m.character_id,
+      })),
+      state,
+      createdAt: room.created_at,
+    },
+  }
+}
+
+/** POST /api/rooms/:id/start —— 房主开始游戏（绑定剧本 + 活跃实例即时同步）。 */
+export function startRoom(
+  userId: number,
+  roomId: string,
+  storyId: string,
+): { ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'bad-request'; message: string } {
+  const room = roomStorage.getRoomRow(roomId)
+  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+  if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
+  if (!storyId) return { ok: false, reason: 'bad-request', message: 'storyId required' }
+  roomStorage.updateRoomStart(roomId, storyId)
+  syncActiveRoom(roomId)
+  return { ok: true }
+}
+
+/** POST /api/rooms/:id/character —— 绑定角色卡（一人一卡，Phase B4）。 */
+export function bindRoomCharacter(
+  userId: number,
+  roomId: string,
+  characterId: string,
+): { ok: true; roomId: string; characterId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string } {
+  if (!roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
+  if (roomStorage.characterOwnerUserId(characterId) !== userId) {
+    return { ok: false, reason: 'not-found', message: 'character not found' }
+  }
+  if (roomStorage.boundMemberOf(roomId, characterId, userId) !== null) {
+    return { ok: false, reason: 'conflict', message: 'character already bound to another member' }
+  }
+  roomStorage.bindMemberCharacter(roomId, userId, characterId)
+  syncActiveRoom(roomId)
+  return { ok: true, roomId, characterId }
+}
+
+/** 校验回合窗口值（0..60000），非法返回 null。 */
+function sanitizeTurnWindowMs(value: unknown): number | null {
+  const ms = Number(value)
+  if (!Number.isFinite(ms) || ms < 0 || ms > 60_000) return null
+  return Math.floor(ms)
+}
+
+/** PUT /api/rooms/:id/settings —— 房主改 turnWindowMs（写库 + 活跃实例立即生效并广播）。 */
+export function setRoomTurnWindow(
+  userId: number,
+  roomId: string,
+  rawTurnWindowMs: unknown,
+): { ok: true; turnWindowMs?: number } | { ok: false; reason: 'not-found' | 'not-owner' | 'bad-request'; message: string } {
+  const room = roomStorage.getRoomRow(roomId)
+  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+  if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can change room settings' }
+  let state: Record<string, unknown> = {}
+  try { state = JSON.parse(room.state) as Record<string, unknown> } catch { state = {} }
+  let ms: number | undefined
+  if (rawTurnWindowMs !== undefined) {
+    const sanitized = sanitizeTurnWindowMs(rawTurnWindowMs)
+    if (sanitized === null) return { ok: false, reason: 'bad-request', message: 'turnWindowMs must be 0..60000' }
+    state.turnWindowMs = sanitized
+    ms = sanitized
+  }
+  roomStorage.updateRoomStateSettings(roomId, JSON.stringify(state))
+  const active = getRoom(roomId)
+  if (active && typeof ms === 'number') active.setTurnWindowMs(ms)
+  return { ok: true, turnWindowMs: ms }
+}
+
+/** DELETE /api/rooms/:id —— 房主解散。 */
+export function deleteRoomAsOwner(
+  userId: number,
+  roomId: string,
+): { ok: true } | { ok: false; reason: 'not-found' | 'not-owner'; message: string } {
+  const room = roomStorage.getRoomRow(roomId)
+  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+  if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
+  roomStorage.deleteRoomRows(roomId)
+  return { ok: true }
+}
+
+/** WS join：校验成员资格并返回活跃实例（不存在则 materialize——懒激活）。 */
+export function joinRoom(roomId: string, userId: number, username: string): RoomService | null {
+  if (!roomStorage.isRoomMember(roomId, userId)) return null
+  return getRoom(roomId) ?? getOrCreateRoom(roomId, userId, username)
+}
+
+/** WS 成员资格 gate（sync/action 帧用）。 */
+export function isRoomMember(roomId: string, userId: number): boolean {
+  return roomStorage.isRoomMember(roomId, userId)
 }
 
 /** 回收过期房间（TTL 扫描，进程启动时定期调用）。 */

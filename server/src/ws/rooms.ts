@@ -12,8 +12,7 @@
  *   room:error  { roomId, error }
  */
 import type { WebSocket } from 'ws'
-import { getRoom, getOrCreateRoom, type RoomEvent } from '../services/roomService.js'
-import { getDb } from '../db/index.js'
+import { getRoom, isRoomMember, joinRoom, type RoomEvent } from '../services/roomService.js'
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 
@@ -36,14 +35,6 @@ function send(socket: WebSocket, obj: unknown): void {
     return
   }
   socket.send(frame)
-}
-
-/** 校验用户是否为房间成员（DB 权威）。 */
-function isRoomMember(userId: number, roomId: string): boolean {
-  const row = getDb()
-    .prepare(`SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?`)
-    .get(roomId, userId)
-  return !!row
 }
 
 function subscribeSocket(socket: WebSocket, roomId: string): void {
@@ -83,11 +74,11 @@ export function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown):
     send(socket, { type: 'room:error', roomId: '', error: 'roomId required' })
     return
   }
-  if (!isRoomMember(userId, roomId)) {
+  const room = joinRoom(roomId, userId, `user_${userId}`)
+  if (!room) {
     send(socket, { type: 'room:error', roomId, error: 'not a room member' })
     return
   }
-  const room = getRoom(roomId) ?? getOrCreateRoom(roomId, userId, `user_${userId}`)
   // 挂接广播：RoomService 事件 → 房间订阅组扇出（幂等：subscribe 去重由 Set 保证，
   // 但多次挂接会产生重复回调 → 用标记位防止重复订阅）。
   if (!roomBroadcastAttached.has(room)) {
@@ -119,7 +110,7 @@ export function handleRoomLeave(socket: WebSocket, roomId: string): void {
 /** 处理 room:sync — lastSeq 之后的增量补齐；缺口过大（事件日志淘汰）→ 全量快照。 */
 export function handleRoomSync(socket: WebSocket, userId: number, raw: unknown): void {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
-  if (!roomId || !isRoomMember(userId, roomId)) {
+  if (!roomId || !isRoomMember(roomId, userId)) {
     send(socket, { type: 'room:error', roomId, error: 'not a room member' })
     return
   }
@@ -150,7 +141,7 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
     send(socket, { type: 'room:error', roomId, error: 'roomId and action.type required' })
     return
   }
-  if (!isRoomMember(userId, roomId)) {
+  if (!isRoomMember(roomId, userId)) {
     send(socket, { type: 'room:error', roomId, error: 'not a room member' })
     return
   }
@@ -166,19 +157,8 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
         send(socket, { type: 'room:error', roomId, error: 'chat content required' })
         return
       }
-      const username = (getDb().prepare(`SELECT username FROM users WHERE id = ?`).get(userId) as { username: string } | undefined)?.username ?? `user_${userId}`
-      room.appendMessage(
-        { id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'player', playerName: username, content },
-        { userId, roleName: username },
-      )
-      // Phase B6 + D4：玩家消息触发 KP 回合——回合窗口合并（窗口内多人行动合并进
-      // 一次推理）；行动者 = 成员绑定的角色卡（无绑定则 null）。
-      // 单人房间 = 单成员（FR-M9）；turnWindowMs=0 时立即处理（严格排队）。
-      const memberRow = getDb()
-        .prepare(`SELECT character_id FROM room_members WHERE room_id = ? AND user_id = ?`)
-        .all(roomId, userId) as unknown as { character_id: string | null }[]
-      const activeCharacterId = memberRow[0]?.character_id ?? null
-      room.bufferPlayerChat(username, content, activeCharacterId, userId)
+      // 领域方法（ADR-0001）：身份解析/消息流/回合缓冲都在 RoomService 内部
+      room.submitPlayerChat(userId, content)
     } else {
       send(socket, { type: 'room:error', roomId, error: `unknown action type: ${action.type}` })
       return
