@@ -41,6 +41,8 @@ export interface SoloRoomListItemRow {
   storyId: string | null
   phase: string
   updatedAt: number
+  /** 进度摘要 = 消息流最后一条的非玩家侧内容截断（首页展示用）。 */
+  preview: string
 }
 
 /* ═══════════════ rooms 表 ═══════════════ */
@@ -83,11 +85,19 @@ export function listRoomsForUser(userId: number): RoomListItemRow[] {
 /** 未结束 solo 房间列表（继续游戏入口，ADR-0002）。 */
 export function listSoloRoomsForUser(userId: number): SoloRoomListItemRow[] {
   const rows = getDb()
-    .prepare(`SELECT r.room_id, r.story_id, r.phase, r.updated_at
+    .prepare(`SELECT r.room_id, r.story_id, r.phase, r.updated_at, r.state
               FROM rooms r JOIN room_members m ON r.room_id = m.room_id
               WHERE m.user_id = ? AND r.kind = 'solo' AND r.phase != 'ended' ORDER BY r.updated_at DESC`)
-    .all(userId) as { room_id: string; story_id: string | null; phase: string; updated_at: number }[]
-  return rows.map((r) => ({ roomId: r.room_id, storyId: r.story_id, phase: r.phase, updatedAt: r.updated_at }))
+    .all(userId) as { room_id: string; story_id: string | null; phase: string; updated_at: number; state: string }[]
+  return rows.map((r) => {
+    let preview = ''
+    try {
+      const msgs = (JSON.parse(r.state) as { messages?: { role: string; content?: unknown }[] }).messages
+      const last = Array.isArray(msgs) ? msgs[msgs.length - 1] : undefined
+      if (last && typeof last.content === 'string') preview = last.content.slice(0, 50)
+    } catch { /* 脏 state 忽略摘要 */ }
+    return { roomId: r.room_id, storyId: r.story_id, phase: r.phase, updatedAt: r.updated_at, preview }
+  })
 }
 
 export function getRoomRow(roomId: string): RoomRow | undefined {
@@ -117,6 +127,11 @@ export function updateRoomStateSettings(roomId: string, stateJson: string): void
 export function deleteRoomRows(roomId: string): void {
   getDb().prepare(`DELETE FROM room_members WHERE room_id = ?`).run(roomId)
   getDb().prepare(`DELETE FROM rooms WHERE room_id = ?`).run(roomId)
+}
+
+/** 共享连接（事务用：BEGIN/COMMIT/ROLLBACK 包住同连接上的顺序写）。 */
+export function tx(): ReturnType<typeof getDb> {
+  return getDb()
 }
 
 /* ═══════════════ room_members 表 ═══════════════ */

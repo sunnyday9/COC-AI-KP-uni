@@ -146,6 +146,7 @@ function goRooms() {
           >
             <view class="resume-info" @click="resumeSolo(room)">
               <text class="resume-name">{{ storyNameOf(room.storyId) }}</text>
+              <text v-if="room.preview" class="resume-meta">{{ room.preview }}</text>
               <text class="resume-meta">{{ room.phase === 'playing' ? '进行中' : '待开始' }} · {{ new Date(room.updatedAt).toLocaleDateString() }}</text>
             </view>
             <view class="resume-actions">

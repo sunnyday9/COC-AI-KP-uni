@@ -478,7 +478,13 @@ export class RoomService {
               this.appendMessage(dm as Message, { userId: ownerUserId, roleName: 'KP' })
             }
           },
-          onError: () => { /* 回合错误由调用方处理（不中断房间） */ },
+          onError: () => {
+            // 回合失败可见化：系统消息进流（同时供客户端清除「KP 推进中」占位）
+            this.appendMessage(
+              { id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'system', content: 'KP 回合失败，请稍后重试。' },
+              { userId: ownerUserId, roleName: 'system' },
+            )
+          },
         },
       },
     )
@@ -738,17 +744,26 @@ export function createSoloRoom(
     return { ok: false, reason: 'bad-request', message: 'sheet required (COCCharacterSheet)' }
   }
   const characterId = `char_${crypto.randomUUID().slice(0, 8)}`
-  roomStorage.insertCharacter(characterId, userId, name, JSON.stringify(sheet))
-  const roomId = `room_${crypto.randomUUID().slice(0, 8)}`
-  const inviteCode = ensureUniqueInviteCode()
-  roomStorage.insertRoom(roomId, userId, inviteCode, storyId, 'solo')
-  roomStorage.insertMember(roomId, userId, 'owner')
-  roomStorage.bindMemberCharacter(roomId, userId, characterId)
-  // 出生即 playing（列权威）；turnWindowMs=0 进 state（ADR-0002：solo 恒严格排队，restore 时实例取 0）。
-  // 懒激活保持：REST 建房只持久化，不激活实例。
-  roomStorage.updateRoomStart(roomId, storyId)
-  roomStorage.updateRoomStateSettings(roomId, JSON.stringify({ turnWindowMs: 0 }))
-  return { ok: true, roomId, inviteCode, characterId }
+  // 一体动作的六次写库包进事务：中途失败整体回滚，不留孤儿角色卡/房间
+  const db = roomStorage.tx()
+  db.exec('BEGIN')
+  try {
+    roomStorage.insertCharacter(characterId, userId, name, JSON.stringify(sheet))
+    const roomId = `room_${crypto.randomUUID().slice(0, 8)}`
+    const inviteCode = ensureUniqueInviteCode()
+    roomStorage.insertRoom(roomId, userId, inviteCode, storyId, 'solo')
+    roomStorage.insertMember(roomId, userId, 'owner')
+    roomStorage.bindMemberCharacter(roomId, userId, characterId)
+    // 出生即 playing（列权威）；turnWindowMs=0 进 state（ADR-0002：solo 恒严格排队，restore 时实例取 0）。
+    // 懒激活保持：REST 建房只持久化，不激活实例。
+    roomStorage.updateRoomStart(roomId, storyId)
+    roomStorage.updateRoomStateSettings(roomId, JSON.stringify({ turnWindowMs: 0 }))
+    db.exec('COMMIT')
+    return { ok: true, roomId, inviteCode, characterId }
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
 }
 
 /** POST /api/rooms/join —— 邀请码加入（幂等：INSERT OR IGNORE）。 */
@@ -844,6 +859,8 @@ export function setRoomTurnWindow(
   const room = roomStorage.getRoomRow(roomId)
   if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
   if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can change room settings' }
+  // ADR-0002：solo 房间回合窗口恒为 0（单成员无需合并缓冲），不可设置
+  if (room.kind === 'solo') return { ok: false, reason: 'bad-request', message: 'solo rooms have a fixed turn window of 0' }
   let state: Record<string, unknown> = {}
   try { state = JSON.parse(room.state) as Record<string, unknown> } catch { state = {} }
   let ms: number | undefined

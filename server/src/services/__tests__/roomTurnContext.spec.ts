@@ -36,7 +36,7 @@ vi.mock('../ragService.js', () => ({
 }))
 
 import { runKpTurn } from '../kpTurnService.js'
-import { RoomService, createSoloRoom, joinRoom, _clearRoomRegistryForTests } from '../roomService.js'
+import { RoomService, createSoloRoom, joinRoom, getOrCreateRoom, _clearRoomRegistryForTests } from '../roomService.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, BASE_INSTRUCTIONS } from '../kpPromptService.js'
 import { getDb } from '../../db/index.js'
 import type { COCCharacterSheet } from '../../../../shared/types/character.js'
@@ -156,6 +156,25 @@ describe('opening 回合（ADR-0002）', () => {
     room.beginOpeningIfPending()
     await new Promise((r) => setTimeout(r, 20))
     expect(runKpTurnMock).toHaveBeenCalledTimes(1) // 不重入
+  })
+
+  it('TTL 回收后 restore：kpMemory/longTermSummary/turnWindow 从 rooms.state 恢复', async () => {
+    const userId = seedUser('ctx_restore')
+    const created = createSoloRoom(userId, { storyId: 'story_r', name: '瑞秋', sheet })
+    if (!created.ok) throw new Error('unreachable')
+    const room = joinRoom(created.roomId, userId, 'ctx_restore')!
+    await vi.waitFor(() => expect(room.snapshot().kpMemory).toHaveLength(2))
+    room.setScene('地下室') // 触发长期摘要刷新
+    await vi.waitFor(() => expect(room.snapshot().longTermSummary).toBe('+摘要v2'))
+
+    await room.persistSnapshot() // 强制落库（模拟回收前的节流快照）
+    _clearRoomRegistryForTests() // 模拟 TTL 回收
+
+    const restored = getOrCreateRoom(created.roomId, userId, 'ctx_restore')
+    expect(restored.snapshot().kpMemory).toHaveLength(2)
+    expect(restored.snapshot().longTermSummary).toBe('+摘要v2')
+    expect(restored.getTurnWindowMs()).toBe(0)
+    expect(restored.getCharacters().size).toBe(1) // 物化即对账：角色组从 DB 装载
   })
 
   it('opening 失败不阻塞：回合拒绝后玩家消息照常触发回合', async () => {

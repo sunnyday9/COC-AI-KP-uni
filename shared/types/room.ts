@@ -119,6 +119,8 @@ export interface SoloRoomListItem {
   storyId: string | null
   phase: RoomPhase
   updatedAt: number
+  /** 进度摘要（消息流最后一条内容截断）。 */
+  preview: string
 }
 
 export interface RoomDetail {

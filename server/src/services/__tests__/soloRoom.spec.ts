@@ -9,6 +9,7 @@ import {
   listSoloRoomsForUser,
   getRoomDetail,
   getOrCreateRoom,
+  setRoomTurnWindow,
   _clearRoomRegistryForTests,
 } from '../roomService.js'
 import { getRoomRow } from '../roomStorage.js'
@@ -62,6 +63,16 @@ describe('createSoloRoom 一体领域动作', () => {
     expect(createSoloRoom(userId, { storyId: 's', name: 'x', sheet: {} }).ok).toBe(false)
     const count = getDb().prepare(`SELECT COUNT(*) AS n FROM rooms r JOIN room_members m ON r.room_id = m.room_id WHERE m.user_id = ? AND r.kind = 'solo'`).get(userId) as { n: number }
     expect(count.n).toBe(0)
+  })
+
+  it('solo 房回合窗口不可设置（ADR-0002 恒 0）', () => {
+    const userId = seedUser('solo_window')
+    const result = createSoloRoom(userId, { storyId: 'story_w', name: '温蒂', sheet: validSheet })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const fail = setRoomTurnWindow(userId, result.roomId, 5000)
+    expect(fail.ok).toBe(false)
+    if (!fail.ok) expect(fail.reason).toBe('bad-request')
   })
 })
 

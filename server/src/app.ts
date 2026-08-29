@@ -20,10 +20,9 @@ import charactersRoutes from './routes/characters.routes.js'
 /**
  * Express application factory.
  *
- * Route mounting per api-contract: /api/auth, /api/settings, /api/ai,
- * /api/stories, /api/scripts, /api/saves, /api/rag, /api/rooms, /api/characters.
+ * Route mounting: /api/auth, /api/settings, /api/ai, /api/stories,
+ * /api/scripts, /api/saves, /api/rag, /api/rooms, /api/characters.
  * KP 回合只走房间协议（ADR-0002），无独立 kp 路由。
- * All business routes are 501 placeholders in this phase (Task 1 scaffold only).
  */
 export function createApp(): Express {
   const app = express()

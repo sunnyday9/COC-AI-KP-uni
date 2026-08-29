@@ -129,13 +129,13 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       case 'message_appended': {
         const p = payload as RoomMessageAppendedPayload
         if (!p?.message || typeof p.message.content !== 'string') break
-        // 乐观对齐：自己的玩家消息 echo 到达 → 移除同内容 pending；KP 回复到达 → 清推进中
+        // 乐观对齐：自己的玩家消息 echo 到达 → 移除同内容 pending；KP/系统消息到达 → 清推进中
         if (p.message.role === 'player') {
           if (p.author?.userId === selfUserId.value) {
             const idx = messages.value.findIndex((m) => m.pending && m.role === 'player' && m.content === p.message.content)
             if (idx >= 0) messages.value.splice(idx, 1)
           }
-        } else if (p.message.role === 'kp') {
+        } else {
           awaitingKp.value = false
         }
         // payload 携带服务端完整 Message（含 id/timestamp/playerName）——直接 append
@@ -224,6 +224,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         errorMessage.value = frame.error
         connectionState.value = 'error'
         isSyncing.value = false
+        awaitingKp.value = false
         break
       }
     }
