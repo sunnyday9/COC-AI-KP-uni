@@ -443,7 +443,7 @@ describe('PlatformBridge', () => {
       state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
       const bridge = new PlatformBridge()
       const params = { storyId: 'st1', sessionId: 'sess', event: { type: 'clue', name: '信件' } }
-      await expect(bridge.ragUserGraphAdd!(params)).resolves.toEqual({ ok: true })
+      await expect(bridge.ragUserGraphAdd(params)).resolves.toEqual({ ok: true })
       expect(state.requests[0]).toMatchObject({ url: '/api/rag/user-graph/event', method: 'POST' })
       expect(state.requests[0].data).toEqual(params)
     })
@@ -451,7 +451,7 @@ describe('PlatformBridge', () => {
     it('ragUserGraphSummary returns the summary', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { summary: 'sum' } })
       const bridge = new PlatformBridge()
-      await expect(bridge.ragUserGraphSummary!({ storyId: 'st1', sessionId: 'sess' })).resolves.toEqual({ summary: 'sum' })
+      await expect(bridge.ragUserGraphSummary({ storyId: 'st1', sessionId: 'sess' })).resolves.toEqual({ summary: 'sum' })
       expect(state.requests[0].url).toBe('/api/rag/user-graph/summary')
     })
 

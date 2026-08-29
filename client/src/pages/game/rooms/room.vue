@@ -51,7 +51,7 @@ const displayMessages = computed(() => roomStore.messages.map((m) => roomStore.t
 
 async function loadMyCharacters() {
   try {
-    myCharacters.value = await getBridge().characterList!()
+    myCharacters.value = await getBridge().characterList()
   } catch {
     myCharacters.value = []
   }
@@ -73,7 +73,7 @@ async function startGame() {
   }
   const story = stories[0] // 当前版本取第一个剧本；后续可扩展选择器
   try {
-    await getBridge().roomStart!(roomId.value, story.storyId)
+    await getBridge().roomStart(roomId.value, story.storyId)
     uni.showToast({ title: '游戏开始', icon: 'success' })
   } catch (e) {
     uni.showToast({ title: e instanceof Error ? e.message : String(e), icon: 'none' })
@@ -82,7 +82,7 @@ async function startGame() {
 
 async function dissolveRoom() {
   try {
-    await getBridge().roomDelete!(roomId.value)
+    await getBridge().roomDelete(roomId.value)
     roomStore.leaveRoom()
     uni.navigateBack()
   } catch (e) {
@@ -100,7 +100,7 @@ async function applyTurnWindow() {
     return
   }
   try {
-    const r = await getBridge().roomSetTurnWindow!(roomId.value, ms)
+    const r = await getBridge().roomSetTurnWindow(roomId.value, ms)
     uni.showToast({ title: '回合窗口已更新', icon: 'success' })
     if (typeof r.turnWindowMs === 'number') turnWindowSec.value = Math.round(r.turnWindowMs / 1000)
   } catch (e) {
@@ -115,7 +115,7 @@ function openCharPicker() {
 async function bindCharacter() {
   if (!selectedCharId.value) return
   try {
-    await getBridge().roomBindCharacter!(roomId.value, selectedCharId.value)
+    await getBridge().roomBindCharacter(roomId.value, selectedCharId.value)
     showCharPicker.value = false
     uni.showToast({ title: '角色已绑定', icon: 'success' })
     void roomStore.refreshMeta()

@@ -216,7 +216,7 @@ type RoomEventPayload = RoomMessageAppendedPayload | RoomStatePatchPayload | Roo
     const rid = roomId.value
     if (!rid) return
     try {
-      const detail = await getBridge().roomDetail!(rid)
+      const detail = await getBridge().roomDetail(rid)
       phase.value = detail.phase
       storyId.value = detail.storyId
       members.value = detail.members

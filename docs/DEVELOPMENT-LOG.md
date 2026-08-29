@@ -292,6 +292,14 @@
 
 ---
 
+### D-30：Bridge 契约收紧（2026-08-28，架构评审候选 6）
+
+**决策**：`shared/types/bridge.ts` 的 18 个可选成员全部改必选（房间/角色卡段 15 个 + RAG user-graph 段 3 个）——它们是为不存在的第二个实现保留的兼容包袱，唯一实现 `PlatformBridge` 全部有实现；room/character 的内联响应形状改为引用 `shared/types/room.ts` 的 `RoomListItem`/`RoomDetail`/`CharacterListItem`（实现侧本就返回这些类型），修复 `role: string` vs `RoomMemberRole` 的已实际漂移。客户端随之清理：9 处 `getBridge().roomXxx!()` 非空断言删除、`ragService` 3 处 `const fn = …; if (!fn)` 可选代偿简化为直接调用、`bridge.test.ts` 2 处测试侧 `!` 删除。评审同时决策：Bridge 的 60+ 方法宽接口本身不拆（收紧 ≠ 重构形状）。
+
+**原因**：可选性把类型负担转嫁给调用点——接口承诺「可能没有」、运行时永远有，检查形同虚设；同一 wire 形状两份类型已实际漂移。**验证：client vitest 99/99 + server vitest 393/393 全绿 + 双侧 tsc 零错误。**
+
+---
+
 ## 验证基线记录
 
 | 时间 | 项目 | 结果 |
@@ -323,3 +331,4 @@
 | 2026-08-20 | H5 build（含新房间页面） | 成功（模板编译无错误） |
 | 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |
 | 2026-08-28 | client 单测（D-29 删除残骸后） | **99 全绿** + client tsc 零错误 |
+| 2026-08-28 | 单测（D-30 Bridge 收紧后） | client 99 + server 393 全绿，双侧 tsc 零错误 |

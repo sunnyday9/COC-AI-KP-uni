@@ -112,9 +112,7 @@ export async function addUserGraphEvent(params: {
   sessionId: string
   event: { type: 'clue' | 'scene' | 'action' | 'item' | 'npc'; name: string; description?: string }
 }): Promise<void> {
-  const fn = getBridge().ragUserGraphAdd
-  if (!fn) return
-  await fn(params)
+  await getBridge().ragUserGraphAdd(params)
 }
 
 /** Sync user graph from game state (on load). */
@@ -123,9 +121,7 @@ export async function syncUserGraphFromState(params: {
   sessionId: string
   state: { cluesObtained: { id: string; description: string }[]; currentScene: string }
 }): Promise<void> {
-  const fn = getBridge().ragUserGraphSync
-  if (!fn) return
-  await fn(params)
+  await getBridge().ragUserGraphSync(params)
 }
 
 /** Get full chunk index for a story (dev/inspector use). */
@@ -144,8 +140,6 @@ export async function getStoryGraph(scriptId: string) {
  * the string (the original IPC returned the string directly).
  */
 export async function getUserGraphSummary(storyId: string, sessionId: string): Promise<string> {
-  const fn = getBridge().ragUserGraphSummary
-  if (!fn) return ''
-  const r = await fn({ storyId, sessionId })
+  const r = await getBridge().ragUserGraphSummary({ storyId, sessionId })
   return r?.summary ?? ''
 }

@@ -12,7 +12,7 @@ const noticeMsg = ref('')
 
 async function loadRooms() {
   try {
-    myRooms.value = await getBridge().roomList!()
+    myRooms.value = await getBridge().roomList()
   } catch {
     myRooms.value = []
   }
@@ -24,7 +24,7 @@ async function createRoom() {
   errorMsg.value = ''
   noticeMsg.value = ''
   try {
-    const r = await getBridge().roomCreate!()
+    const r = await getBridge().roomCreate()
     noticeMsg.value = `房间已创建，邀请码 ${r.inviteCode}`
     uni.navigateTo({ url: `/pages/rooms/room?roomId=${r.roomId}` })
   } catch (e) {
@@ -40,7 +40,7 @@ async function joinByCode() {
   }
   errorMsg.value = ''
   try {
-    const r = await getBridge().roomJoin!(code)
+    const r = await getBridge().roomJoin(code)
     uni.navigateTo({ url: `/pages/rooms/room?roomId=${r.roomId}` })
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)

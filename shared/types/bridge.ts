@@ -5,6 +5,7 @@
  * server-generated `id`s and new auth methods added.
  */
 import type { AppSettings } from './settings'
+import type { CharacterListItem, RoomDetail, RoomListItem } from './room'
 
 export type Platform = 'h5' | 'mp-weixin' | 'app'
 
@@ -122,32 +123,23 @@ export interface Bridge {
   writeSave: (saveId: string, data: unknown) => Promise<void>
 
   // ── Rooms（Phase B3 多人联机）─────────────────────────────────
-  roomCreate?: (storyId?: string) => Promise<{ ok: boolean; roomId: string; inviteCode: string; ownerId: number; ownerName: string }>
-  roomList?: () => Promise<{ roomId: string; inviteCode: string; storyId: string | null; phase: string; updatedAt: number }[]>
-  roomJoin?: (inviteCode: string) => Promise<{ ok: boolean; roomId: string }>
-  roomDetail?: (roomId: string) => Promise<{
-    roomId: string
-    inviteCode: string
-    storyId: string | null
-    phase: string
-    ownerId: number
-    members: { userId: number; username: string; role: string; characterId: string | null }[]
-    state: Record<string, unknown>
-    createdAt: number
-  }>
-  roomStart?: (roomId: string, storyId: string) => Promise<{ ok: boolean }>
-  roomSetTurnWindow?: (roomId: string, turnWindowMs: number) => Promise<{ ok: boolean; turnWindowMs?: number }>
-  roomBindCharacter?: (roomId: string, characterId: string) => Promise<{ ok: boolean }>
-  roomDelete?: (roomId: string) => Promise<{ ok: boolean }>
-  onRoomFrame?: (handler: (frame: unknown) => void) => () => void
-  onReconnect?: (handler: () => void) => () => void
-  sendRoomFrame?: (type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>) => void
+  roomCreate: (storyId?: string) => Promise<{ ok: boolean; roomId: string; inviteCode: string; ownerId: number; ownerName: string }>
+  roomList: () => Promise<RoomListItem[]>
+  roomJoin: (inviteCode: string) => Promise<{ ok: boolean; roomId: string }>
+  roomDetail: (roomId: string) => Promise<RoomDetail>
+  roomStart: (roomId: string, storyId: string) => Promise<{ ok: boolean }>
+  roomSetTurnWindow: (roomId: string, turnWindowMs: number) => Promise<{ ok: boolean; turnWindowMs?: number }>
+  roomBindCharacter: (roomId: string, characterId: string) => Promise<{ ok: boolean }>
+  roomDelete: (roomId: string) => Promise<{ ok: boolean }>
+  onRoomFrame: (handler: (frame: unknown) => void) => () => void
+  onReconnect: (handler: () => void) => () => void
+  sendRoomFrame: (type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>) => void
 
   // ── Characters（Phase B4 角色卡持久化）───────────────────────
-  characterCreate?: (name: string, sheet: unknown) => Promise<{ ok: boolean; id: string; name: string }>
-  characterList?: () => Promise<{ id: string; name: string; sheet: Record<string, unknown>; updatedAt: number }[]>
-  characterDetail?: (id: string) => Promise<{ id: string; name: string; sheet: Record<string, unknown>; updatedAt: number }>
-  characterDelete?: (id: string) => Promise<{ ok: boolean }>
+  characterCreate: (name: string, sheet: unknown) => Promise<{ ok: boolean; id: string; name: string }>
+  characterList: () => Promise<CharacterListItem[]>
+  characterDetail: (id: string) => Promise<CharacterListItem>
+  characterDelete: (id: string) => Promise<{ ok: boolean }>
 
   // ── RAG（与 ragHandlers.cjs 一致）─────────────────────────────
   ragHealth: () => Promise<{ status: string; service: string }>
@@ -195,16 +187,16 @@ export interface Bridge {
     communitySummaries: Record<string, string>
   } | null>
 
-  // ── RAG 用户行动图谱（可选，Task 3+ 填充）────────────────────
-  ragUserGraphAdd?: (params: {
+  // ── RAG 用户行动图谱（Task 3+ 填充）──────────────────────────
+  ragUserGraphAdd: (params: {
     storyId: string
     sessionId: string
     event: { type: string; name: string; description?: string }
   }) => Promise<{ ok: boolean }>
-  ragUserGraphSync?: (params: {
+  ragUserGraphSync: (params: {
     storyId: string
     sessionId: string
     state: { cluesObtained: { id: string; description: string }[]; currentScene: string }
   }) => Promise<{ ok: boolean }>
-  ragUserGraphSummary?: (params: { storyId: string; sessionId: string }) => Promise<{ summary: string }>
+  ragUserGraphSummary: (params: { storyId: string; sessionId: string }) => Promise<{ summary: string }>
 }
