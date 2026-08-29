@@ -165,33 +165,41 @@ export interface KpTurnHandlers {
  * @param allowedCharacterIds 归属校验（D5）：工具 characterId 必须在此集内，
  *        否则回退行动者（防跨角色篡改）；缺省 = 不限制（单卡路径）
  */
+/** 一个回合的执行依赖（评审候选 1：8 位置参收窄为对象）。 */
+export interface KpTurnDeps {
+  /** 角色组（characterId → sheet；多人多卡，单人单卡） */
+  characters: Record<string, COCCharacterSheet> | null
+  /** 当前行动者（工具缺省 characterId 的回退目标；null = 无角色） */
+  activeCharacterId: string | null
+  /** 变更应用器工厂（characterMutators.createCharacterMutatorFactory 产出——15 个变更语义的唯一实现） */
+  mutatorFactory: (characterId: string | null) => TurnCharacterMutators
+  /** 归属校验（D5）：工具 characterId 必须在此集内，否则回退行动者（防跨角色篡改）；缺省 = 不限制（单卡路径） */
+  allowedCharacterIds?: Set<string>
+  handlers: KpTurnHandlers
+}
+
 export async function runKpTurn(
   userId: number,
   body: { messages: unknown; storyContext?: Record<string, unknown> | null },
-  characters: Record<string, COCCharacterSheet> | null,
-  activeCharacterId: string | null,
-  mutators: TurnCharacterMutators,
-  handlers: KpTurnHandlers,
-  characterMutatorFactory?: (characterId: string | null) => TurnCharacterMutators,
-  allowedCharacterIds?: Set<string>,
+  turn: KpTurnDeps,
 ): Promise<void> {
   let messages: KpMessage[]
   try {
     messages = normalizeMessages(body?.messages)
   } catch (err) {
-    handlers.onError(errorMessage(err))
+    turn.handlers.onError(errorMessage(err))
     return
   }
   // B5：多人模式注入房间内调查员花名册（id + 名称 + 关键属性），LLM 据此用 characterId 调工具
-  messages = injectCharacterRoster(messages, characters)
-  const activeSheet = (characters && activeCharacterId ? characters[activeCharacterId] : null) ?? null
+  messages = injectCharacterRoster(messages, turn.characters)
+  const activeSheet = (turn.characters && turn.activeCharacterId ? turn.characters[turn.activeCharacterId] : null) ?? null
   if (messages.length === 0) {
-    handlers.onEnd({ content: '', displayMessages: [], toolCalls: [], worldDeltas: { cluesAdded: [] }, characterSheet: activeSheet })
+    turn.handlers.onEnd({ content: '', displayMessages: [], toolCalls: [], worldDeltas: { cluesAdded: [] }, characterSheet: activeSheet })
     return
   }
 
   const ai = getAiConfig(userId)
-  const invokeLLM = buildInvokeLLM(userId, ai, { stream: true, onChunk: handlers.onChunk })
+  const invokeLLM = buildInvokeLLM(userId, ai, { stream: true, onChunk: turn.handlers.onChunk })
 
   let fullContent = ''
   let msgs: KpMessage[] = messages
@@ -203,23 +211,6 @@ export async function runKpTurn(
     ending?: { outcome: string; title: string; summary: string; epilogueOptions?: string[]; keyFacts?: string[]; keyTurnIds?: string[] }
   } = { cluesAdded: [] }
   const generateId = (): string => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-
-  // 包装调用方 mutators：世界增量（线索/场景/结局）收集到 worldDeltas，随 end 帧回传
-  const wrappedMutators: TurnCharacterMutators = {
-    ...mutators,
-    addClue: (description, clueId) => {
-      worldDeltas.cluesAdded.push({ description, clueId })
-      mutators.addClue(description, clueId)
-    },
-    transitionToScene: (sceneName) => {
-      worldDeltas.sceneChanged = sceneName
-      mutators.transitionToScene(sceneName)
-    },
-    endGame: (ending) => {
-      worldDeltas.ending = ending
-      mutators.endGame(ending)
-    },
-  }
 
   for (let loop = 0; loop < MAX_TOOL_ITERATIONS; loop++) {
     const base = fullContent
@@ -246,39 +237,39 @@ export async function runKpTurn(
     const results: { role: 'tool'; tool_call_id: string; content: string }[] = []
     const iterDisplay: Message[] = []
     for (const tc of toolCalls) {
-      let targetId = activeCharacterId
+      let targetId = turn.activeCharacterId
       try {
         const args = JSON.parse(tc.arguments || '{}') as { characterId?: unknown }
-        if (typeof args.characterId === 'string' && args.characterId && characters && characters[args.characterId]) {
+        if (typeof args.characterId === 'string' && args.characterId && turn.characters && turn.characters[args.characterId]) {
           // 归属校验（D5）：显式 characterId 必须在本回合行动者可用的角色集内，
           // 否则回退行动者（防跨角色篡改他人角色卡）
-          if (!allowedCharacterIds || allowedCharacterIds.has(args.characterId)) {
+          if (!turn.allowedCharacterIds || turn.allowedCharacterIds.has(args.characterId)) {
             targetId = args.characterId
           }
         }
       } catch { /* 参数解析失败 → 行动者 */ }
-      const targetSheet = (targetId && characters ? characters[targetId] : null) ?? null
-      const m = characterMutatorFactory ? characterMutatorFactory(targetId) : wrappedMutators
-      const ctx = buildToolContext({
-        characterSheet: targetSheet,
-        updateCharacterHP: m.updateCharacterHP,
-        updateCharacterMP: m.updateCharacterMP,
-        updateCharacterSAN: m.updateCharacterSAN,
-        updateCharacterLuck: m.updateCharacterLuck,
-        addCharacterDailySanLoss: m.addCharacterDailySanLoss,
-        resetCharacterDailySanLoss: m.resetCharacterDailySanLoss,
-        updateCharacterInsanityState: m.updateCharacterInsanityState,
-        setCharacterMajorWound: m.setCharacterMajorWound,
-        setCharacterDying: m.setCharacterDying,
-        growCharacterSkill: m.growCharacterSkill,
-        increaseCthulhuMythos: m.increaseCthulhuMythos,
-        transitionToScene: m.transitionToScene,
-        addClue: m.addClue,
-        endGame: m.endGame,
-        generateId,
-      })
+      const targetSheet = (targetId && turn.characters ? turn.characters[targetId] : null) ?? null
+      const m = turn.mutatorFactory(targetId)
+      // 评审候选 1 / Q4：worldDeltas 收集统一在内层——对工厂产出同样生效
+      //（房间路径的 end 帧 worldDeltas 从恒空变为有值；房间客户端走 state_patch，不受影响）
+      const ctxMutators: TurnCharacterMutators = {
+        ...m,
+        addClue: (description, clueId) => {
+          worldDeltas.cluesAdded.push({ description, clueId })
+          m.addClue(description, clueId)
+        },
+        transitionToScene: (sceneName) => {
+          worldDeltas.sceneChanged = sceneName
+          m.transitionToScene(sceneName)
+        },
+        endGame: (ending) => {
+          worldDeltas.ending = ending
+          m.endGame(ending)
+        },
+      }
+      const ctx = buildToolContext({ characterSheet: targetSheet, ...ctxMutators, generateId })
       const { toolResults: tr, displayMessages: dm } = processToolCalls([tc], ctx, {
-        onToolExecuted: handlers.onToolExecuted,
+        onToolExecuted: turn.handlers.onToolExecuted,
       })
       results.push(...tr)
       iterDisplay.push(...dm)
@@ -309,5 +300,5 @@ export async function runKpTurn(
   if (!fullContent.trim()) {
     fullContent = '守密人正在思考……请稍候再试，或换一种方式描述你的行动。'
   }
-  handlers.onEnd({ content: fullContent, displayMessages: allDisplayMessages, toolCalls: executedToolCalls, worldDeltas, characterSheet: activeSheet })
+  turn.handlers.onEnd({ content: fullContent, displayMessages: allDisplayMessages, toolCalls: executedToolCalls, worldDeltas, characterSheet: activeSheet })
 }

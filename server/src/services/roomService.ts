@@ -12,6 +12,7 @@
  */
 import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
+import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
 import type {
   RoomEventPayloadMap,
   RoomEventType,
@@ -413,65 +414,44 @@ export class RoomService {
     const { runKpTurn } = await import('./kpTurnService.js')
     const characterMap = this.getCharacterMap()
 
-    // mutators：按 characterId 路由到目标角色卡（D5）；缺省 → 行动者
-    const mutate = (characterId: string | null, fn: (sheet: COCCharacterSheet) => void): void => {
-      const target = characterId ?? activeCharacterId
-      const sheet = target ? this.characters.get(target) : null
-      if (sheet) {
-        fn(sheet)
-        this.emit({ type: 'state_patch', payload: { path: `characters.${target}`, value: sheet } })
-      }
-    }
-    const makeCharacterMutators = (characterId: string | null) => ({
-      updateCharacterHP: (delta: number) => mutate(characterId, (s) => { if (s.derived) s.derived.hp = Math.max(0, (s.derived.hp ?? 0) + delta) }),
-      updateCharacterMP: (delta: number) => mutate(characterId, (s) => { if (s.derived) s.derived.mp = Math.max(0, (s.derived.mp ?? 0) + delta) }),
-      updateCharacterSAN: (delta: number) => mutate(characterId, (s) => { if (s.derived) s.derived.san = Math.max(0, (s.derived.san ?? 0) + delta) }),
-      updateCharacterLuck: (delta: number) => mutate(characterId, (s) => { if (s.attributes) s.attributes.luck = Math.max(0, (s.attributes.luck ?? 0) + delta) }),
-      addCharacterDailySanLoss: (amount: number) => mutate(characterId, (s) => { s.dailySanLoss = (s.dailySanLoss ?? 0) + amount }),
-      resetCharacterDailySanLoss: () => mutate(characterId, (s) => { s.dailySanLoss = 0 }),
-      updateCharacterInsanityState: (state: 'normal' | 'temporary' | 'indefinite' | 'permanent', phobias?: string[], manias?: string[]) =>
-        mutate(characterId, (s) => {
-          s.insanityState = state
-          if (phobias) s.phobias = phobias
-          if (manias) s.manias = manias
-        }),
-      setCharacterMajorWound: (v: boolean) => mutate(characterId, (s) => { s.hasMajorWound = v }),
-      setCharacterDying: (v: boolean) => mutate(characterId, (s) => { s.isDying = v }),
-      growCharacterSkill: (skillId: string, newValue: number) => mutate(characterId, (s) => { if (s.skills) s.skills[skillId] = newValue }),
-      increaseCthulhuMythos: (gain: number) => mutate(characterId, (s) => { s.cthulhuMythos = (s.cthulhuMythos ?? 0) + gain }),
-      transitionToScene: (sceneName: string) => this.setScene(sceneName),
-      addClue: (description: string, clueId?: string) => this.addClue(description, clueId),
-      endGame: (ending: { outcome: string; title: string; summary: string; epilogueOptions?: string[]; keyFacts?: string[]; keyTurnIds?: string[] }) => this.setEnding(ending),
-      generateId: () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    // 变更应用器工厂（评审候选 1：15 个 sheet 变更语义唯一实现在 rule-engine/characterMutators；
+    // onSheetMutated → state_patch 广播，world 三回调接房间状态方法）
+    const mutatorFactory = createCharacterMutatorFactory({
+      resolveSheet: (id) => (id ? this.characters.get(id) : null) ?? null,
+      onSheetMutated: (id, sheet) => {
+        if (id) this.emit({ type: 'state_patch', payload: { path: `characters.${id}`, value: sheet } })
+      },
+      transitionToScene: (sceneName) => this.setScene(sceneName),
+      addClue: (description, clueId) => this.addClue(description, clueId),
+      endGame: (ending) => this.setEnding(ending),
     })
 
-    const activeSheet = activeCharacterId ? this.characters.get(activeCharacterId) ?? null : null
     await runKpTurn(
       ownerUserId,
       { messages, storyContext },
-      characterMap,
-      activeCharacterId,
-      makeCharacterMutators(activeCharacterId),
       {
-        onChunk,
-        onEnd: (result) => {
-          // KP 回复追加消息流
-          if (result.content?.trim()) {
-            this.appendMessage(
-              { id: `kp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'kp', content: result.content },
-              { userId: ownerUserId, roleName: 'KP' },
-            )
-          }
-          // 工具展示消息（骰子/系统提示）追加消息流
-          for (const dm of result.displayMessages ?? []) {
-            this.appendMessage(dm as Message, { userId: ownerUserId, roleName: 'KP' })
-          }
-          void activeSheet
+        characters: characterMap,
+        activeCharacterId,
+        mutatorFactory,
+        allowedCharacterIds, // D5：归属校验（窗口内行动者可用的角色卡集）
+        handlers: {
+          onChunk,
+          onEnd: (result) => {
+            // KP 回复追加消息流
+            if (result.content?.trim()) {
+              this.appendMessage(
+                { id: `kp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'kp', content: result.content },
+                { userId: ownerUserId, roleName: 'KP' },
+              )
+            }
+            // 工具展示消息（骰子/系统提示）追加消息流
+            for (const dm of result.displayMessages ?? []) {
+              this.appendMessage(dm as Message, { userId: ownerUserId, roleName: 'KP' })
+            }
+          },
+          onError: () => { /* 回合错误由调用方处理（不中断房间） */ },
         },
-        onError: () => { /* 回合错误由调用方处理（不中断房间） */ },
       },
-      makeCharacterMutators, // D5：按 characterId 分派变更应用器
-      allowedCharacterIds, // D5：归属校验（窗口内行动者可用的角色卡集）
     )
   }
 

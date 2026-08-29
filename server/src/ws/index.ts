@@ -3,6 +3,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { verifyToken } from '../middleware/auth.js'
 import { invokeKpStream } from '../services/kpAgentService.js'
 import { runKpTurn } from '../services/kpTurnService.js'
+import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
 import type { KpMessage } from '../agent/kpGraph.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import { errorMessage } from '../utils/errors.js'
@@ -115,7 +116,6 @@ function handleKpTurn(socket: WebSocket, userId: number, raw: unknown): void {
     messages?: unknown
     storyContext?: unknown
     characterSheet?: unknown
-    characters?: unknown
   }
   const streamId = typeof payload.streamId === 'string' && payload.streamId ? payload.streamId : 'unknown'
 
@@ -131,17 +131,10 @@ function handleKpTurn(socket: WebSocket, userId: number, raw: unknown): void {
     socket.send(frame)
   }
 
-  // 角色卡：客户端不再执行规则，但回合开始时需把当前快照带上，服务端更新后随 end 帧回传。
-  // 多人模式（Phase B5）：payload.characters = { characterId: sheet }；单卡兼容 { default: sheet }。
-  const rawCharacters = (payload as { characters?: unknown }).characters as Record<string, COCCharacterSheet> | undefined
+  // 角色卡：客户端不再执行规则，回合开始时需把当前快照带上，服务端更新后随 end 帧回传。
+  // kp:turn 契约 = 单卡（多卡只属于房间路径；评审候选 1 删除从不发送的 payload.characters 分支）。
   const characterSheet = (payload.characterSheet as COCCharacterSheet | null | undefined) ?? null
-  const characters: Record<string, COCCharacterSheet> | null =
-    rawCharacters && typeof rawCharacters === 'object' && Object.keys(rawCharacters).length > 0
-      ? rawCharacters
-      : characterSheet
-        ? { default: characterSheet }
-        : null
-  const activeCharacterId = characters ? (characters.default ? 'default' : Object.keys(characters)[0] ?? null) : null
+  const characters: Record<string, COCCharacterSheet> | null = characterSheet ? { default: characterSheet } : null
 
   try {
     void runKpTurn(
@@ -150,44 +143,28 @@ function handleKpTurn(socket: WebSocket, userId: number, raw: unknown): void {
         messages: payload.messages as KpMessage[],
         storyContext: (payload.storyContext as Record<string, unknown> | null | undefined) ?? null,
       },
-      characters,
-      activeCharacterId,
       {
-        updateCharacterHP: (delta: number) => { if (characterSheet?.derived) characterSheet.derived.hp = Math.max(0, (characterSheet.derived.hp ?? 0) + delta) },
-        updateCharacterMP: (delta: number) => { if (characterSheet?.derived) characterSheet.derived.mp = Math.max(0, (characterSheet.derived.mp ?? 0) + delta) },
-        updateCharacterSAN: (delta: number) => { if (characterSheet?.derived) characterSheet.derived.san = Math.max(0, (characterSheet.derived.san ?? 0) + delta) },
-        updateCharacterLuck: (delta: number) => { if (characterSheet?.attributes) characterSheet.attributes.luck = Math.max(0, (characterSheet.attributes.luck ?? 0) + delta) },
-        addCharacterDailySanLoss: (amount: number) => { if (characterSheet) characterSheet.dailySanLoss = (characterSheet.dailySanLoss ?? 0) + amount },
-        resetCharacterDailySanLoss: () => { if (characterSheet) characterSheet.dailySanLoss = 0 },
-        updateCharacterInsanityState: (state: 'normal' | 'temporary' | 'indefinite' | 'permanent', phobias?: string[], manias?: string[]) => {
-          if (!characterSheet) return
-          characterSheet.insanityState = state
-          if (phobias) characterSheet.phobias = phobias
-          if (manias) characterSheet.manias = manias
+        characters,
+        activeCharacterId: characterSheet ? 'default' : null,
+        // 15 个变更语义的唯一实现（评审候选 1）；单人路径无 world 回调——worldDeltas 由 kpTurnService 收集
+        mutatorFactory: createCharacterMutatorFactory({
+          resolveSheet: (id) => (id && characters ? characters[id] ?? null : null),
+        }),
+        handlers: {
+          onChunk: (chunk) => send({ type: 'chunk', streamId, chunk }),
+          onToolExecuted: (info) => send({ type: 'tool', streamId, tool: info }),
+          onEnd: (result) =>
+            send({
+              type: 'end',
+              streamId,
+              content: result.content ?? '',
+              displayMessages: result.displayMessages ?? [],
+              toolCalls: result.toolCalls ?? [],
+              worldDeltas: result.worldDeltas ?? { cluesAdded: [] },
+              characterSheet: result.characterSheet ?? null,
+            }),
+          onError: (error) => send({ type: 'error', streamId, error }),
         },
-        setCharacterMajorWound: (v: boolean) => { if (characterSheet) characterSheet.hasMajorWound = v },
-        setCharacterDying: (v: boolean) => { if (characterSheet) characterSheet.isDying = v },
-        growCharacterSkill: (id: string, v: number) => { if (characterSheet?.skills) characterSheet.skills[id] = v },
-        increaseCthulhuMythos: (gain: number) => { if (characterSheet) characterSheet.cthulhuMythos = (characterSheet.cthulhuMythos ?? 0) + gain },
-        transitionToScene: () => { /* 世界增量由 kpTurnService 收集进 worldDeltas，随 end 帧回传 */ },
-        addClue: () => { /* 同上 */ },
-        endGame: () => { /* 同上 */ },
-        generateId: () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-      },
-      {
-        onChunk: (chunk) => send({ type: 'chunk', streamId, chunk }),
-        onToolExecuted: (info) => send({ type: 'tool', streamId, tool: info }),
-        onEnd: (result) =>
-          send({
-            type: 'end',
-            streamId,
-            content: result.content ?? '',
-            displayMessages: result.displayMessages ?? [],
-            toolCalls: result.toolCalls ?? [],
-            worldDeltas: result.worldDeltas ?? { cluesAdded: [] },
-            characterSheet: result.characterSheet ?? null,
-          }),
-        onError: (error) => send({ type: 'error', streamId, error }),
       },
     ).catch((err) => {
       send({ type: 'error', streamId, error: errorMessage(err) })

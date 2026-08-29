@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 import { runKpTurn } from '../src/services/kpTurnService.js'
+import { createCharacterMutatorFactory } from '../src/rule-engine/characterMutators.js'
 import type { COCCharacterSheet } from '../../shared/types/character.js'
 
 beforeAll(() => {
@@ -33,34 +34,20 @@ describe('kpTurnService (MOCK_AI 服务端图内循环)', () => {
       { role: 'user' as const, content: '我侦查一下书架。' },
     ]
     const chunks: string[] = []
-    const mutators = {
-      updateCharacterHP: () => {},
-      updateCharacterMP: () => {},
-      updateCharacterSAN: () => {},
-      updateCharacterLuck: () => {},
-      addCharacterDailySanLoss: () => {},
-      resetCharacterDailySanLoss: () => {},
-      updateCharacterInsanityState: () => {},
-      setCharacterMajorWound: () => {},
-      setCharacterDying: () => {},
-      growCharacterSkill: () => {},
-      increaseCthulhuMythos: () => {},
-      transitionToScene: () => {},
-      addClue: () => {},
-      endGame: () => {},
-      generateId: () => 'id_' + Math.random(),
-    }
     const result = await new Promise<{ content: string; displayMessages: unknown[]; toolCalls: { name: string }[]; worldDeltas: { cluesAdded: { description: string }[] } }>((resolve, reject) => {
       void runKpTurn(
         userId,
         { messages, storyContext: null },
-        { default: MOCK_SHEET },
-        'default',
-        mutators,
         {
-          onChunk: (c) => chunks.push(c),
-          onEnd: (r) => resolve({ content: r.content, displayMessages: r.displayMessages, toolCalls: r.toolCalls, worldDeltas: r.worldDeltas }),
-          onError: (e) => reject(new Error(e)),
+          characters: { default: MOCK_SHEET },
+          activeCharacterId: 'default',
+          // 真实工厂（评审候选 1）：15 个变更语义的唯一实现走完整闭环
+          mutatorFactory: createCharacterMutatorFactory({ resolveSheet: (id) => (id === 'default' ? MOCK_SHEET : null) }),
+          handlers: {
+            onChunk: (c) => chunks.push(c),
+            onEnd: (r) => resolve({ content: r.content, displayMessages: r.displayMessages, toolCalls: r.toolCalls, worldDeltas: r.worldDeltas }),
+            onError: (e) => reject(new Error(e)),
+          },
         },
       )
     })

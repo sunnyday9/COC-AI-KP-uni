@@ -26,21 +26,22 @@ function makeSheet(id: string, hp = 10): COCCharacterSheet {
   } as unknown as COCCharacterSheet
 }
 
-/** 桩 kpTurnService.runKpTurn：记录收到的 messages/characters/activeCharacterId，按需回显。 */
+/** 桩 kpTurnService.runKpTurn：记录收到的 messages/turn 选项，按需回显。 */
 vi.mock('../kpTurnService.js', () => ({
   runKpTurn: vi.fn(async (
     _userId: number,
     body: { messages: unknown },
-    _characters: unknown,
-    activeCharacterId: string | null,
-    _mutators: unknown,
-    handlers: { onChunk: (c: string) => void; onEnd: (r: unknown) => void },
-    _factory?: unknown,
+    turn: {
+      activeCharacterId: string | null
+      mutatorFactory: unknown
+      allowedCharacterIds?: Set<string>
+      handlers: { onChunk: (c: string) => void; onEnd: (r: unknown) => void }
+    },
   ) => {
     const lastUser = [...(body.messages as { role: string; content: string }[])].reverse().find((m) => m.role === 'user')
-    handlers.onChunk('（测试）')
-    handlers.onEnd({
-      content: `KP 回应（行动者 ${activeCharacterId ?? 'none'}）: ${lastUser?.content ?? ''}`,
+    turn.handlers.onChunk('（测试）')
+    turn.handlers.onEnd({
+      content: `KP 回应（行动者 ${turn.activeCharacterId ?? 'none'}）: ${lastUser?.content ?? ''}`,
       displayMessages: [],
       toolCalls: [],
       worldDeltas: { cluesAdded: [] },
@@ -87,7 +88,7 @@ describe('RoomService 回合窗口合并（D4）', () => {
     expect(userMsg?.content).toContain('【alice】我搜索书架。')
     expect(userMsg?.content).toContain('【bob】我撬开箱子。')
     // 缺省行动者 = 最后一位（D4）
-    expect(call[3]).toBe('char_b')
+    expect((call[2] as { activeCharacterId: string | null }).activeCharacterId).toBe('char_b')
     // KP 回复进消息流
     expect(room.getMessages().some((m) => m.role === 'kp' && m.content.includes('KP 回应'))).toBe(true)
   })
@@ -141,15 +142,15 @@ describe('RoomService 回合窗口合并（D4）', () => {
     expect(runKpTurnMock).not.toHaveBeenCalled()
   })
 
-  it('D5：多角色工具分派——characterMutatorFactory 按 characterId 路由', async () => {
+  it('D5：多角色工具分派——mutatorFactory 按 characterId 路由', async () => {
     room.bindCharacter(1, 'char_a', makeSheet('char_a'))
     room.bindCharacter(2, 'char_b', makeSheet('char_b'))
-    // 直接调 runKpTurnForRoom，验证 factory 被传入
+    // 直接调 runKpTurnForRoom，验证工厂被传入
     await room.runKpTurnForRoom(1, [{ role: 'user', content: '测试' }], null, 'char_a', () => {})
     expect(runKpTurnMock).toHaveBeenCalledTimes(1)
-    const factory = runKpTurnMock.mock.calls[0]![6]
+    const factory = (runKpTurnMock.mock.calls[0]![2] as { mutatorFactory: unknown }).mutatorFactory
     expect(typeof factory).toBe('function')
-    // factory 返回的 mutator 集可用（updateCharacterHP 等）
+    // 工厂返回的 mutator 集可用（updateCharacterHP 等）
     const m = (factory as (id: string | null) => { updateCharacterHP: (d: number) => void })(null)
     expect(typeof m.updateCharacterHP).toBe('function')
   })
@@ -161,7 +162,7 @@ describe('RoomService 回合窗口合并（D4）', () => {
     room.bufferPlayerChat('bob', '行动2', 'char_b', 2)
     await new Promise((r) => setTimeout(r, 350))
     expect(runKpTurnMock).toHaveBeenCalledTimes(1)
-    const allowed = runKpTurnMock.mock.calls[0]![7] as Set<string> | undefined
+    const allowed = (runKpTurnMock.mock.calls[0]![2] as { allowedCharacterIds?: Set<string> }).allowedCharacterIds
     expect(allowed).toBeDefined()
     expect(allowed!.has('char_a')).toBe(true)
     expect(allowed!.has('char_b')).toBe(true)
@@ -173,9 +174,9 @@ describe('RoomService 回合窗口合并（D4）', () => {
     // 用延迟 Promise 模拟慢 LLM：第一次 flush 进行中，第二条消息到达
     let resolveFirst: (() => void) | null = null
     runKpTurnMock.mockImplementationOnce(async (...args) => {
-      const handlers = args[5] as { onEnd: (r: unknown) => void }
+      const turn = args[2] as { handlers: { onEnd: (r: unknown) => void } }
       await new Promise<void>((r) => { resolveFirst = r })
-      handlers.onEnd({ content: '第一次回复', displayMessages: [], toolCalls: [], worldDeltas: { cluesAdded: [] }, characterSheet: null })
+      turn.handlers.onEnd({ content: '第一次回复', displayMessages: [], toolCalls: [], worldDeltas: { cluesAdded: [] }, characterSheet: null })
     })
     const strict = new RoomService({ roomId: 'room_race', ownerId: 1, ownerName: 'alice', turnWindowMs: 0 })
     try {

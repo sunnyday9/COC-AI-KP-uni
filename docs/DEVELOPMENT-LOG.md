@@ -326,6 +326,14 @@
 
 ---
 
+### D-34：角色卡 mutator 工厂——15 个变更语义唯一实现（2026-08-28，架构评审候选 1）
+
+**决策**：新建 `server/src/rule-engine/characterMutators.ts`：`createCharacterMutatorFactory(deps)` 把 15 个 sheet 变更语义（负值钳制、dailySanLoss 累加、疯狂状态、技能成长……）收为唯一实现——deps 三件套 `resolveSheet`/`onSheetMutated`/world 三回调由调用方注入。单人路径（ws/index.ts kp:turn）删除 15 个手写 mutator 改调工厂；房间路径（roomService）的 makeCharacterMutators 手写版删除改调工厂（`onSheetMutated` → state_patch 广播，语义不变）。`runKpTurn` 8 位置参收窄为 **3 参**（`(userId, body, turn: KpTurnDeps)`），工厂成为唯一通道（第 5 参兼容路径删除）；ws/index.ts 的 `payload.characters` 多卡分支删除——客户端从不发送且真发会错打单卡（kp:turn 契约收窄为单卡，多卡只属于房间路径）。worldDeltas 收集从「只包第 5 参的 wrapper」移进 runKpTurn 内层、对工厂产出同样生效——房间路径 end 帧 worldDeltas 从恒空变为有值（房间客户端走 state_patch 事件，不受影响）。测试：+7 工厂直测（钳制/累加/疯狂/通知/world 透传），roomTurnWindow mock 迁移新签名，test/kpTurnService.spec 的 MOCK_AI 闭环改走真实工厂。
+
+**原因**：架构评审候选 1——钳制/疯狂等易错规则两处逐字重复且已分叉；16 方法接口 + 8 位置参是浅 interface；`payload.characters` 是坏死的契约谎言。**验证：server 415/415 全绿（+7）、双侧 tsc 零错误、multiroom E2E 11/11 + h5 E2E 14/14（单人 kp:turn 全链路）。**
+
+---
+
 ## 验证基线记录
 
 | 时间 | 项目 | 结果 |
@@ -362,3 +370,6 @@
 | 2026-08-28 | multiroom E2E（D-31 后） | **11/11 PASS**（wire 行为不变） |
 | 2026-08-28 | 单测（D-32 事件单一来源后） | server 400 + client 99 全绿，双侧 tsc 零错误 |
 | 2026-08-28 | multiroom E2E（D-32 后） | **11/11 PASS**（payload.message 断言） |
+| 2026-08-28 | server 单测（D-33 订阅簿后） | **408 全绿**（+8 roomLedger 表驱动） |
+| 2026-08-28 | server 单测（D-34 mutator 工厂后） | **415 全绿**（+7 characterMutators 直测） |
+| 2026-08-28 | E2E（D-34 后） | multiroom **11/11** + h5 **14/14** |
