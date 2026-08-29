@@ -6,7 +6,6 @@ import type { StoryContext } from '../types/storyContext'
 import { getContext, addUserGraphEvent, syncUserGraphFromState, getUserGraphSummary } from '../services/ragService'
 import {
   hasKpAgent,
-  runKpAgentLoop as runKpAgentLoopService,
   runDirectChat as runDirectChatService,
 } from '../services/kpSessionService'
 import {
@@ -723,7 +722,7 @@ export const useGameStore = defineStore('game', () => {
       })
 
       const fullContent = hasKpAgent()
-        ? await runKpTurnService(chatMessages, aiConfig, buildStoryContext(), characterSheet.value, {
+        ? await runKpTurnService(chatMessages, buildStoryContext(), characterSheet.value, {
             onStreamChunk: (preview) => updateLastMessage((m) => { if (m.role === 'kp') m.content = sanitizeKpResponse(preview) }),
             onDisplayMessages: (msgs) => insertMessagesBeforeLast(msgs as Message[]),
             onCharacterSheetUpdate: (sheet) => applyServerCharacterSheet(sheet),
@@ -793,7 +792,7 @@ export const useGameStore = defineStore('game', () => {
       })
 
       const fullContent = hasKpAgent()
-        ? await runKpTurnService(chatMessages, aiConfig, buildStoryContext(), characterSheet.value, {
+        ? await runKpTurnService(chatMessages, buildStoryContext(), characterSheet.value, {
             onStreamChunk: (preview) => updateLastMessage((m) => { if (m.role === 'kp') m.content = sanitizeKpResponse(preview) }),
             onDisplayMessages: (msgs) => insertMessagesBeforeLast(msgs as Message[]),
             onCharacterSheetUpdate: (sheet) => applyServerCharacterSheet(sheet),

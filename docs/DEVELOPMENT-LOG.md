@@ -284,6 +284,14 @@
 
 ---
 
+### D-29：删除客户端 KP 循环残骸（2026-08-28，架构评审候选 5）
+
+**决策**：执行架构方案 §五既定删除的收尾——`client/src/services/kpSessionService.ts` 308→132 行：删 `runKpAgentLoop`/`kpInvokeOnce`/`KpAgentCallbacks`（全仓库零调用方）、与 server 逐字重复的截断/摘要常量与函数（`MAX_TOOL_ITERATIONS`/`MAX_TOOL_RESULT_CHARS`/`MAX_TOOL_RESULT_SUMMARY_CHARS`/`truncateToolResult`/`summarizeToolResult`，唯一实现在 server/src/services/kpTurnService.ts）、gameStore 死导入、`runKpTurn` 从未使用的 `aiConfig` 形参（gameStore 两处调用点与集成测试 mock 签名同步）。保留 `runKpTurn`（bridge 薄壳）/`runDirectChat`（无 KP agent 时直连 fallback，`aiConfig` 真实使用）/`hasKpAgent`。评审同时决策：**不**把截断常量提进 shared——它们是 server implementation 细节而非 client interface；防分叉的正解是删除第二份本身。
+
+**原因**：架构评审（候选 5）发现客户端 agent 循环只删了一半——两侧常量若各自演化，同一工具链在单人/房间路径会喂给 LLM 不同形状；死路径误导读者。**验证：client vitest 99/99 全绿（与 D-28 基线一致）+ client tsc 零错误。**
+
+---
+
 ## 验证基线记录
 
 | 时间 | 项目 | 结果 |
@@ -314,3 +322,4 @@
 | 2026-08-21 | H5 build | 成功（模板编译无错误） |
 | 2026-08-20 | H5 build（含新房间页面） | 成功（模板编译无错误） |
 | 2026-08-20 | git 提交 | 门禁放行（DB 映射断链后 commit 099f859/84add77/bcab6e6 等全部通过） |
+| 2026-08-28 | client 单测（D-29 删除残骸后） | **99 全绿** + client tsc 零错误 |

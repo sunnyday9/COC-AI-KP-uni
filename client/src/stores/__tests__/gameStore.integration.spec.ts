@@ -87,7 +87,7 @@ describe('gameStore integration (sendPlayerMessage)', () => {
   it('sendPlayerMessage end-to-end: RAG → KP agent loop → toolCalls → orchestrator → state updates', async () => {
     const store = startPlaying()
 
-    vi.mocked(runKpTurn).mockImplementation(async (_msgs, _aiConfig, _storyContext, _sheet, callbacks) => {
+    vi.mocked(runKpTurn).mockImplementation(async (_msgs, _storyContext, _sheet, callbacks) => {
       // simulate streaming chunk
       callbacks.onStreamChunk('守密人仔细观察')
       // 服务端执行工具：回传 displayMessages（骰子/系统提示）与执行过的工具调用
