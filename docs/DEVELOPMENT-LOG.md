@@ -385,4 +385,7 @@
 | 2026-08-28 | server 单测（D-33 订阅簿后） | **408 全绿**（+8 roomLedger 表驱动） |
 | 2026-08-28 | server 单测（D-34 mutator 工厂后） | **415 全绿**（+7 characterMutators 直测） |
 | 2026-08-28 | E2E（D-34 后） | multiroom **11/11** + h5 **14/14** |
+| 2026-08-29 | server 单测（A4/T1-T4 后） | **413 全绿**（+4 soloRoom +7 roomTurnContext，-8 kpStream -4 kp 路由测试）；tsc 零错误 |
+| 2026-08-29 | client 单测（A4/T3-T4 后） | **83 全绿**（roomStore +3 乐观用例；kp 流/debugStore 用例随删除面退役）；build:h5 通过 |
+| 2026-08-29 | E2E（A4/T5 后） | solo h5 journey（重写为房间帧协议）**14/14**；rooms 浏览器 **8/8**（断言随导航修复更新）；multiroom **11/11**；压测 **3/3**（p95=20ms） |
 | 2026-08-29 | 合并前全量回归（D-29~D-34 后） | server **415** + client **99** + multiroom 11/11 + h5 14/14 + rooms 浏览器 **8/8** + 压测 **3/3**（50 房 14.2s，广播 p95=17ms） |

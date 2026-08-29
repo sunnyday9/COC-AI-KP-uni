@@ -275,19 +275,17 @@ async function main() {
       await pageA.goto(`${WEB_BASE}/#/pages/game/rooms/index`, { waitUntil: 'domcontentloaded' })
       await waitText(pageA, '多人房间')
       await clickBtn(pageA, '创建新房间')
-      // 建房后 REST 拿 roomId（不依赖 navigateTo——dev 下 uni.navigateTo 到子包页面可能异步慢）
-      await waitText(pageA, '房间已创建', 15_000)
-      const notice = await pageA.locator('.notice-text').first().textContent()
-      assert(notice && notice.includes('邀请码'), `no invite code in notice: ${notice}`)
+      // 导航 bug 修复后建房即跳转房间页（旧「房间已创建」提示随页面卸载消失）——
+      // 以房间页内容为就绪信号，roomId 经 REST 获取（不依赖 notice 文本）
+      await waitText(pageA, '房间里一片寂静', 20_000)
       // Node 侧 REST（page.evaluate 的 fetch 走 vite proxy，响应解析不稳）
       const token = await pageA.evaluate(() => localStorage.getItem('aikp_token'))
       const listRes = await fetch(`${API_BASE}/api/rooms`, { headers: { Authorization: 'Bearer ' + token } })
       const list = await listRes.json()
       assert(Array.isArray(list) && list.length > 0, `room list empty: ${JSON.stringify(list)}`)
       roomId = list[0].roomId
-      // 直接导航到房间页（绕过 navigateTo 不确定性）
-      await pageA.goto(`${WEB_BASE}/#/pages/game/rooms/room?roomId=${roomId}`, { waitUntil: 'domcontentloaded' })
-      await waitText(pageA, '成员', 20_000)
+      // 导航修复后建房即已跳转并加入房间页——不要再 goto 同 URL
+      // （同路由导航触发页面 unload → roomStore.leaveRoom() 清空已 join 的状态）
     })
 
     await step('B 注册并用邀请码加入', async () => {
@@ -307,8 +305,8 @@ async function main() {
       const detailRes = await fetch(`${API_BASE}/api/rooms/${roomId}`, { headers: { Authorization: 'Bearer ' + tokenB } })
       const detail = await detailRes.json()
       assert(detail.members && detail.members.length === 2, `B not in room: ${JSON.stringify(detail.members ?? detail)}`)
-      await pageB.goto(`${WEB_BASE}/#/pages/game/rooms/room?roomId=${roomId}`, { waitUntil: 'domcontentloaded' })
-      await waitText(pageB, '成员', 20_000)
+      // 加入成功后 index 页已自动跳转房间页（导航修复）——无需再 goto
+      await waitText(pageB, '成员 (2)', 20_000)
     })
 
     await step('A 与 B 成员列表互相可见（2 人）', async () => {

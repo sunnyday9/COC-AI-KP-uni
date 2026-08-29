@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 /**
- * H5 end-to-end journey (Task 11, Phase 10) — `node e2e/h5.journey.mjs`
+ * H5 end-to-end journey (Task 11; ADR-0002 solo-room protocol) — `node e2e/h5.journey.mjs`
  *
- * Drives the full COC flow in a real browser against a MOCK_AI backend:
+ * Drives the full COC solo flow in a real browser against a MOCK_AI backend.
+ * 单人 = 单成员房间（ADR-0002）：确认角色卡即 roomCreateSolo 进房，全程房间帧。
  *
  *   register → settings (model auto-filled from mock list + save) → story
  *   import (TXT fixture) → index → home story list → occupation (法官) →
- *   character create (roll + interest skills + name) → game opening →
+ *   character create (roll + interest skills + name) → roomCreateSolo →
+ *   game page joins solo room → server opening (room event) →
  *   message with 侦查 → skill_check + grant_clue tool loop (clue gained) →
  *   message with 战斗 → skill_check → roll_dice → adjust_hp loop (HP 10→8) →
- *   save → load → restore assertions → screenshots.
+ *   reload → resume from server snapshot (messages + HP restored) →
+ *   home 继续游戏 lists the unfinished solo room → screenshots.
  *
  * Usage (from the repo root):
  *   node e2e/h5.journey.mjs
@@ -433,8 +436,8 @@ async function main() {
       await waitText(page, '职业技能')
     })
 
-    /* ── 8. Character create: roll attrs + interest skills + name ── */
-    await step('character create (roll + skills + name)', async () => {
+    /* ── 8. Character create: roll attrs + interest skills + name → roomCreateSolo ── */
+    await step('character create → roomCreateSolo → 进入 solo 房间', async () => {
       await clickBtn(page, '投掷属性')
       await waitText(page, '重新投掷')
       // 4 interest skill pickers (.picker-view.flex-1) — pick deterministic skills
@@ -444,20 +447,20 @@ async function main() {
       await pickUniOption(page, '.picker-view.flex-1', '潜行', 3)
       await fillInput(page, '调查员', 'E2E 调查员')
       await clickBtn(page, '确认角色并进入游戏')
+      // ADR-0002：确认 = 服务端一体动作（落角色卡 + 建 solo 房 + 绑卡 + start）→ 直接进游戏页
       await waitText(page, '描述你的行动...', 30_000)
-    })
-
-    /* ── 9. Game opening (mock KP) ── */
-    await step('game opening (mock KP reply)', async () => {
-      // First visit compiles the game page on demand in dev — allow a long
-      // window for the textarea to become enabled (opening finished).
+      // 房间已连接（输入框从「正在连接房间...」切换为可用）
       await page.waitForFunction(
         () => {
           const el = document.querySelector('uni-textarea textarea')
           return el && !el.disabled
         },
-        { timeout: 90_000 },
+        { timeout: 60_000 },
       )
+    })
+
+    /* ── 9. Server opening (room event, mock KP) ── */
+    await step('opening 叙述经房间事件流到达（服务端触发）', async () => {
       await waitText(page, '（测试模式）守秘人回应：你听到了远处的脚步声。', 30_000)
     })
 
@@ -469,7 +472,7 @@ async function main() {
       await waitText(page, '侦查检定', 30_000)
       await waitText(page, '获得线索: 书架后的暗格里藏着一把铜钥匙', 30_000)
       await waitText(page, '（测试模式）线索已记录。', 30_000)
-      // clue panel button appears with badge
+      // clue panel button appears with badge（state_patch → roomStore.clues）
       await pLoc('.action-btn').filter({ hasText: '线索' }).first().waitFor({ timeout: 10_000 })
     })
 
@@ -487,24 +490,23 @@ async function main() {
       assert(hpAfter === hpBefore - 2, `HP should drop by exactly 2 (${hpBefore} → ${hpAfter})`)
     })
 
-    /* ── 12. Save ── */
-    await step('save game', async () => {
-      await clickBtn(page, '💾 存档')
-      await fillInput(page, '存档名称', 'E2E 存档 1')
-      await pLoc('.modal-box').getByText('保存', { exact: true }).click()
-      await pLoc('.modal-box').waitFor({ state: 'detached', timeout: 15_000 })
-    })
-
-    /* ── 13. Load + restore assertions ── */
-    await step('load game (restore messages + HP)', async () => {
-      await clickBtn(page, '📄 读档')
-      await pLoc('.save-item').filter({ hasText: 'E2E 存档 1' }).first().waitFor({ timeout: 15_000 })
-      await pLoc('.save-item').filter({ hasText: 'E2E 存档 1' }).first().click()
-      await pLoc('.modal-box').waitFor({ state: 'detached', timeout: 15_000 })
-      await waitText(page, '我发动攻击！')
-      await waitText(page, '（测试模式）你受到了伤害，HP 下降。')
+    /* ── 12. Reload → resume from server snapshot（存读档已由服务端快照取代） ── */
+    await step('reload → 服务端快照续玩（消息 + HP 恢复）', async () => {
+      await page.reload({ waitUntil: 'domcontentloaded' })
+      // onLoad 带 roomId 参数 → joinRoom → 全量快照恢复
+      await waitText(page, '我发动攻击！', 30_000)
+      await waitText(page, '（测试模式）你受到了伤害，HP 下降。', 30_000)
       const hp = Number((await pLoc('.stat-current').nth(1).textContent()).trim())
       assert(Number.isFinite(hp) && hp > 0, `HP should be restored (> 0), got "${hp}"`)
+    })
+
+    /* ── 13. Home 继续游戏 lists the unfinished solo room ── */
+    await step('首页「继续游戏」列出未结束 solo 局', async () => {
+      await page.goto(`${WEB_BASE}/#/pages/home/index`, { waitUntil: 'domcontentloaded' })
+      await page.reload({ waitUntil: 'domcontentloaded' })
+      await waitText(page, '继续游戏', 20_000)
+      await waitText(page, 'demo-story', 10_000)
+      await waitText(page, '进行中', 10_000)
     })
 
     /* ── 14. Screenshot ── */
