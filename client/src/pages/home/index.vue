@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useGameStore } from '../../stores/gameStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { listIndexedStories, type IndexedStory } from '../../services/ragService'
+import { getBridge } from '../../platform'
+import type { SoloRoomListItem } from '../../../../../shared/types/room'
 import AppLayout from '../../components/layout/AppLayout.vue'
 
-const gameStore = useGameStore()
 const settingsStore = useSettingsStore()
 
 const stories = ref<IndexedStory[]>([])
 const isLoading = ref(false)
+const soloRooms = ref<SoloRoomListItem[]>([])
+const soloLoading = ref(false)
 
 async function loadStories() {
   isLoading.value = true
@@ -19,11 +21,34 @@ async function loadStories() {
   finally { isLoading.value = false }
 }
 
-onMounted(() => { loadStories() })
+async function loadSoloRooms() {
+  soloLoading.value = true
+  try {
+    soloRooms.value = await getBridge().roomListSolo()
+  } catch { soloRooms.value = [] }
+  finally { soloLoading.value = false }
+}
 
-async function goToSetup(story: IndexedStory) {
-  await gameStore.startGame({ storyId: story.storyId, storyName: story.name })
-  uni.navigateTo({ url: '/pages/character/occupation/index' })
+onMounted(() => { loadStories(); loadSoloRooms() })
+
+function storyNameOf(storyId: string | null): string {
+  if (!storyId) return '未命名故事'
+  return stories.value.find((s) => s.storyId === storyId)?.name ?? storyId
+}
+
+function goToSetup(story: IndexedStory) {
+  uni.navigateTo({ url: `/pages/character/occupation/index?storyId=${encodeURIComponent(story.storyId)}&storyName=${encodeURIComponent(story.name)}` })
+}
+
+function resumeSolo(room: SoloRoomListItem) {
+  uni.navigateTo({ url: `/pages/game/index?roomId=${encodeURIComponent(room.roomId)}&storyName=${encodeURIComponent(storyNameOf(room.storyId))}` })
+}
+
+async function deleteSolo(room: SoloRoomListItem) {
+  try {
+    await getBridge().roomDelete(room.roomId)
+  } catch { /* 删除失败静默，列表刷新兜底 */ }
+  loadSoloRooms()
 }
 
 function goScripts() {
@@ -105,6 +130,29 @@ function goRooms() {
             前往故事管理
             <text class="arrow">→</text>
           </button>
+        </view>
+
+        <!-- 继续游戏（未结束单人局，ADR-0002：单人=单成员房间） -->
+        <view v-if="soloRooms.length > 0" class="gothic-card resume-card">
+          <view class="resume-head">
+            <text class="resume-title">☽ 继续游戏</text>
+            <text class="resume-hint">进度保存在服务端，进入即续玩</text>
+          </view>
+          <view
+            v-for="room in soloRooms"
+            :key="room.roomId"
+            class="resume-row"
+            hover-class="story-card-hover"
+          >
+            <view class="resume-info" @click="resumeSolo(room)">
+              <text class="resume-name">{{ storyNameOf(room.storyId) }}</text>
+              <text class="resume-meta">{{ room.phase === 'playing' ? '进行中' : '待开始' }} · {{ new Date(room.updatedAt).toLocaleDateString() }}</text>
+            </view>
+            <view class="resume-actions">
+              <button class="resume-btn resume-enter" @click="resumeSolo(room)">进入</button>
+              <button class="resume-btn resume-del" @click="deleteSolo(room)">删除</button>
+            </view>
+          </view>
         </view>
 
         <!-- 多人联机入口 -->
@@ -365,6 +413,85 @@ function goRooms() {
 }
 .arrow {
   margin-left: 4px;
+}
+
+/* ── 继续游戏 ── */
+.resume-card {
+  margin-top: 16px;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+  border-left: 3px solid hsla(42, 55%, 45%, 0.5);
+}
+.resume-head {
+  margin-bottom: 12px;
+}
+.resume-title {
+  display: block;
+  font-family: $font-display;
+  font-size: 1rem;
+  font-weight: bold;
+  color: hsl(38, 50%, 88%);
+  letter-spacing: 0.08em;
+}
+.resume-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  font-family: $font-serif;
+  font-style: italic;
+  color: hsl(220, 10%, 45%);
+}
+.resume-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: hsla(220, 16%, 11%, 0.5);
+  border: 1px solid hsla(220, 14%, 16%, 0.5);
+}
+.resume-info {
+  min-width: 0;
+  flex: 1;
+}
+.resume-name {
+  display: block;
+  font-family: $font-serif;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: #fff;
+  word-break: break-all;
+}
+.resume-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-family: $font-mono;
+  color: hsl(220, 10%, 45%);
+}
+.resume-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+}
+.resume-btn {
+  font-size: 12px;
+  padding: 6px 12px;
+  line-height: 1.5;
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+}
+.resume-enter {
+  background: hsla(165, 35%, 12%, 0.7);
+  border: 1px solid hsla(165, 45%, 25%, 0.6);
+  color: hsl(165, 50%, 78%);
+}
+.resume-del {
+  background: transparent;
+  border: 1px solid hsla(220, 14%, 20%, 0.6);
+  color: hsl(220, 10%, 45%);
 }
 
 /* ── 多人联机入口 ── */

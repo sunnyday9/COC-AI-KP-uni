@@ -2,16 +2,15 @@
 import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../stores/gameStore'
+import { useRoomStore } from '../../stores/roomStore'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { useGameGuard } from '../../composables/useGameGuard'
 import ChatMessage from './components/ChatMessage.vue'
 import PlayerStatsBar from './components/PlayerStatsBar.vue'
 import DebugPanel from './components/DebugPanel.vue'
 import AppLayout from '../../components/layout/AppLayout.vue'
 
 const isDev = import.meta.env.DEV
-const gameStore = useGameStore()
+const roomStore = useRoomStore()
 const settingsStore = useSettingsStore()
 
 /**
@@ -24,22 +23,23 @@ const pageBg = '/static/bg/bg_game.webp'
 // #ifndef H5
 const pageBg = '/pages/game/static/bg_game.webp'
 // #endif
-const { messages, isSending, storyId, storyName, playerName, gamePhase, characterSheet, currentScene, cluesObtained } = storeToRefs(gameStore)
-const isEnded = computed(() => gamePhase.value === 'ended')
+
+/** 页面级故事名（从导航参数带入；服务端权威是 roomStore.storyId）。 */
+const storyName = ref('')
+
+const { messages } = storeToRefs(roomStore)
+const isEnded = computed(() => roomStore.phase === 'ended')
+const playerName = computed(() => roomStore.selfName)
+const currentScene = computed(() => roomStore.scene)
+const cluesObtained = computed(() => roomStore.clues)
+const isJoined = computed(() => roomStore.connectionState === 'joined')
+
 const inputText = ref('')
 const textareaFocus = ref(false)
 const lastMsgAnchor = ref('')
 const cluesPanelOpen = ref(false)
 /** Task 8（简报决策 5）：DebugPanel 仅 debugMode；开发模式默认展开（原行为） */
 const debugPanelOpen = ref(isDev)
-const saveModalOpen = ref(false)
-const loadModalOpen = ref(false)
-const saveNameInput = ref('')
-const saveError = ref('')
-const loadError = ref('')
-const saveList = ref<string[]>([])
-const saveMetaCache = ref<Record<string, { name?: string; storyName?: string }>>({})
-const loadLoading = ref(false)
 
 /** 消息列表自动滚底：scroll-into-view 锚点 = 最后一条消息 id（替代 scrollIntoView） */
 function scrollToBottom() {
@@ -63,46 +63,40 @@ onMounted(() => document.addEventListener('keydown', handleGlobalKeydown))
 onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
 // #endif
 
-onLoad(() => {
-  const guard = useGameGuard()
-  if (!guard.checkGameAccess()) return
-  if (gamePhase.value === 'ended') {
-    uni.redirectTo({ url: '/pages/game/game-end/index' })
+onLoad((options) => {
+  const rid = String(options?.roomId ?? '')
+  if (!rid) {
+    try { uni.reLaunch({ url: '/pages/home/index' }) } catch { /* 导航失败不抛出 */ }
+    return
   }
+  storyName.value = decodeURIComponent(String(options?.storyName ?? ''))
+  // 加入 solo 房间即续玩（ADR-0002：服务端快照权威，重进=恢复）
+  void roomStore.joinRoom(rid)
 })
 
-// 原 GameRoomView.onMounted：页面子组件（DebugPanel 等）挂载完成后执行，
-// 保证 traceBus 已启用（DebugPanel onMounted 开启）再发起开场请求
-onMounted(async () => {
-  const guard = useGameGuard()
-  if (!guard.checkGameAccess()) return
-  // 读取 debugMode（设置页持久化开关）；成功且非 dev 时打开面板
+// DebugPanel 等子组件挂载后读取 debugMode 设置
+onMounted(() => {
   settingsStore.load().then(() => {
     if (settingsStore.debugMode && !isDev) debugPanelOpen.value = true
   }).catch(() => {})
-  if (messages.value.length === 0) {
-    await gameStore.requestOpening()
-  }
   scrollToBottom()
 })
 
 onShow(() => {
-  const guard = useGameGuard()
-  if (!guard.checkGameAccess()) return
-  if (gamePhase.value === 'ended') {
+  if (isEnded.value) {
     uni.redirectTo({ url: '/pages/game/game-end/index' })
   }
 })
 
-watch(gamePhase, (p) => {
+watch(() => roomStore.phase, (p) => {
   if (p === 'ended') uni.redirectTo({ url: '/pages/game/game-end/index' })
 })
 
-async function handleSend() {
+function handleSend() {
   const text = inputText.value.trim()
-  if (!text || isSending.value || isEnded.value) return
+  if (!text || isEnded.value || !isJoined.value) return
   inputText.value = ''
-  await gameStore.sendPlayerMessage(text)
+  roomStore.sendChat(text)
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -114,57 +108,10 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 function handleOptionSelected(opt: string) {
-  if (isSending.value || isEnded.value) return
+  if (isEnded.value || !isJoined.value) return
   inputText.value = opt
   textareaFocus.value = true
   nextTick(() => { textareaFocus.value = false })
-}
-
-function openSaveModal() {
-  saveModalOpen.value = true
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  saveNameInput.value = `${storyName.value || '存档'} ${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-  saveError.value = ''
-}
-
-async function confirmSave() {
-  saveError.value = ''
-  const name = saveNameInput.value.trim() || '未命名存档'
-  try {
-    const saveId = 'save_' + Date.now()
-    await gameStore.saveGame(saveId, name)
-    saveModalOpen.value = false
-  } catch (e) {
-    saveError.value = e instanceof Error ? e.message : String(e)
-  }
-}
-
-function openLoadModal() {
-  loadModalOpen.value = true
-  loadError.value = ''
-  gameStore.listSaves().then((ids) => {
-    saveList.value = ids
-    saveMetaCache.value = {}
-    ids.forEach((id) => {
-      gameStore.getSaveMeta(id).then((meta) => {
-        if (meta) saveMetaCache.value[id] = meta
-      })
-    })
-  })
-}
-
-async function confirmLoad(saveId: string) {
-  loadError.value = ''
-  loadLoading.value = true
-  try {
-    await gameStore.loadGame(saveId)
-    loadModalOpen.value = false
-  } catch (e) {
-    loadError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    loadLoading.value = false
-  }
 }
 </script>
 
@@ -176,7 +123,7 @@ async function confirmLoad(saveId: string) {
         <!-- 顶栏 -->
         <view class="game-header">
           <view class="header-info">
-            <text class="header-title">{{ storyName || storyId }}</text>
+            <text class="header-title">{{ storyName || roomStore.storyId || '单人局' }}</text>
             <view class="header-meta">
               <text class="header-player">{{ playerName }}</text>
               <text v-if="currentScene" class="header-scene">
@@ -185,8 +132,6 @@ async function confirmLoad(saveId: string) {
             </view>
           </view>
 
-          <button class="action-btn" @click="openSaveModal">💾 存档</button>
-          <button class="action-btn" @click="openLoadModal">📄 读档</button>
           <button v-if="isDev" class="action-btn" :class="{ 'action-btn-active': debugPanelOpen }" @click="debugPanelOpen = !debugPanelOpen">
             <text class="dbg-text">DBG</text>
           </button>
@@ -198,7 +143,7 @@ async function confirmLoad(saveId: string) {
 
         <!-- 聊天区（scroll-view 自动滚底） -->
         <scroll-view class="chat-area vignette-overlay" :scroll-into-view="lastMsgAnchor" scroll-y scroll-with-animation>
-          <text v-if="messages.length === 0 && !isSending" class="chat-empty">
+          <text v-if="messages.length === 0 && !roomStore.awaitingKp" class="chat-empty">
             "黑暗中，一个故事正在苏醒..."
           </text>
           <view
@@ -206,8 +151,13 @@ async function confirmLoad(saveId: string) {
             :id="'msg-' + msg.id"
             :key="msg.id"
             class="msg-wrap"
+            :class="{ 'msg-pending': msg.pending }"
           >
-            <chat-message :msg="msg" @select-option="handleOptionSelected" />
+            <chat-message :msg="roomStore.toMessage(msg)" @select-option="handleOptionSelected" />
+          </view>
+          <view v-if="roomStore.awaitingKp" class="kp-pending">
+            <view class="sigil-spinner small-spinner" />
+            <text class="kp-pending-text">KP 推进中…</text>
           </view>
         </scroll-view>
 
@@ -220,8 +170,8 @@ async function confirmLoad(saveId: string) {
             <textarea
               v-model="inputText"
               :focus="textareaFocus"
-              :placeholder="isEnded ? '游戏已结束，请前往结局总结' : '描述你的行动...'"
-              :disabled="isSending || isEnded"
+              :placeholder="isEnded ? '游戏已结束，请前往结局总结' : (isJoined ? '描述你的行动...' : '正在连接房间...')"
+              :disabled="isEnded || !isJoined"
               placeholder-class="gothic-ph"
               confirm-type="send"
               auto-height
@@ -232,12 +182,11 @@ async function confirmLoad(saveId: string) {
             />
             <button
               class="gothic-btn send-btn"
-              :class="{ 'is-disabled': !inputText.trim() || isSending || isEnded }"
+              :class="{ 'is-disabled': !inputText.trim() || isEnded || !isJoined }"
               hover-class="send-btn-hover"
               @click="handleSend"
             >
-              <view v-if="isSending" class="sigil-spinner small-spinner" />
-              <text v-else>发送</text>
+              <text>发送</text>
             </button>
           </view>
         </view>
@@ -250,8 +199,8 @@ async function confirmLoad(saveId: string) {
           <text class="close-btn" @click="cluesPanelOpen = false">✕</text>
         </view>
         <scroll-view class="clues-body" scroll-y>
-          <view v-for="(clue, idx) in cluesObtained" :key="idx" class="clue-card">
-            <text decode>{{ clue }}</text>
+          <view v-for="clue in cluesObtained" :key="clue.id || clue.description" class="clue-card">
+            <text decode>{{ clue.description }}</text>
           </view>
         </scroll-view>
       </view>
@@ -259,52 +208,6 @@ async function confirmLoad(saveId: string) {
       <!-- 调试面板（仅 debugMode；开发模式默认展开，Ctrl+Shift+D 切换） -->
       <view v-if="debugPanelOpen" class="debug-aside">
         <debug-panel />
-      </view>
-
-      <!-- 存档弹窗 -->
-      <view v-if="saveModalOpen" class="modal-overlay">
-        <view class="modal-box">
-          <text class="modal-title">存档</text>
-          <input
-            v-model="saveNameInput"
-            class="gothic-input save-input"
-            placeholder="存档名称"
-            placeholder-class="gothic-ph"
-            confirm-type="done"
-            @confirm="confirmSave"
-          />
-          <text v-if="saveError" class="modal-error">{{ saveError }}</text>
-          <view class="modal-actions">
-            <button class="gothic-btn-secondary modal-btn" @click="saveModalOpen = false">取消</button>
-            <button class="gothic-btn modal-btn" @click="confirmSave">保存</button>
-          </view>
-        </view>
-      </view>
-
-      <!-- 读档弹窗 -->
-      <view v-if="loadModalOpen" class="modal-overlay">
-        <view class="modal-box modal-box-lg">
-          <view class="modal-section-header">
-            <text class="modal-title">读档</text>
-          </view>
-          <scroll-view class="save-list" scroll-y>
-            <text v-if="saveList.length === 0" class="no-saves">暂无存档</text>
-            <button
-              v-for="id in saveList"
-              :key="id"
-              class="save-item"
-              :class="{ 'is-disabled': loadLoading }"
-              @click="confirmLoad(id)"
-            >
-              <text class="save-name">{{ saveMetaCache[id]?.name ?? id }}</text>
-              <text v-if="saveMetaCache[id]?.storyName" class="save-story">{{ saveMetaCache[id]?.storyName }}</text>
-            </button>
-          </scroll-view>
-          <text v-if="loadError" class="modal-error load-error">{{ loadError }}</text>
-          <view class="modal-section-footer modal-actions">
-            <button class="gothic-btn-secondary modal-btn" @click="loadModalOpen = false">关闭</button>
-          </view>
-        </view>
       </view>
     </view>
   </app-layout>
@@ -428,6 +331,21 @@ async function confirmLoad(saveId: string) {
 }
 .msg-wrap {
   padding: 8px 0;
+}
+.msg-pending {
+  opacity: 0.55;
+}
+.kp-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px 16px;
+}
+.kp-pending-text {
+  font-family: $font-serif;
+  font-size: 0.8125rem;
+  font-style: italic;
+  color: hsl(220, 10%, 55%);
 }
 
 /* ── 输入区 ── */

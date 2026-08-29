@@ -155,15 +155,47 @@ describe('roomStore', () => {
     expect(store.members).toHaveLength(2)
   })
 
-  it('sendChat sends room:action without optimistic echo', async () => {
+  it('sendChat appends an optimistic pending message and sends room:action (ADR-0002)', async () => {
     await joinAndSync()
     store.sendChat('  我要调查书架  ')
-    expect(store.messages).toHaveLength(0) // no echo
+    // 唯一乐观面：自己的消息立即显示（pending 标记）+ KP 推进中
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].pending).toBe(true)
+    expect(store.messages[0].content).toBe('我要调查书架')
+    expect(store.awaitingKp).toBe(true)
     const action = sentFrames().find((f) => f.type === 'room:action')
     expect(action).toBeDefined()
     expect(action!.roomId).toBe('room_x')
     expect((action!.action as { type: string }).type).toBe('chat')
     expect(((action!.action as { payload: { content: string } }).payload).content).toBe('我要调查书架')
+  })
+
+  it('server echo of my own message aligns the optimistic entry and KP reply clears awaitingKp', async () => {
+    await joinAndSync()
+    store.sendChat('我要调查书架')
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].pending).toBe(true)
+
+    // 我自己的 echo 到达（author.userId = selfUserId 1）→ pending 移除，服务端权威消息替换
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'message_appended', payload: { message: { id: 'm_own', timestamp: 1720000000000, role: 'player', playerName: 'alice', content: '我要调查书架' }, author: { userId: 1, roleName: 'alice' } } })
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].id).toBe('m_own')
+    expect(store.messages[0].pending).toBeUndefined()
+
+    // KP 回复到达 → 推进中清位
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'message_appended', payload: { message: { id: 'm_kp', timestamp: 1720000000001, role: 'kp', content: '你发现…' }, author: { userId: 1, roleName: 'KP' } } })
+    expect(store.awaitingKp).toBe(false)
+    expect(store.messages).toHaveLength(2)
+  })
+
+  it('selfCharacterSheet resolves my bound character from state_patch', async () => {
+    await joinAndSync()
+    expect(store.selfCharacterSheet).toBeNull() // 未绑定
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'state_patch', payload: { path: 'characters.char_a', value: { playerName: 'alice', derived: { hp: 10 } } } })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'room_meta', payload: { phase: 'playing', turnWindowMs: 0, members: [{ userId: 1, username: 'alice', role: 'owner', characterId: 'char_a' }] } })
+    expect(store.selfCharacterSheet).not.toBeNull()
+    expect((store.selfCharacterSheet as { playerName: string }).playerName).toBe('alice')
+    expect(store.selfName).toBe('alice')
   })
 
   it('resync requests delta with lastSeq watermark', async () => {

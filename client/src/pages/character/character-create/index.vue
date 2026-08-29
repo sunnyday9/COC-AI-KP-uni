@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../../stores/gameStore'
+import { getBridge } from '../../../platform'
 import { OCCUPATION_SKILL_VALUES, PERSONAL_INTEREST_BONUS, PERSONAL_INTEREST_COUNT } from '../../../types/character'
 import {
   COC7_OCCUPATIONS,
@@ -18,8 +17,13 @@ import {
 import type { COCAttributes } from '../../../types/character'
 import AppLayout from '../../../components/layout/AppLayout.vue'
 
-const gameStore = useGameStore()
-const { selectedOccupationId, selectedOccupationName } = storeToRefs(gameStore)
+/** 故事/职业上下文经 URL 参数传递（ADR-0002：确认即建 solo 房，无客户端会话状态）。 */
+const storyId = ref('')
+const storyName = ref('')
+const selectedOccupationId = ref('')
+const selectedOccupationName = ref('')
+const isCreating = ref(false)
+const createError = ref('')
 
 /**
  * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
@@ -170,8 +174,8 @@ function canConfirm(): boolean {
   return true
 }
 
-function confirm() {
-  if (!canConfirm() || !occupation.value || !attributes.value) return
+async function confirm() {
+  if (!canConfirm() || !occupation.value || !attributes.value || isCreating.value) return
   const sheet = buildSheet(
     occupation.value.id,
     occupation.value.name,
@@ -180,9 +184,17 @@ function confirm() {
     personalInterestKeys.value.filter(Boolean),
     attributes.value
   )
-  gameStore.setCharacterSheet(sheet)
-  gameStore.confirmCharacterAndEnterGame()
-  uni.redirectTo({ url: '/pages/game/index' })
+  // ADR-0002：确认角色卡 = 服务端一体动作（落角色卡 + 建 solo 房 + 绑卡 + start）→ 直接进房
+  isCreating.value = true
+  createError.value = ''
+  try {
+    const r = await getBridge().roomCreateSolo({ storyId: storyId.value, name: playerName.value.trim(), sheet })
+    uni.redirectTo({ url: `/pages/game/index?roomId=${encodeURIComponent(r.roomId)}&storyName=${encodeURIComponent(storyName.value)}` })
+  } catch (e) {
+    createError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    isCreating.value = false
+  }
 }
 
 function goBackOccupation() {
@@ -192,8 +204,12 @@ function goBackOccupation() {
 }
 
 // 原 onMounted：无已选职业 → router.replace('/occupation')；uni 返回上一页等价
-onLoad(() => {
-  if (!selectedOccupationId.value) {
+onLoad((options) => {
+  storyId.value = String(options?.storyId ?? '')
+  storyName.value = decodeURIComponent(String(options?.storyName ?? ''))
+  selectedOccupationId.value = String(options?.occupationId ?? '')
+  selectedOccupationName.value = decodeURIComponent(String(options?.occupationName ?? ''))
+  if (!selectedOccupationId.value || !storyId.value) {
     uni.redirectTo({ url: '/pages/character/occupation/index' })
     return
   }
@@ -321,13 +337,15 @@ onLoad(() => {
           <button class="gothic-btn-secondary action-btn" @click="goBackOccupation">返回选职业</button>
           <button
             class="gothic-btn action-btn"
-            :class="{ 'is-disabled': !canConfirm() }"
+            :class="{ 'is-disabled': !canConfirm() || isCreating }"
+            :loading="isCreating"
             hover-class="confirm-btn-hover"
             @click="confirm"
           >
             确认角色并进入游戏
           </button>
         </view>
+        <text v-if="createError" class="create-error">开局失败：{{ createError }}</text>
       </view>
     </view>
   </app-layout>
@@ -571,5 +589,12 @@ onLoad(() => {
 .confirm-btn-hover {
   background: hsla(165, 50%, 25%, 0.85);
   border-color: hsl(165, 60%, 35%);
+}
+.create-error {
+  display: block;
+  font-size: 0.8125rem;
+  font-family: $font-serif;
+  color: hsl(0, 55%, 65%);
+  padding: 8px 0 16px;
 }
 </style>

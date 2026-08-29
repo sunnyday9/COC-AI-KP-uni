@@ -113,6 +113,14 @@ export interface RoomListItem {
   updatedAt: number
 }
 
+/** REST /api/rooms/solo 响应——未结束单人局（继续游戏入口，ADR-0002；solo 无邀请码）。 */
+export interface SoloRoomListItem {
+  roomId: string
+  storyId: string | null
+  phase: RoomPhase
+  updatedAt: number
+}
+
 export interface RoomDetail {
   roomId: string
   inviteCode: string

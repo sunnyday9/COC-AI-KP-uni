@@ -20,7 +20,7 @@
  *   shared/ — no runtime import, so no bundling concerns).
  */
 import type { AppSettings } from '../../../shared/types/settings'
-import type { RoomServerFrame, RoomSnapshot, RoomAction, RoomListItem, RoomDetail, CharacterListItem } from '../../../shared/types/room'
+import type { RoomServerFrame, RoomSnapshot, RoomAction, RoomListItem, RoomDetail, CharacterListItem, SoloRoomListItem } from '../../../shared/types/room'
 import type {
   AuthResult,
   Bridge,
@@ -402,6 +402,14 @@ export class PlatformBridge implements Bridge {
   }
   roomDelete(roomId: string): Promise<{ ok: boolean }> {
     return request('DELETE', `/api/rooms/${encodeURIComponent(roomId)}`)
+  }
+  /** ADR-0002 单人开局一体动作：服务端落角色卡 + 建 solo 房 + 绑卡 + start。 */
+  roomCreateSolo(params: { storyId: string; name: string; sheet: unknown }): Promise<{ ok: boolean; roomId: string; inviteCode: string; characterId: string }> {
+    return request('POST', '/api/rooms/solo', params)
+  }
+  /** 未结束单人局列表（继续游戏入口）。 */
+  roomListSolo(): Promise<SoloRoomListItem[]> {
+    return request<SoloRoomListItem[]>('GET', '/api/rooms/solo')
   }
   /** 房间 WS 帧：订阅（返回取消函数）。 */
   onRoomFrame(handler: (frame: RoomServerFrame) => void): () => void {

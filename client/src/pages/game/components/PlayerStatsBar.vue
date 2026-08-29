@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../../stores/gameStore'
+import { useRoomStore } from '../../../stores/roomStore'
 import { getSkillName } from '../../../../../shared/coc/coc7'
 import type { COCAttributes } from '../../../types/character'
 
-const gameStore = useGameStore()
-const { characterSheet, derivedStatsVersion } = storeToRefs(gameStore)
+/** 服务端权威角色卡（state_patch 推平，ADR-0002）：自己绑定的卡即属性来源。 */
+const roomStore = useRoomStore()
 
 const showSkills = ref(false)
-const char = computed(() => characterSheet.value)
+const char = computed(() => roomStore.selfCharacterSheet)
 const derived = computed(() => {
-  derivedStatsVersion.value
   return char.value?.derived ?? { hp: 0, hpMax: 0, mp: 0, mpMax: 0, san: 0, sanMax: 0 }
 })
 const skills = computed(() => {

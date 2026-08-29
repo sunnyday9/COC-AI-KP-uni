@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../../stores/gameStore'
 import {
   COC7_OCCUPATIONS,
   OCCUPATION_CATEGORIES,
@@ -11,8 +9,9 @@ import {
 } from '../../../../../shared/coc/coc7'
 import AppLayout from '../../../components/layout/AppLayout.vue'
 
-const gameStore = useGameStore()
-const { storyId, storyName } = storeToRefs(gameStore)
+/** 故事上下文经 URL 参数传递（ADR-0002：确认角色卡即建 solo 房，无客户端会话状态）。 */
+const storyId = ref('')
+const storyName = ref('')
 
 /**
  * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
@@ -75,8 +74,9 @@ const categoryCounts = computed(() => {
 })
 
 function selectOccupation(id: string, name: string) {
-  gameStore.setOccupation(id, name)
-  uni.navigateTo({ url: '/pages/character/character-create/index' })
+  uni.navigateTo({
+    url: `/pages/character/character-create/index?storyId=${encodeURIComponent(storyId.value)}&storyName=${encodeURIComponent(storyName.value)}&occupationId=${encodeURIComponent(id)}&occupationName=${encodeURIComponent(name)}`,
+  })
 }
 
 function eraLabel(era: 'any' | 'classic' | 'modern'): string {
@@ -86,7 +86,9 @@ function eraLabel(era: 'any' | 'classic' | 'modern'): string {
 }
 
 // 原 onMounted：无 storyId → router.replace('/')；uni-app 首页为根页面 → reLaunch
-onLoad(() => {
+onLoad((options) => {
+  storyId.value = String(options?.storyId ?? '')
+  storyName.value = decodeURIComponent(String(options?.storyName ?? ''))
   if (!storyId.value) {
     uni.reLaunch({ url: '/pages/home/index' })
   }

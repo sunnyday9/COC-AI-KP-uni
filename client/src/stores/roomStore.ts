@@ -19,6 +19,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomDiceResultPayload, RoomMetaPayload, RoomTracePayload } from '../../../shared/types/room'
 import type { Message } from '../../../shared/types/game'
+import type { COCCharacterSheet } from '../../../shared/types/character'
 import { getBridge } from '../platform'
 
 export type RoomConnectionState = 'idle' | 'joining' | 'joined' | 'error'
@@ -27,14 +28,17 @@ export type RoomConnectionState = 'idle' | 'joining' | 'joined' | 'error'
 let frameBridgeWired = false
 let frameBridgeOff: (() => void) | null = null
 let reconnectOff: (() => void) | null = null
+let pendingSeq = 0
 
-interface RoomMessageRecord {
+export interface RoomMessageRecord {
   id: string
   timestamp: number
   role: 'kp' | 'player' | 'system'
   playerName?: string
   content: string
   isStreaming?: boolean
+  /** 乐观消息标记（唯一乐观面 = 自己的 chat，ADR-0002；服务端 echo 到达后移除）。 */
+  pending?: boolean
 }
 
 function toMessage(m: RoomMessageRecord): Message {
@@ -88,6 +92,19 @@ export const useRoomStore = defineStore('room', () => {
   const isPlaying = computed(() => phase.value === 'playing')
   const isEnded = computed(() => phase.value === 'ended')
 
+  /** 自己的成员信息（昵称/绑定角色卡用）。 */
+  const selfMember = computed(() => members.value.find((m) => m.userId === selfUserId.value) ?? null)
+  /** 自己的昵称（乐观消息 + 结局页署名）。 */
+  const selfName = computed(() => selfMember.value?.username ?? '调查员')
+  /** 自己绑定的角色卡（state_patch 服务端推平，客户端零变更器）。 */
+  const selfCharacterSheet = computed(() => {
+    const cid = selfMember.value?.characterId
+    if (!cid) return null
+    return (characters.value[cid] as COCCharacterSheet | undefined) ?? null
+  })
+  /** KP 回合进行中（发消息后置位，KP 回复到达后清位——推进中占位）。 */
+  const awaitingKp = ref(false)
+
   /** 归一化服务端快照 → 本地视图模型。 */
   function applySnapshot(snap: RoomSnapshot): void {
     lastSeq.value = typeof snap.seq === 'number' ? snap.seq : 0
@@ -112,6 +129,15 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       case 'message_appended': {
         const p = payload as RoomMessageAppendedPayload
         if (!p?.message || typeof p.message.content !== 'string') break
+        // 乐观对齐：自己的玩家消息 echo 到达 → 移除同内容 pending；KP 回复到达 → 清推进中
+        if (p.message.role === 'player') {
+          if (p.author?.userId === selfUserId.value) {
+            const idx = messages.value.findIndex((m) => m.pending && m.role === 'player' && m.content === p.message.content)
+            if (idx >= 0) messages.value.splice(idx, 1)
+          }
+        } else if (p.message.role === 'kp') {
+          awaitingKp.value = false
+        }
         // payload 携带服务端完整 Message（含 id/timestamp/playerName）——直接 append
         messages.value.push(p.message)
         break
@@ -298,6 +324,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     errorMessage.value = ''
     lastSeq.value = 0
     isSyncing.value = false
+    awaitingKp.value = false
     selfUserId.value = null
     ownerId.value = null
   }
@@ -315,15 +342,29 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     }
   }
 
-  /** 发送聊天消息（服务端串行入队；不回显——经 room:event 回灌）。 */
+  /** 发送聊天消息：本地乐观追加（pending）→ 服务端串行入队；服务端 echo 到达后对齐。 */
   function sendChat(content: string): void {
     const rid = roomId.value
     if (!rid || connectionState.value !== 'joined') return
     const trimmed = content.trim()
     if (!trimmed) return
+    // 唯一乐观面（ADR-0002）：自己的消息立即显示；KP 回复前显示推进中占位
+    messages.value.push({
+      id: `local_${Date.now()}_${pendingSeq++}`,
+      timestamp: Date.now(),
+      role: 'player',
+      playerName: selfName.value,
+      content: trimmed,
+      pending: true,
+    })
+    awaitingKp.value = true
     try {
       getBridge().sendRoomFrame('room:action', { roomId: rid, action: { type: 'chat', payload: { content: trimmed } } })
     } catch (err) {
+      // 发送失败：撤回乐观消息（服务端权威无此消息）
+      const idx = messages.value.findIndex((m) => m.pending && m.content === trimmed)
+      if (idx >= 0) messages.value.splice(idx, 1)
+      awaitingKp.value = false
       errorMessage.value = err instanceof Error ? err.message : String(err)
     }
   }
@@ -346,6 +387,10 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     isOwner,
     isPlaying,
     isEnded,
+    selfMember,
+    selfName,
+    selfCharacterSheet,
+    awaitingKp,
     joinRoom,
     leaveRoom,
     resync,

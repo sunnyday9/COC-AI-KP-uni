@@ -1,14 +1,30 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
-import { storeToRefs } from 'pinia'
-import { useGameStore } from '../../../stores/gameStore'
-import { useGameGuard } from '../../../composables/useGameGuard'
+import { useRoomStore } from '../../../stores/roomStore'
 import { downloadText } from '../../../utils/downloadText'
 import AppLayout from '../../../components/layout/AppLayout.vue'
 
-const gameStore = useGameStore()
-const { endingState, storyName, storyId, playerName } = storeToRefs(gameStore)
+/** 结局数据来自房间事件流（end_game → state_patch/ending，ADR-0002）。 */
+const roomStore = useRoomStore()
+
+interface EndingView {
+  title?: string
+  outcome?: string
+  summary?: string
+  storyName?: string
+  endedAt?: number
+  keyFacts?: string[]
+  epilogueOptions?: string[]
+  scenesVisited?: string[]
+  cluesObtained?: string[]
+  finalSnapshot?: Record<string, unknown>
+}
+
+const storyName = ref('')
+const endingState = computed(() => (roomStore.ending as EndingView | null) ?? null)
+const storyId = computed(() => roomStore.storyId)
+const playerName = computed(() => roomStore.selfName)
 
 /**
  * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
@@ -105,12 +121,14 @@ async function exportReport() {
 }
 
 function startNew() {
-  gameStore.reset()
+  roomStore.leaveRoom()
   uni.reLaunch({ url: '/pages/home/index' })
 }
 
 function goGame() {
-  uni.redirectTo({ url: '/pages/game/index' })
+  const rid = roomStore.roomId
+  if (rid) uni.redirectTo({ url: `/pages/game/index?roomId=${encodeURIComponent(rid)}&storyName=${encodeURIComponent(storyName.value)}` })
+  else uni.reLaunch({ url: '/pages/home/index' })
 }
 
 function goScripts() {
@@ -121,12 +139,20 @@ function goSettings() {
   uni.navigateTo({ url: '/pages/settings/index' })
 }
 
-// requiresGame 路由守卫（onLoad/onShow，Task 8 简报决策 7）
-onLoad(() => {
-  useGameGuard().checkGameAccess()
+// 房间上下文（ADR-0002）：经参数或已加入的 roomStore 进入；未结束局回游戏页
+onLoad((options) => {
+  const rid = String(options?.roomId ?? roomStore.roomId ?? '')
+  storyName.value = decodeURIComponent(String(options?.storyName ?? ''))
+  if (!rid) {
+    try { uni.reLaunch({ url: '/pages/home/index' }) } catch { /* 导航失败不抛出 */ }
+    return
+  }
+  if (roomStore.roomId !== rid) void roomStore.joinRoom(rid)
 })
 onShow(() => {
-  useGameGuard().checkGameAccess()
+  if (roomStore.roomId && roomStore.phase !== 'ended') {
+    goGame()
+  }
 })
 </script>
 

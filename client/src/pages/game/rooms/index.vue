@@ -26,7 +26,7 @@ async function createRoom() {
   try {
     const r = await getBridge().roomCreate()
     noticeMsg.value = `房间已创建，邀请码 ${r.inviteCode}`
-    uni.navigateTo({ url: `/pages/rooms/room?roomId=${r.roomId}` })
+    uni.navigateTo({ url: `/pages/game/rooms/room?roomId=${r.roomId}` })
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   }
@@ -41,14 +41,14 @@ async function joinByCode() {
   errorMsg.value = ''
   try {
     const r = await getBridge().roomJoin(code)
-    uni.navigateTo({ url: `/pages/rooms/room?roomId=${r.roomId}` })
+    uni.navigateTo({ url: `/pages/game/rooms/room?roomId=${r.roomId}` })
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   }
 }
 
 function openRoom(room: RoomListItem) {
-  uni.navigateTo({ url: `/pages/rooms/room?roomId=${room.roomId}` })
+  uni.navigateTo({ url: `/pages/game/rooms/room?roomId=${room.roomId}` })
 }
 </script>
 
