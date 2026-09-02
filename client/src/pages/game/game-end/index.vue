@@ -4,6 +4,7 @@ import { onLoad, onShow } from '@dcloudio/uni-app'
 import { useRoomStore } from '../../../stores/roomStore'
 import { downloadText } from '../../../utils/downloadText'
 import AppLayout from '../../../components/layout/AppLayout.vue'
+import CharacterSheetCard from '../../../components/domain/CharacterSheetCard.vue'
 
 /** 结局数据来自房间事件流（end_game → state_patch/ending，ADR-0002）。 */
 const roomStore = useRoomStore()
@@ -25,6 +26,8 @@ const storyName = ref('')
 const endingState = computed(() => (roomStore.ending as EndingView | null) ?? null)
 const storyId = computed(() => roomStore.storyId)
 const playerName = computed(() => roomStore.selfName)
+/** 调查员最终状态档案卡（T3：CharacterSheetCard 三处复用之一 —— game-end 最终态） */
+const charSheet = computed(() => roomStore.selfCharacterSheet)
 
 /**
  * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
@@ -185,6 +188,10 @@ onShow(() => {
             </view>
           </view>
           <view class="side-col">
+            <view v-if="charSheet" class="char-sheet-wrap">
+              <text class="block-title">调查员最终状态</text>
+              <character-sheet-card :sheet="charSheet" />
+            </view>
             <view v-if="endingState?.keyFacts?.length" class="info-card">
               <text class="block-title">关键事实</text>
               <view class="list">
@@ -316,6 +323,16 @@ onShow(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+.char-sheet-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 8px;
+  background: hsla(38, 18%, 18%, 0.25);
+  border: 1px solid hsla(38, 20%, 30%, 0.25);
 }
 .info-card {
   padding: 16px;
