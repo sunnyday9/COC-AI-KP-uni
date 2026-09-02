@@ -30,6 +30,17 @@ vi.mock('openai', () => ({
         },
       },
     }
+    responses = {
+      create: async (opts: Record<string, unknown>) => {
+        calls.push({ baseURL: this.baseURL, opts })
+        if (opts.stream) {
+          return (async function* () {
+            yield { type: 'response.output_text.delta', delta: 'Resp ' }
+          })()
+        }
+        return { id: 'resp_x', output: [{ type: 'message', content: [{ type: 'output_text', text: 'RespOK' }] }] }
+      },
+    }
   },
 }))
 
@@ -88,8 +99,10 @@ describe('llm dispatch', () => {
     expect(res.content).toBe('hi from gemini')
   })
 
-  it('openai_responses is not yet implemented (T3)', async () => {
-    await expect(dispatch(cfg('openai_responses'), params)).rejects.toThrow(/Unknown protocol/)
+  it('dispatches openai_responses to the responses adapter', async () => {
+    const res = await dispatch(cfg('openai_responses'), params)
+    expect(res.stream).toBe(false)
+    expect(typeof res.content).toBe('string')
   })
 
   it('rejects an unknown protocol', async () => {

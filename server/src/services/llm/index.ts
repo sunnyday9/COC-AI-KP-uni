@@ -11,6 +11,7 @@ import { BadRequestError } from '../../utils/errors.js'
 import { openaiChatAdapter } from './openaiChat.js'
 import { anthropicMessagesAdapter } from './anthropicMessages.js'
 import { googleAdapter } from './google.js'
+import { openaiResponsesAdapter } from './openaiResponses.js'
 import type { LLMCallParams, LLMResult } from './types.js'
 
 export type { LLMCallParams, LLMResult, ChatMessage, ChatTool, ToolCallResult } from './types.js'
@@ -23,13 +24,12 @@ export async function dispatch(config: AIProviderConfig, params: LLMCallParams):
   switch (config.protocol) {
     case 'openai_chat':
       return openaiChatAdapter(config, params)
+    case 'openai_responses':
+      return openaiResponsesAdapter(config, params)
     case 'anthropic_messages':
       return anthropicMessagesAdapter(config, params)
     case 'google_compatible':
       return googleAdapter(config, params)
-    case 'openai_responses':
-      // T3 (#10) 实现；此前视为未配置协议
-      throw new BadRequestError(`Unknown protocol: ${config.protocol}`)
     default:
       throw new BadRequestError(`Unknown protocol: ${config.protocol}`)
   }
