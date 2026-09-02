@@ -508,8 +508,9 @@ async function main() {
       // T4 clue 渲染剥离「获得线索:」前缀（视觉更干净，设计稿对齐）——断言语义内容
       await waitText(page, '书架后的暗格里藏着一把铜钥匙', 30_000)
       await waitText(page, '（测试模式）线索已记录。', 30_000)
-      // clue panel button appears with badge（state_patch → roomStore.clues）
-      await pLoc('.action-btn').filter({ hasText: '线索' }).first().waitFor({ timeout: 10_000 })
+      // T5 桌面三栏：线索簿左栏常显（state_patch → roomStore.clues → 左栏 clue-card + badge）
+      await pLoc('.left-rail .clue-badge').first().waitFor({ timeout: 10_000 })
+      await pLoc('.left-rail .clue-card').filter({ hasText: '书架后的暗格里藏着一把铜钥匙' }).first().waitFor({ timeout: 10_000 })
     })
 
     /* ── 11. Combat message → skill_check → roll_dice → adjust_hp (HP -2) ── */

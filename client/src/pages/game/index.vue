@@ -6,6 +6,8 @@ import { useRoomStore } from '../../stores/roomStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import ChatMessage from './components/ChatMessage.vue'
 import PlayerStatsBar from './components/PlayerStatsBar.vue'
+import CharacterSheetCard from '../../components/domain/CharacterSheetCard.vue'
+import AppIcon from '../../components/ui/AppIcon.vue'
 import AppLayout from '../../components/layout/AppLayout.vue'
 
 const roomStore = useRoomStore()
@@ -31,11 +33,15 @@ const playerName = computed(() => roomStore.selfName)
 const currentScene = computed(() => roomStore.scene)
 const cluesObtained = computed(() => roomStore.clues)
 const isJoined = computed(() => roomStore.connectionState === 'joined')
+/** T5：右栏/档案卡数据（桌面右栏常显；移动 sheet 内展示）。 */
+const charSheet = computed(() => roomStore.selfCharacterSheet)
 
 const inputText = ref('')
 const textareaFocus = ref(false)
 const lastMsgAnchor = ref('')
 const cluesPanelOpen = ref(false)
+/** T5：移动端 bottom sheet（clues | dossier），桌面不弹 sheet。 */
+const sheetOpen = ref<'clues' | 'dossier' | null>(null)
 
 /** 消息列表自动滚底：scroll-into-view 锚点 = 最后一条消息 id（替代 scrollIntoView） */
 function scrollToBottom() {
@@ -100,7 +106,34 @@ function handleOptionSelected(opt: string) {
 <template>
   <app-layout active="game" :bg="pageBg" :overlay="0.8">
     <view class="game-root">
-      <!-- 主聊天列 -->
+      <!-- ══ 桌面左栏：场景 + 线索列表（≥1024px 常显） ══ -->
+      <view class="left-rail">
+        <view class="rail-block scene-block">
+          <view class="rail-title-row">
+            <app-icon name="scroll" :size="14" class="rail-title-icon" />
+            <text class="rail-title">当前场景</text>
+          </view>
+          <text class="scene-text">{{ currentScene || '（未切换场景）' }}</text>
+        </view>
+
+        <view class="rail-block clues-rail">
+          <view class="rail-title-row">
+            <app-icon name="search" :size="14" class="rail-title-icon" />
+            <text class="rail-title">线索簿</text>
+            <text v-if="cluesObtained.length" class="clue-badge">{{ cluesObtained.length }}</text>
+          </view>
+          <scroll-view class="clues-rail-body" scroll-y>
+            <view v-if="cluesObtained.length === 0" class="clues-empty">
+              <text class="clues-empty-text">尚未发现线索…</text>
+            </view>
+            <view v-for="clue in cluesObtained" :key="clue.id || clue.description" class="clue-card">
+              <text decode>{{ clue.description }}</text>
+            </view>
+          </scroll-view>
+        </view>
+      </view>
+
+      <!-- ══ 主列：顶栏 + 对话流 + 输入 ══ -->
       <view class="main-col">
         <!-- 顶栏 -->
         <view class="game-header">
@@ -108,16 +141,24 @@ function handleOptionSelected(opt: string) {
             <text class="header-title">{{ storyName || roomStore.storyId || '单人局' }}</text>
             <view class="header-meta">
               <text class="header-player">{{ playerName }}</text>
-              <text v-if="currentScene" class="header-scene">
-                <text class="scene-icon">⛩</text>{{ currentScene }}
+              <text v-if="currentScene" class="header-scene header-scene-mobile">
+                <app-icon name="scroll" :size="11" class="scene-icon" />{{ currentScene }}
               </text>
             </view>
           </view>
 
-          <button v-if="cluesObtained.length > 0" class="action-btn" @click="cluesPanelOpen = !cluesPanelOpen">
-            <text>📜 线索</text>
-            <text class="clue-badge">{{ cluesObtained.length }}</text>
-          </button>
+          <!-- 移动端：档案/线索 sheet 唤起（桌面常显栏位不重复） -->
+          <view class="mobile-actions">
+            <button v-if="charSheet" class="action-btn" @click="sheetOpen = 'dossier'">
+              <app-icon name="users" :size="13" />
+              <text>档案</text>
+            </button>
+            <button v-if="cluesObtained.length > 0" class="action-btn" @click="sheetOpen = 'clues'">
+              <app-icon name="search" :size="13" />
+              <text>线索</text>
+              <text class="clue-badge">{{ cluesObtained.length }}</text>
+            </button>
+          </view>
         </view>
 
         <!-- 聊天区（scroll-view 自动滚底） -->
@@ -140,8 +181,10 @@ function handleOptionSelected(opt: string) {
           </view>
         </scroll-view>
 
-        <!-- 角色状态栏 -->
-        <player-stats-bar />
+        <!-- 移动端底部状态胶囊（桌面状态在右栏） -->
+        <view class="stats-mobile-wrap">
+          <player-stats-bar />
+        </view>
 
         <!-- 输入区 -->
         <view class="input-area">
@@ -171,17 +214,41 @@ function handleOptionSelected(opt: string) {
         </view>
       </view>
 
-      <!-- 线索侧面板 -->
-      <view v-if="cluesPanelOpen && cluesObtained.length > 0" class="clues-panel animate-slide-up">
-        <view class="clues-header">
-          <text class="clues-title">已获得线索</text>
-          <text class="close-btn" @click="cluesPanelOpen = false">✕</text>
-        </view>
-        <scroll-view class="clues-body" scroll-y>
-          <view v-for="clue in cluesObtained" :key="clue.id || clue.description" class="clue-card">
-            <text decode>{{ clue.description }}</text>
+      <!-- ══ 桌面右栏：状态胶囊 + CharacterSheet 档案（≥1024px 常显） ══ -->
+      <view class="right-rail">
+        <player-stats-bar />
+        <view class="dossier-block">
+          <view class="rail-title-row">
+            <app-icon name="users" :size="14" class="rail-title-icon" />
+            <text class="rail-title">调查员档案</text>
           </view>
-        </scroll-view>
+          <character-sheet-card v-if="charSheet" :sheet="charSheet" />
+          <view v-else class="dossier-empty">档案加载中…</view>
+        </view>
+      </view>
+
+      <!-- ══ 移动端 bottom sheet（clues / dossier） ══ -->
+      <view v-if="sheetOpen" class="sheet-mask" @click="sheetOpen = null">
+        <view class="sheet-panel" @click.stop>
+          <view class="sheet-head">
+            <text class="sheet-title">{{ sheetOpen === 'clues' ? '线索簿' : '调查员档案' }}</text>
+            <text class="sheet-close" @click="sheetOpen = null">✕</text>
+          </view>
+          <scroll-view class="sheet-body" scroll-y>
+            <template v-if="sheetOpen === 'clues'">
+              <view v-if="cluesObtained.length === 0" class="clues-empty">
+                <text class="clues-empty-text">尚未发现线索…</text>
+              </view>
+              <view v-for="clue in cluesObtained" :key="clue.id || clue.description" class="clue-card">
+                <text decode>{{ clue.description }}</text>
+              </view>
+            </template>
+            <template v-else>
+              <character-sheet-card v-if="charSheet" :sheet="charSheet" />
+              <view v-else class="dossier-empty">档案加载中…</view>
+            </template>
+          </scroll-view>
+        </view>
       </view>
     </view>
   </app-layout>
@@ -247,6 +314,11 @@ function handleOptionSelected(opt: string) {
   color: hsl(165, 50%, 60%);
 }
 .scene-icon { font-size: 12px; }
+.mobile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
 .action-btn {
   display: inline-flex;
@@ -266,15 +338,6 @@ function handleOptionSelected(opt: string) {
   background: hsla(220, 16%, 14%, 0.8);
   color: hsl(38, 25%, 55%);
   border-color: hsla(220, 12%, 22%, 0.8);
-}
-.action-btn-active {
-  background: hsla(42, 40%, 14%, 0.4);
-  border-color: hsla(42, 70%, 50%, 0.3);
-  color: hsl(42, 65%, 70%);
-}
-.dbg-text {
-  font-family: $font-mono;
-  font-size: 10px;
 }
 .clue-badge {
   margin-left: 4px;
@@ -363,48 +426,109 @@ function handleOptionSelected(opt: string) {
   border-width: 2px;
 }
 
-/* ── 线索面板 ── */
-.clues-panel {
-  width: 256px;
+/* ═══════ 三栏布局（桌面 ≥1024px） ═══════ */
+
+/* 桌面左栏：场景 + 线索（移动端隐藏——线索改 bottom sheet） */
+.left-rail {
+  display: none;
+}
+/* 桌面右栏：状态胶囊 + 档案（移动端隐藏——档案改 bottom sheet） */
+.right-rail {
+  display: none;
+}
+/* 桌面隐藏移动端状态胶囊与场景行内小字 */
+.stats-mobile-wrap {
   flex-shrink: 0;
+}
+.header-scene-mobile {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .left-rail {
+    display: flex;
+    flex-direction: column;
+    width: 248px;
+    flex-shrink: 0;
+    border-right: 1px solid hsl(220, 14%, 16%);
+    background: hsla(220, 18%, 7%, 0.98);
+    min-height: 0;
+  }
+  .right-rail {
+    display: flex;
+    flex-direction: column;
+    width: 280px;
+    flex-shrink: 0;
+    border-left: 1px solid hsl(220, 14%, 16%);
+    background: hsla(220, 18%, 7%, 0.98);
+    min-height: 0;
+    overflow-y: auto;
+    gap: 16px;
+    padding: 16px 12px;
+    box-sizing: border-box;
+  }
+  .stats-mobile-wrap {
+    display: none;
+  }
+  .mobile-actions {
+    display: none;
+  }
+  .header-scene-mobile {
+    display: flex;
+  }
+}
+
+.rail-block {
   display: flex;
   flex-direction: column;
-  border-left: 1px solid hsl(220, 14%, 16%);
-  background: hsla(220, 18%, 7%, 0.98);
-}
-.clues-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid hsl(220, 14%, 16%);
-  flex-shrink: 0;
-}
-.clues-title {
-  font-family: $font-display;
-  font-size: 0.875rem;
-  letter-spacing: 0.05em;
-  color: hsl(38, 35%, 68%);
-}
-.close-btn {
-  font-size: 12px;
-  color: hsl(220, 10%, 30%);
-  padding: 0 4px;
-}
-.close-btn:active {
-  color: hsl(38, 25%, 55%);
-}
-.clues-body {
-  flex: 1;
-  min-height: 0;
-  padding: 12px;
+  padding: 14px 12px;
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
+}
+.scene-block {
+  border-bottom: 1px solid hsl(220, 14%, 16%);
   gap: 8px;
 }
+.clues-rail {
+  flex: 1;
+  min-height: 0;
+  gap: 8px;
+}
+.clues-rail-body {
+  flex: 1;
+  min-height: 0;
+}
+.rail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rail-title-icon {
+  color: hsl(165, 45%, 45%);
+}
+.rail-title {
+  font-family: $font-display;
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  color: hsl(38, 35%, 75%);
+}
+.scene-text {
+  font-family: $font-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  color: hsl(165, 40%, 60%);
+}
+.clues-empty {
+  padding: 16px 0;
+  text-align: center;
+}
+.clues-empty-text {
+  font-family: $font-serif;
+  font-size: 12px;
+  font-style: italic;
+  color: hsl(220, 10%, 30%);
+}
 .clue-card {
-  padding: 12px;
+  padding: 10px 12px;
   border-radius: 8px;
   font-size: 12px;
   line-height: 1.6;
@@ -412,122 +536,74 @@ function handleOptionSelected(opt: string) {
   background: hsla(38, 18%, 18%, 0.25);
   border: 1px solid hsla(38, 20%, 30%, 0.2);
   color: hsl(38, 35%, 68%);
+  margin-bottom: 8px;
 }
-
-/* ── 调试面板 ── */
-.debug-aside {
-  flex-shrink: 0;
+.dossier-block {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  border-left: 1px solid hsl(220, 14%, 16%);
+  align-items: center;
+  gap: 10px;
+}
+.dossier-empty {
+  font-family: $font-serif;
+  font-style: italic;
+  font-size: 12px;
+  color: hsl(220, 10%, 30%);
+  padding: 32px 0;
 }
 
-/* ── 弹窗 ── */
-.modal-overlay {
+/* ═══════ 移动 bottom sheet ═══════ */
+.sheet-mask {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 50;
+  z-index: 60;
+  background: hsla(220, 20%, 4%, 0.6);
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  background: hsla(220, 20%, 4%, 0.85);
 }
-.modal-box {
-  width: 320px;
-  max-width: calc(100vw - 32px);
-  padding: 20px;
+.sheet-panel {
+  width: 100%;
+  max-width: 720px;
+  max-height: 72vh;
   background: hsl(220, 18%, 7%);
+  border-radius: 16px 16px 0 0;
   border: 1px solid hsl(220, 14%, 16%);
-  border-radius: 0.75rem;
-  box-shadow: 0 8px 32px hsla(220, 20%, 4%, 0.8), 0 0 0 1px hsla(220, 14%, 16%, 0.3);
-}
-.modal-box-lg {
-  width: 448px;
   display: flex;
   flex-direction: column;
-  padding: 0;
-  max-height: 70vh;
+  overflow: hidden;
 }
-.modal-title {
-  display: block;
-  font-family: $font-display;
-  letter-spacing: 0.05em;
-  margin-bottom: 12px;
-  color: hsl(38, 50%, 88%);
-}
-.save-input {
-  margin-bottom: 8px;
-}
-.modal-error {
-  display: block;
-  font-size: 12px;
-  margin-bottom: 8px;
-  color: hsl(0, 55%, 65%);
-}
-.modal-actions {
+.sheet-head {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.modal-btn {
-  font-size: 0.875rem;
-}
-.modal-section-header {
-  padding: 20px 20px 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
   border-bottom: 1px solid hsl(220, 14%, 16%);
+  flex-shrink: 0;
 }
-.modal-section-header .modal-title {
-  margin-bottom: 0;
+.sheet-title {
+  font-family: $font-display;
+  font-size: 0.9375rem;
+  letter-spacing: 0.06em;
+  color: hsl(38, 45%, 85%);
 }
-.modal-section-footer {
-  padding: 16px 20px;
-  border-top: 1px solid hsl(220, 14%, 16%);
+.sheet-close {
+  font-size: 14px;
+  color: hsl(220, 10%, 40%);
+  padding: 0 6px;
 }
-.save-list {
+.sheet-body {
   flex: 1;
   min-height: 0;
   padding: 16px;
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
-.no-saves {
-  font-size: 0.875rem;
-  font-family: $font-serif;
-  font-style: italic;
-  color: hsl(220, 10%, 30%);
-  padding: 8px 0;
-}
-.save-item {
-  width: 100%;
-  text-align: left;
-  padding: 10px 12px;
-  border-radius: 8px;
-  font-size: 0.875rem;
-  line-height: 1.5;
-  box-sizing: border-box;
-  background: hsla(220, 16%, 11%, 0.5);
-  border: 1px solid hsla(220, 14%, 16%, 0.5);
-}
-.save-item:active {
-  background: hsla(220, 16%, 14%, 0.7);
-  border-color: hsla(220, 12%, 22%, 0.6);
-}
-.save-name {
-  color: hsl(38, 40%, 78%);
-  font-weight: 500;
-}
-.save-story {
-  margin-left: 8px;
-  font-size: 12px;
-  color: hsl(220, 10%, 30%);
-}
-.load-error {
-  padding: 0 20px;
+@media (min-width: 1024px) {
+  .sheet-mask {
+    display: none;
+  }
 }
 </style>
