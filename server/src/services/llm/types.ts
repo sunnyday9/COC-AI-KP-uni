@@ -54,12 +54,6 @@ export interface LLMResult {
   toolCalls?: ToolCallResult[]
 }
 
-/** 模型列表条目（与 ModelOption 同构） */
-export interface LLMModelOption {
-  value: string
-  label: string
-}
-
 /**
  * 协议适配器统一签名。
  * `config.baseUrl` 为已解析（默认值填充）的端点；`assertSafeOutboundUrl`

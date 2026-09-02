@@ -52,20 +52,26 @@ function toResponsesInput(messages: ChatMessage[]): { input: unknown[]; instruct
     if (m.role === 'user') {
       input.push({ role: 'user', content: m.content || '' })
     } else if (m.role === 'assistant') {
-      // 单次往返内 assistant 无 tool_calls 需回传（历史里若有，由调用方以
-      // function_call_output 形式携带；此处仅文本 + 简单 tool_calls→output）
-      if (m.tool_calls?.length) {
-        // 上一轮 assistant 发起的工具调用 → 扁平 output items
-        for (const tc of m.tool_calls) {
-          input.push({
-            type: 'function_call',
-            call_id: tc.id || `fc_${Date.now()}`,
-            name: tc.function?.name ?? '',
-            arguments: typeof tc.function?.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function?.arguments ?? {}),
-          })
-        }
+      // responses input 不接受裸 {role:'assistant'} 消息（合法 role 仅
+      // user/system/developer）；assistant 历史必须以 ResponseOutputMessage
+      // 形态（type:'message', role:'assistant'）或 function_call item 携带。
+      if (m.content) {
+        input.push({
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: m.content }],
+        })
       }
-      if (m.content) input.push({ role: 'assistant', content: m.content })
+      // 上一轮 assistant 发起的工具调用 → function_call items（后续 tool
+      // 结果以 function_call_output 配对，顺序保证 call_id 先于 output）
+      for (const tc of m.tool_calls ?? []) {
+        input.push({
+          type: 'function_call',
+          call_id: tc.id || `fc_${input.length}`,
+          name: tc.function?.name ?? '',
+          arguments: typeof tc.function?.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function?.arguments ?? {}),
+        })
+      }
     } else if (m.role === 'tool') {
       input.push({
         type: 'function_call_output',

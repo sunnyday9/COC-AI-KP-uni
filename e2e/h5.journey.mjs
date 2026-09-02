@@ -391,8 +391,16 @@ async function main() {
       await waitText(page, 'AI 提供商', 20_000)
     })
 
-    /* ── 3. Settings: model auto-filled from mock list + save ── */
-    await step('settings AI form (mock model + save)', async () => {
+    /* ── 3. Settings: protocol card select → model auto-filled + save ── */
+    await step('settings AI form (protocol card + mock model + save)', async () => {
+      // ADR-0003 protocol-first UI: four protocol cards; pick Anthropic
+      // Messages and assert the active card switches (mock mode keeps the
+      // model list deterministic).
+      await pLoc('.provider-card').filter({ hasText: 'Anthropic Messages' }).first().click()
+      await pLoc('.provider-card.provider-active').filter({ hasText: 'Anthropic Messages' }).first().waitFor({ timeout: 10_000 })
+      // 切回 OpenAI Chat（默认 mock-model 列表来自 openai_chat 分支）
+      await pLoc('.provider-card').filter({ hasText: 'OpenAI Chat' }).first().click()
+      await pLoc('.provider-card.provider-active').filter({ hasText: 'OpenAI Chat' }).first().waitFor({ timeout: 10_000 })
       // The picker popup keeps all options in the DOM (hidden) — assert the
       // visible trigger value (.picker-value) instead of the option text.
       await pLoc('.picker-value').filter({ hasText: 'mock-model' }).first().waitFor({ timeout: 15_000 })

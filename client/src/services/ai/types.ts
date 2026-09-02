@@ -7,7 +7,6 @@ export {
   PROTOCOL_DEFS,
   getProtocolDef,
   resolveProtocolDefaultBaseUrl,
-  AI_MODEL_LISTS,
 } from '../../../../shared/constants/providers'
 export type {
   AIProviderConfig,
