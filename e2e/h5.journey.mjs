@@ -537,13 +537,15 @@ async function main() {
       assert(Number.isFinite(hp) && hp > 0, `HP should be restored (> 0), got "${hp}"`)
     })
 
-    /* ── 13. Home 继续游戏 lists the unfinished solo room ── */
-    await step('首页「继续游戏」列出未结束 solo 局', async () => {
+    /* ── 13. Home: 未结束 solo 局以「继续」角标出现在故事卡上（T7 移除独立续玩块） ── */
+    await step('首页故事卡「继续」角标（续玩入口）', async () => {
       await page.goto(`${WEB_BASE}/#/pages/home/index`, { waitUntil: 'domcontentloaded' })
       await page.reload({ waitUntil: 'domcontentloaded' })
-      await waitText(page, '继续游戏', 20_000)
-      await waitText(page, 'demo-story', 10_000)
-      await waitText(page, '进行中', 10_000)
+      await waitText(page, 'demo-story', 20_000)
+      // 进行中局的故事卡带「继续」角标；点击续玩（回游戏页）
+      await pLoc('.story-card').filter({ hasText: 'demo-story' }).locator('.story-resume-badge').first().waitFor({ timeout: 15_000 })
+      await pLoc('.story-card').filter({ hasText: 'demo-story' }).first().click()
+      await waitText(page, '描述你的行动...', 30_000)
     })
 
     /* ── 14. Screenshot ── */
