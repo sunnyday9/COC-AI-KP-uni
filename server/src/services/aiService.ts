@@ -1,6 +1,3 @@
-import OpenAI from 'openai'
-import type { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat/completions.js'
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js'
 import {
   AI_MODEL_LISTS,
   resolveProtocolDefaultBaseUrl,
@@ -11,55 +8,30 @@ import {
 import { getAiConfig } from './settingsService.js'
 import { isMockAiMode } from '../config.js'
 import { mockChat, mockChatForAgent, mockChatForRag, mockListModels } from './mockAi.js'
-import type { KpToolDef } from '../../../shared/tools/cocTools.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError, UpstreamError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
+import { dispatch } from './llm/index.js'
+import type { ChatMessage, ChatTool, ToolCallResult } from './llm/types.js'
 
 /**
- * AI service (api-contract §3) — migrated from
- * `original/ai-trpg-web/electron/ipc/aiHandlers.cjs` (Provider → Protocol
- * resolver + doOpenAICompat / doAnthropic / doGoogle + listModels).
+ * AI service (api-contract §3) — config resolution + dispatch facade over
+ * the llm protocol adapters (ADR-0003). Adapter implementations live in
+ * `services/llm/*`; this module resolves the user's settings into a config,
+ * asserts the outbound URL gate, and calls `dispatch(config, params)`.
  *
- * Adaptations vs the original (no Electron main process):
- *  - AI config (provider/baseUrl/model/apiKey/…) is read server-side from the
+ * Adaptations vs the original aiHandlers.cjs (no Electron main process):
+ *  - AI config (protocol/baseUrl/model/apiKey/…) is read server-side from the
  *    user's settings (decrypted apiKey); the request body carries none.
  *  - Every outbound request passes `assertSafeOutboundUrl(baseUrl)` first.
  *  - Streaming (stream=true) returns buffered `{ stream: true, chunks }`
  *    (contract §3); the original collapsed streams into non-stream results.
- *  - Tool-calling support (Task 3): the three protocol adapters accept
- *    `tools` + `onChunk` and return `toolCalls`, matching the original
- *    adapters. The public `chat()` (contract §3) never sends tools; the KP
+ *  - Tool-calling (Task 3): adapters accept `tools` + `onChunk` and return
+ *    `toolCalls`; the public `chat()` (contract §3) never sends tools; the KP
  *    Agent path goes through `chatForAgent()`.
- *  - doGoogle propagates `_thoughtSignature` both directions (request-side
- *    passthrough + response capture), restoring the original aiHandlers.cjs
- *    behavior that was lost in Task 2 (see task-2-report.md minor).
  */
 
-export interface ChatMessage {
-  role: string
-  content: string
-  tool_calls?: {
-    id?: string
-    function?: { name?: string; arguments?: unknown }
-    _thoughtSignature?: unknown
-  }[]
-  tool_call_id?: string
-}
-
-/**
- * OpenAI-format tool definition — single source: shared/tools/cocTools.ts
- * (same shape as the original shared/tools/cocTools.cjs).
- */
-export type ChatTool = KpToolDef
-
-/** Normalized tool call emitted by adapters (mirrors original aiHandlers.cjs). */
-export interface ToolCallResult {
-  id: string
-  name: string
-  arguments: string
-  _thoughtSignature?: string
-}
+export type { ChatMessage, ChatTool, ToolCallResult, LLMCallParams, LLMResult } from './llm/types.js'
 
 export interface ChatBody {
   messages: ChatMessage[]
@@ -73,16 +45,6 @@ export interface ChatResult {
   content?: string
   chunks?: string[]
 }
-
-/** Internal adapter result — superset of ChatResult with toolCalls. */
-interface AdapterResult {
-  stream: boolean
-  content?: string
-  chunks?: string[]
-  toolCalls?: ToolCallResult[]
-}
-
-type OnChunk = (chunk: string) => void
 
 /**
  * Per-request timeout for NON-streaming LLM calls (perf guard). A hung single
@@ -101,561 +63,6 @@ export async function withRequestTimeout<T>(p: Promise<T>, label: string): Promi
       setTimeout(() => reject(new Error(`${label} timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`)), LLM_REQUEST_TIMEOUT_MS)
     }),
   ])
-}
-
-/* ═══════════════════ OpenAI Compatible (openai SDK) ═══════════════════ */
-
-async function doOpenAICompat(
-  config: AIProviderConfig,
-  messages: ChatMessage[],
-  stream: boolean,
-  temp: number,
-  maxTokens: number,
-  tools?: ChatTool[],
-  onChunk?: OnChunk,
-): Promise<AdapterResult> {
-  const client = new OpenAI({
-    baseURL: config.baseUrl,
-    apiKey: config.apiKey || 'not-needed',
-  })
-
-  const opts: {
-    model: string
-    messages: ChatCompletionMessageParam[]
-    temperature: number
-    max_tokens: number
-    stream: boolean
-    tools?: ChatTool[]
-    tool_choice?: string
-  } = {
-    model: config.model as string,
-    messages: messages as unknown as ChatCompletionMessageParam[],
-    temperature: temp ?? 0.7,
-    max_tokens: maxTokens ?? 2048,
-    stream: !!stream,
-  }
-  if (tools && tools.length > 0) {
-    opts.tools = tools
-    opts.tool_choice = 'auto'
-  }
-
-  const res = (await client.chat.completions.create(opts as unknown as Parameters<OpenAI['chat']['completions']['create']>[0])) as
-    | ChatCompletion
-    | AsyncIterable<ChatCompletionChunk>
-
-  if (stream) {
-    const chunks: string[] = []
-    let fullText = ''
-    const toolCallsByIndex = new Map<number, { id: string; name: string; arguments: string }>()
-    for await (const chunk of res as AsyncIterable<ChatCompletionChunk>) {
-      const choice = chunk.choices?.[0]
-      const delta = choice?.delta?.content
-      if (delta) {
-        fullText += delta
-        chunks.push(delta)
-        if (onChunk) onChunk(delta)
-      }
-      const tcs = choice?.delta?.tool_calls
-      if (Array.isArray(tcs)) {
-        for (const tc of tcs) {
-          const idx = tc.index ?? 0
-          const prev = toolCallsByIndex.get(idx) ?? { id: tc.id ?? '', name: '', arguments: '' }
-          toolCallsByIndex.set(idx, {
-            id: tc.id ?? prev.id,
-            name: tc.function?.name ?? prev.name,
-            arguments: (prev.arguments ?? '') + (tc.function?.arguments ?? ''),
-          })
-        }
-      }
-    }
-    const toolCalls: ToolCallResult[] = [...toolCallsByIndex.values()].map((tc, idx) => ({
-      id: tc.id ?? `tc_${idx}`,
-      name: tc.name ?? '',
-      arguments: tc.arguments?.trim() ? tc.arguments : '{}',
-    }))
-    return {
-      stream: true,
-      chunks,
-      content: fullText,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-    }
-  }
-
-  const msg = (res as ChatCompletion).choices?.[0]?.message ?? {}
-  const toolCalls: ToolCallResult[] = ((msg as { tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[] }).tool_calls || []).map(
-    (tc) => ({
-      id: tc.id ?? '',
-      name: tc.function?.name ?? '',
-      arguments: tc.function?.arguments ?? '{}',
-    }),
-  )
-  return {
-    stream: false,
-    content: (msg.content as string | null) ?? '',
-    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-  }
-}
-
-/* ═══════════════════ Anthropic Compatible (fetch + SSE) ═══════════════════ */
-
-function toAnthropicTools(openaiTools?: ChatTool[]): unknown[] | undefined {
-  if (!openaiTools?.length) return undefined
-  interface AnthropicTool {
-    name: string
-    description: string
-    input_schema: Record<string, unknown>
-  }
-  return openaiTools
-    .map((t) => {
-      const fn = t.function
-      if (!fn) return null
-      return {
-        name: fn.name,
-        description: fn.description ?? '',
-        input_schema: fn.parameters ?? { type: 'object', properties: {} },
-      }
-    })
-    .filter((x): x is AnthropicTool => x !== null)
-}
-
-function toAnthropicMessages(messages: ChatMessage[]): {
-  system: string
-  messages: unknown[]
-} {
-  const system: string[] = []
-  const raw: { role: string; content: unknown }[] = []
-
-  for (const m of messages) {
-    if (m.role === 'system') {
-      system.push(m.content || '')
-      continue
-    }
-    if (m.role === 'user') {
-      raw.push({ role: 'user', content: m.content || '' })
-    } else if (m.role === 'assistant') {
-      const blocks: unknown[] = []
-      if (m.content) blocks.push({ type: 'text', text: m.content })
-      if (m.tool_calls?.length) {
-        for (const tc of m.tool_calls) {
-          let input: unknown = {}
-          try {
-            input =
-              typeof tc.function?.arguments === 'string'
-                ? JSON.parse(tc.function.arguments)
-                : (tc.function?.arguments ?? {})
-          } catch {
-            /* ignore malformed arguments */
-          }
-          blocks.push({
-            type: 'tool_use',
-            id: tc.id || `tc_${Date.now()}`,
-            name: tc.function?.name ?? '',
-            input,
-          })
-        }
-      }
-      if (blocks.length > 0) raw.push({ role: 'assistant', content: blocks })
-    } else if (m.role === 'tool') {
-      const last = raw[raw.length - 1]
-      const result = {
-        type: 'tool_result',
-        tool_use_id: m.tool_call_id || '',
-        content: m.content || '',
-      }
-      if (last && last.role === 'user' && Array.isArray(last.content)) {
-        ;(last.content as unknown[]).push(result)
-      } else {
-        raw.push({ role: 'user', content: [result] })
-      }
-    }
-  }
-
-  const msgs: { role: string; content: unknown }[] = []
-  for (const m of raw) {
-    const prev = msgs[msgs.length - 1]
-    if (prev && prev.role === m.role) {
-      const prevBlocks = Array.isArray(prev.content) ? prev.content : [{ type: 'text', text: prev.content || '' }]
-      const curBlocks = Array.isArray(m.content) ? m.content : [{ type: 'text', text: m.content || '' }]
-      prev.content = (prevBlocks as unknown[]).concat(curBlocks as unknown[])
-    } else {
-      msgs.push({ ...m })
-    }
-  }
-
-  if (msgs.length > 0 && msgs[0].role !== 'user') {
-    msgs.unshift({ role: 'user', content: '（继续）' })
-  }
-
-  return { system: system.join('\n\n'), messages: msgs }
-}
-
-async function doAnthropic(
-  config: AIProviderConfig,
-  messages: ChatMessage[],
-  stream: boolean,
-  temp: number,
-  maxTokens: number,
-  tools?: ChatTool[],
-  onChunk?: OnChunk,
-): Promise<AdapterResult> {
-  const apiKey = config.apiKey
-  if (!apiKey) throw new BadRequestError('Anthropic 需要 API Key')
-  const baseURL = (config.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '')
-
-  const { system, messages: anthropicMsgs } = toAnthropicMessages(messages)
-  const anthropicTools = toAnthropicTools(tools)
-
-  const body: Record<string, unknown> = {
-    model: config.model,
-    messages: anthropicMsgs,
-    max_tokens: maxTokens ?? 2048,
-    temperature: temp ?? 0.7,
-    stream: !!stream,
-  }
-  if (system) body.system = system
-  if (anthropicTools?.length) body.tools = anthropicTools
-
-  const res = await fetch(`${baseURL}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify(body),
-  })
-
-  if (!res.ok) {
-    const errText = await res.text()
-    throw new Error(`Anthropic: ${res.status} ${errText}`)
-  }
-
-  if (stream) {
-    const chunks: string[] = []
-    let fullText = ''
-    const toolBlocks: ToolCallResult[] = []
-    let currentToolId = ''
-    let currentToolName = ''
-    let currentToolInput = ''
-
-    const reader = res.body?.getReader()
-    if (!reader) return { stream: true, chunks, content: fullText }
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (raw === '[DONE]') continue
-        let evt: { type?: string; content_block?: { type?: string; id?: string; name?: string }; delta?: { type?: string; text?: string; partial_json?: string } }
-        try {
-          evt = JSON.parse(raw)
-        } catch {
-          continue
-        }
-
-        if (evt.type === 'content_block_start') {
-          const block = evt.content_block ?? {}
-          if (block.type === 'tool_use') {
-            currentToolId = block.id || ''
-            currentToolName = block.name || ''
-            currentToolInput = ''
-          }
-        } else if (evt.type === 'content_block_delta') {
-          const delta = evt.delta ?? {}
-          if (delta.type === 'text_delta' && delta.text) {
-            fullText += delta.text
-            chunks.push(delta.text)
-            if (onChunk) onChunk(delta.text)
-          } else if (delta.type === 'input_json_delta' && delta.partial_json) {
-            currentToolInput += delta.partial_json
-          }
-        } else if (evt.type === 'content_block_stop') {
-          if (currentToolName) {
-            let parsedInput: unknown = {}
-            try {
-              parsedInput = JSON.parse(currentToolInput)
-            } catch {
-              /* ignore */
-            }
-            toolBlocks.push({
-              id: currentToolId,
-              name: currentToolName,
-              arguments: JSON.stringify(parsedInput),
-            })
-            currentToolId = ''
-            currentToolName = ''
-            currentToolInput = ''
-          }
-        }
-      }
-    }
-
-    return {
-      stream: true,
-      chunks,
-      content: fullText,
-      toolCalls: toolBlocks.length > 0 ? toolBlocks : undefined,
-    }
-  }
-
-  const data = (await res.json()) as {
-    content?: { type: string; text?: string; id?: string; name?: string; input?: unknown }[]
-  }
-  let text = ''
-  const toolCalls: ToolCallResult[] = []
-  for (const block of data.content ?? []) {
-    if (block.type === 'text') text += block.text ?? ''
-    if (block.type === 'tool_use') {
-      toolCalls.push({
-        id: block.id || `tc_${toolCalls.length}`,
-        name: block.name ?? '',
-        arguments: JSON.stringify(block.input ?? {}),
-      })
-    }
-  }
-  return {
-    stream: false,
-    content: text,
-    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-  }
-}
-
-/* ═══════════════════ Google Compatible (fetch + SSE) ═══════════════════ */
-
-function toGeminiTools(openaiTools?: ChatTool[]): unknown[] | null {
-  if (!openaiTools?.length) return null
-
-  function toGeminiSchema(schema: Record<string, unknown>): Record<string, unknown> {
-    const t = (String(schema?.type ?? 'string')).toLowerCase()
-    const base: Record<string, unknown> = {
-      type: t === 'object' ? 'OBJECT' : t === 'array' ? 'ARRAY' : t === 'integer' ? 'INTEGER' : t === 'number' ? 'NUMBER' : t === 'boolean' ? 'BOOLEAN' : 'STRING',
-      description: String(schema?.description ?? ''),
-    }
-
-    if (t === 'array') {
-      const itemSchema = (schema?.items as Record<string, unknown>) ?? { type: 'string' }
-      base.items = toGeminiSchema(itemSchema)
-      return base
-    }
-
-    if (t === 'object') {
-      const props = (schema?.properties as Record<string, Record<string, unknown>>) ?? {}
-      const required = (schema?.required as string[]) ?? []
-      const out: Record<string, unknown> = { ...base, properties: {}, required }
-      for (const [k, v] of Object.entries(props)) {
-        ;(out.properties as Record<string, unknown>)[k] = toGeminiSchema(v)
-      }
-      return out
-    }
-
-    if (Array.isArray(schema?.enum)) {
-      base.enum = schema.enum
-    }
-
-    return base
-  }
-
-  interface GeminiToolDeclaration {
-    name: string
-    description: string
-    parameters: Record<string, unknown>
-  }
-  const declarations = openaiTools
-    .map((t) => {
-      const fn = t.function
-      if (!fn) return null
-      const params = (fn.parameters ?? { type: 'object', properties: {}, required: [] }) as Record<string, unknown>
-      const geminiParams = toGeminiSchema(params)
-      return {
-        name: fn.name,
-        description: fn.description ?? '',
-        parameters: geminiParams,
-      }
-    })
-    .filter((x): x is GeminiToolDeclaration => x !== null)
-  return declarations.length ? [{ functionDeclarations: declarations }] : null
-}
-
-async function doGoogle(
-  config: AIProviderConfig,
-  messages: ChatMessage[],
-  stream: boolean,
-  temp: number,
-  maxTokens: number,
-  tools?: ChatTool[],
-  onChunk?: OnChunk,
-): Promise<AdapterResult> {
-  const apiKey = config.apiKey
-  if (!apiKey) throw new BadRequestError('Google API 需要 API Key')
-  let model = (config.model || '').trim()
-  if (!model) throw new BadRequestError('请先在设置中选择或输入模型名称')
-  model = model.replace(/^models\//, '')
-
-  const baseURL = (config.baseUrl || 'https://generativelanguage.googleapis.com').replace(/\/$/, '')
-
-  const systemMsg = messages.find((m) => m.role === 'system')
-  const other = messages.filter((m) => m.role !== 'system')
-  const contents: { role: string; parts: Record<string, unknown>[] }[] = []
-  let pendingToolNames: string[] = []
-  for (const m of other) {
-    if (m.role === 'assistant' && m.tool_calls?.length) {
-      pendingToolNames = m.tool_calls.map((tc) => tc.function?.name ?? '')
-      for (const tc of m.tool_calls) {
-        let args: unknown = {}
-        try {
-          args = typeof tc.function?.arguments === 'string' ? JSON.parse(tc.function.arguments) : (tc.function?.arguments ?? {})
-        } catch {
-          /* ignore */
-        }
-        const partObj: Record<string, unknown> = {
-          functionCall: {
-            name: tc.function?.name ?? '',
-            args,
-          },
-        }
-        // _thoughtSignature passthrough — restored from original aiHandlers.cjs
-        if (tc._thoughtSignature) partObj.thoughtSignature = tc._thoughtSignature
-        contents.push({ role: 'model', parts: [partObj] })
-      }
-      if (m.content) {
-        contents.push({ role: 'model', parts: [{ text: m.content }] })
-      }
-    } else if (m.role === 'tool') {
-      const name = pendingToolNames.shift() ?? 'unknown'
-      contents.push({
-        role: 'function',
-        parts: [
-          {
-            functionResponse: {
-              name,
-              response: { content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '') },
-            },
-          },
-        ],
-      })
-    } else if (m.role === 'user') {
-      contents.push({ role: 'user', parts: [{ text: m.content ?? '' }] })
-      pendingToolNames = []
-    } else if (m.role === 'assistant' && m.content && !m.tool_calls?.length) {
-      contents.push({ role: 'model', parts: [{ text: m.content }] })
-      pendingToolNames = []
-    }
-  }
-
-  const body: Record<string, unknown> = {
-    contents,
-    generationConfig: {
-      temperature: temp ?? 0.7,
-      maxOutputTokens: maxTokens ?? 2048,
-    },
-  }
-  if (systemMsg?.content) {
-    body.systemInstruction = { parts: [{ text: systemMsg.content }] }
-  }
-  const geminiTools = toGeminiTools(tools)
-  if (geminiTools) body.tools = geminiTools
-
-  const endpoint = stream ? 'streamGenerateContent' : 'generateContent'
-  const altParam = stream ? '&alt=sse' : ''
-  const url = `${baseURL}/v1beta/models/${model}:${endpoint}?key=${apiKey}${altParam}`
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-
-  if (!res.ok) {
-    const text = await res.text()
-    const msg = res.status === 404
-      ? `Google: 404 模型不存在或已下线 (当前: ${model})`
-      : `Google: ${res.status} ${text}`
-    throw new Error(msg)
-  }
-
-  if (stream) {
-    const chunks: string[] = []
-    let fullText = ''
-    const geminiToolCalls: ToolCallResult[] = []
-    const reader = res.body?.getReader()
-    if (!reader) return { stream: true, chunks, content: fullText }
-    const decoder = new TextDecoder()
-    let sseBuffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      sseBuffer += decoder.decode(value, { stream: true })
-      const lines = sseBuffer.split('\n')
-      sseBuffer = lines.pop() || ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (!raw || raw === '[DONE]') continue
-        let obj: { candidates?: { content?: { parts?: { text?: string; functionCall?: { name?: string; args?: unknown }; thoughtSignature?: unknown }[] } }[] }
-        try {
-          obj = JSON.parse(raw)
-        } catch {
-          continue
-        }
-        for (const part of obj.candidates?.[0]?.content?.parts ?? []) {
-          if (part.text) {
-            fullText += part.text
-            chunks.push(part.text)
-            if (onChunk) onChunk(part.text)
-          }
-          if (part.functionCall) {
-            const tc: ToolCallResult = {
-              id: `gemini_tc_${geminiToolCalls.length}`,
-              name: part.functionCall.name ?? '',
-              arguments: JSON.stringify(part.functionCall.args ?? {}),
-            }
-            // _thoughtSignature capture — restored from original aiHandlers.cjs
-            if (part.thoughtSignature) tc._thoughtSignature = String(part.thoughtSignature)
-            geminiToolCalls.push(tc)
-          }
-        }
-      }
-    }
-    return {
-      stream: true,
-      chunks,
-      content: fullText,
-      toolCalls: geminiToolCalls.length > 0 ? geminiToolCalls : undefined,
-    }
-  }
-
-  const data = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string; functionCall?: { name?: string; args?: unknown }; thoughtSignature?: unknown }[] } }[]
-  }
-  const parts = data.candidates?.[0]?.content?.parts ?? []
-  let text = ''
-  const geminiToolCalls: ToolCallResult[] = []
-  for (const part of parts) {
-    if (part.text) text += part.text
-    if (part.functionCall) {
-      const tc: ToolCallResult = {
-        id: `gemini_tc_${geminiToolCalls.length}`,
-        name: part.functionCall.name ?? '',
-        arguments: JSON.stringify(part.functionCall.args ?? {}),
-      }
-      // _thoughtSignature capture — restored from original aiHandlers.cjs
-      if (part.thoughtSignature) tc._thoughtSignature = String(part.thoughtSignature)
-      geminiToolCalls.push(tc)
-    }
-  }
-  return {
-    stream: false,
-    content: text,
-    toolCalls: geminiToolCalls.length > 0 ? geminiToolCalls : undefined,
-  }
 }
 
 /* ═══════════════════ Config resolution & dispatch ═══════════════════ */
@@ -693,32 +100,6 @@ function resolveAiConfig(userId: number, modelOverride?: string): { config: AIPr
     },
     protocol,
   }
-}
-
-function dispatchChat(
-  protocol: LLMProtocol,
-  config: AIProviderConfig,
-  messages: ChatMessage[],
-  stream: boolean,
-  temp: number,
-  maxTokens: number,
-  tools?: ChatTool[],
-  onChunk?: OnChunk,
-): Promise<AdapterResult> {
-  if (protocol === 'openai_chat') {
-    return doOpenAICompat(config, messages, stream, temp, maxTokens, tools, onChunk)
-  }
-  if (protocol === 'anthropic_messages') {
-    return doAnthropic(config, messages, stream, temp, maxTokens, tools, onChunk)
-  }
-  if (protocol === 'google_compatible') {
-    return doGoogle(config, messages, stream, temp, maxTokens, tools, onChunk)
-  }
-  if (protocol === 'openai_responses') {
-    // T3 (#10) 实现；在此之前视为未配置协议
-    throw new BadRequestError(`Unknown protocol: ${protocol}`)
-  }
-  throw new BadRequestError(`Unknown protocol: ${protocol}`)
 }
 
 function validateMessages(messages: unknown): ChatMessage[] {
@@ -760,15 +141,15 @@ export async function chat(userId: number, body: ChatBody): Promise<ChatResult> 
     return mockChat(body)
   }
 
-  const { config, protocol } = resolveAiConfig(userId)
+  const { config } = resolveAiConfig(userId)
   const temp = body.temperature ?? config.temperature ?? 0.7
   const maxTokens = body.maxTokens ?? config.maxTokens ?? 2048
   const stream = !!body.stream
 
   try {
     const result = stream
-      ? await dispatchChat(protocol, config, messages, stream, temp, maxTokens)
-      : await withRequestTimeout(dispatchChat(protocol, config, messages, stream, temp, maxTokens), 'ai chat')
+      ? await dispatch(config, { messages, stream, temperature: temp, maxTokens })
+      : await withRequestTimeout(dispatch(config, { messages, stream, temperature: temp, maxTokens }), 'ai chat')
     // Contract §3 response shape only — strip toolCalls (chat never sends tools).
     if (result.stream) return { stream: true, chunks: result.chunks ?? [] }
     return { stream: false, content: result.content ?? '' }
@@ -793,7 +174,7 @@ export async function chatForAgent(
     maxTokens?: number
     stream?: boolean
     tools?: ChatTool[]
-    onChunk?: OnChunk
+    onChunk?: (chunk: string) => void
   },
 ): Promise<{ content: string; toolCalls?: ToolCallResult[] }> {
   const messages = params.messages
@@ -807,15 +188,18 @@ export async function chatForAgent(
     return mockChatForAgent(messages, !!params.stream, params.onChunk)
   }
 
-  const { config, protocol } = resolveAiConfig(userId)
+  const { config } = resolveAiConfig(userId)
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
   const stream = !!params.stream
 
   try {
     const result = stream
-      ? await dispatchChat(protocol, config, messages, stream, temp, maxTokens, params.tools, params.onChunk)
-      : await withRequestTimeout(dispatchChat(protocol, config, messages, stream, temp, maxTokens, params.tools, params.onChunk), 'kp agent LLM')
+      ? await dispatch(config, { messages, stream, temperature: temp, maxTokens, tools: params.tools, onChunk: params.onChunk })
+      : await withRequestTimeout(
+          dispatch(config, { messages, stream, temperature: temp, maxTokens, tools: params.tools, onChunk: params.onChunk }),
+          'kp agent LLM',
+        )
     return { content: result.content ?? '', toolCalls: result.toolCalls }
   } catch (err) {
     if (err instanceof BadRequestError) throw err
@@ -853,12 +237,15 @@ export async function chatForRag(
     return mockChatForRag()
   }
 
-  const { config, protocol } = resolveAiConfig(userId, params.model)
+  const { config } = resolveAiConfig(userId, params.model)
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
 
   try {
-    const result = await withRequestTimeout(dispatchChat(protocol, config, messages, false, temp, maxTokens), 'rag graph LLM')
+    const result = await withRequestTimeout(
+      dispatch(config, { messages, stream: false, temperature: temp, maxTokens }),
+      'rag graph LLM',
+    )
     return { content: result.content ?? '' }
   } catch (err) {
     if (err instanceof BadRequestError) throw err
