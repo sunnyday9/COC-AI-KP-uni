@@ -135,18 +135,18 @@ describe('PlatformBridge', () => {
     it('getSettings returns AppSettings without apiKey', async () => {
       state.requestResponder = () => ({
         statusCode: 200,
-        data: { ai: { provider: 'openai', baseUrl: 'https://x', model: 'gpt-4o', temperature: 0.7, maxTokens: 1024 }, syncServerUrl: '' },
+        data: { ai: { protocol: 'openai_chat', baseUrl: 'https://x', model: 'gpt-4o', temperature: 0.7, maxTokens: 1024 }, syncServerUrl: '' },
       })
       const bridge = new PlatformBridge()
       const s = await bridge.getSettings()
-      expect(s.ai.provider).toBe('openai')
+      expect(s.ai.protocol).toBe('openai_chat')
       expect(s.ai.apiKey).toBeUndefined()
     })
 
     it('setSettings PUTs the settings body', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
       const bridge = new PlatformBridge()
-      const settings = { ai: { provider: 'deepseek', baseUrl: '', model: 'deepseek-chat', temperature: 0.5, maxTokens: 512 }, syncServerUrl: '' }
+      const settings = { ai: { protocol: 'anthropic_messages', baseUrl: '', model: 'claude-sonnet-4-20250514', temperature: 0.5, maxTokens: 512 }, syncServerUrl: '' }
       await expect(bridge.setSettings(settings as never)).resolves.toEqual({ ok: true })
       expect(state.requests[0]).toMatchObject({ url: '/api/settings', method: 'PUT' })
       expect(state.requests[0].data).toEqual(settings)

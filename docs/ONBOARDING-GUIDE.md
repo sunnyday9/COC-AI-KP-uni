@@ -302,17 +302,20 @@ DB 表 `user_graphs`：每局记录线索获得（clue）/场景到访（scene�
 
 ## 八、AI 协议适配层与 MOCK_AI
 
-文件：`server/src/services/aiService.ts`（948 行）+ `shared/constants/providers.ts` + `mockAi.ts`。
+文件：`server/src/services/aiService.ts`（facade）+ `server/src/services/llm/`（适配器）+ `shared/constants/providers.ts`（协议常量）+ `mockAi.ts`。
 
-### 8.1 Provider → Protocol 映射
+### 8.1 LLM 协议一等公民（ADR-0003）
 
-预设：openai / openrouter / deepseek / gemini / vllm / ollama；自定义：openai_compatible / anthropic_compatible / google_compatible / deepseek_compatible。`dispatchChat` 按 protocol 分派：
+`settings.ai.protocol` 是唯一协议真源（取代旧 provider→protocol 两级模型），四种协议：
 
 | 协议 | 实现 | 要点 |
 |---|---|---|
-| openai_compatible | openai SDK（`doOpenAICompat`） | 流式增量聚合 tool_calls（按 index 拼接 arguments 片段） |
-| anthropic_compatible | fetch + SSE（`doAnthropic`） | 消息转换（system 抽取、tool_use/tool_result 块、相邻同角色合并、首条非 user 补 `（继续）`）；SSE 解析 content_block_start/delta/stop |
-| google_compatible | fetch + SSE（`doGoogle`） | OpenAI schema → Gemini `functionDeclarations` 递归转换；functionCall/functionResponse 往返；**`_thoughtSignature` 双向透传**（从原 aiHandlers.cjs 恢复的行为） |
+| openai_chat | openai SDK `chat.completions`（`llm/openaiChat.ts`） | 流式增量聚合 tool_calls（按 index 拼接 arguments 片段） |
+| openai_responses | openai SDK `responses.create`（`llm/openaiResponses.ts`） | system→`instructions`；工具扁平 `{type,name,description,parameters}`；`max_output_tokens`；流式 `output_text.delta` 累积 + `output_item.done` 拿完整 arguments（不拼 delta） |
+| anthropic_messages | fetch + SSE（`llm/anthropicMessages.ts`） | 消息转换（system 抽取、tool_use/tool_result 块、相邻同角色合并、首条非 user 补 `（继续）`）；SSE 解析 content_block_start/delta/stop |
+| google_compatible | fetch + SSE（`llm/google.ts`） | OpenAI schema → Gemini `functionDeclarations` 递归转换；functionCall/functionResponse 往返；**`_thoughtSignature` 双向透传**（从原 aiHandlers.cjs 恢复的行为） |
+
+`llm/index.ts` 的 `dispatch(config, params)` 按 `config.protocol` 分派；各适配器私有转换（system 抽取、tool_calls ↔ tool_use、工具结果回填），无跨协议统一转换层。`deepseek_compatible` 合并进 openai_chat（deepseek 用户选 openai_chat + 自填 `https://api.deepseek.com/v1`）。模型列表：三协议统一 `GET {baseUrl}/models`，anthropic 失败回退静态列表（`llm` 未涉及，在 `aiService.listModels`）。
 
 **统一安全门**：`resolveAiConfig` 在**任何出站请求之前**调用 `assertSafeOutboundUrl(baseUrl)`（§12）。
 

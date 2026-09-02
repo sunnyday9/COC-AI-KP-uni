@@ -34,10 +34,10 @@ describe('settingsStore', () => {
     bridge.me.mockReset()
   })
 
-  it('load() merges server settings with defaults and validates the provider', async () => {
+  it('load() merges server settings with defaults and validates the protocol', async () => {
     bridge.getSettings.mockResolvedValue({
       ai: {
-        provider: 'not-a-provider',
+        protocol: 'not-a-protocol',
         baseUrl: 'http://example.com',
         model: 'm1',
         apiKey: TEST_KEY_A,
@@ -51,8 +51,8 @@ describe('settingsStore', () => {
     const store = useSettingsStore()
     await store.load()
 
-    // invalid provider normalized to default
-    expect(store.settings.ai.provider).toBe('openai')
+    // invalid protocol normalized to default
+    expect(store.settings.ai.protocol).toBe('openai_chat')
     expect(store.settings.ai.model).toBe('m1')
     expect(store.settings.ai.baseUrl).toBe('http://example.com')
     expect(store.settings.ai.apiKey).toBe(TEST_KEY_A)
@@ -70,7 +70,7 @@ describe('settingsStore', () => {
     const store = useSettingsStore()
     await store.load()
 
-    expect(store.settings.ai.provider).toBe('openai')
+    expect(store.settings.ai.protocol).toBe('openai_chat')
     expect(store.settings.ai.model).toBe('')
     expect(store.settings.rag?.useEmbeddings).toBe(true)
     expect(store.settings.rag?.provider).toBe('builtin')
@@ -137,6 +137,6 @@ describe('settingsStore', () => {
     // settings cache cleared back to defaults
     expect(store.settings.ai.model).toBe('')
     expect(store.settings.ai.apiKey).toBeUndefined()
-    expect(store.settings.ai.provider).toBe('openai')
+    expect(store.settings.ai.protocol).toBe('openai_chat')
   })
 })

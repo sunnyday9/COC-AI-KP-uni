@@ -30,9 +30,10 @@
 | PUT | `/api/settings` | `AppSettings`（apiKey 仅在变更时传） | `{ ok: true }` |
 
 ```ts
+// ADR-0003（2026-09-02）：protocol 一等公民取代 provider 两级模型。
 interface AIProviderConfig {
-  provider: string          // 'openai' | 'deepseek' | 'custom' | ... (见 PRESET_PROVIDERS)
-  baseUrl: string
+  protocol: 'openai_chat' | 'openai_responses' | 'anthropic_messages' | 'google_compatible'
+  baseUrl: string            // 留空用协议默认值（见 PROTOCOL_DEFAULT_BASE_URL）
   model: string
   apiKey?: string           // 服务端 AES-256 加密存储；GET 不回传
   temperature: number
@@ -60,7 +61,9 @@ interface AppSettings {
 | POST | `/api/ai/chat` | `{ messages: {role,content}[], temperature?, maxTokens?, stream? }` | `{ stream: boolean, content?: string, chunks?: string[] }` |
 | GET | `/api/ai/models` | `?purpose=chat\|embeddings` | `{ value, label }[]` |
 
-- AI 配置（provider/baseUrl/model/apiKey/temperature/maxTokens）**由服务端从用户设置读取**，请求体中不需要传。
+- AI 配置（protocol/baseUrl/model/apiKey/temperature/maxTokens）**由服务端从用户设置读取**，请求体中不需要传。
+- 模型列表：三协议（chat/responses/messages）统一 `GET {baseUrl}/models`（OpenAI 格式）按 purpose 过滤；anthropic 实时拉取失败回退静态 Claude 列表；google 走 `/v1beta/models`（ADR-0003 T4）。
+- 嵌入端点：固定 `POST {baseUrl}/v1/embeddings`（OpenAI 格式），与主协议解耦（anthropic/google 无等价嵌入 API）。
 - 流式：`stream=true` 时返回缓冲的 `chunks` 数组（与原 IPC 契约一致，真流式走 KP WebSocket 路径）。
 - **安全约束**：服务端发起任何外部 URL 请求前必须校验 host —— 仅 http/https；拒绝 localhost、环回、私有（10/8、172.16/12、192.168/16、169.254/16）与保留地址（含 0.0.0.0、::、IPv6 映射）。实现于 `server/src/utils/outboundUrl.ts`。
 

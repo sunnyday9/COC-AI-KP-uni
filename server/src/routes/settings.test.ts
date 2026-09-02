@@ -8,7 +8,7 @@ import type { EncryptedSecret } from '../utils/crypto.js'
 /**
  * Settings route tests (api-contract §2).
  * Covers: default structure, PUT→GET persistence (no apiKey leak),
- * ciphertext at rest, apiKey keep-on-omit, invalid provider → 400.
+ * ciphertext at rest, apiKey keep-on-omit, invalid protocol → 400.
  * All credential-shaped values below are non-secret test placeholders,
  * built as expressions so they never appear as raw literal secrets.
  */
@@ -37,7 +37,7 @@ function putSettings(token: string, body: unknown) {
 }
 
 const DEFAULT_AI = {
-  provider: 'openai',
+  protocol: 'openai_chat',
   baseUrl: '',
   model: '',
   temperature: 0.7,
@@ -72,9 +72,9 @@ describe('settings routes', () => {
     const token = await registerToken('s_bob')
     const put = await putSettings(token, {
       ai: {
-        provider: 'deepseek',
-        baseUrl: 'https://api.deepseek.com/v1',
-        model: 'deepseek-chat',
+        protocol: 'anthropic_messages',
+        baseUrl: 'https://api.anthropic.com',
+        model: 'claude-sonnet-4-20250514',
         apiKey: KEY_A,
         temperature: 0.5,
         maxTokens: 1024,
@@ -89,9 +89,9 @@ describe('settings routes', () => {
     const got = await getSettings(token)
     expect(got.status).toBe(200)
     expect(got.body.ai).toEqual({
-      provider: 'deepseek',
-      baseUrl: 'https://api.deepseek.com/v1',
-      model: 'deepseek-chat',
+      protocol: 'anthropic_messages',
+      baseUrl: 'https://api.anthropic.com',
+      model: 'claude-sonnet-4-20250514',
       temperature: 0.5,
       maxTokens: 1024,
     })
@@ -124,11 +124,11 @@ describe('settings routes', () => {
 
   it('PUT without apiKey keeps the previously stored key (still decryptable)', async () => {
     const token = await registerToken('s_dave')
-    await putSettings(token, { ai: { provider: 'openai', apiKey: KEY_C } })
+    await putSettings(token, { ai: { protocol: 'openai_chat', apiKey: KEY_C } })
 
     // second PUT omits apiKey entirely
     const put2 = await putSettings(token, {
-      ai: { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'gpt-4o' },
+      ai: { protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' },
     })
     expect(put2.status).toBe(200)
 
@@ -137,7 +137,7 @@ describe('settings routes', () => {
     }
     const stored = JSON.parse(row.data) as { ai: { apiKey: EncryptedSecret } }
     expect(decryptSecret(stored.ai.apiKey)).toBe(KEY_C)
-    expect(stored.ai.provider).toBe('openrouter')
+    expect(stored.ai.protocol).toBe('openai_responses')
   })
 
   it('PUT with masked placeholder *** keeps the stored key (legacy client behavior)', async () => {
@@ -151,23 +151,23 @@ describe('settings routes', () => {
     expect(decryptSecret(stored.ai.apiKey)).toBe(KEY_D)
   })
 
-  it('PUT with invalid provider returns 400', async () => {
+  it('PUT with invalid protocol returns 400', async () => {
     const token = await registerToken('s_frank')
-    const res = await putSettings(token, { ai: { provider: 'not-a-provider' } })
+    const res = await putSettings(token, { ai: { protocol: 'not-a-protocol' } })
     expect(res.status).toBe(400)
-    expect(res.body).toEqual({ error: 'invalid provider' })
+    expect(res.body).toEqual({ error: 'invalid protocol' })
   })
 
   it('PUT with out-of-range temperature returns 400', async () => {
     const token = await registerToken('s_grace')
-    const res = await putSettings(token, { ai: { provider: 'openai', temperature: 3 } })
+    const res = await putSettings(token, { ai: { protocol: 'openai_chat', temperature: 3 } })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/temperature/)
   })
 
   it('PUT with non-integer maxTokens returns 400', async () => {
     const token = await registerToken('s_heidi')
-    const res = await putSettings(token, { ai: { provider: 'openai', maxTokens: 10.5 } })
+    const res = await putSettings(token, { ai: { protocol: 'openai_chat', maxTokens: 10.5 } })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/maxTokens/)
   })

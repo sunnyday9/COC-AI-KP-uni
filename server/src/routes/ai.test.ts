@@ -85,7 +85,7 @@ describe('ai chat', () => {
   it('non-stream chat returns { stream: false, content } and forwards config', async () => {
     const token = await registerToken('ai_alice')
     await putSettings(token, {
-      provider: 'openai',
+      protocol: 'openai_chat',
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4o',
       apiKey: KEY_OPENAI,
@@ -109,7 +109,7 @@ describe('ai chat', () => {
 
   it('stream chat returns buffered chunks array', async () => {
     const token = await registerToken('ai_bob')
-    await putSettings(token, { provider: 'openai', model: 'gpt-4o', apiKey: KEY_OPENAI })
+    await putSettings(token, { protocol: 'openai_chat', model: 'gpt-4o', apiKey: KEY_OPENAI })
 
     const res = await chat(token, {
       messages: [{ role: 'user', content: 'hi' }],
@@ -125,7 +125,7 @@ describe('ai chat', () => {
   it('chat with localhost baseUrl is blocked by the outbound URL guard (400)', async () => {
     const token = await registerToken('ai_carol')
     await putSettings(token, {
-      provider: 'openai_compatible',
+      protocol: 'openai_chat',
       baseUrl: 'http://localhost:9999',
       model: 'some-model',
       apiKey: KEY_OPENAI,
@@ -139,7 +139,7 @@ describe('ai chat', () => {
 
   it('chat without a configured model returns 400', async () => {
     const token = await registerToken('ai_dave')
-    await putSettings(token, { provider: 'openai', apiKey: KEY_OPENAI })
+    await putSettings(token, { protocol: 'openai_chat', apiKey: KEY_OPENAI })
     const res = await chat(token, { messages: [{ role: 'user', content: 'hi' }] })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/请先在设置中选择或输入模型名称/)
@@ -152,13 +152,13 @@ describe('ai chat', () => {
     expect(res.body.error).toMatch(/non-empty array/)
   })
 
-  it('chat with unknown provider is unreachable via API (settings validation rejects it)', async () => {
+  it('chat with unknown protocol is unreachable via API (settings validation rejects it)', async () => {
     const token = await registerToken('ai_frank')
-    const put = await putSettings(token, { provider: 'not-a-provider', model: 'x' })
+    const put = await putSettings(token, { protocol: 'not-a-protocol', model: 'x' })
     expect(put.status).toBe(400)
-    expect(put.body).toEqual({ error: 'invalid provider' })
+    expect(put.body).toEqual({ error: 'invalid protocol' })
     // defensive fallback in aiService: stored settings are always valid, so
-    // with defaults (no provider configured) chat reports missing model.
+    // with defaults (no protocol configured) chat reports missing model.
     const res = await chat(token, { messages: [{ role: 'user', content: 'hi' }] })
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/请先在设置中选择或输入模型名称/)
@@ -167,7 +167,7 @@ describe('ai chat', () => {
   it('anthropic-compatible chat goes through the fetch adapter', async () => {
     const token = await registerToken('ai_grace')
     await putSettings(token, {
-      provider: 'anthropic_compatible',
+      protocol: 'anthropic_messages',
       baseUrl: 'https://api.anthropic.com',
       model: 'claude-sonnet-4-20250514',
       apiKey: KEY_ANTHROPIC,
@@ -199,34 +199,46 @@ describe('ai models', () => {
     expect(res.status).toBe(401)
   })
 
-  it('anthropic-compatible provider returns the preset model list without network', async () => {
+  it('anthropic-compatible provider falls back to the preset model list when the live fetch fails', async () => {
     const token = await registerToken('ai_henry')
     await putSettings(token, {
-      provider: 'anthropic_compatible',
+      protocol: 'anthropic_messages',
       model: 'claude-sonnet-4-20250514',
       apiKey: KEY_ANTHROPIC,
     })
 
+    // Stub upstream /models to fail → anthropic falls back to the static
+    // Claude preset list (T4 #11). No real network.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500 })),
+    )
     const res = await request(createApp())
       .get('/api/ai/models?purpose=chat')
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(res.body.map((m: { value: string }) => m.value)).toEqual(CLAUDE_MODELS)
+    vi.unstubAllGlobals()
   })
 
-  it('anthropic-compatible embeddings purpose returns []', async () => {
+  it('anthropic-compatible embeddings purpose returns [] (no static embedding list)', async () => {
     const token = await registerToken('ai_iris')
-    await putSettings(token, { provider: 'anthropic_compatible', apiKey: KEY_ANTHROPIC })
+    await putSettings(token, { protocol: 'anthropic_messages', apiKey: KEY_ANTHROPIC })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500 })),
+    )
     const res = await request(createApp())
       .get('/api/ai/models?purpose=embeddings')
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(res.body).toEqual([])
+    vi.unstubAllGlobals()
   })
 
   it('listModels with default settings returns [] without real network (stubbed upstream 401)', async () => {
     const token = await registerToken('ai_jack')
-    // Fresh user → server merges DEFAULT_SETTINGS (provider 'openai', baseUrl
+    // Fresh user → server merges DEFAULT_SETTINGS (protocol 'openai_chat', baseUrl
     // resolved to https://api.openai.com/v1), which would trigger a real
     // outbound /models fetch. Stub it to answer 401 → empty list, keeping the
     // exercised code path (fetch + !ok → []) identical without network.

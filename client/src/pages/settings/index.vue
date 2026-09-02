@@ -8,10 +8,9 @@ import { getModelOptions } from '../../services/ai/modelListService'
 import { useToast } from '../../composables/useToast'
 import { onUnauthorized } from '../../platform/token'
 import {
-  PRESET_PROVIDERS,
-  CUSTOM_PROVIDERS,
-  getProviderDef,
-  type AIProviderType,
+  PROTOCOL_DEFS,
+  getProtocolDef,
+  type LLMProtocol,
 } from '../../services/ai/types'
 import AppLayout from '../../components/layout/AppLayout.vue'
 
@@ -92,23 +91,7 @@ const embeddingCustomModel = ref('')
 const embeddingTestStatus = ref<'idle' | 'loading' | 'ok' | 'error'>('idle')
 const embeddingTestError = ref('')
 
-const currentDef = computed(() => getProviderDef(settings.value.ai.provider))
-
-const isPreset = computed(() =>
-  PRESET_PROVIDERS.some((p) => p.id === settings.value.ai.provider)
-)
-
-const showBaseUrl = computed(() => {
-  if (!isPreset.value) return true
-  const def = currentDef.value
-  return !!def && 'needsBaseUrl' in def && def.needsBaseUrl
-})
-
-const showApiKey = computed(() => {
-  if (!isPreset.value) return true
-  const def = currentDef.value
-  return !!def && 'needsApiKey' in def ? def.needsApiKey : true
-})
+const currentDef = computed(() => getProtocolDef(settings.value.ai.protocol))
 
 const baseUrlPlaceholder = computed(() => currentDef.value?.defaultBaseUrl ?? '')
 const apiKeyPlaceholder = computed(() => currentDef.value?.apiKeyPlaceholder ?? 'sk-...')
@@ -152,7 +135,7 @@ async function loadModelList() {
   modelListLoading.value = true
   modelListError.value = ''
   try {
-    const opts = await getModelOptions(settings.value.ai.provider, {
+    const opts = await getModelOptions(settings.value.ai.protocol, {
       apiKey: settings.value.ai.apiKey,
       baseUrl: settings.value.ai.baseUrl,
     })
@@ -174,7 +157,7 @@ async function loadEmbeddingModelList() {
   embeddingModelListLoading.value = true
   embeddingModelListError.value = ''
   try {
-    const opts = await getModelOptions(settings.value.ai.provider, {
+    const opts = await getModelOptions(settings.value.ai.protocol, {
       apiKey: settings.value.ai.apiKey,
       baseUrl: settings.value.ai.baseUrl,
     }, 'embeddings')
@@ -192,9 +175,9 @@ async function loadEmbeddingModelList() {
   }
 }
 
-function selectProvider(id: AIProviderType) {
-  if (settings.value.ai.provider === id) return
-  settings.value.ai.provider = id
+function selectProtocol(id: LLMProtocol) {
+  if (settings.value.ai.protocol === id) return
+  settings.value.ai.protocol = id
   settings.value.ai.model = ''
   settings.value.ai.baseUrl = ''
   settings.value.ai.apiKey = ''
@@ -216,7 +199,7 @@ function applyCustomEmbeddingModel() {
 }
 
 watch(
-  () => settings.value.ai.provider,
+  () => settings.value.ai.protocol,
   () => {
     loadModelList()
     if (settings.value.rag?.provider === 'api') loadEmbeddingModelList()
@@ -374,52 +357,32 @@ const authed = computed(() => settingsStore.isAuthenticated)
               <text class="section-arrow">{{ sections.ai ? '▾' : '▸' }}</text>
             </view>
             <view v-if="sections.ai" class="section-content">
-              <!-- 常用服务商 -->
+              <!-- 协议选择（ADR-0003：协议一等公民） -->
               <view>
-                <text class="field-label">常用服务商</text>
-                <view class="provider-grid three">
-                  <view
-                    v-for="preset in PRESET_PROVIDERS"
-                    :key="preset.id"
-                    class="provider-card"
-                    :class="settings.ai.provider === preset.id ? 'provider-active' : 'provider-dim'"
-                    @click="selectProvider(preset.id)"
-                  >
-                    <text class="provider-name" :style="{ color: settings.ai.provider === preset.id ? 'hsl(165, 50%, 78%)' : 'hsl(38, 30%, 65%)' }">
-                      {{ preset.label }}
-                    </text>
-                    <text class="provider-desc" :style="{ color: settings.ai.provider === preset.id ? 'hsl(165, 40%, 55%)' : 'hsl(220, 10%, 25%)' }">
-                      {{ preset.description }}
-                    </text>
-                  </view>
-                </view>
-              </view>
-
-              <!-- 自定义兼容端点 -->
-              <view>
-                <text class="field-label">自定义兼容端点</text>
+                <text class="field-label">接入协议</text>
                 <view class="provider-grid two">
                   <view
-                    v-for="custom in CUSTOM_PROVIDERS"
-                    :key="custom.id"
+                    v-for="def in PROTOCOL_DEFS"
+                    :key="def.id"
                     class="provider-card"
-                    :class="settings.ai.provider === custom.id ? 'provider-active' : 'provider-dim'"
-                    @click="selectProvider(custom.id)"
+                    :class="settings.ai.protocol === def.id ? 'provider-active' : 'provider-dim'"
+                    @click="selectProtocol(def.id)"
                   >
-                    <text class="provider-name" :style="{ color: settings.ai.provider === custom.id ? 'hsl(165, 50%, 78%)' : 'hsl(38, 30%, 65%)' }">
-                      {{ custom.label }}
+                    <text class="provider-name" :style="{ color: settings.ai.protocol === def.id ? 'hsl(165, 50%, 78%)' : 'hsl(38, 30%, 65%)' }">
+                      {{ def.label }}
                     </text>
-                    <text class="provider-desc" :style="{ color: settings.ai.provider === custom.id ? 'hsl(165, 40%, 55%)' : 'hsl(220, 10%, 25%)' }">
-                      {{ custom.description }}
+                    <text class="provider-desc" :style="{ color: settings.ai.protocol === def.id ? 'hsl(165, 40%, 55%)' : 'hsl(220, 10%, 25%)' }">
+                      {{ def.description }}
                     </text>
                   </view>
                 </view>
+                <text class="field-note">选择 API 协议后，可自定义 Base URL（如中转站）与 API Key</text>
               </view>
 
               <view class="ink-divider" />
 
               <!-- Base URL -->
-              <view v-if="showBaseUrl">
+              <view>
                 <text class="field-label">Base URL</text>
                 <input
                   v-model="settings.ai.baseUrl"
@@ -433,7 +396,7 @@ const authed = computed(() => settingsStore.isAuthenticated)
               </view>
 
               <!-- API Key（仅保存在服务端） -->
-              <view v-if="showApiKey">
+              <view>
                 <text class="field-label">API Key</text>
                 <input
                   v-model="settings.ai.apiKey"
@@ -786,7 +749,6 @@ const authed = computed(() => settingsStore.isAuthenticated)
   display: grid;
   gap: 8px;
 }
-.provider-grid.three { grid-template-columns: repeat(3, 1fr); }
 .provider-grid.two { grid-template-columns: repeat(2, 1fr); }
 .provider-card {
   padding: 10px 12px;
