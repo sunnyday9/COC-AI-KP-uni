@@ -199,7 +199,7 @@ describe('ai models', () => {
     expect(res.status).toBe(401)
   })
 
-  it('anthropic-compatible provider returns the preset model list without network', async () => {
+  it('anthropic-compatible provider falls back to the preset model list when the live fetch fails', async () => {
     const token = await registerToken('ai_henry')
     await putSettings(token, {
       protocol: 'anthropic_messages',
@@ -207,21 +207,33 @@ describe('ai models', () => {
       apiKey: KEY_ANTHROPIC,
     })
 
+    // Stub upstream /models to fail → anthropic falls back to the static
+    // Claude preset list (T4 #11). No real network.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500 })),
+    )
     const res = await request(createApp())
       .get('/api/ai/models?purpose=chat')
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(res.body.map((m: { value: string }) => m.value)).toEqual(CLAUDE_MODELS)
+    vi.unstubAllGlobals()
   })
 
-  it('anthropic-compatible embeddings purpose returns []', async () => {
+  it('anthropic-compatible embeddings purpose returns [] (no static embedding list)', async () => {
     const token = await registerToken('ai_iris')
     await putSettings(token, { protocol: 'anthropic_messages', apiKey: KEY_ANTHROPIC })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500 })),
+    )
     const res = await request(createApp())
       .get('/api/ai/models?purpose=embeddings')
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(res.body).toEqual([])
+    vi.unstubAllGlobals()
   })
 
   it('listModels with default settings returns [] without real network (stubbed upstream 401)', async () => {

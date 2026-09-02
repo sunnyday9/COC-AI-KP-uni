@@ -255,11 +255,41 @@ export async function chatForRag(
 }
 
 /**
+ * OpenAI 格式实时拉取 {baseUrl}/models（chat/responses/messages 共用）。
+ * `assertSafeOutboundUrl` 由调用方（listModels）在进入前执行。
+ */
+async function fetchOpenAiModels(
+  baseUrl: string,
+  apiKey: string | undefined,
+  purpose: string,
+): Promise<ModelOption[] | null> {
+  if (!baseUrl) return null
+  try {
+    const modelsUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/models` : `${baseUrl}/v1/models`
+    const headers: Record<string, string> = {}
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+    const res = await fetch(modelsUrl, { headers })
+    if (!res.ok) return null
+    const data = (await res.json()) as { data?: { id: string }[] }
+    let models: ModelOption[] = (data.data ?? []).filter((m) => m.id).map((m) => ({ value: m.id, label: m.id }))
+    if (purpose === 'embeddings') {
+      const filtered = models.filter((m) => /(embedding|embed)/i.test(m.value))
+      if (filtered.length) models = filtered
+    }
+    return models.slice(0, 100)
+  } catch {
+    return null
+  }
+}
+
+/**
  * List models for the user's configured provider (api-contract §3).
  * Same behavior as original aiHandlers.listModels / modelListService:
- *  - openai/deepseek compatible → GET {baseUrl}/models (empty on failure)
- *  - anthropic compatible → static preset list (AI_MODEL_LISTS)
- *  - google compatible → GET /v1beta/models (empty on failure)
+ *  - openai_chat / openai_responses / anthropic_messages → GET {baseUrl}/models
+ *    (OpenAI format); anthropic falls back to the static preset list when the
+ *    real fetch fails (T4 #11 — user-supplied endpoints may serve models the
+ *    static Claude list cannot know; best-effort real list, static on failure)
+ *  - google_compatible → GET /v1beta/models (empty on failure)
  * Every fetch is preceded by assertSafeOutboundUrl.
  */
 export async function listModels(userId: number, purpose = 'chat'): Promise<ModelOption[]> {
@@ -273,30 +303,19 @@ export async function listModels(userId: number, purpose = 'chat'): Promise<Mode
   const baseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(protocol)).replace(/\/$/, '')
   const apiKey = ai.apiKey
 
-  if (protocol === 'openai_chat' || protocol === 'openai_responses') {
-    if (!baseUrl) return []
+  if (protocol === 'openai_chat' || protocol === 'openai_responses' || protocol === 'anthropic_messages') {
     try {
       assertSafeOutboundUrl(baseUrl)
-      const modelsUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/models` : `${baseUrl}/v1/models`
-      const headers: Record<string, string> = {}
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-      const res = await fetch(modelsUrl, { headers })
-      if (!res.ok) return []
-      const data = (await res.json()) as { data?: { id: string }[] }
-      let models: ModelOption[] = (data.data ?? []).filter((m) => m.id).map((m) => ({ value: m.id, label: m.id }))
-      if (purpose === 'embeddings') {
-        const filtered = models.filter((m) => /(embedding|embed)/i.test(m.value))
-        if (filtered.length) models = filtered
-      }
-      return models.slice(0, 100)
     } catch {
       return []
     }
-  }
-
-  if (protocol === 'anthropic_messages') {
-    if (purpose === 'embeddings') return []
-    return AI_MODEL_LISTS.anthropic_compatible ?? []
+    const live = await fetchOpenAiModels(baseUrl, apiKey, purpose)
+    if (live) return live
+    // 实时拉取失败 → 回退：anthropic 用静态 Claude 列表（chat），其余协议空
+    if (protocol === 'anthropic_messages' && purpose === 'chat') {
+      return AI_MODEL_LISTS.anthropic_compatible ?? []
+    }
+    return []
   }
 
   if (protocol === 'google_compatible') {
