@@ -13,6 +13,8 @@ import {
   type LLMProtocol,
 } from '../../services/ai/types'
 import AppLayout from '../../components/layout/AppLayout.vue'
+import AppIcon from '../../components/ui/AppIcon.vue'
+import ConfirmModal from '../../components/ui/ConfirmModal.vue'
 
 const isDev = import.meta.env.DEV
 const toast = useToast()
@@ -62,16 +64,6 @@ async function doAuth() {
     toast.error(e instanceof Error ? e.message : String(e))
   } finally {
     authSubmitting.value = false
-  }
-}
-
-async function doLogout() {
-  try {
-    await settingsStore.logout()
-    resetAuthForm()
-    toast.info('已退出登录')
-  } catch (e) {
-    toast.error(`退出登录失败：${e instanceof Error ? e.message : String(e)}`)
   }
 }
 
@@ -287,6 +279,23 @@ async function handleTestEmbedding() {
 
 /** 登录/注册表单可见（认证状态由 settingsStore 维护） */
 const authed = computed(() => settingsStore.isAuthenticated)
+
+/** 退出登录确认（T2 ConfirmModal，危险操作分级）。 */
+const logoutConfirm = ref(false)
+const logoutBusy = ref(false)
+async function confirmLogout() {
+  logoutBusy.value = true
+  try {
+    await settingsStore.logout()
+    resetAuthForm()
+    toast.info('已退出登录')
+    logoutConfirm.value = false
+  } catch (e) {
+    toast.error(`退出登录失败：${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    logoutBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -299,61 +308,80 @@ const authed = computed(() => settingsStore.isAuthenticated)
       </view>
 
       <view class="page-body">
-        <!-- ═══ 登录 / 注册（新增，Task 8 简报决策 7） ═══ -->
-        <view v-if="!authed" class="gothic-card auth-card">
-          <view class="auth-tabs">
-            <view
-              class="auth-tab"
-              :class="authMode === 'login' ? 'auth-tab-on' : 'auth-tab-off'"
-              @click="authMode = 'login'"
-            >登录</view>
-            <view
-              class="auth-tab"
-              :class="authMode === 'register' ? 'auth-tab-on' : 'auth-tab-off'"
-              @click="authMode = 'register'"
-            >注册</view>
-          </view>
-          <view class="auth-fields">
-            <input
-              v-model="authUsername"
-              class="gothic-input auth-input"
-              placeholder="用户名（3-32 字符）"
-              placeholder-class="gothic-ph"
-              :maxlength="32"
-            />
-            <input
-              v-model="authPassword"
-              class="gothic-input auth-input"
-              placeholder="密码（至少 6 位）"
-              placeholder-class="gothic-ph"
-              password
-            />
-            <input
-              v-if="authMode === 'register'"
-              v-model="authConfirm"
-              class="gothic-input auth-input"
-              placeholder="确认密码"
-              placeholder-class="gothic-ph"
-              password
-            />
-            <button
-              class="gothic-btn auth-submit"
-              :class="{ 'is-disabled': authSubmitting }"
-              @click="doAuth"
-            >
-              {{ authSubmitting ? '处理中...' : (authMode === 'login' ? '登录' : '注册并登录') }}
-            </button>
-            <text class="auth-note">
-              {{ authMode === 'register' ? '注册成功后将自动登录；配置与故事数据按账号隔离。' : '登录后即可同步配置与故事（API Key 仅保存在服务端）。' }}
-            </text>
+        <!-- ═══ 档案卡登录（T8 重排：未登录首屏即档案卡，无独立登录页） ═══ -->
+        <view v-if="!authed" class="auth-wrap">
+          <view class="auth-card">
+            <view class="auth-seal">
+              <app-icon name="scroll" :size="26" class="auth-seal-icon" />
+            </view>
+            <text class="auth-card-title">调查员档案</text>
+            <text class="auth-card-sub">登录以同步配置与故事档案</text>
+
+            <view class="auth-tabs">
+              <view
+                class="auth-tab"
+                :class="authMode === 'login' ? 'auth-tab-on' : 'auth-tab-off'"
+                @click="authMode = 'login'"
+              >登录</view>
+              <view
+                class="auth-tab"
+                :class="authMode === 'register' ? 'auth-tab-on' : 'auth-tab-off'"
+                @click="authMode = 'register'"
+              >注册</view>
+            </view>
+            <view class="auth-fields">
+              <view class="auth-field">
+                <app-icon name="users" :size="14" class="auth-field-icon" />
+                <input
+                  v-model="authUsername"
+                  class="gothic-input auth-input"
+                  placeholder="用户名（3-32 字符）"
+                  placeholder-class="gothic-ph"
+                  :maxlength="32"
+                />
+              </view>
+              <view class="auth-field">
+                <app-icon name="feather" :size="14" class="auth-field-icon" />
+                <input
+                  v-model="authPassword"
+                  class="gothic-input auth-input"
+                  placeholder="密码（至少 6 位）"
+                  placeholder-class="gothic-ph"
+                  password
+                />
+              </view>
+              <view v-if="authMode === 'register'" class="auth-field">
+                <app-icon name="feather" :size="14" class="auth-field-icon" />
+                <input
+                  v-model="authConfirm"
+                  class="gothic-input auth-input"
+                  placeholder="确认密码"
+                  placeholder-class="gothic-ph"
+                  password
+                />
+              </view>
+              <button
+                class="gothic-btn auth-submit"
+                :class="{ 'is-disabled': authSubmitting }"
+                @click="doAuth"
+              >
+                {{ authSubmitting ? '处理中...' : (authMode === 'login' ? '登录' : '注册并登录') }}
+              </button>
+              <text class="auth-note">
+                {{ authMode === 'register' ? '注册成功后将自动登录；配置与故事数据按账号隔离。' : '登录后即可同步配置与故事（API Key 仅保存在服务端）。' }}
+              </text>
+            </view>
           </view>
         </view>
 
         <template v-else>
-          <!-- ═══ AI 提供商 ═══ -->
+          <!-- ═══ AI 提供商（ADR-0003 协议卡形态保留） ═══ -->
           <view class="gothic-card section-card">
             <view class="section-toggle" @click="sections.ai = !sections.ai">
-              <text class="section-title">⚙ AI 提供商</text>
+              <view class="section-title-row">
+                <app-icon name="gear" :size="15" class="section-title-icon" />
+                <text class="section-title">AI 提供商</text>
+              </view>
               <text class="section-arrow">{{ sections.ai ? '▾' : '▸' }}</text>
             </view>
             <view v-if="sections.ai" class="section-content">
@@ -368,10 +396,10 @@ const authed = computed(() => settingsStore.isAuthenticated)
                     :class="settings.ai.protocol === def.id ? 'provider-active' : 'provider-dim'"
                     @click="selectProtocol(def.id)"
                   >
-                    <text class="provider-name" :style="{ color: settings.ai.protocol === def.id ? 'hsl(165, 50%, 78%)' : 'hsl(38, 30%, 65%)' }">
+                    <text class="provider-name" :class="settings.ai.protocol === def.id ? 'provider-name-on' : 'provider-name-off'">
                       {{ def.label }}
                     </text>
-                    <text class="provider-desc" :style="{ color: settings.ai.protocol === def.id ? 'hsl(165, 40%, 55%)' : 'hsl(220, 10%, 25%)' }">
+                    <text class="provider-desc" :class="settings.ai.protocol === def.id ? 'provider-desc-on' : 'provider-desc-off'">
                       {{ def.description }}
                     </text>
                   </view>
@@ -476,7 +504,10 @@ const authed = computed(() => settingsStore.isAuthenticated)
           <!-- ═══ 服务配置 ═══ -->
           <view class="gothic-card section-card">
             <view class="section-toggle" @click="sections.services = !sections.services">
-              <text class="section-title">⚡ 服务配置</text>
+              <view class="section-title-row">
+                <app-icon name="sparkle" :size="15" class="section-title-icon" />
+                <text class="section-title">服务配置</text>
+              </view>
               <text class="section-arrow">{{ sections.services ? '▾' : '▸' }}</text>
             </view>
             <view v-if="sections.services" class="section-content">
@@ -565,7 +596,10 @@ const authed = computed(() => settingsStore.isAuthenticated)
           <!-- ═══ 开发调试（dev only） ═══ -->
           <view v-if="isDev" class="gothic-card section-card">
             <view class="section-toggle static-toggle">
-              <text class="section-title">🔍 开发调试</text>
+              <view class="section-title-row">
+                <app-icon name="search" :size="15" class="section-title-icon" />
+                <text class="section-title">开发调试</text>
+              </view>
               <text class="dev-badge">DEV ONLY</text>
             </view>
             <view class="section-content">
@@ -589,11 +623,21 @@ const authed = computed(() => settingsStore.isAuthenticated)
             </view>
           </view>
 
-          <!-- 退出登录 -->
+          <!-- 退出登录（危险操作分级：outline-danger + Modal 确认） -->
           <view class="logout-row">
-            <button class="gothic-btn-secondary logout-btn" @click="doLogout">退出登录</button>
+            <button class="btn-outline-danger logout-btn" @click="logoutConfirm = true">退出登录</button>
           </view>
         </template>
+
+        <confirm-modal
+          v-if="logoutConfirm"
+          title="退出登录"
+          message="确定要退出当前调查员账号吗？本地未同步的配置可能丢失。"
+          confirm-text="退出登录"
+          :loading="logoutBusy"
+          @cancel="logoutConfirm = false"
+          @confirm="confirmLogout"
+        />
       </view>
     </view>
   </app-layout>
@@ -644,15 +688,61 @@ const authed = computed(() => settingsStore.isAuthenticated)
   gap: 16px;
 }
 
-/* ── 认证卡 ── */
+/* ── 档案卡登录（T8） ── */
+.auth-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 24px;
+}
 .auth-card {
-  padding: 24px;
-  background: rgba(0, 0, 0, 0.5);
+  width: 100%;
+  max-width: 420px;
+  padding: 28px 32px 24px;
+  background: var(--c-card);
+  border: 1px solid var(--c-outline);
+  border-radius: 14px;
+  border-top: 3px solid var(--c-eld-500);
+  box-shadow: 0 10px 34px var(--shadow-ink), inset 0 0 60px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+}
+.auth-seal {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1px solid var(--c-eld-700);
+  background: radial-gradient(circle, var(--c-eld-900), transparent 70%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 18px var(--c-eld-900);
+  margin-bottom: 12px;
+}
+.auth-seal-icon {
+  color: var(--c-eld-300);
+}
+.auth-card-title {
+  font-family: $font-display;
+  font-size: 1.1rem;
+  font-weight: bold;
+  letter-spacing: 0.12em;
+  color: var(--c-paper-100);
+  text-shadow: 0 0 12px rgba(0, 0, 0, 0.6);
+}
+.auth-card-sub {
+  margin-top: 4px;
+  margin-bottom: 20px;
+  font-size: 12px;
+  color: var(--c-text-secondary);
 }
 .auth-tabs {
   display: flex;
   gap: 8px;
   margin-bottom: 16px;
+  width: 100%;
+  justify-content: center;
 }
 .auth-tab {
   padding: 6px 20px;
@@ -661,30 +751,49 @@ const authed = computed(() => settingsStore.isAuthenticated)
   font-weight: 500;
 }
 .auth-tab-on {
-  background: hsla(165, 45%, 22%, 0.3);
-  border: 1px solid hsla(165, 55%, 28%, 0.5);
-  color: hsl(165, 50%, 78%);
+  background: var(--c-primary-bg);
+  border: 1px solid var(--c-primary-deep);
+  color: var(--c-eld-200);
 }
 .auth-tab-off {
-  background: hsla(220, 16%, 11%, 0.5);
-  border: 1px solid hsla(220, 14%, 16%, 0.5);
-  color: hsl(220, 10%, 30%);
+  background: var(--c-slate);
+  border: 1px solid var(--c-outline);
+  color: var(--c-text-disabled);
 }
 .auth-fields {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  width: 100%;
+}
+.auth-field {
+  position: relative;
+  width: 100%;
+}
+.auth-field-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--c-text-disabled);
+  pointer-events: none;
 }
 .auth-input {
-  max-width: 320px;
+  max-width: 100%;
+  padding-left: 36px;
+  box-sizing: border-box;
+  width: 100%;
 }
 .auth-submit {
-  align-self: flex-start;
+  align-self: center;
+  min-width: 180px;
+  margin-top: 6px;
 }
 .auth-note {
   font-size: 12px;
-  color: hsl(220, 10%, 45%);
+  color: var(--c-text-secondary);
   line-height: 1.6;
+  text-align: center;
 }
 
 /* ── 分区卡片 ── */
@@ -700,7 +809,15 @@ const authed = computed(() => settingsStore.isAuthenticated)
   transition: background 0.2s;
 }
 .section-toggle:active {
-  background: hsla(220, 16%, 14%, 0.4);
+  background: var(--c-hover);
+}
+.section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-title-icon {
+  color: var(--c-eld-400);
 }
 .static-toggle {
   cursor: default;
@@ -709,7 +826,7 @@ const authed = computed(() => settingsStore.isAuthenticated)
   font-family: $font-display;
   font-size: 0.875rem;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
   letter-spacing: 0.05em;
 }
 .section-arrow {
@@ -774,11 +891,23 @@ const authed = computed(() => settingsStore.isAuthenticated)
   font-size: 0.875rem;
   font-weight: 500;
 }
+.provider-name-on {
+  color: var(--c-eld-200);
+}
+.provider-name-off {
+  color: var(--c-paper-400);
+}
 .provider-desc {
   display: block;
   margin-top: 2px;
   font-size: 10px;
   line-height: 1.4;
+}
+.provider-desc-on {
+  color: var(--c-eld-400);
+}
+.provider-desc-off {
+  color: var(--c-text-disabled);
 }
 
 .model-head {
@@ -960,9 +1089,10 @@ const authed = computed(() => settingsStore.isAuthenticated)
 .logout-row {
   display: flex;
   justify-content: center;
-  padding: 8px 0;
+  padding: 8px 0 16px;
 }
 .logout-btn {
   font-size: 0.875rem;
+  padding: 10px 28px;
 }
 </style>
