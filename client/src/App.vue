@@ -143,6 +143,10 @@ button {
 /* ── 输入框：羊皮纸聚焦 ── */
 .gothic-input {
   width: 100%;
+  /* uni-h5 给 uni-input 宿主默认 height/min-height: 1.4em —— border-box 下
+     padding+border 会把内层原生 input 挤到 1.6px，输入文字被 overflow:clip
+     裁到只剩一条缝（登录页用户名不可见的根因）。显式高度保证内容区 ≥ 行高。 */
+  height: 2.5rem;
   padding: 0.5rem 0.75rem;
   border-radius: 0.5rem;
   font-size: 0.875rem;

@@ -369,6 +369,21 @@ async function main() {
       await waitText(page, '设置')
       await pLoc('.auth-tab').filter({ hasText: '注册' }).first().click()
       await fillInput(page, '用户名（3-32 字符）', `e2e_user_${Date.now() % 100000}`)
+      // Regression: uni-h5 gives uni-input hosts a fixed height:1.4em default;
+      // .gothic-input's border-box padding+border once squeezed the native
+      // input to 1.6px tall → typed text clipped to an invisible sliver.
+      // The native input must be tall enough to paint its own glyphs.
+      await page.waitForFunction(
+        () => {
+          const host = [...document.querySelectorAll('uni-input')].find((el) =>
+            (el.textContent || '').includes('用户名'),
+          )
+          const native = host && host.querySelector('input')
+          if (!native || !native.value) return false
+          return native.getBoundingClientRect().height >= parseFloat(getComputedStyle(native).fontSize)
+        },
+        { timeout: 10_000 },
+      )
       await fillInput(page, '密码（至少 6 位）', 'secret123')
       await fillInput(page, '确认密码', 'secret123')
       await clickBtn(page, '注册并登录')
