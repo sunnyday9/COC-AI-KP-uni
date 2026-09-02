@@ -467,7 +467,7 @@ async function main() {
       await waitText(page, '职业技能')
     })
 
-    /* ── 8. Character create: roll attrs + interest skills + name → roomCreateSolo ── */
+    /* ── 8. Character create (单页 step2 技能属性 → step3 兴趣姓名预览) → roomCreateSolo ── */
     await step('character create → roomCreateSolo → 进入 solo 房间', async () => {
       await clickBtn(page, '投掷属性')
       await waitText(page, '重新投掷')
@@ -476,6 +476,10 @@ async function main() {
       await pickUniOption(page, '.picker-view.flex-1', '聆听', 1)
       await pickUniOption(page, '.picker-view.flex-1', '图书馆使用', 2)
       await pickUniOption(page, '.picker-view.flex-1', '潜行', 3)
+      // T6 单页向导：step2 配满后进入 step3（姓名 + 档案预览）
+      await clickBtn(page, '下一步：确认调查员')
+      await waitText(page, '确认调查员')
+      await waitText(page, '档案预览')
       await fillInput(page, '调查员', 'E2E 调查员')
       await clickBtn(page, '确认角色并进入游戏')
       // ADR-0002：确认 = 服务端一体动作（落角色卡 + 建 solo 房 + 绑卡 + start）→ 直接进游戏页
