@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import ToastContainer from '../ui/ToastContainer.vue'
+import AppIcon from '../ui/AppIcon.vue'
 
 /**
  * 通用布局组件（Task 8，迁移自 original/AppLayout.vue）。

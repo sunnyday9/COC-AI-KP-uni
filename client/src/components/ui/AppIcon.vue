@@ -5,15 +5,9 @@
  * MP-WEIXIN 等无 SVG 能力端回退到字符符号（保持现状不倒退，小程序非本轮设计重点）。
  * 尺寸默认 18，颜色继承 currentColor。
  */
-withDefaults(
-  defineProps<{
-    /** 图标名：house/book-open/sword/gear/dice/scroll/search/users/close/play/trash 等 */
-    name: string
-    size?: number
-  }>(),
-  { size: 18 },
-)
-
+import { computed } from 'vue'
+// 条件编译双根（H5 svg / MP text）→ 关自动继承，class 等 attrs 手工落根
+defineOptions({ inheritAttrs: false })
 const MP_FALLBACK: Record<string, string> = {
   house: '⌂',
   'book-open': '📖',
@@ -57,11 +51,79 @@ const PATHS: Record<string, string> = {
   feather:
     '<path d="M20 4c-6 0-11 4-13 10l-3 7 7-3c6-2 10-7 10-13Z"/><path d="M4 21C8 14 14 8 20 4"/>',
 }
+
+/** 把紧凑 path 串解析为可渲染子节点（uni-app H5 对 v-html 注入 SVG 支持不稳）。 */
+interface IconPart {
+  kind: 'path' | 'circle' | 'rect'
+  d?: string
+  cx?: number
+  cy?: number
+  r?: number
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  rx?: number
+  fill?: string
+  stroke?: string
+}
+
+function parseParts(raw: string): IconPart[] {
+  const parts: IconPart[] = []
+  const tagRe = /<(path|circle|rect)\b([^>]*)\/?>/g
+  let m: RegExpExecArray | null
+  while ((m = tagRe.exec(raw)) !== null) {
+    const kind = m[1] as IconPart['kind']
+    const attrs = m[2] || ''
+    const get = (name: string): string | undefined => {
+      const am = new RegExp(name + '="([^"]*)"').exec(attrs)
+      return am ? am[1] : undefined
+    }
+    if (kind === 'path') {
+      parts.push({ kind, d: get('d') })
+    } else if (kind === 'circle') {
+      parts.push({
+        kind,
+        cx: Number(get('cx') ?? 0),
+        cy: Number(get('cy') ?? 0),
+        r: Number(get('r') ?? 0),
+        fill: get('fill'),
+        stroke: get('stroke'),
+      })
+    } else if (kind === 'rect') {
+      parts.push({
+        kind,
+        x: Number(get('x') ?? 0),
+        y: Number(get('y') ?? 0),
+        width: Number(get('width') ?? 0),
+        height: Number(get('height') ?? 0),
+        rx: get('rx') ? Number(get('rx')) : undefined,
+      })
+    }
+  }
+  return parts
+}
+
+const props = withDefaults(
+  defineProps<{
+    /** 图标名：house/book-open/sword/gear/dice/scroll/search/users/close/play/trash 等 */
+    name: string
+    size?: number
+  }>(),
+  { size: 18 },
+)
+
+const parts = computed<IconPart[]>(() => {
+  const raw = PATHS[props.name] || ''
+  return parseParts(raw)
+})
+
 </script>
 
 <template>
   <!-- #ifndef MP-WEIXIN -->
   <svg
+    v-bind="$attrs"
     class="app-icon"
     :width="size"
     :height="size"
@@ -72,11 +134,17 @@ const PATHS: Record<string, string> = {
     stroke-linecap="round"
     stroke-linejoin="round"
     aria-hidden="true"
-    v-html="PATHS[name] || ''"
-  />
+  >
+    <!-- PATHS 由 vite/uni 编译期展开为真实 <path>/<circle>/<rect> 子节点 -->
+    <template v-for="(d, idx) in parts" :key="idx">
+      <path v-if="d.kind === 'path'" :d="d.d" />
+      <circle v-else-if="d.kind === 'circle'" :cx="d.cx" :cy="d.cy" :r="d.r" :fill="d.fill || 'none'" :stroke="d.stroke || 'currentColor'" />
+      <rect v-else-if="d.kind === 'rect'" :x="d.x" :y="d.y" :width="d.width" :height="d.height" :rx="d.rx" />
+    </template>
+  </svg>
   <!-- #endif -->
   <!-- #ifdef MP-WEIXIN -->
-  <text class="app-icon-fallback" :style="{ fontSize: size + 'px' }">{{ MP_FALLBACK[name] || '' }}</text>
+  <text v-bind="$attrs" class="app-icon-fallback" :style="{ fontSize: size + 'px' }">{{ MP_FALLBACK[name] || '' }}</text>
   <!-- #endif -->
 </template>
 
