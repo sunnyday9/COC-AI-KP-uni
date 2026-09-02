@@ -76,7 +76,7 @@ describe('listModels protocol dispatch', () => {
       vi.fn(async () => ({ ok: false, status: 500 })),
     )
     const models = await listModels(userId, 'chat')
-    expect(models.map((m) => m.value)).toEqual((AI_MODEL_LISTS.anthropic_compatible ?? []).map((m) => m.value))
+    expect(models.map((m) => m.value)).toEqual((AI_MODEL_LISTS.anthropic_messages ?? []).map((m) => m.value))
   })
 
   it('anthropic_messages: embeddings purpose falls back to empty (no static embedding list)', async () => {

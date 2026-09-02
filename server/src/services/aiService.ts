@@ -313,7 +313,7 @@ export async function listModels(userId: number, purpose = 'chat'): Promise<Mode
     if (live) return live
     // 实时拉取失败 → 回退：anthropic 用静态 Claude 列表（chat），其余协议空
     if (protocol === 'anthropic_messages' && purpose === 'chat') {
-      return AI_MODEL_LISTS.anthropic_compatible ?? []
+      return AI_MODEL_LISTS.anthropic_messages ?? []
     }
     return []
   }

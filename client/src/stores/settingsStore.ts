@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { AIProviderConfig } from '../services/ai/types'
-import { PRESET_PROVIDERS, CUSTOM_PROVIDERS } from '../services/ai/types'
+import type { AIProviderConfig, LLMProtocol } from '../services/ai/types'
+import { PROTOCOL_DEFS } from '../services/ai/types'
 import { getBridge } from '../platform'
 import type { AppSettings as BridgeAppSettings } from '../../../shared/types/settings'
 import type { AuthResult, BridgeUser } from '../../../shared/types/bridge'
@@ -28,10 +28,7 @@ export interface AppSettings {
   debugMode?: boolean
 }
 
-const ALL_PROVIDER_IDS = new Set<string>([
-  ...PRESET_PROVIDERS.map((p) => p.id),
-  ...CUSTOM_PROVIDERS.map((p) => p.id),
-])
+const ALL_PROTOCOLS = new Set<string>(PROTOCOL_DEFS.map((p) => p.id))
 
 const defaultRAG: RAGSettings = {
   // 默认启用语义检索（嵌入向量），在 Electron 内自动使用本地向量检索 + GraphRAG
@@ -44,7 +41,7 @@ const defaultRAG: RAGSettings = {
 
 const defaultSettings: AppSettings = {
   ai: {
-    provider: 'openai',
+    protocol: 'openai_chat',
     baseUrl: '',
     model: '',
     temperature: 0.7,
@@ -76,7 +73,9 @@ export const useSettingsStore = defineStore('settings', () => {
       const ai: AIProviderConfig = {
         ...defaultSettings.ai,
         ...rawAi,
-        provider: ALL_PROVIDER_IDS.has(String(rawAi.provider ?? '')) ? (rawAi.provider as AIProviderConfig['provider']) : 'openai',
+        protocol: ALL_PROTOCOLS.has(String(rawAi.protocol ?? ''))
+          ? (rawAi.protocol as LLMProtocol)
+          : (defaultSettings.ai.protocol as LLMProtocol),
         model: typeof rawAi.model === 'string' ? rawAi.model : defaultSettings.ai.model,
         baseUrl: typeof rawAi.baseUrl === 'string' ? rawAi.baseUrl : defaultSettings.ai.baseUrl,
         apiKey: rawAi.apiKey !== undefined ? String(rawAi.apiKey) : defaultSettings.ai.apiKey,
