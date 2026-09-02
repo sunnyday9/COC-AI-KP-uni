@@ -565,27 +565,32 @@ export class RoomService {
     }
   }
 
-  /**
-   * opening 回合（ADR-0002）：startRoom / 首次 join 时触发一次。
-   * 失败不阻塞进入——首回合不是门闩，玩家消息照常触发回合（flushTurn 路径独立）。
-   */
+  /** opening（ADR-0002）：startRoom / 首次 join 时触发一次，失败不阻塞进入。 */
   beginOpeningIfPending(): void {
     if (this.openingStarted || this.phase !== 'playing' || this.messages.length > 0) return
     this.openingStarted = true
     void this.runOpeningTurn()
   }
 
+  /**
+   * opening 回合真实执行：串行入队（与后续 flushTurn 共享队列，避免与玩家
+   * 首条消息并发跑两个回合）。失败不阻塞进入——首回合不是门闩，玩家消息
+   * 照常触发回合（flushTurn 路径独立）。快照恢复时角色组（characters map）
+   * 由 getOrCreateRoom 的 syncFromDb 装载后才会调用本方法（懒激活顺序保证）。
+   */
   private async runOpeningTurn(): Promise<void> {
     try {
       const [ragContext, storyName] = await Promise.all([this.fetchRagContext(OPENING_RAG_QUERY), this.fetchStoryName()])
       const chatMessages = buildRoomOpeningMessages(this.promptInput(storyName, this.messages), ragContext)
       const firstCharacterId = [...this.characters.keys()][0] ?? null
-      await this.runKpTurnForRoom(
-        this.ownerId,
-        chatMessages,
-        this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
-        firstCharacterId,
-        () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
+      await this.enqueue(() =>
+        this.runKpTurnForRoom(
+          this.ownerId,
+          chatMessages,
+          this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
+          firstCharacterId,
+          () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
+        ),
       )
     } catch {
       // opening 失败不阻塞（ADR-0002）
