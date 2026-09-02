@@ -749,7 +749,6 @@ const authed = computed(() => settingsStore.isAuthenticated)
   display: grid;
   gap: 8px;
 }
-.provider-grid.three { grid-template-columns: repeat(3, 1fr); }
 .provider-grid.two { grid-template-columns: repeat(2, 1fr); }
 .provider-card {
   padding: 10px 12px;

@@ -89,7 +89,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('chatForAgent — openai_compatible', () => {
+describe('chatForAgent — openai_chat', () => {
   it('sends tools with tool_choice auto and returns normalized toolCalls', async () => {
     const userId = await createUser('tools_alice')
     saveSettings(userId, {
@@ -130,7 +130,7 @@ describe('chatForAgent — openai_compatible', () => {
   })
 })
 
-describe('chatForAgent — anthropic_compatible', () => {
+describe('chatForAgent — anthropic_messages', () => {
   it('converts tools to input_schema and parses tool_use blocks', async () => {
     const userId = await createUser('tools_carol')
     saveSettings(userId, {
