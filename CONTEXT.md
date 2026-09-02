@@ -31,6 +31,18 @@ DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执�
 ### 房间视图模型（RoomClient）
 客户端消费房间事件流的唯一视图层：事件应用 + 动作发送 + 唯一乐观面（自己发出的消息）。落点 `client/src/stores/roomStore.ts`；页面不持有领域状态、不组装提示词、不拉取 RAG（ADR-0002）。
 
+### LLM 协议（LLM protocol）
+用户可选的 LLM 接入方式，一等公民配置维度：`openai_chat`（Chat Completions）/ `openai_responses`（Responses API）/ `anthropic_messages`（Messages API）/ `google_compatible`（Gemini，遗留）。`settings.ai.protocol` 是唯一协议真源；不随 provider 推导（ADR-0003）。
+
+### 协议适配器（protocol adapter）
+把内部统一格式（OpenAI 风格 `ChatMessage[]` + `tools`）翻译成特定协议请求/响应并归一化返回 `{ content, chunks, toolCalls }` 的模块。转换（system 抽取、assistant tool_calls ↔ tool_use、工具结果回填）是各适配器私有实现，不做跨协议统一层。落点 `server/src/services/llm/*.ts`（ADR-0003）。
+
+### 嵌入端点（embedding endpoint）
+RAG 嵌入固定走 OpenAI 兼容端点 `POST {baseUrl}/v1/embeddings`，与主协议解耦——协议切到 anthropic/responses 时嵌入仍打同一 baseUrl 的 OpenAI 格式端点（anthropic/google 无等价嵌入 API）。落点 `server/src/rag/embedding.ts`（Q5-A）。
+
+### 模板（template）
+已废除的 provider 概念残留：旧 `provider` 字段（openai/deepseek/gemini/…）作为「默认 endpoint + 默认模型列表」的速填模板，不再参与协议解析，仅设置页点选时填充 `protocol + baseUrl`。自填 endpoint 后模板失去唯一性（Q1-B 删 provider，模板随之移除，仅遗留配置经映射表惰性识别）。
+
 ## 不重议的决策
 
 - ADR-0001：房间 schema 只归 RoomService（经 roomStorage）所有，REST/ws 不接触。
@@ -38,3 +50,4 @@ DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执�
 - D-09：外部 id 只进 DB，fs 用 uuid 文件名（Mimosa 污点链断链方案）。
 - D7/D-10：单进程内存注册表 + 节流快照 + TTL 回收；Redis 是触发条件不是默认。
 - 服务端权威单轨：客户端无规则、无工具循环（ARCHITECTURE-MULTIPLAYER §四）。
+- ADR-0003：LLM 接入协议一等公民（协议模型 / 适配器 / 本地端点不豁免 / Responses 流式策略）。
