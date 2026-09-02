@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoomStore } from '../../../stores/roomStore'
 import ChatMessage from '../components/ChatMessage.vue'
+import ConfirmModal from '../../../components/ui/ConfirmModal.vue'
 import { getBridge } from '../../../platform'
 import type { CharacterListItem } from '../../../../../shared/types/room'
 
@@ -13,6 +14,9 @@ const myCharacters = ref<CharacterListItem[]>([])
 const showCharPicker = ref(false)
 const selectedCharId = ref('')
 const listRef = ref<unknown>(null)
+/** 解散房间确认（T9：房主解散不可恢复，危险操作确认）。 */
+const dissolveConfirm = ref(false)
+const dissolveBusy = ref(false)
 
 function goBack() {
   if (roomStore.roomId === roomId.value) {
@@ -81,12 +85,16 @@ async function startGame() {
 }
 
 async function dissolveRoom() {
+  dissolveBusy.value = true
   try {
     await getBridge().roomDelete(roomId.value)
     roomStore.leaveRoom()
+    dissolveConfirm.value = false
     uni.navigateBack()
   } catch (e) {
     uni.showToast({ title: e instanceof Error ? e.message : String(e), icon: 'none' })
+  } finally {
+    dissolveBusy.value = false
   }
 }
 
@@ -143,7 +151,7 @@ onMounted(() => scrollToBottom())
       </view>
       <view class="header-right">
         <button v-if="roomStore.isOwner && roomStore.phase === 'lobby'" class="mini-btn start-btn" @click="startGame">开始游戏</button>
-        <button v-if="roomStore.isOwner" class="mini-btn danger-btn" @click="dissolveRoom">解散</button>
+        <button v-if="roomStore.isOwner" class="mini-btn danger-btn" @click="dissolveConfirm = true">解散</button>
         <button class="mini-btn" @click="goBack">退出</button>
       </view>
     </view>
@@ -227,6 +235,17 @@ onMounted(() => scrollToBottom())
         <button class="gothic-btn" @click="bindCharacter">确认绑定</button>
       </view>
     </view>
+
+    <!-- 解散确认（T9：房主解散房间不可恢复） -->
+    <confirm-modal
+      v-if="dissolveConfirm"
+      title="解散房间"
+      message="房间将被永久解散，所有成员将被移出。此操作不可撤销。"
+      confirm-text="解散房间"
+      :loading="dissolveBusy"
+      @cancel="dissolveConfirm = false"
+      @confirm="dissolveRoom"
+    />
   </view>
 </template>
 

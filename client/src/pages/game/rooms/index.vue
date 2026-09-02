@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { getBridge } from '../../../platform'
 import type { RoomListItem } from '../../../../../shared/types/room'
 import AppLayout from '../../../components/layout/AppLayout.vue'
+import EmptyState from '../../../components/ui/EmptyState.vue'
 
 const myRooms = ref<RoomListItem[]>([])
 const inviteCodeInput = ref('')
@@ -87,7 +88,12 @@ function openRoom(room: RoomListItem) {
 
       <view class="panel">
         <view class="panel-title">我的房间</view>
-        <view v-if="myRooms.length === 0" class="empty">暂无房间 — 创建或加入一个吧</view>
+        <empty-state
+          v-if="myRooms.length === 0"
+          icon="users"
+          title="暂无房间"
+          desc="创建新房间，或输入邀请码加入同伴的调查"
+        />
         <view
           v-for="room in myRooms"
           :key="room.roomId"

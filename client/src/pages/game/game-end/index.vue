@@ -56,10 +56,11 @@ const outcomeLabel = computed(() => {
 
 const outcomeColor = computed(() => {
   const o = outcome.value
-  if (o === 'victory') return { text: 'hsl(42, 65%, 75%)', border: 'hsla(42, 70%, 50%, 0.3)', glow: 'hsla(42, 70%, 50%, 0.1)' }
-  if (o === 'defeat') return { text: 'hsl(0, 55%, 70%)', border: 'hsla(0, 65%, 35%, 0.3)', glow: 'hsla(0, 65%, 35%, 0.1)' }
-  if (o === 'survival') return { text: 'hsl(165, 50%, 65%)', border: 'hsla(165, 60%, 35%, 0.3)', glow: 'hsla(165, 60%, 35%, 0.1)' }
-  return { text: 'hsl(260, 45%, 70%)', border: 'hsla(260, 50%, 45%, 0.3)', glow: 'hsla(260, 50%, 45%, 0.1)' }
+  // T9 结局分级视觉（文本/边框走令牌；glow 为 rgba 字面量供 boxShadow 拼接）
+  if (o === 'victory') return { text: 'var(--c-ritual-200)', border: 'var(--c-ritual-500)', glow: 'hsla(42, 70%, 50%, 0.12)' }
+  if (o === 'defeat') return { text: 'var(--c-blood-200)', border: 'var(--c-blood-500)', glow: 'hsla(0, 65%, 45%, 0.12)' }
+  if (o === 'survival') return { text: 'var(--c-eld-200)', border: 'var(--c-eld-500)', glow: 'hsla(165, 60%, 40%, 0.12)' }
+  return { text: 'var(--c-sanity-200)', border: 'var(--c-sanity-500)', glow: 'hsla(260, 55%, 50%, 0.12)' }
 })
 
 function buildMarkdownReport(): string {
