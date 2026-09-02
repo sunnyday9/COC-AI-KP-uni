@@ -47,6 +47,129 @@ body {
 }
 // #endif
 
+/* ══════════════════════════════════════════════════════════════════
+   设计令牌 CSS 变量层（T1 令牌地基，ADR-0004）
+   uni.scss 为单一事实源；此处把 scss 变量编译为 :root/page 级 CSS
+   变量，供所有页面/组件以 var(--*) 引用（替换散落裸 hsl 字面量）。
+   命名对齐 docs/design/uni-scss-to-brilliant-token-map.md：
+   --c-<ramp>-<stop> 色板 + --c-<semantic> 语义 + --font-* + --shadow-*。
+   ══════════════════════════════════════════════════════════════════ */
+page {
+  /* 墨与纸 */
+  --c-void: #{$c-void};
+  --c-abyss: #{$c-abyss};
+  --c-obsidian: #{$c-obsidian};
+  --c-obsidian-light: #{$c-obsidian-light};
+  --c-slate: #{$c-slate};
+  --c-slate-light: #{$c-slate-light};
+  --c-ash: #{$c-ash};
+  --c-fog: #{$c-fog};
+  --c-paper-50: #{$c-parchment-50};
+  --c-paper-100: #{$c-parchment-100};
+  --c-paper-200: #{$c-parchment-200};
+  --c-paper-300: #{$c-parchment-300};
+  --c-paper-400: #{$c-parchment-400};
+  --c-paper-500: #{$c-parchment-500};
+  --c-paper-600: #{$c-parchment-600};
+  --c-paper-700: #{$c-parchment-700};
+  --c-paper-800: #{$c-parchment-800};
+  --c-paper-900: #{$c-parchment-900};
+  /* 克苏鲁绿（主题强调） */
+  --c-eld-50: #{$c-eldritch-50};
+  --c-eld-100: #{$c-eldritch-100};
+  --c-eld-200: #{$c-eldritch-200};
+  --c-eld-300: #{$c-eldritch-300};
+  --c-eld-400: #{$c-eldritch-400};
+  --c-eld-500: #{$c-eldritch-500};
+  --c-eld-600: #{$c-eldritch-600};
+  --c-eld-700: #{$c-eldritch-700};
+  --c-eld-800: #{$c-eldritch-800};
+  --c-eld-900: #{$c-eldritch-900};
+  /* 血 / 理智 / 仪式金 / 魔力蓝 */
+  --c-blood-50: #{$c-blood-50};
+  --c-blood-100: #{$c-blood-100};
+  --c-blood-200: #{$c-blood-200};
+  --c-blood-300: #{$c-blood-300};
+  --c-blood-400: #{$c-blood-400};
+  --c-blood-500: #{$c-blood-500};
+  --c-blood-600: #{$c-blood-600};
+  --c-blood-700: #{$c-blood-700};
+  --c-blood-800: #{$c-blood-800};
+  --c-blood-900: #{$c-blood-900};
+  --c-sanity-50: #{$c-sanity-50};
+  --c-sanity-100: #{$c-sanity-100};
+  --c-sanity-200: #{$c-sanity-200};
+  --c-sanity-300: #{$c-sanity-300};
+  --c-sanity-400: #{$c-sanity-400};
+  --c-sanity-500: #{$c-sanity-500};
+  --c-sanity-600: #{$c-sanity-600};
+  --c-sanity-700: #{$c-sanity-700};
+  --c-sanity-800: #{$c-sanity-800};
+  --c-sanity-900: #{$c-sanity-900};
+  --c-ritual-50: #{$c-ritual-50};
+  --c-ritual-100: #{$c-ritual-100};
+  --c-ritual-200: #{$c-ritual-200};
+  --c-ritual-300: #{$c-ritual-300};
+  --c-ritual-400: #{$c-ritual-400};
+  --c-ritual-500: #{$c-ritual-500};
+  --c-ritual-600: #{$c-ritual-600};
+  --c-ritual-700: #{$c-ritual-700};
+  --c-ritual-800: #{$c-ritual-800};
+  --c-ritual-900: #{$c-ritual-900};
+  --c-mana-50: #{$c-mana-50};
+  --c-mana-100: #{$c-mana-100};
+  --c-mana-200: #{$c-mana-200};
+  --c-mana-300: #{$c-mana-300};
+  --c-mana-400: #{$c-mana-400};
+  --c-mana-500: #{$c-mana-500};
+  --c-mana-600: #{$c-mana-600};
+  --c-mana-700: #{$c-mana-700};
+  --c-mana-800: #{$c-mana-800};
+  --c-mana-900: #{$c-mana-900};
+
+  /* 语义 alias（对齐 token map 语义面，供 var(--c-primary) 等） */
+  --c-bg: #{$c-void};
+  --c-surface: #{$c-abyss};
+  --c-card: #{$c-obsidian};
+  --c-hover: #{$c-obsidian-light};
+  --c-pressed: #{$c-slate};
+  --c-outline: #{$c-slate-light};
+  --c-outline-weak: #{$c-ash};
+  --c-text-primary: #{$c-parchment-100};
+  --c-text-secondary: #{$c-parchment-500};
+  --c-text-disabled: #{$c-fog};
+  --c-text-display: #{$c-eldritch-300};
+  --c-text-bright: #{$c-parchment-50};
+  --c-text-eld: #{$c-eldritch-100};
+  --c-primary: #{$c-eldritch-300};
+  --c-primary-dim: #{$c-eldritch-200};
+  --c-primary-deep: #{$c-eldritch-400};
+  --c-primary-bg: #{$c-eldritch-800};
+  --c-primary-bg-deep: #{$c-eldritch-900};
+  --c-danger: #{$c-blood-300};
+  --c-danger-dim: #{$c-blood-200};
+  --c-danger-bg: #{$c-blood-900};
+  --c-warning: #{$c-ritual-300};
+  --c-info: #{$c-mana-300};
+  --c-sanity: #{$c-sanity-300};
+
+  /* 字体族 */
+  --font-display: #{$font-display};
+  --font-serif: #{$font-serif};
+  --font-body: #{$font-body};
+  --font-mono: #{$font-mono};
+
+  /* 阴影（对齐 token map 三档 + 既有 ink 系） */
+  --shadow-eldritch: #{$shadow-eldritch};
+  --shadow-eldritch-lg: #{$shadow-eldritch-lg};
+  --shadow-blood: #{$shadow-blood};
+  --shadow-sanity: #{$shadow-sanity};
+  --shadow-ritual: #{$shadow-ritual};
+  --shadow-mana: #{$shadow-mana};
+  --shadow-ink: #{$shadow-ink};
+  --shadow-ink-lg: #{$shadow-ink-lg};
+}
+
 /* 大气滚动条（H5；小程序使用原生滚动条） */
 ::-webkit-scrollbar {
   width: 6px;

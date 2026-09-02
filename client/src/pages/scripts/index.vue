@@ -380,7 +380,7 @@ async function handleTestGraphRagExtract(storyId: string) {
   font-family: $font-display;
   font-size: 0.875rem;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
   letter-spacing: 0.05em;
 }
 .section-actions {
@@ -449,12 +449,12 @@ async function handleTestGraphRagExtract(storyId: string) {
   font-size: 0.875rem;
   background: hsla(38, 18%, 18%, 0.4);
   border: 1px solid hsla(38, 20%, 30%, 0.3);
-  color: hsl(38, 35%, 68%);
+  color: var(--c-paper-400);
 }
 .idx-badge {
   background: hsla(165, 35%, 10%, 0.5);
   border-color: hsla(165, 45%, 22%, 0.4);
-  color: hsl(165, 50%, 78%);
+  color: var(--c-eld-100);
 }
 .file-info {
   min-width: 0;
@@ -465,7 +465,7 @@ async function handleTestGraphRagExtract(storyId: string) {
   font-weight: 600;
   font-size: 0.875rem;
   word-break: break-all;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 .file-status {
   display: block;
@@ -476,7 +476,7 @@ async function handleTestGraphRagExtract(storyId: string) {
   display: block;
   margin-top: 2px;
   font-size: 10px;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .ml-8 { margin-left: 8px; }
 
@@ -495,7 +495,7 @@ async function handleTestGraphRagExtract(storyId: string) {
 .index-btn {
   background: hsla(165, 35%, 10%, 0.5);
   border: 1px solid hsla(165, 45%, 22%, 0.3);
-  color: hsl(165, 50%, 78%);
+  color: var(--c-eld-100);
 }
 .delete-btn {
   background: hsla(0, 50%, 15%, 0.3);
@@ -579,7 +579,7 @@ async function handleTestGraphRagExtract(storyId: string) {
   word-break: break-all;
   color: hsl(38, 25%, 55%);
   background: hsla(220, 20%, 4%, 0.5);
-  border: 1px solid hsl(220, 14%, 16%);
+  border: 1px solid var(--c-slate);
 }
 .graph-placeholder {
   margin-top: 12px;
@@ -590,7 +590,7 @@ async function handleTestGraphRagExtract(storyId: string) {
 }
 .placeholder-text {
   font-size: 12px;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
   font-family: $font-serif;
 }
 </style>

@@ -361,6 +361,14 @@ async function main() {
     await step('home loads', async () => {
       await page.goto(`${WEB_BASE}/#/pages/home/index`, { waitUntil: 'domcontentloaded' })
       await waitText(page, 'AI COC Keeper')
+      // T1 令牌地基：CSS 变量层须生效 —— page/body 背景应解析为 --c-bg（$c-void
+      // = hsl(220,20%,4%) = rgb(8,10,12)），而不是回退到 UA 默认白底。
+      await page.waitForFunction(() => {
+        const bg = getComputedStyle(document.body).backgroundColor
+        const rgb = bg.match(/\d+/g)?.slice(0, 3).map(Number) ?? []
+        const voidRgb = [8, 10, 12]
+        return rgb.length === 3 && rgb.every((v, i) => Math.abs(v - voidRgb[i]) <= 2)
+      }, { timeout: 10_000 })
     })
 
     /* ── 2. Settings: register (new user) ── */
