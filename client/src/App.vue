@@ -149,6 +149,8 @@ page {
   --c-danger: #{$c-blood-300};
   --c-danger-dim: #{$c-blood-200};
   --c-danger-bg: #{$c-blood-900};
+  --c-on-primary: #{$c-void};
+  --c-on-danger: #{$c-parchment-50};
   --c-warning: #{$c-ritual-300};
   --c-info: #{$c-mana-300};
   --c-sanity: #{$c-sanity-300};
@@ -262,6 +264,94 @@ button {
   border-color: hsl(220, 12%, 22%);
 }
 // #endif
+
+/* ──────────────────────────────────────────────────────────────────
+   按钮语义变体（T2 基础基件，ADR-0004 设计稿 Btn 5 变体）
+   与 .gothic-btn* 并存，页面渐进迁移到 .btn-*；均以令牌 var() 实现。
+   尺寸：44 高 / 字号 14 / rd 4；hover 态 H5 专用，MP 用 hover-class。
+   ────────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 1rem;
+  height: 44px;
+  border-radius: 4px;
+  font-family: $font-serif;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.36;
+  border: 1px solid transparent;
+  box-sizing: border-box;
+  transition: all 0.2s;
+}
+/* primary — 克苏鲁绿实底（主操作） */
+.btn-primary {
+  background: var(--c-primary);
+  color: var(--c-on-primary);
+  box-shadow: 0 0 10px rgba(51, 204, 166, 0.2);
+}
+/* outline 绿 — 次级 */
+.btn-outline {
+  background: transparent;
+  color: var(--c-eld-200);
+  border-color: var(--c-eld-400);
+}
+/* outline 血 — 危险次级 */
+.btn-outline-danger {
+  background: transparent;
+  color: var(--c-blood-200);
+  border-color: var(--c-blood-300);
+}
+/* ghost 文字 — 低危 */
+.btn-ghost {
+  background: transparent;
+  color: var(--c-paper-500);
+}
+/* 实底血 — 危险主操作 */
+.btn-danger-solid {
+  background: var(--c-danger);
+  color: #f9f4ec;
+  box-shadow: 0 0 10px rgba(210, 45, 45, 0.2);
+}
+/* 实底金 — 警示主操作（如清除/重置类） */
+.btn-warning {
+  background: var(--c-warning);
+  color: var(--c-on-primary);
+  box-shadow: 0 0 10px rgba(217, 163, 38, 0.2);
+}
+.btn:disabled,
+.btn.is-disabled {
+  opacity: 0.4;
+  box-shadow: none;
+  pointer-events: none;
+}
+// #ifdef H5
+.btn-primary:hover:not(:disabled) {
+  background: var(--c-eld-200);
+  box-shadow: 0 0 16px rgba(51, 204, 166, 0.4);
+}
+.btn-outline:hover:not(:disabled) {
+  border-color: var(--c-eld-300);
+  border-width: 1.5px;
+  color: var(--c-eld-100);
+}
+.btn-outline-danger:hover:not(:disabled) {
+  border-color: var(--c-blood-200);
+  border-width: 1.5px;
+  color: var(--c-blood-100);
+}
+.btn-ghost:hover:not(:disabled) {
+  color: var(--c-paper-100);
+}
+.btn-danger-solid:hover:not(:disabled) {
+  background: var(--c-blood-200);
+}
+// #endif
+/* 按压态（MP） */
+.btn-hover-press {
+  opacity: 0.75;
+}
 
 /* ── 输入框：羊皮纸聚焦 ── */
 .gothic-input {

@@ -26,10 +26,10 @@ const props = withDefaults(defineProps<{
 })
 
 const navItems = [
-  { key: 'home' as const, path: '/pages/home/index', label: '首页', icon: '⛧' },
-  { key: 'scripts' as const, path: '/pages/scripts/index', label: '故事', icon: '📜' },
-  { key: 'game' as const, path: '/pages/game/index', label: '游戏', icon: '🗡' },
-  { key: 'settings' as const, path: '/pages/settings/index', label: '设置', icon: '⚙' },
+  { key: 'home' as const, path: '/pages/home/index', label: '首页', icon: 'house' },
+  { key: 'scripts' as const, path: '/pages/scripts/index', label: '故事', icon: 'book-open' },
+  { key: 'game' as const, path: '/pages/game/index', label: '游戏', icon: 'sword' },
+  { key: 'settings' as const, path: '/pages/settings/index', label: '设置', icon: 'gear' },
 ]
 
 function go(item: { key: string; path: string }) {
@@ -69,7 +69,7 @@ function go(item: { key: string; path: string }) {
           @click="go(item)"
         >
           <view v-if="active === item.key" class="nav-active-bar" />
-          <text class="nav-icon">{{ item.icon }}</text>
+          <app-icon :name="item.icon" :size="18" class="nav-icon" />
           <text class="nav-label">{{ item.label }}</text>
         </view>
       </view>
@@ -95,7 +95,7 @@ function go(item: { key: string; path: string }) {
         @click="go(item)"
       >
         <view v-if="active === item.key" class="bottom-active-dot" />
-        <text class="bottom-icon">{{ item.icon }}</text>
+        <app-icon :name="item.icon" :size="20" class="bottom-icon" />
         <text class="bottom-label">{{ item.label }}</text>
       </view>
     </view>

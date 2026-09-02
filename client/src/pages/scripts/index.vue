@@ -6,6 +6,9 @@ import { listIndexedStories, deleteStoryIndex, getStoryGraph, type IndexedStory 
 import { useToast } from '../../composables/useToast'
 import { onUnauthorized } from '../../platform/token'
 import AppLayout from '../../components/layout/AppLayout.vue'
+import AppIcon from '../../components/ui/AppIcon.vue'
+import ConfirmModal from '../../components/ui/ConfirmModal.vue'
+import EmptyState from '../../components/ui/EmptyState.vue'
 
 const toast = useToast()
 const storyStore = useStoryStore()
@@ -108,18 +111,37 @@ async function handleIndexAll() {
   await refreshIndexed()
 }
 
-async function handleDeleteStory(id: string, name: string) {
-  await storyStore.deleteStory(id)
-  toast.info(`已删除文件「${name}」`)
+/** 删除确认（ADR-0004 UX 缺口：删除文件/索引不可恢复，需 Modal 确认） */
+type PendingDelete = { kind: 'file' | 'index'; id: string; name: string } | null
+const pendingDelete = ref<PendingDelete>(null)
+const deleting = ref(false)
+
+function askDeleteStory(id: string, name: string) {
+  pendingDelete.value = { kind: 'file', id, name }
 }
 
-async function handleDeleteIndex(storyId: string, name: string) {
+function askDeleteIndex(id: string, name: string) {
+  pendingDelete.value = { kind: 'index', id, name }
+}
+
+async function confirmDeleteStory() {
+  if (!pendingDelete.value || deleting.value) return
+  const pd = pendingDelete.value
+  deleting.value = true
   try {
-    await deleteStoryIndex(storyId)
-    toast.info(`已删除索引「${name}」`)
+    if (pd.kind === 'file') {
+      await storyStore.deleteStory(pd.id)
+      toast.info(`已删除文件「${pd.name}」`)
+    } else {
+      await deleteStoryIndex(pd.id)
+      toast.info(`已删除索引「${pd.name}」`)
+    }
     await refreshIndexed()
   } catch (e) {
-    toast.error(`删除索引失败：${e instanceof Error ? e.message : String(e)}`)
+    toast.error(`删除失败：${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    deleting.value = false
+    pendingDelete.value = null
   }
 }
 
@@ -190,7 +212,10 @@ async function handleTestGraphRagExtract(storyId: string) {
         <!-- 故事文件区 -->
         <view class="section">
           <view class="section-head">
-            <text class="section-title">📄 故事文件</text>
+            <view class="section-title-row">
+              <app-icon name="scroll" :size="16" class="section-title-icon" />
+              <text class="section-title">故事文件</text>
+            </view>
             <view class="section-actions">
               <text class="link-btn" @click="storyStore.loadStories()">刷新</text>
               <text v-if="storyFiles.length" class="link-btn" @click="handleIndexAll">索引全部</text>
@@ -231,22 +256,28 @@ async function handleTestGraphRagExtract(storyId: string) {
                   {{ indexStatus[story.id] === 'loading' ? '索引中...'
                    : indexStatus[story.id] === 'ok' ? '✓ 完成' : '索引' }}
                 </button>
-                <button class="mini-btn delete-btn" @click="handleDeleteStory(story.id, story.name)">删除</button>
+                <button class="mini-btn delete-btn" @click="askDeleteStory(story.id, story.name)">删除</button>
               </view>
             </view>
           </view>
 
           <!-- 空态 -->
-          <view v-else class="gothic-card empty-card">
-            <text class="empty-quote">"书架上空无一物..."</text>
-            <text class="empty-hint">点击「导入故事」添加 PDF、TXT 或 MD 文件</text>
+          <view v-else class="gothic-card">
+            <empty-state
+              icon="scroll"
+              title="书架上空无一物..."
+              desc="点击「导入故事」添加 PDF、TXT 或 MD 文件"
+            />
           </view>
         </view>
 
         <!-- 已索引故事区 -->
         <view class="section">
           <view class="section-head">
-            <text class="section-title">🗃 已索引故事</text>
+            <view class="section-title-row">
+              <app-icon name="book-open" :size="16" class="section-title-icon" />
+              <text class="section-title">已索引故事</text>
+            </view>
             <text class="link-btn" @click="refreshIndexed">刷新</text>
           </view>
 
@@ -270,7 +301,7 @@ async function handleTestGraphRagExtract(storyId: string) {
                   <button v-if="isDev" class="mini-btn graph-btn" @click="toggleGraphPanel(idx.storyId)">
                     {{ expandedGraph[idx.storyId] ? '收起 GraphRAG' : '查看 GraphRAG' }}
                   </button>
-                  <button class="mini-btn delete-btn" @click="handleDeleteIndex(idx.storyId, idx.name)">删除索引</button>
+                  <button class="mini-btn delete-btn" @click="askDeleteIndex(idx.storyId, idx.name)">删除索引</button>
                 </view>
               </view>
 
@@ -311,6 +342,18 @@ async function handleTestGraphRagExtract(storyId: string) {
         </view>
       </view>
     </view>
+
+    <!-- 删除确认（ADR-0004：危险操作分级确认） -->
+    <confirm-modal
+      v-if="pendingDelete"
+      :title="pendingDelete.kind === 'file' ? `删除「${pendingDelete.name}」？` : `删除索引「${pendingDelete.name}」？`"
+      :message="pendingDelete.kind === 'file' ? '故事文件将永久删除，无法恢复。此操作不可撤销。' : '该故事的向量索引将删除，可重新索引。'"
+      confirm-text="确认删除"
+      tone="danger"
+      :loading="deleting"
+      @confirm="confirmDeleteStory"
+      @cancel="pendingDelete = null"
+    />
   </app-layout>
 </template>
 
@@ -375,6 +418,14 @@ async function handleTestGraphRagExtract(storyId: string) {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+.section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.section-title-icon {
+  color: var(--c-eld-300);
 }
 .section-title {
   font-family: $font-display;
