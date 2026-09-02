@@ -592,8 +592,9 @@ export class RoomService {
           () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
         ),
       )
-    } catch {
-      // opening 失败不阻塞（ADR-0002）
+    } catch (err) {
+      // opening 失败不阻塞（ADR-0002）——保留可见日志（此前全吞难排查）
+      console.log('[opening] runOpeningTurn FAILED room=', this.roomId, 'err=', err instanceof Error ? err.message : String(err))
     }
   }
 

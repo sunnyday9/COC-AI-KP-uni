@@ -21,7 +21,8 @@ const role = computed(() => props.msg.role)
 </script>
 
 <template>
-  <kp-message v-if="role === 'kp'" :msg="msg" @select-option="(t: string) => emit('select-option', t)" />
-  <player-message v-else-if="role === 'player'" :msg="msg" />
-  <system-message v-else :msg="msg" />
+  <!-- 用 PascalCase 标签（KPMessage → k-p-message ≠ kp-message，kebab 会解析失败） -->
+  <KPMessage v-if="role === 'kp'" :msg="msg" @select-option="(t: string) => emit('select-option', t)" />
+  <PlayerMessage v-else-if="role === 'player'" :msg="msg" />
+  <SystemMessage v-else :msg="msg" />
 </template>

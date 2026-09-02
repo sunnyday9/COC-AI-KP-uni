@@ -501,7 +501,8 @@ async function main() {
       await clickBtn(page, '发送')
       await waitText(page, '我仔细侦查房间，搜索书架。')
       await waitText(page, '侦查检定', 30_000)
-      await waitText(page, '获得线索: 书架后的暗格里藏着一把铜钥匙', 30_000)
+      // T4 clue 渲染剥离「获得线索:」前缀（视觉更干净，设计稿对齐）——断言语义内容
+      await waitText(page, '书架后的暗格里藏着一把铜钥匙', 30_000)
       await waitText(page, '（测试模式）线索已记录。', 30_000)
       // clue panel button appears with badge（state_patch → roomStore.clues）
       await pLoc('.action-btn').filter({ hasText: '线索' }).first().waitFor({ timeout: 10_000 })
