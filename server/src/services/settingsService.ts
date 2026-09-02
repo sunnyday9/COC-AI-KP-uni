@@ -2,7 +2,7 @@ import type { AppSettings } from '../../../shared/types/settings.js'
 import { getDb } from '../db/index.js'
 import { BadRequestError } from '../utils/errors.js'
 import { decryptSecret, encryptSecret, type EncryptedSecret } from '../utils/crypto.js'
-import { ALL_PROVIDER_IDS } from '../../../shared/constants/providers.js'
+import { ALL_PROTOCOL_IDS } from '../../../shared/constants/providers.js'
 import { logger } from '../utils/logging.js'
 
 /**
@@ -17,7 +17,7 @@ import { logger } from '../utils/logging.js'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   ai: {
-    provider: 'openai',
+    protocol: 'openai_chat',
     baseUrl: '',
     model: '',
     temperature: 0.7,
@@ -77,10 +77,10 @@ export function validatePatch(patch: unknown): void {
   const ai = patch.ai === undefined ? {} : patch.ai
   if (!isRecord(ai)) throw new BadRequestError('settings.ai must be an object')
 
-  const { provider, baseUrl, model, temperature, maxTokens } = ai
-  if (provider !== undefined) {
-    if (typeof provider !== 'string' || !ALL_PROVIDER_IDS.has(provider)) {
-      throw new BadRequestError('invalid provider')
+  const { protocol, baseUrl, model, temperature, maxTokens } = ai
+  if (protocol !== undefined) {
+    if (typeof protocol !== 'string' || !ALL_PROTOCOL_IDS.has(protocol)) {
+      throw new BadRequestError('invalid protocol')
     }
   }
   if (baseUrl !== undefined && typeof baseUrl !== 'string') {
@@ -152,7 +152,7 @@ export function getAiConfig(userId: number): AppSettings['ai'] {
   const raw = readRow(userId)
   const merged = mergeDefaults(raw ?? {})
   const ai: AppSettings['ai'] = {
-    provider: merged.ai.provider,
+    protocol: merged.ai.protocol,
     baseUrl: merged.ai.baseUrl,
     model: merged.ai.model,
     temperature: merged.ai.temperature,
@@ -205,7 +205,10 @@ function mergeDefaults(patch: Record<string, unknown>): StoredSettings {
   const merged: StoredSettings = {
     ...DEFAULT_SETTINGS,
     ai: {
-      provider: typeof aiIn.provider === 'string' ? aiIn.provider : DEFAULT_SETTINGS.ai.provider,
+      protocol:
+        typeof aiIn.protocol === 'string' && ALL_PROTOCOL_IDS.has(aiIn.protocol)
+          ? (aiIn.protocol as AppSettings['ai']['protocol'])
+          : DEFAULT_SETTINGS.ai.protocol,
       baseUrl: typeof aiIn.baseUrl === 'string' ? aiIn.baseUrl : DEFAULT_SETTINGS.ai.baseUrl,
       model: typeof aiIn.model === 'string' ? aiIn.model : DEFAULT_SETTINGS.ai.model,
       temperature: typeof aiIn.temperature === 'number' ? aiIn.temperature : DEFAULT_SETTINGS.ai.temperature,

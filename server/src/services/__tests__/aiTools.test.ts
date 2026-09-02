@@ -93,7 +93,7 @@ describe('chatForAgent — openai_compatible', () => {
   it('sends tools with tool_choice auto and returns normalized toolCalls', async () => {
     const userId = await createUser('tools_alice')
     saveSettings(userId, {
-      ai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: KEY_OPENAI },
+      ai: { protocol: 'openai_chat', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: KEY_OPENAI },
     })
 
     const result = await chatForAgent(userId, {
@@ -112,7 +112,7 @@ describe('chatForAgent — openai_compatible', () => {
   it('streams onChunk deltas and accumulates tool_calls by index', async () => {
     const userId = await createUser('tools_bob')
     saveSettings(userId, {
-      ai: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: KEY_OPENAI },
+      ai: { protocol: 'openai_chat', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: KEY_OPENAI },
     })
 
     const chunks: string[] = []
@@ -135,7 +135,7 @@ describe('chatForAgent — anthropic_compatible', () => {
     const userId = await createUser('tools_carol')
     saveSettings(userId, {
       ai: {
-        provider: 'anthropic_compatible',
+        protocol: 'anthropic_messages',
         baseUrl: 'https://api.anthropic.com',
         model: 'claude-sonnet-4-20250514',
         apiKey: KEY_ANTHROPIC,
@@ -173,7 +173,7 @@ describe('chatForAgent — anthropic_compatible', () => {
     const userId = await createUser('tools_dave')
     saveSettings(userId, {
       ai: {
-        provider: 'anthropic_compatible',
+        protocol: 'anthropic_messages',
         baseUrl: 'https://api.anthropic.com',
         model: 'claude-sonnet-4-20250514',
         apiKey: KEY_ANTHROPIC,
@@ -220,7 +220,7 @@ describe('chatForAgent — google_compatible (_thoughtSignature)', () => {
     const userId = await createUser('tools_erin')
     saveSettings(userId, {
       ai: {
-        provider: 'google_compatible',
+        protocol: 'google_compatible',
         baseUrl: 'https://generativelanguage.googleapis.com',
         model: 'gemini-2.0-flash',
         apiKey: KEY_GEMINI,
@@ -293,7 +293,7 @@ describe('chatForAgent — google_compatible (_thoughtSignature)', () => {
     const userId = await createUser('tools_frank')
     saveSettings(userId, {
       ai: {
-        provider: 'gemini',
+        protocol: 'google_compatible',
         model: 'gemini-2.0-flash',
         apiKey: KEY_GEMINI,
       },
@@ -338,7 +338,7 @@ describe('chatForAgent — safety gate', () => {
   it('blocks unsafe outbound baseUrl before any request', async () => {
     const userId = await createUser('tools_grace')
     saveSettings(userId, {
-      ai: { provider: 'openai_compatible', baseUrl: 'http://localhost:9999', model: 'x', apiKey: KEY_CUSTOM },
+      ai: { protocol: 'openai_chat', baseUrl: 'http://localhost:9999', model: 'x', apiKey: KEY_CUSTOM },
     })
     await expect(
       chatForAgent(userId, { messages: [{ role: 'user', content: 'hi' }], tools: COC_KP_TOOLS }),

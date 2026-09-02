@@ -3,9 +3,9 @@ import type { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat/
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js'
 import {
   AI_MODEL_LISTS,
-  getProviderDef,
+  resolveProtocolDefaultBaseUrl,
   type AIProviderConfig,
-  type AIProviderType,
+  type LLMProtocol,
   type ModelOption,
 } from '../../../shared/constants/providers.js'
 import { getAiConfig } from './settingsService.js'
@@ -667,15 +667,12 @@ async function doGoogle(
  * without requiring settings.ai.model to be set — mirrors the original
  * invokeChat's `model: model || ai.model` precedence.
  */
-function resolveAiConfig(userId: number, modelOverride?: string): { config: AIProviderConfig; protocol: string } {
+function resolveAiConfig(userId: number, modelOverride?: string): { config: AIProviderConfig; protocol: LLMProtocol } {
   const ai = getAiConfig(userId)
-  const provider = ai.provider as AIProviderType
-  if (!provider) throw new BadRequestError('请先在设置中配置 AI 提供商')
-
-  const def = getProviderDef(provider)
-  if (!def) throw new BadRequestError(`Unknown provider: ${provider}. 请在设置中选择正确的提供商。`)
+  const protocol = ai.protocol as LLMProtocol
+  if (!protocol) throw new BadRequestError('请先在设置中配置 AI 协议')
   if (!ai.model && !modelOverride) throw new BadRequestError('请先在设置中选择或输入模型名称')
-  const baseUrl = (ai.baseUrl || def.defaultBaseUrl || '').replace(/\/$/, '')
+  const baseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(protocol)).replace(/\/$/, '')
   if (!baseUrl) throw new BadRequestError('请在设置中填写 Base URL')
 
   // Security gate: every outbound AI request must pass this first.
@@ -687,19 +684,19 @@ function resolveAiConfig(userId: number, modelOverride?: string): { config: AIPr
 
   return {
     config: {
-      provider,
+      protocol,
       model: modelOverride || ai.model,
       baseUrl,
       apiKey: ai.apiKey,
       temperature: ai.temperature,
       maxTokens: ai.maxTokens,
     },
-    protocol: def.protocol,
+    protocol,
   }
 }
 
 function dispatchChat(
-  protocol: string,
+  protocol: LLMProtocol,
   config: AIProviderConfig,
   messages: ChatMessage[],
   stream: boolean,
@@ -708,14 +705,18 @@ function dispatchChat(
   tools?: ChatTool[],
   onChunk?: OnChunk,
 ): Promise<AdapterResult> {
-  if (protocol === 'openai_compatible' || protocol === 'deepseek_compatible') {
+  if (protocol === 'openai_chat') {
     return doOpenAICompat(config, messages, stream, temp, maxTokens, tools, onChunk)
   }
-  if (protocol === 'anthropic_compatible') {
+  if (protocol === 'anthropic_messages') {
     return doAnthropic(config, messages, stream, temp, maxTokens, tools, onChunk)
   }
   if (protocol === 'google_compatible') {
     return doGoogle(config, messages, stream, temp, maxTokens, tools, onChunk)
+  }
+  if (protocol === 'openai_responses') {
+    // T3 (#10) 实现；在此之前视为未配置协议
+    throw new BadRequestError(`Unknown protocol: ${protocol}`)
   }
   throw new BadRequestError(`Unknown protocol: ${protocol}`)
 }
@@ -773,7 +774,7 @@ export async function chat(userId: number, body: ChatBody): Promise<ChatResult> 
     return { stream: false, content: result.content ?? '' }
   } catch (err) {
     if (err instanceof BadRequestError) throw err
-    logger.warn('ai chat upstream failure', { provider: config.provider, error: err instanceof Error ? err.message : String(err) })
+    logger.warn('ai chat upstream failure', { protocol: config.protocol, error: err instanceof Error ? err.message : String(err) })
     throw new UpstreamError(err instanceof Error ? err.message : String(err))
   }
 }
@@ -818,7 +819,7 @@ export async function chatForAgent(
     return { content: result.content ?? '', toolCalls: result.toolCalls }
   } catch (err) {
     if (err instanceof BadRequestError) throw err
-    logger.warn('kp agent LLM call failure', { provider: config.provider, error: err instanceof Error ? err.message : String(err) })
+    logger.warn('kp agent LLM call failure', { protocol: config.protocol, error: err instanceof Error ? err.message : String(err) })
     throw new UpstreamError(err instanceof Error ? err.message : String(err))
   }
 }
@@ -861,7 +862,7 @@ export async function chatForRag(
     return { content: result.content ?? '' }
   } catch (err) {
     if (err instanceof BadRequestError) throw err
-    logger.warn('rag graph LLM call failure', { provider: config.provider, error: err instanceof Error ? err.message : String(err) })
+    logger.warn('rag graph LLM call failure', { protocol: config.protocol, error: err instanceof Error ? err.message : String(err) })
     throw new UpstreamError(err instanceof Error ? err.message : String(err))
   }
 }
@@ -880,15 +881,12 @@ export async function listModels(userId: number, purpose = 'chat'): Promise<Mode
     return mockListModels()
   }
   const ai = getAiConfig(userId)
-  const provider = ai.provider as AIProviderType
-  if (!provider) return []
-  const def = getProviderDef(provider)
-  if (!def) return []
-  const protocol = def.protocol
-  const baseUrl = (ai.baseUrl || def.defaultBaseUrl || '').replace(/\/$/, '')
+  const protocol = ai.protocol as LLMProtocol
+  if (!protocol) return []
+  const baseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(protocol)).replace(/\/$/, '')
   const apiKey = ai.apiKey
 
-  if (protocol === 'openai_compatible' || protocol === 'deepseek_compatible') {
+  if (protocol === 'openai_chat' || protocol === 'openai_responses') {
     if (!baseUrl) return []
     try {
       assertSafeOutboundUrl(baseUrl)
@@ -909,7 +907,7 @@ export async function listModels(userId: number, purpose = 'chat'): Promise<Mode
     }
   }
 
-  if (protocol === 'anthropic_compatible') {
+  if (protocol === 'anthropic_messages') {
     if (purpose === 'embeddings') return []
     return AI_MODEL_LISTS.anthropic_compatible ?? []
   }

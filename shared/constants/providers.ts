@@ -51,12 +51,39 @@ export type CustomProvider =
 
 export type AIProviderType = PresetProvider | CustomProvider
 
-/** The 4 underlying protocol types that all providers route to */
-export type CompatibleProtocol =
-  | 'openai_compatible'
-  | 'anthropic_compatible'
-  | 'google_compatible'
-  | 'deepseek_compatible'
+/** 可用的 LLM 接入协议（ADR-0003 一等公民） */
+export type LLMProtocol = 'openai_chat' | 'openai_responses' | 'anthropic_messages' | 'google_compatible'
+
+/**
+ * 过渡别名：旧 provider 常量结构的 protocol 字段类型（T5 删除 provider 后一并移除）。
+ * openai_compatible/deepseek_compatible 均为 openai_chat 的旧名。
+ */
+export type CompatibleProtocol = LLMProtocol
+
+/**
+ * LLM 协议常量 — 一等公民配置维度（ADR-0003）。
+ * `settings.ai.protocol` 是唯一协议真源；不随 provider 推导。
+ */
+export const LLM_PROTOCOLS: readonly LLMProtocol[] = [
+  'openai_chat',
+  'openai_responses',
+  'anthropic_messages',
+  'google_compatible',
+] as const
+
+export const ALL_PROTOCOL_IDS = new Set<string>(LLM_PROTOCOLS)
+
+/** 各协议默认 baseUrl（用户留空时使用） */
+export const PROTOCOL_DEFAULT_BASE_URL: Record<LLMProtocol, string> = {
+  openai_chat: 'https://api.openai.com/v1',
+  openai_responses: 'https://api.openai.com/v1',
+  anthropic_messages: 'https://api.anthropic.com',
+  google_compatible: 'https://generativelanguage.googleapis.com',
+}
+
+export function resolveProtocolDefaultBaseUrl(protocol: LLMProtocol): string {
+  return PROTOCOL_DEFAULT_BASE_URL[protocol]
+}
 
 export interface ProviderPreset {
   id: PresetProvider
@@ -83,7 +110,7 @@ export const PRESET_PROVIDERS: ProviderPreset[] = [
     id: 'openai',
     label: 'OpenAI',
     description: 'GPT-4o、o1 等 OpenAI 官方模型',
-    protocol: 'openai_compatible',
+    protocol: 'openai_chat',
     defaultBaseUrl: 'https://api.openai.com/v1',
     needsApiKey: true,
     needsBaseUrl: false,
@@ -93,7 +120,7 @@ export const PRESET_PROVIDERS: ProviderPreset[] = [
     id: 'openrouter',
     label: 'OpenRouter',
     description: '聚合多家模型的统一 API 网关',
-    protocol: 'openai_compatible',
+    protocol: 'openai_chat',
     defaultBaseUrl: 'https://openrouter.ai/api/v1',
     needsApiKey: true,
     needsBaseUrl: false,
@@ -103,7 +130,7 @@ export const PRESET_PROVIDERS: ProviderPreset[] = [
     id: 'deepseek',
     label: 'DeepSeek',
     description: 'DeepSeek 官方 API（V3/R1 等）',
-    protocol: 'openai_compatible',
+    protocol: 'openai_chat',
     defaultBaseUrl: 'https://api.deepseek.com/v1',
     needsApiKey: true,
     needsBaseUrl: false,
@@ -123,7 +150,7 @@ export const PRESET_PROVIDERS: ProviderPreset[] = [
     id: 'vllm',
     label: 'vLLM (本地)',
     description: '本地 vLLM 推理服务器',
-    protocol: 'openai_compatible',
+    protocol: 'openai_chat',
     defaultBaseUrl: 'http://localhost:8000/v1',
     needsApiKey: false,
     needsBaseUrl: true,
@@ -133,7 +160,7 @@ export const PRESET_PROVIDERS: ProviderPreset[] = [
     id: 'ollama',
     label: 'Ollama (本地)',
     description: '本地 Ollama 模型服务',
-    protocol: 'openai_compatible',
+    protocol: 'openai_chat',
     defaultBaseUrl: 'http://localhost:11434/v1',
     needsApiKey: false,
     needsBaseUrl: true,
@@ -146,7 +173,7 @@ export const CUSTOM_PROVIDERS: CustomProviderDef[] = [
     id: 'openai_compatible',
     label: 'OpenAI 兼容',
     description: '任何 OpenAI 兼容 API 端点',
-    protocol: 'openai_compatible',
+    protocol: 'openai_chat',
     defaultBaseUrl: '',
     apiKeyPlaceholder: 'sk-...',
   },
@@ -154,7 +181,7 @@ export const CUSTOM_PROVIDERS: CustomProviderDef[] = [
     id: 'anthropic_compatible',
     label: 'Anthropic 兼容',
     description: 'Claude 系列及 Anthropic 兼容 API',
-    protocol: 'anthropic_compatible',
+    protocol: 'anthropic_messages',
     defaultBaseUrl: 'https://api.anthropic.com',
     apiKeyPlaceholder: 'sk-ant-...',
   },
@@ -170,7 +197,7 @@ export const CUSTOM_PROVIDERS: CustomProviderDef[] = [
     id: 'deepseek_compatible',
     label: 'DeepSeek 兼容',
     description: 'DeepSeek 兼容 API（OpenAI 格式）',
-    protocol: 'deepseek_compatible',
+    protocol: 'openai_chat',
     defaultBaseUrl: 'https://api.deepseek.com/v1',
     apiKeyPlaceholder: 'sk-...',
   },
@@ -183,7 +210,7 @@ export function getProviderDef(id: AIProviderType): (ProviderPreset | CustomProv
 
 export function resolveProtocol(id: AIProviderType): CompatibleProtocol {
   const def = getProviderDef(id)
-  return def?.protocol ?? 'openai_compatible'
+  return def?.protocol ?? 'openai_chat'
 }
 
 export function resolveBaseUrl(id: AIProviderType, userBaseUrl?: string): string {
@@ -192,7 +219,7 @@ export function resolveBaseUrl(id: AIProviderType, userBaseUrl?: string): string
 }
 
 export interface AIProviderConfig {
-  provider: AIProviderType
+  protocol: LLMProtocol
   baseUrl?: string
   model?: string
   apiKey?: string
