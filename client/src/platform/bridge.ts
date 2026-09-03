@@ -331,6 +331,22 @@ export class PlatformBridge implements Bridge {
   roomDelete(roomId: string): Promise<{ ok: boolean }> {
     return request('DELETE', `/api/rooms/${encodeURIComponent(roomId)}`)
   }
+  /** ADR-0005 等待室治理：成员就绪/取消（软信号）。 */
+  roomSetReady(roomId: string, ready: boolean): Promise<{ ok: boolean }> {
+    return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/ready`, { ready })
+  }
+  /** ADR-0005 等待室治理：成员主动离开（owner 离开 → 转让/解散）。 */
+  roomLeave(roomId: string): Promise<{ ok: boolean }> {
+    return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/leave`)
+  }
+  /** ADR-0005 等待室治理：房主踢出成员。 */
+  roomKickMember(roomId: string, userId: number): Promise<{ ok: boolean }> {
+    return request('DELETE', `/api/rooms/${encodeURIComponent(roomId)}/members/${userId}`)
+  }
+  /** ADR-0005 等待室治理：房主主动转让（userId → 新 owner）。 */
+  roomTransfer(roomId: string, userId: number): Promise<{ ok: boolean }> {
+    return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/transfer`, { userId })
+  }
   /** ADR-0002 单人开局一体动作：服务端落角色卡 + 建 solo 房 + 绑卡 + start。 */
   roomCreateSolo(params: { storyId: string; name: string; sheet: unknown }): Promise<{ ok: boolean; roomId: string; inviteCode: string; characterId: string }> {
     return request('POST', '/api/rooms/solo', params)

@@ -24,6 +24,14 @@ import { getBridge } from '../platform'
 
 export type RoomConnectionState = 'idle' | 'joining' | 'joined' | 'error'
 
+/**
+ * 被移出房间的原因（成员资格自检，ADR-0005 治理提示）：
+ *  - kicked：房主踢出（room_meta 后成员列表不再含自己）
+ *  - dissolved：房间解散（REST 轮询 roomDetail 404 兜底——解散无广播）
+ * 仅非主动离开置位；leaveRoom()/leaveAndClear() 是主动离开，不触发。
+ */
+export type RoomRemovedReason = 'kicked' | 'dissolved'
+
 /** 全局帧订阅只挂接一次（roomStore 是 pinia 单例，多页面复用同一实例）。 */
 let frameBridgeWired = false
 let frameBridgeOff: (() => void) | null = null
@@ -86,6 +94,11 @@ export const useRoomStore = defineStore('room', () => {
   /** 房主 id（REST 详情）。 */
   const ownerId = ref<number | null>(null)
 
+  /** 非主动离开房间的原因（kicked/dissolved；null = 在房内或主动离开）。 */
+  const removedReason = ref<RoomRemovedReason | null>(null)
+  /** 「你已成为房主」一次性提示（房主转让 → room_meta 后本人 role 变 owner 触发，展示后清除）。 */
+  const promotedNotice = ref(false)
+
   /** 当前用户是否为房主。 */
   const isOwner = computed(() => ownerId.value !== null && ownerId.value === selfUserId.value)
 
@@ -96,6 +109,11 @@ export const useRoomStore = defineStore('room', () => {
   const selfMember = computed(() => members.value.find((m) => m.userId === selfUserId.value) ?? null)
   /** 自己的昵称（乐观消息 + 结局页署名）。 */
   const selfName = computed(() => selfMember.value?.username ?? '调查员')
+  /** 是否已就绪（等待室软信号；owner 无 ready 语义，恒 false）。 */
+  const selfReady = computed(() => {
+    if (isOwner.value) return false
+    return selfMember.value?.ready === true
+  })
   /** 自己绑定的角色卡（state_patch 服务端推平，客户端零变更器）。 */
   const selfCharacterSheet = computed(() => {
     const cid = selfMember.value?.characterId
@@ -163,7 +181,23 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         const p = payload as RoomMetaPayload
         if (!p) break
         if (typeof p.phase === 'string') phase.value = p.phase
-        if (Array.isArray(p.members)) members.value = p.members
+        if (Array.isArray(p.members)) {
+          // 房主行跟踪（room_meta 是全员镜像）：ownerId 跟随 → 转让后治理权即刻生效
+          const ownerRow = p.members.find((m) => m.role === 'owner')
+          if (ownerRow) {
+            const becameOwner = ownerRow.userId === selfUserId.value && ownerId.value !== null && ownerId.value !== selfUserId.value
+            ownerId.value = ownerRow.userId
+            // 房主转让提示（ADR-0005）：被转让为 owner 的成员看到一次性「你已成为房主」
+            if (becameOwner) promotedNotice.value = true
+          }
+          members.value = p.members
+          // 成员资格自检（ADR-0005）：被踢/被移出 → room_meta 不再含自己；
+          // 非主动离开（removedReason 为空）才置位，页面据此提示并回大厅
+          const stillMember = p.members.some((m) => m.userId === selfUserId.value)
+          if (!stillMember && selfUserId.value !== null && removedReason.value === null && connectionState.value !== 'idle') {
+            removedReason.value = 'kicked'
+          }
+        }
         break
       }
       case 'trace':
@@ -241,6 +275,11 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       members.value = detail.members
       inviteCode.value = detail.inviteCode
       ownerId.value = detail.ownerId
+      // 资格自检也适用于 REST 全量（room_meta 之外的路径：入房即不在成员列表 → 被移出）
+      if (removedReason.value === null && selfUserId.value !== null) {
+        const stillMember = detail.members.some((m) => m.userId === selfUserId.value)
+        if (!stillMember) removedReason.value = 'kicked'
+      }
     } catch {
       // REST 失败不阻塞房间（WS 流仍可用）；成员列表留待 room_meta 事件
     }
@@ -328,6 +367,23 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     awaitingKp.value = false
     selfUserId.value = null
     ownerId.value = null
+    removedReason.value = null
+    promotedNotice.value = false
+  }
+
+  /** 主动离开房间（REST 删行 + WS 退订 + 本地清理）——ADR-0005 成员离开入口。
+   *  与 leaveRoom 的差别：调服务端 leave 领域动作（owner 离开会触发转让/解散）。
+   *  失败仍本地清理（房间本地不再可达）。 */
+  async function leaveAndClear(): Promise<void> {
+    const rid = roomId.value
+    if (rid) {
+      try {
+        await getBridge().roomLeave(rid)
+      } catch {
+        // 服务端失败不阻塞离开：本地照常清理（REST 是尽力而为）
+      }
+    }
+    leaveRoom()
   }
 
   /** 断线重连增量补齐：向服务端请求 lastSeq 之后的增量（缺口过大 → 全量快照）。 */
@@ -370,6 +426,39 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     }
   }
 
+  /** 等待室就绪/取消（软信号；owner 无 ready 语义，服务端 409——UI 不暴露给房主）。 */
+  async function setReady(ready: boolean): Promise<void> {
+    const rid = roomId.value
+    if (!rid) return
+    try {
+      await getBridge().roomSetReady(rid, ready)
+    } catch (err) {
+      errorMessage.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  /** 房主踢出成员。 */
+  async function kickMember(userId: number): Promise<void> {
+    const rid = roomId.value
+    if (!rid) return
+    try {
+      await getBridge().roomKickMember(rid, userId)
+    } catch (err) {
+      errorMessage.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  /** 房主主动转让给成员（userId → 新 owner）。 */
+  async function transferOwner(userId: number): Promise<void> {
+    const rid = roomId.value
+    if (!rid) return
+    try {
+      await getBridge().roomTransfer(rid, userId)
+    } catch (err) {
+      errorMessage.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
   return {
     roomId,
     inviteCode,
@@ -388,14 +477,22 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     isOwner,
     isPlaying,
     isEnded,
+    selfUserId,
+    removedReason,
+    promotedNotice,
     selfMember,
     selfName,
+    selfReady,
     selfCharacterSheet,
     awaitingKp,
     joinRoom,
     leaveRoom,
+    leaveAndClear,
     resync,
     sendChat,
+    setReady,
+    kickMember,
+    transferOwner,
     refreshMeta,
     handleServerFrame,
     // 视图辅助

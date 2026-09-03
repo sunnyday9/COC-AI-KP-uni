@@ -106,6 +106,10 @@ export interface Bridge {
   roomSetTurnWindow: (roomId: string, turnWindowMs: number) => Promise<{ ok: boolean; turnWindowMs?: number }>
   roomBindCharacter: (roomId: string, characterId: string) => Promise<{ ok: boolean }>
   roomDelete: (roomId: string) => Promise<{ ok: boolean }>
+  roomSetReady: (roomId: string, ready: boolean) => Promise<{ ok: boolean }>
+  roomLeave: (roomId: string) => Promise<{ ok: boolean }>
+  roomKickMember: (roomId: string, userId: number) => Promise<{ ok: boolean }>
+  roomTransfer: (roomId: string, userId: number) => Promise<{ ok: boolean }>
   onRoomFrame: (handler: (frame: unknown) => void) => () => void
   onReconnect: (handler: () => void) => () => void
   sendRoomFrame: (type: 'room:join' | 'room:leave' | 'room:sync' | 'room:action', body: Record<string, unknown>) => void

@@ -79,6 +79,20 @@ describe('roomStore', () => {
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0 })
   }
 
+  /** 以成员身份加入（REST 详情 ownerId=2，我=1 是 member）——治理场景夹具。 */
+  async function joinAndSyncAsMember(): Promise<void> {
+    state.requestResponder = ({ url }) => {
+      if (url.includes('/api/rooms/') && !url.endsWith('/rooms')) {
+        return { statusCode: 200, data: { roomId: 'room_x', inviteCode: 'ABC123', storyId: null, phase: 'lobby', ownerId: 2, members: [{ userId: 1, username: 'alice', role: 'member', characterId: null }, { userId: 2, username: 'bob', role: 'owner', characterId: null }], state: {}, createdAt: 1 } }
+      }
+      if (url.includes('/api/auth/me')) {
+        return { statusCode: 200, data: { user: { id: '1', username: 'alice' } } }
+      }
+      return { statusCode: 200, data: { ok: true } }
+    }
+    await joinAndSync()
+  }
+
   it('joins a room: connects WS, sends room:join, applies full snapshot', async () => {
     const p = store.joinRoom('room_x')
     expect(store.connectionState).toBe('joining')
@@ -153,6 +167,62 @@ describe('roomStore', () => {
     emitFrame({ type: 'room:event', roomId: 'room_x', seq: 4, eventType: 'room_meta', payload: { phase: 'playing', turnWindowMs: 5000, members: [{ userId: 1, username: 'alice', role: 'owner', characterId: null }, { userId: 2, username: 'bob', role: 'member', characterId: null }] } })
     expect(store.phase).toBe('playing')
     expect(store.members).toHaveLength(2)
+  })
+
+  it('room_meta 成员资格自检：成员列表不再含自己 → removedReason=kicked（被踢感知）', async () => {
+    await joinAndSyncAsMember()
+    expect(store.removedReason).toBeNull()
+    expect(store.isOwner).toBe(false)
+    // 房主把我（1）移出：room_meta 成员列表只剩 owner（2）→ kicked
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'room_meta', payload: { phase: 'lobby', turnWindowMs: 5000, members: [{ userId: 2, username: 'bob', role: 'owner', characterId: null }] } })
+    expect(store.removedReason).toBe('kicked')
+  })
+
+  it('room_meta 转让：本人成为 owner → promotedNotice 一次 + isOwner 翻转为 true', async () => {
+    await joinAndSyncAsMember()
+    // owner（2）把房主转让给我（1）：role member → owner → 一次性提示 + isOwner 翻转
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'room_meta', payload: { phase: 'lobby', turnWindowMs: 5000, members: [{ userId: 1, username: 'alice', role: 'owner', characterId: null }, { userId: 2, username: 'bob', role: 'member', characterId: null }] } })
+    expect(store.promotedNotice).toBe(true)
+    expect(store.isOwner).toBe(true)
+    // 后续 room_meta（成员状态变化）不再重复提示
+    store.promotedNotice = false
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'room_meta', payload: { phase: 'lobby', turnWindowMs: 5000, members: [{ userId: 1, username: 'alice', role: 'owner', characterId: null, ready: false }, { userId: 2, username: 'bob', role: 'member', characterId: null, ready: true }] } })
+    expect(store.promotedNotice).toBe(false)
+  })
+
+  it('selfReady 只反映非房主成员的就绪状态（owner 无 ready 语义）', async () => {
+    await joinAndSyncAsMember()
+    // 我是 member 且未就绪
+    expect(store.selfReady).toBe(false)
+    // 就绪 → true
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'room_meta', payload: { phase: 'lobby', turnWindowMs: 5000, members: [{ userId: 1, username: 'alice', role: 'member', characterId: null, ready: true }, { userId: 2, username: 'bob', role: 'owner', characterId: null, ready: false }] } })
+    expect(store.selfReady).toBe(true)
+    // 被转让成 owner → 无 ready 语义（服务端 owner 行 ready 恒 0）
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'room_meta', payload: { phase: 'lobby', turnWindowMs: 5000, members: [{ userId: 1, username: 'alice', role: 'owner', characterId: null, ready: false }, { userId: 2, username: 'bob', role: 'member', characterId: null, ready: false }] } })
+    expect(store.selfReady).toBe(false)
+  })
+
+  it('治理动作 REST：setReady / leaveAndClear / kickMember / transferOwner 走对应端点', async () => {
+    await joinAndSync()
+    await store.setReady(true)
+    const readyReq = state.requests.find((r) => r.url.includes('/ready'))
+    expect(readyReq).toBeDefined()
+    expect(readyReq!.data).toEqual({ ready: true })
+
+    await store.kickMember(2)
+    expect(state.requests.some((r) => r.url.includes('/members/2') && r.method === 'DELETE')).toBe(true)
+
+    await store.transferOwner(2)
+    const transferReq = state.requests.find((r) => r.url.includes('/transfer'))
+    expect(transferReq).toBeDefined()
+    expect(transferReq!.data).toEqual({ userId: 2 })
+
+    // leaveAndClear：REST leave + 本地清理（room:leave 也发）
+    await store.leaveAndClear()
+    expect(state.requests.some((r) => r.url.includes('/leave') && r.method === 'POST')).toBe(true)
+    expect(store.roomId).toBeNull()
+    expect(store.removedReason).toBeNull() // 主动离开不置被移出标记
+    expect(store.promotedNotice).toBe(false)
   })
 
   it('sendChat appends an optimistic pending message and sends room:action (ADR-0002)', async () => {
