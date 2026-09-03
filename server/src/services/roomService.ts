@@ -318,6 +318,16 @@ export class RoomService {
     this.emit({ type: 'state_patch', payload: { path: `characters.${characterId}`, value: sheet } })
   }
 
+  /** 取单张角色卡（供 bindRoomCharacter 换绑后定向广播 sheet）。 */
+  getCharacter(characterId: string): COCCharacterSheet | null {
+    return this.characters.get(characterId) ?? null
+  }
+
+  /** 角色卡 sheet 定向广播（T4 #31：绑定/换绑后全员拿到 characters.<id>）。 */
+  emitSheetPatch(characterId: string, sheet: COCCharacterSheet): void {
+    this.emit({ type: 'state_patch', payload: { path: `characters.${characterId}`, value: sheet } })
+  }
+
   /** 角色卡归属查询（D5：工具 characterId 归属校验）。 */
   characterOwnerOf(characterId: string): number | null {
     return this.characterOwner.get(characterId) ?? null
@@ -889,6 +899,14 @@ export function bindRoomCharacter(
   }
   roomStorage.bindMemberCharacter(roomId, userId, characterId)
   syncActiveRoom(roomId)
+  // T4 #31：换绑后广播新绑定卡 sheet（room_meta 只带 member.characterId；
+  // characters.<id> 走 state_patch——客户端档案区/队友卡依赖此通道）。
+  // 定向发本卡：幂等（绑同卡重复调用也只会同步一份权威 sheet）。
+  const active = getRoom(roomId)
+  const sheet = active?.getCharacter(characterId) ?? null
+  if (active && sheet) {
+    active.emitSheetPatch(characterId, sheet)
+  }
   return { ok: true, roomId, characterId }
 }
 

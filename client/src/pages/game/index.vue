@@ -6,10 +6,13 @@ import { useRoomStore } from '../../stores/roomStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import ChatMessage from './components/ChatMessage.vue'
 import PlayerStatsBar from './components/PlayerStatsBar.vue'
+import MemberSwitcher from './components/MemberSwitcher.vue'
 import CharacterSheetCard from '../../components/domain/CharacterSheetCard.vue'
 import AppIcon from '../../components/ui/AppIcon.vue'
 import ConfirmModal from '../../components/ui/ConfirmModal.vue'
 import AppLayout from '../../components/layout/AppLayout.vue'
+import type { RoomMemberInfo } from '../../../../shared/types/room'
+import type { COCCharacterSheet } from '../../../../shared/types/character'
 
 const roomStore = useRoomStore()
 const settingsStore = useSettingsStore()
@@ -34,8 +37,53 @@ const playerName = computed(() => roomStore.selfName)
 const currentScene = computed(() => roomStore.scene)
 const cluesObtained = computed(() => roomStore.clues)
 const isJoined = computed(() => roomStore.connectionState === 'joined')
-/** T5：右栏/档案卡数据（桌面右栏常显；移动 sheet 内展示）。 */
-const charSheet = computed(() => roomStore.selfCharacterSheet)
+
+/* ── T4 队友档案切换（#31，ADR-0005 决策 8）：桌面右栏 + 移动 dossier sheet 共用的成员档案选择 ── */
+
+/** 可看档案的成员（多人在列 → 切换器显示；单人局单成员 → 无切换器零回归）。 */
+const dossierMembers = computed(() => roomStore.members)
+/** 多人在列（>1）才显示切换器（单人局天然单成员，隐藏）。 */
+const showMemberPicker = computed(() => roomStore.members.length > 1)
+/** 移动端档案按钮：多人局含未绑卡成员也要有入口（能看到空态），不再以自己绑卡为前提。 */
+const showMobileDossier = computed(() => roomStore.members.length > 0)
+/** 当前选中查看的成员 id（默认自己；成员离开/自己不在列 → 回落自己）。 */
+const selectedMemberId = ref<number | null>(null)
+function normalizeMemberPick(): void {
+  const mine = roomStore.selfUserId
+  const list = dossierMembers.value
+  const stillThere = (id: number | null) => id !== null && list.some((m) => m.userId === id)
+  if (selectedMemberId.value !== null && stillThere(selectedMemberId.value)) return
+  // 默认自己；自己不在列（理论不发生——还在房间里）→ 取首个成员兜底
+  selectedMemberId.value = mine !== null && list.some((m) => m.userId === mine) ? mine : (list[0]?.userId ?? null)
+}
+// members 响应式刷新（新绑卡/换绑/离开都会触发）→ 选中项合法性随动
+watch(dossierMembers, normalizeMemberPick, { deep: true })
+// 页面进入时初始化选中：roomStore 是全局单例（等待室已 join → 状态已是
+// joined），immediate 保证本页 setup 即使不再有状态变迁也完成默认选中。
+watch(() => roomStore.connectionState, (s) => {
+  if (s === 'joined') normalizeMemberPick()
+}, { immediate: true })
+
+/** 选中成员行（members 中不存在 → null，卡区显示兜底）。 */
+const selectedMember = computed<RoomMemberInfo | null>(
+  () => dossierMembers.value.find((m) => m.userId === selectedMemberId.value) ?? null,
+)
+/** 选中成员的角色卡（characterId → roomStore.characters；换绑随 room_meta/state_patch 自动生效）。 */
+const selectedSheet = computed<COCCharacterSheet | null>(() => {
+  const cid = selectedMember.value?.characterId
+  if (!cid) return null
+  return (roomStore.characters[cid] as COCCharacterSheet | undefined) ?? null
+})
+/** 选中成员的档案区空态文案：未绑卡 / 已绑卡但档案未到（时序兜底）/ 成员不在列。 */
+const dossierEmptyText = computed(() => {
+  const m = selectedMember.value
+  if (!m) return '档案加载中…'
+  if (!m.characterId) return `${m.username} 尚未绑定角色卡`
+  return '档案加载中…'
+})
+function pickMember(userId: number): void {
+  selectedMemberId.value = userId
+}
 
 const inputText = ref('')
 const textareaFocus = ref(false)
@@ -166,7 +214,7 @@ function confirmExit() {
 
           <!-- 移动端：档案/线索 sheet 唤起（桌面常显栏位不重复） -->
           <view class="mobile-actions">
-            <button v-if="charSheet" class="action-btn" @click="sheetOpen = 'dossier'">
+            <button v-if="showMobileDossier" class="action-btn" @click="sheetOpen = 'dossier'">
               <app-icon name="users" :size="13" />
               <text>档案</text>
             </button>
@@ -245,8 +293,17 @@ function confirmExit() {
             <app-icon name="users" :size="14" class="rail-title-icon" />
             <text class="rail-title">调查员档案</text>
           </view>
-          <character-sheet-card v-if="charSheet" :sheet="charSheet" />
-          <view v-else class="dossier-empty">档案加载中…</view>
+          <!-- T4 队友档案切换：多人在列才显示（单人局单成员无切换器，零回归） -->
+          <member-switcher
+            v-if="showMemberPicker"
+            class="dossier-switcher"
+            :members="dossierMembers"
+            :selected-id="selectedMemberId"
+            :self-user-id="roomStore.selfUserId"
+            @select="pickMember"
+          />
+          <character-sheet-card v-if="selectedSheet" :sheet="selectedSheet" />
+          <view v-else class="dossier-empty">{{ dossierEmptyText }}</view>
         </view>
       </view>
 
@@ -267,8 +324,17 @@ function confirmExit() {
               </view>
             </template>
             <template v-else>
-              <character-sheet-card v-if="charSheet" :sheet="charSheet" />
-              <view v-else class="dossier-empty">档案加载中…</view>
+              <!-- T4 队友档案切换：移动 sheet 顶部；多人在列才显示（单人局无切换器） -->
+              <member-switcher
+                v-if="showMemberPicker"
+                class="dossier-switcher sheet-switcher"
+                :members="dossierMembers"
+                :selected-id="selectedMemberId"
+                :self-user-id="roomStore.selfUserId"
+                @select="pickMember"
+              />
+              <character-sheet-card v-if="selectedSheet" :sheet="selectedSheet" />
+              <view v-else class="dossier-empty">{{ dossierEmptyText }}</view>
             </template>
           </scroll-view>
         </view>
@@ -602,12 +668,22 @@ function confirmExit() {
   align-items: center;
   gap: 10px;
 }
+/* 切换器与档案卡同宽（两者都是块宽 100%） */
+.dossier-block > .dossier-switcher {
+  width: 100%;
+}
+/* 移动 sheet：切换器与卡之间的间距（sheet-body 已有 padding） */
+.sheet-body > .dossier-switcher {
+  width: 100%;
+  margin-bottom: 12px;
+}
 .dossier-empty {
   font-family: $font-serif;
   font-style: italic;
   font-size: 12px;
   color: hsl(220, 10%, 30%);
   padding: 32px 0;
+  text-align: center;
 }
 
 /* ═══════ 移动 bottom sheet ═══════ */
