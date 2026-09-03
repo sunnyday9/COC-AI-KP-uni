@@ -155,4 +155,27 @@ describe('stories routes', () => {
     expect(readA.status).toBe(200)
     expect(readA.body.content).toBe('A 的秘密')
   })
+
+  it('keeps CJK filenames intact on upload (defParamCharset utf-8) and list/read round-trip', async () => {
+    const token = await registerToken('stories_cjk')
+    const app = createApp()
+    const content = '雾中灯塔：第一章 守夜人。'
+    const up = await request(app)
+      .post('/api/stories/upload')
+      .set(auth(token))
+      .attach('file', Buffer.from(content, 'utf-8'), '雾中的灯塔.txt')
+    // supersonic/busboy request charset: filename must survive as CJK, NOT as
+    // `é¾ä¸­çç¯å¡` (latin1 mojibake) — regression for feedback #1.
+    expect(up.status).toBe(200)
+    expect(up.body).toMatchObject({ ok: true, name: '雾中的灯塔.txt' })
+    const id = up.body.id as string
+    expect(id).toBe('雾中的灯塔.txt')
+
+    const list = await request(app).get('/api/stories').set(auth(token))
+    expect(list.body).toContainEqual({ name: '雾中的灯塔.txt', id: '雾中的灯塔.txt' })
+
+    const read = await request(app).get(`/api/stories/${encodeURIComponent(id)}`).set(auth(token))
+    expect(read.status).toBe(200)
+    expect(read.body).toEqual({ name: '雾中的灯塔.txt', content })
+  })
 })

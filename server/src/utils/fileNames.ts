@@ -42,3 +42,25 @@ export function sanitizeFilename(raw: string, fallback = 'story'): string {
   if (WINDOWS_RESERVED.test(stem)) name = '_' + name
   return assertId(name)
 }
+
+/**
+ * Repair a filename whose UTF-8 bytes were decoded as latin1 (the classic
+ * mojibake `é¾ä¸­çç¯å¡` for `雾中的灯塔`). Busboy defaults to latin1 for
+ * multipart header params; when the client sent raw UTF-8 the bytes survive
+ * but the string is wrong. Re-encode latin1 → original bytes → decode utf-8.
+ *
+ * Only applies when the result is *valid* UTF-8 with a CJK character present —
+ * a genuine latin1-only filename must never be rewritten.
+ */
+export function repairMojibakeFilename(name: string): string {
+  if (!name) return name
+  try {
+    const roundTripped = Buffer.from(name, 'latin1').toString('utf8')
+    if (roundTripped !== name && /[\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/.test(roundTripped)) {
+      return roundTripped
+    }
+  } catch {
+    // fall through — leave the original untouched
+  }
+  return name
+}

@@ -3,7 +3,7 @@ import multer from 'multer'
 import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError } from '../utils/errors.js'
-import { assertId } from '../utils/fileNames.js'
+import { assertId, sanitizeFilename, repairMojibakeFilename } from '../utils/fileNames.js'
 import { MAX_UPLOAD_BYTES } from '../config.js'
 import * as storyService from '../services/storyService.js'
 
@@ -25,6 +25,11 @@ router.use(requireAuth)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_BYTES },
+  // busboy decodes multipart header params (incl. filename) as latin1 by
+  // default → CJK filenames arrive mojibake'd. Request utf-8 so multer
+  // normalizes the header; importStory additionally repairs any bytes that
+  // were already latin1-decoded by an older proxy/browser.
+  defParamCharset: 'utf-8',
 })
 
 /** GET /api/stories — file:listStories → [{ name, id }]. */
@@ -52,7 +57,18 @@ router.post('/upload', (req: AuthRequest, res) => {
     }
     void storyService
       .importStory(req.userId as number, req.file)
-      .then((result) => res.json(result))
+      .then((result) => {
+        // UTF-8 named file uploads can arrive latin1-mangled (header charset
+        // negotiation) — repair the *display* name while the storage id keeps
+        // its sanitized (safe-ascii) form.
+        if (result && result.ok && typeof result.name === 'string' && typeof result.id === 'string') {
+          const repaired = repairMojibakeFilename(result.name)
+          if (repaired !== result.name) {
+            return res.json({ ...result, name: repaired })
+          }
+        }
+        return res.json(result)
+      })
       .catch((e) => sendError(res, e))
   })
 })
