@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 /**
- * Multi-client room E2E (Phase B7 双客户端) — `node e2e/multiroom.journey.mjs`
+ * Multi-client room E2E (Phase B7 双客户端; ADR-0005/T5 #32 同步) — `node e2e/multiroom.journey.mjs`
  *
- * 验证服务端房间多人链路（MOCK_AI 后端，两个 WS 客户端）：
+ * 验证服务端房间多人链路（MOCK_AI 后端，两个 WS 客户端），覆盖 ADR-0005 开局门闩与 phase gate：
  *   1. 注册两个用户 A/B（REST）
  *   2. A 建房（REST）→ 拿邀请码
  *   3. B 用邀请码加入（REST）
  *   4. A/B 各自 WS room:join 订阅同一房间
- *   5. A 发 room:action chat → B 收到 room:event message_appended（全序 seq）
- *   6. B room:sync → 收到全量快照（含刚才的消息）
- *   7. A room:leave / B room:leave → 清理
+ *   5. lobby phase gate：A 发 chat → B 收到 message_appended（全序 seq），
+ *      但无 KP 回合（lobby 只广播，不开回合——ADR-0005 决策 2）
+ *   6. 开局门闩：B 未绑卡时 A 发 start → 409（错误文案含「未绑定角色卡」）
+ *   7. A/B 各建卡绑卡（REST）→ 房主开局成功 → room_meta phase=playing
+ *   8. playing 后 A 发 chat → B 收到玩家消息 + KP 回合回复（mock 侦查 → skill_check → grant_clue）
+ *   9. B room:sync 增量补齐（lastSeq 后的事件，非全量）
+ *   10. A/B room:leave → 清理
  *
  * 用法（仓库根）：
  *   node e2e/multiroom.journey.mjs
@@ -72,7 +76,63 @@ async function registerUser(tag) {
   const login = await api('POST', '/api/auth/login', { username, password })
   assert(login.status === 200, `login ${tag} failed: ${login.status}`)
   const me = await api('GET', '/api/auth/me', undefined, login.data.token)
-  return { username, token: login.data.token, userId: me.data?.user?.id ?? 0 }
+  return { username, password, token: login.data.token, userId: me.data?.user?.id ?? 0 }
+}
+
+/** 最小合法 COCCharacterSheet（服务端只校验 derived 存在；mock KP 读取 playerName/skills/derived）。 */
+function makeSheet(name) {
+  const base = { str: 50, con: 50, siz: 50, dex: 50, app: 50, int: 50, pow: 50, edu: 50, luck: 50 }
+  return {
+    occupationId: 'judge',
+    occupationName: '法官',
+    playerName: name,
+    attributes: base,
+    skills: { 侦查: 65, 聆听: 60, 图书馆使用: 55, 格斗: 40, 信用评级: 40 },
+    occupationSkillKeys: ['侦查', '聆听', '图书馆使用', '格斗', '信用评级', '心理学', '法律', '母语', '恐吓'],
+    personalInterestKeys: ['侦查', '聆听', '图书馆使用', '潜行'],
+    derived: {
+      hp: Math.floor((base.con + base.siz) / 10),
+      hpMax: Math.floor((base.con + base.siz) / 10),
+      mp: Math.floor(base.pow / 5),
+      mpMax: Math.floor(base.pow / 5),
+      san: base.pow,
+      sanMax: base.pow,
+    },
+    damageBonus: '0',
+    build: 0,
+    mov: 8,
+    armor: 0,
+  }
+}
+
+/** 上传 demo 剧本（stories 库 → scriptId 入库）。 */
+async function uploadScript(token) {
+  const fixture = path.join(ROOT, 'e2e', 'fixtures', 'demo-story.txt')
+  const content = fs.readFileSync(fixture)
+  const fd = new FormData()
+  fd.append('file', new Blob([content], { type: 'text/plain' }), 'demo-story.txt')
+  const res = await fetch(`${API_BASE}/api/stories/upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: fd,
+  })
+  const data = await res.json().catch(() => ({}))
+  assert(res.status === 200, `script upload failed: ${res.status} ${JSON.stringify(data)}`)
+  return (data.id ?? data.scriptId ?? 'demo-story.txt')
+}
+
+/** 索引剧本（A 房主 token + scriptId）→ 返回可给 /start 的 storyId。 */
+async function indexStory(token, scriptId) {
+  const rag = await api('GET', `/api/stories/${encodeURIComponent(scriptId)}/rag`, undefined, token)
+  assert(rag.status === 200, `rag read failed: ${rag.status}`)
+  const content = typeof rag.data.content === 'string' ? rag.data.content : JSON.stringify(rag.data)
+  const idx = await api('POST', '/api/rag/index', {
+    scriptId,
+    chunks: [{ id: 'c0', content }],
+    storyMeta: { name: 'demo-story' },
+  }, token)
+  assert(idx.status === 200 && idx.data.ok, `rag index failed: ${idx.status} ${JSON.stringify(idx.data)}`)
+  return scriptId
 }
 
 /** 打开 WS（JWT query），返回 { socket, frames, waitFor }。 */
@@ -200,7 +260,7 @@ async function main() {
       wsA2.socket.close()
     })
 
-    await step('A 发 chat → B 收到 message_appended（同 seq）', async () => {
+    await step('lobby 禁 KP：A 发 chat → 只广播不开回合（ADR-0005 决策 2）', async () => {
       wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我调查一下书架。' } } }))
       const evB = await wsB.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '我调查一下书架。', 15_000, 'B message event')
       assert(evB.payload.message.content === '我调查一下书架。', `content mismatch: ${evB.payload.message.content}`)
@@ -210,6 +270,11 @@ async function main() {
       // A 自己也应收到（全序广播）
       const evA = await wsA.waitFor((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.content === '我调查一下书架。', 15_000, 'A message event')
       assert(evA.seq === evB.seq, `seq mismatch: A=${evA.seq} B=${evB.seq}`)
+      // lobby phase gate：等超过回合窗口（默认 5s）断言没有 kp 回合出现
+      const kpWatermark = wsB.frames.filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp').length
+      await new Promise((r) => setTimeout(r, 6_000))
+      const kpAfterWait = wsB.frames.filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp').length
+      assert(kpAfterWait === kpWatermark, `lobby chat must not trigger KP (kp count ${kpWatermark} → ${kpAfterWait})`)
     })
 
     await step('B room:sync lastSeq=0 → 全量快照兜底', async () => {
@@ -220,25 +285,77 @@ async function main() {
       assert(msgs.some((m) => m.content === '我调查一下书架。'), `snapshot missing chat message; msgs=${JSON.stringify(msgs).slice(0, 120)}`)
     })
 
-    await step('A 发侦查 → B 收到 KP 回合回复（message_appended kp）', async () => {
+    let storyId
+    await step('开局门闩：B 未绑卡 → A start 409（缺项文案）', async () => {
+      // 房主先索引剧本（/start 门闩 4：storyId 必须在房主 RAG 已索引）
+      const scriptId = await uploadScript(userA.token)
+      storyId = await indexStory(userA.token, scriptId)
+      const res = await api('POST', `/api/rooms/${roomId}/start`, { storyId }, userA.token)
+      assert(res.status === 409, `start should 409 while unbound, got ${res.status}: ${JSON.stringify(res.data)}`)
+      assert(
+        (res.data.error ?? '').includes('未绑定角色卡'),
+        `409 copy should mention unbound members: ${res.data.error}`,
+      )
+    })
+
+    await step('开局门闩：非房主 start → 409 only owner', async () => {
+      const res = await api('POST', `/api/rooms/${roomId}/start`, { storyId }, userB.token)
+      assert(res.status === 409, `non-owner start should 409, got ${res.status}`)
+      assert((res.data.error ?? '').includes('only the owner'), `409 copy mismatch: ${res.data.error}`)
+    })
+
+    await step('A/B 各建卡绑卡 → A start 成功（room_meta playing）', async () => {
+      const charA = await api('POST', '/api/characters', { name: '房主调查员A', sheet: makeSheet('房主调查员A') }, userA.token)
+      assert(charA.status === 200, `create char A failed: ${charA.status}`)
+      const bindA = await api('POST', `/api/rooms/${roomId}/character`, { characterId: charA.data.id }, userA.token)
+      assert(bindA.status === 200, `bind char A failed: ${bindA.status}`)
+      const charB = await api('POST', '/api/characters', { name: '成员调查员B', sheet: makeSheet('成员调查员B') }, userB.token)
+      assert(charB.status === 200, `create char B failed: ${charB.status}`)
+      const bindB = await api('POST', `/api/rooms/${roomId}/character`, { characterId: charB.data.id }, userB.token)
+      assert(bindB.status === 200, `bind char B failed: ${bindB.status}`)
+      // 全员已绑 → start 成功 → 双端 room_meta phase=playing
+      const start = await api('POST', `/api/rooms/${roomId}/start`, { storyId }, userA.token)
+      assert(start.status === 200, `start failed: ${start.status} ${JSON.stringify(start.data)}`)
+      const metaA = await wsA.waitFor(
+        (f) => f.type === 'room:event' && f.eventType === 'room_meta' && f.payload?.phase === 'playing',
+        15_000,
+        'A room_meta playing',
+      )
+      const metaB = await wsB.waitFor(
+        (f) => f.type === 'room:event' && f.eventType === 'room_meta' && f.payload?.phase === 'playing',
+        15_000,
+        'B room_meta playing',
+      )
+      assert(metaA.payload.members.length === 2, `members missing in room_meta: ${JSON.stringify(metaA.payload.members)}`)
+      assert(metaA.payload.members.every((m) => m.characterId), `playing room_meta should carry bound characters`)
+      assert(metaB.seq === metaA.seq, `playing room_meta seq mismatch: A=${metaA.seq} B=${metaB.seq}`)
+      // 注：lobby 已聊过天（messages 非空）→ 服务端不触发 opening 开场白（ADR-0002 语义）；
+      // playing 后的 KP 回合由下一步「侦查消息」验证。
+    })
+
+    await step('playing 后 A 发侦查 → B 收到 KP 回合回复（message_appended kp）', async () => {
+      // 水位：只认本次回合（seq > 已见最大 kp seq，避开 opening 回合）
+      const kpWatermark = wsB.frames
+        .filter((f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp')
+        .reduce((m, f) => Math.max(m, f.seq ?? 0), 0)
       wsA.socket.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content: '我侦查一下书架。' } } }))
       // B 应收到：玩家消息 + KP 回复（mock 侦查 → skill_check → grant_clue → 收尾）
       const kpMsg = await wsB.waitFor(
-        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp',
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp' && (f.seq ?? 0) > kpWatermark,
         20_000,
         'B kp reply',
       )
       assert(kpMsg.payload.message.content.length > 0, 'kp reply empty')
       // A 也应收到同一 KP 回复（全序广播）
       const kpMsgA = await wsA.waitFor(
-        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp',
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp' && (f.seq ?? 0) > kpWatermark,
         20_000,
         'A kp reply',
       )
       assert(kpMsgA.seq === kpMsg.seq, `kp seq mismatch: A=${kpMsgA.seq} B=${kpMsg.seq}`)
       // 骰子展示消息（skill_check 的 displayMessage）也应广播
       const dice = await wsB.waitFor(
-        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && typeof f.payload?.message?.content === 'string' && f.payload.message.content.includes('检定'),
+        (f) => f.type === 'room:event' && f.eventType === 'message_appended' && typeof f.payload?.message?.content === 'string' && f.payload.message.content.includes('侦查检定'),
         20_000,
         'B dice display',
       )
