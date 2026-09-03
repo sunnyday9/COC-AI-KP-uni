@@ -13,6 +13,11 @@ export function getDb(): DatabaseSync {
   if (!db) {
     fs.mkdirSync(DATA_DIR, { recursive: true })
     db = new DatabaseSync(path.join(DATA_DIR, 'ai-kp.db'))
+    // WAL + busy_timeout：Windows 高频快照写（房间定时 persistSnapshot）在
+    // 默认 delete journal 下多次触发 SQLite disk I/O error(266)；WAL 允许
+    // 读写并发并显著降低锁/IO 竞争（node:sqlite 内建支持）。
+    db.exec(`PRAGMA journal_mode = WAL`)
+    db.exec(`PRAGMA busy_timeout = 5000`)
     initSchema(db)
   }
   return db
