@@ -8,6 +8,7 @@ import ChatMessage from './components/ChatMessage.vue'
 import PlayerStatsBar from './components/PlayerStatsBar.vue'
 import CharacterSheetCard from '../../components/domain/CharacterSheetCard.vue'
 import AppIcon from '../../components/ui/AppIcon.vue'
+import ConfirmModal from '../../components/ui/ConfirmModal.vue'
 import AppLayout from '../../components/layout/AppLayout.vue'
 
 const roomStore = useRoomStore()
@@ -42,6 +43,8 @@ const lastMsgAnchor = ref('')
 const cluesPanelOpen = ref(false)
 /** T5：移动端 bottom sheet（clues | dossier），桌面不弹 sheet。 */
 const sheetOpen = ref<'clues' | 'dossier' | null>(null)
+/** 沉浸退出确认弹窗（复用项目 ConfirmModal，暗色哥特风）。 */
+const exitOpen = ref(false)
 
 /** 消息列表自动滚底：scroll-into-view 锚点 = 最后一条消息 id（替代 scrollIntoView） */
 function scrollToBottom() {
@@ -101,10 +104,24 @@ function handleOptionSelected(opt: string) {
   textareaFocus.value = true
   nextTick(() => { textareaFocus.value = false })
 }
+
+/** 沉浸模式退出入口：打开确认弹窗（复用 ConfirmModal，暗色哥特风）。 */
+function handleExit() {
+  exitOpen.value = true
+}
+
+/** 确认离开：离开当前房间回首页。 */
+function confirmExit() {
+  exitOpen.value = false
+  try {
+    roomStore.leaveRoom()
+  } catch { /* 忽略登出清理异常 */ }
+  uni.reLaunch({ url: '/pages/home/index' })
+}
 </script>
 
 <template>
-  <app-layout active="game" :bg="pageBg" :overlay="0.8">
+  <app-layout active="game" :bg="pageBg" :overlay="0.8" :chrome="false">
     <view class="game-root">
       <!-- ══ 桌面左栏：场景 + 线索列表（≥1024px 常显） ══ -->
       <view class="left-rail">
@@ -158,6 +175,12 @@ function handleOptionSelected(opt: string) {
               <text>线索</text>
               <text class="clue-badge">{{ cluesObtained.length }}</text>
             </button>
+          </view>
+
+          <!-- 退出（沉浸模式无全局导航；主列顶栏右缘，桌面/移动均显示，不碰右栏） -->
+          <view class="game-exit" @click="handleExit">
+            <app-icon name="x" :size="13" />
+            <text>退出</text>
           </view>
         </view>
 
@@ -250,6 +273,18 @@ function handleOptionSelected(opt: string) {
           </scroll-view>
         </view>
       </view>
+
+      <!-- 退出确认弹窗（项目 ConfirmModal：暗色卡片底 + 危险红确认） -->
+      <confirm-modal
+        v-if="exitOpen"
+        title="离开房间"
+        message="调查进度已保存在服务端，随时可回来继续。"
+        confirm-text="离开房间"
+        cancel-text="留下"
+        tone="danger"
+        @confirm="confirmExit"
+        @cancel="exitOpen = false"
+      />
     </view>
   </app-layout>
 </template>
@@ -261,6 +296,29 @@ function handleOptionSelected(opt: string) {
   min-height: 0;
   position: relative;
   width: 100%;
+}
+
+/* 退出入口（沉浸模式无全局导航；置于主列顶栏右缘，随 header 布局不碰右栏） */
+.game-exit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid hsla(0, 60%, 40%, 0.35);
+  background: rgba(24, 8, 10, 0.75);
+  color: hsl(0, 45%, 72%);
+  font-size: 0.75rem;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.25s;
+}
+.game-exit:hover {
+  color: hsl(0, 90%, 90%);
+  border-color: hsla(0, 90%, 55%, 0.9);
+  background: hsla(0, 55%, 24%, 0.92);
+  box-shadow: 0 0 10px hsla(0, 60%, 45%, 0.35);
 }
 
 .main-col {

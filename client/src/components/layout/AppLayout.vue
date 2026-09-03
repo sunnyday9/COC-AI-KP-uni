@@ -21,9 +21,12 @@ const props = withDefaults(defineProps<{
   bg?: string
   /** 暗色遮罩不透明度（原 bg-black/70 ~ bg-black/80） */
   overlay?: number
+  /** 沉浸模式：隐藏桌面侧边栏与移动底部导航（游戏页等全屏界面用） */
+  chrome?: boolean
 }>(), {
   bg: '/static/bg/bg_home.webp',
   overlay: 0.7,
+  chrome: true,
 })
 
 const navItems = [
@@ -52,7 +55,7 @@ function go(item: { key: string; path: string }) {
     </view>
 
     <!-- 桌面侧边栏 -->
-    <view class="sidebar">
+    <view v-if="chrome" class="sidebar">
       <view class="sidebar-logo">
         <view class="corner tl" /><view class="corner tr" />
         <view class="corner bl" /><view class="corner br" />
@@ -82,12 +85,12 @@ function go(item: { key: string; path: string }) {
     </view>
 
     <!-- 主内容区 -->
-    <view class="content">
+    <view class="content" :class="{ 'content-immersive': !chrome }">
       <slot />
     </view>
 
     <!-- 移动端底部导航（毛玻璃） -->
-    <view class="bottom-nav">
+    <view v-if="chrome" class="bottom-nav">
       <view
         v-for="item in navItems"
         :key="item.path"
@@ -270,6 +273,10 @@ function go(item: { key: string; path: string }) {
   z-index: 10;
   overflow-y: auto;
   padding-bottom: 56px; /* 移动端底部导航占位 */
+}
+/* 沉浸模式（chrome=false）：无底部导航 → 无占位，内容真正全高 */
+.content-immersive {
+  padding-bottom: 0;
 }
 @media (min-width: 768px) {
   .content {
