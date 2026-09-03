@@ -27,6 +27,8 @@ const chatText = ref('')
 const myCharacters = ref<CharacterListItem[]>([])
 const showCharPicker = ref(false)
 const selectedCharId = ref('')
+/** 我有几张可用角色卡（打开选择器前由 loadMyCharacters 刷新；开卡向导期间去建卡回来会重算）。 */
+const hasAnyCharacter = ref(false)
 
 // ── 故事选择 ──
 const indexedStories = ref<IndexedStory[]>([])
@@ -126,16 +128,25 @@ const displayMessages = computed(() => roomStore.messages.map((m) => roomStore.t
 
 async function loadMyCharacters() {
   try {
-    myCharacters.value = await getBridge().characterList()
+    const list = await getBridge().characterList()
+    myCharacters.value = list
+    hasAnyCharacter.value = list.length > 0
   } catch {
     myCharacters.value = []
+    hasAnyCharacter.value = false
   }
 }
 
-/** 打开绑卡选择器：每次进入刷新我的角色卡（可能刚建/换绑过）。 */
+/** 打开绑卡选择器：每次进入刷新我的角色卡（可能刚建/换绑过）。
+ *  有卡走选择器（原「绑定角色卡」行为）；一张都没有 → 直接去建卡向导（T3 #30 最小入口）。 */
 function openCharPicker() {
   void loadMyCharacters()
   showCharPicker.value = true
+}
+
+/** 无卡成员「去建卡」：进入 occupation 多人模式向导（建卡完成自动绑回本房间）。 */
+function goCreateCharacter() {
+  uni.navigateTo({ url: `/pages/character/occupation/index?mode=multi&roomId=${encodeURIComponent(roomId.value)}` })
 }
 
 function send() {
@@ -414,7 +425,10 @@ function readRoomId(): string {
           </view>
           <view v-else class="me-unbound">
             <text class="me-unbound-text">未绑定角色卡 — 全员绑定后房主才能开局</text>
-            <button class="mini-btn start-btn bind-btn" @click="openCharPicker">绑定角色卡</button>
+            <view class="me-unbound-actions">
+              <button v-if="hasAnyCharacter" class="mini-btn start-btn bind-btn" @click="openCharPicker">绑定角色卡</button>
+              <button class="mini-btn start-btn bind-btn" @click="goCreateCharacter">去建卡</button>
+            </view>
           </view>
           <view v-if="roomStore.selfMember?.characterId && !isOwner" class="ready-row">
             <button
@@ -513,6 +527,7 @@ function readRoomId(): string {
           </view>
           <view v-if="myCharacters.length === 0" class="picker-empty">
             暂无角色卡 — 请先到「创建角色」制作一张
+            <button class="mini-btn start-btn go-create-btn" @click="goCreateCharacter">去建卡</button>
           </view>
         </scroll-view>
         <view class="picker-foot">
@@ -820,6 +835,11 @@ function readRoomId(): string {
   font-size: 0.8125rem;
   color: hsl(38, 25%, 50%);
 }
+.me-unbound-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .bind-btn {
   align-self: flex-start;
 }
@@ -961,6 +981,13 @@ function readRoomId(): string {
   color: hsl(220, 10%, 40%);
   font-size: 0.875rem;
   padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.go-create-btn {
+  margin: 0;
 }
 .picker-foot {
   display: flex;

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 /**
- * T6 #20：建卡向导单页 3 步（ADR-0004 设计稿 P2→P3 合并）。
+ * T6 #20：建卡向导单页 3 步（ADR-0004 设计稿 P2→P3 合并）+ T3 #30 多人模式。
  * 原 occupation / character-create 双页合并为一页三态向导，保留本路由
  * /pages/character/occupation/index 为唯一入口：
  *   step=1 选职业（搜索 + 时代/类别 filter + 职业卡网格）
  *   step=2 技能与属性（9 职业技能 + 属性投掷 + 4 兴趣技能）
- *   step=3 兴趣补全 + 姓名 + CharacterSheet 预览 → roomCreateSolo 进单人房
+ *   step=3 兴趣补全 + 姓名 + CharacterSheet 预览 → 完成动作分模式（ADR-0002/0005）：
+ *     单人（无 mode 参数）：roomCreateSolo 一体动作 → 进 solo 游戏页；
+ *     多人（mode=multi&roomId）：characterCreate + roomBindCharacter → 回跳等待室。
  * step 走 URL 参数（story/occupation 上下文原样 URL 传递，无客户端会话状态，
  * 刷新/回退语义正确）；e2e 文案/类名契约（选择职业/创建角色/occ-card/
  * picker-view.flex-1/投掷属性/调查员/确认角色并进入游戏）原样保留。
@@ -47,6 +49,82 @@ const selectedOccupationId = ref('')
 const selectedOccupationName = ref('')
 const isCreating = ref(false)
 const createError = ref('')
+
+/* ───────────── 多人模式（T3 #30：mode=multi&roomId） ─────────────
+ * 成员从等待室（rooms/room）建卡入口直达本页：storyId 可空（房主剧本
+ * 可能尚未选定——剧本选择是房主侧动作，与成员建卡解耦）。进入即 roomDetail
+ * 预检（房间不存在 404 / 已 playing / ended → 明确错误回退，不卡死）；
+ * 完成动作 = characterCreate + roomBindCharacter + 回跳等待室。 */
+
+/** 多人模式目标房间 id（空 = 单人模式）。 */
+const multiRoomId = ref('')
+/** 单人模式判定：无 mode 参数（storyId 守卫与完成动作原样——h5.journey 回归基线）。 */
+const isMultiMode = computed(() => multiRoomId.value !== '')
+/** 多人模式展示用角色卡（已建过的卡可在向导里复用：完成时若选了既有卡则跳过建卡）。 */
+const existingCharacters = ref<{ id: string; name: string; sheet: Record<string, unknown> }[]>([])
+const useExistingCharId = ref('')
+const pickingExisting = ref(false)
+
+/**
+ * 多人模式入场预检：房间不存在（404）或已开局/结束（playing/ended）→
+ * toast + reLaunch 回首页（等待室开局后会锁房跳转 game 页，本页不可再被依赖）。
+ * 房主剧本（storyId）若房间已登记 → 展示（否则「房主尚未选择剧本」）。
+ */
+async function preflightMultiRoom(): Promise<void> {
+  try {
+    const detail = await getBridge().roomDetail(multiRoomId.value)
+    if (detail.phase === 'playing' || detail.phase === 'ended') {
+      uni.showToast({ title: '房间已开局，无法在此建卡', icon: 'none' })
+      setTimeout(() => uni.reLaunch({ url: '/pages/home/index' }), 1200)
+      return
+    }
+    if (detail.storyId && !storyId.value) storyId.value = detail.storyId
+    try {
+      existingCharacters.value = await getBridge().characterList()
+    } catch { existingCharacters.value = [] }
+    pickingExisting.value = true
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message : '房间不存在或已不可加入', icon: 'none' })
+    setTimeout(() => uni.reLaunch({ url: '/pages/home/index' }), 1200)
+  }
+}
+
+/** 打开「复用已有角色卡」选择器（预检成功后由 onLoad 自动弹；用户可关闭回向导）。 */
+function openExistingPicker() {
+  pickingExisting.value = true
+}
+
+function closeExistingPicker() {
+  useExistingCharId.value = ''
+  pickingExisting.value = false
+}
+
+/** 复用选中卡 → 跳过建卡向导直接绑定回等待室。 */
+async function confirmExistingCharacter() {
+  if (!useExistingCharId.value || isCreating.value) return
+  isCreating.value = true
+  createError.value = ''
+  try {
+    await bindToRoom(useExistingCharId.value)
+    finishMultiMode()
+  } catch (e) {
+    useExistingCharId.value = ''
+    pickingExisting.value = true
+    createError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    isCreating.value = false
+  }
+}
+
+/** 多人模式完成动作：绑定当前房间 + 回跳等待室（roomStore 会续上 room_meta）。 */
+async function bindToRoom(characterId: string): Promise<void> {
+  await getBridge().roomBindCharacter(multiRoomId.value, characterId)
+}
+
+/** 多人模式收尾导航：redirectTo 等待室（替换本页，返回键不再回到向导）。 */
+function finishMultiMode(): void {
+  uni.redirectTo({ url: `/pages/game/rooms/room?roomId=${encodeURIComponent(multiRoomId.value)}` })
+}
 
 /**
  * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
@@ -313,12 +391,19 @@ async function confirm() {
     personalInterestKeys.value.filter(Boolean),
     attributes.value,
   )
-  // ADR-0002：确认角色卡 = 服务端一体动作（落角色卡 + 建 solo 房 + 绑卡 + start）→ 直接进房
+  // 模式分流：多人 = characterCreate + roomBindCharacter + 回跳等待室（ADR-0005 T3 #30）；
+  // 单人 = 服务端一体动作（落角色卡 + 建 solo 房 + 绑卡 + start）→ 直接进房（ADR-0002）
   isCreating.value = true
   createError.value = ''
   try {
-    const r = await getBridge().roomCreateSolo({ storyId: storyId.value, name: playerName.value.trim(), sheet })
-    uni.redirectTo({ url: `/pages/game/index?roomId=${encodeURIComponent(r.roomId)}&storyName=${encodeURIComponent(storyName.value)}` })
+    if (isMultiMode.value) {
+      const r = await getBridge().characterCreate(playerName.value.trim(), sheet)
+      await bindToRoom(r.id)
+      finishMultiMode()
+    } else {
+      const r = await getBridge().roomCreateSolo({ storyId: storyId.value, name: playerName.value.trim(), sheet })
+      uni.redirectTo({ url: `/pages/game/index?roomId=${encodeURIComponent(r.roomId)}&storyName=${encodeURIComponent(storyName.value)}` })
+    }
   } catch (e) {
     createError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -327,6 +412,7 @@ async function confirm() {
 }
 
 // 原双页导航回归守卫：直接落地（无 story/职业）→ 回首页；否则按 URL step/职业恢复
+// 多人模式（T3 #30）：storyId 可空，但必须有 roomId → 预检房间后照常进入向导
 onLoad((options) => {
   const rawStep = Number(options?.step ?? 1)
   step.value = rawStep === 2 || rawStep === 3 ? rawStep : 1
@@ -334,7 +420,12 @@ onLoad((options) => {
   storyName.value = decodeURIComponent(String(options?.storyName ?? ''))
   selectedOccupationId.value = String(options?.occupationId ?? '')
   selectedOccupationName.value = decodeURIComponent(String(options?.occupationName ?? ''))
-  if (!storyId.value) {
+  const multiRoomIdParam = String(options?.mode ?? '') === 'multi' ? String(options?.roomId ?? '') : ''
+  multiRoomId.value = multiRoomIdParam
+  if (multiRoomIdParam) {
+    // 多人入场：房间预检（不存在/已开局 → 明确回退）；无故事时不守卫（房主剧本可选）
+    void preflightMultiRoom()
+  } else if (!storyId.value) {
     uni.reLaunch({ url: '/pages/home/index' })
     return
   }
@@ -372,14 +463,15 @@ onLoad((options) => {
         <text class="page-title">{{ step === 1 ? '选择职业' : step === 2 ? '创建角色' : '确认调查员' }}</text>
         <text class="page-desc">
           <template v-if="step === 1">
-            故事：<text class="story-name">{{ storyName || storyId || '—' }}</text>
+            故事：<text class="story-name">{{ storyName || storyId || (isMultiMode ? '房主尚未选择剧本' : '—') }}</text>
           </template>
           <template v-else>
             职业：<text class="occupation-name">{{ selectedOccupationName }}</text>
-            <text v-if="step === 3"> · 故事：<text class="story-name">{{ storyName || '—' }}</text></text>
+            <text v-if="step === 3" class="story-name">{{ isMultiMode ? ` · 房间建卡${storyId ? ' · 故事：' + storyName : ''}` : ` · 故事：${storyName || '—'}` }}</text>
           </template>
         </text>
         <view class="head-divider ink-divider" />
+        <text v-if="createError" class="create-error create-error-head">{{ createError }}</text>
       </view>
 
       <!-- ══ Step 1：选职业 ══ -->
@@ -623,9 +715,36 @@ onLoad((options) => {
               {{ canConfirm() ? '确认角色并进入游戏' : `选择 ${PERSONAL_INTEREST_COUNT} 项兴趣并填写姓名` }}
             </button>
           </view>
-          <text v-if="createError" class="create-error">开局失败：{{ createError }}</text>
         </view>
       </template>
+    </view>
+
+    <!-- 复用既有角色卡弹层（多人模式入场自动弹出；有卡时也可点击进入选择） -->
+    <view v-if="pickingExisting && isMultiMode" class="picker-mask" @click="closeExistingPicker">
+      <view class="picker" @click.stop>
+        <view class="picker-title">选择要绑定的角色卡</view>
+        <scroll-view class="picker-scroll" scroll-y>
+          <view
+            v-for="c in existingCharacters"
+            :key="c.id"
+            class="char-option"
+            :class="{ active: useExistingCharId === c.id }"
+            @click="useExistingCharId = c.id"
+          >
+            <text>{{ c.name }}</text>
+          </view>
+          <view v-if="existingCharacters.length === 0" class="char-empty">还没有角色卡 — 关闭后在上方向导新建一张</view>
+        </scroll-view>
+        <view class="picker-foot">
+          <button class="gothic-btn-secondary picker-btn" @click="closeExistingPicker">关闭，新建角色</button>
+          <button
+            class="gothic-btn picker-btn"
+            :class="{ 'is-disabled': !useExistingCharId || isCreating }"
+            :loading="isCreating"
+            @click="confirmExistingCharacter"
+          >确认绑定</button>
+        </view>
+      </view>
     </view>
   </app-layout>
 </template>
@@ -1095,6 +1214,72 @@ onLoad((options) => {
   font-family: $font-serif;
   color: hsl(0, 55%, 65%);
   padding: 8px 0 16px;
+}
+.create-error-head {
+  padding: 0 24px 12px;
+  max-width: 896px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+/* ── 复用角色卡弹层（多人模式，T3 #30；lobby 绑定选择器同构样式） ── */
+.picker-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+.picker {
+  width: min(480px, calc(100vw - 48px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: #0b0d10;
+  border: 1px solid hsl(220, 14%, 16%);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.picker-title {
+  padding: 16px 20px 8px;
+  font-family: $font-display;
+  font-weight: bold;
+  color: hsl(38, 50%, 88%);
+}
+.picker-scroll {
+  flex: 1;
+  min-height: 0;
+}
+.char-option {
+  padding: 12px 20px;
+  border-bottom: 1px solid hsl(220, 14%, 12%);
+  color: hsl(38, 40%, 78%);
+  font-family: $font-serif;
+  font-size: 0.9375rem;
+}
+.char-option.active {
+  background: hsla(165, 45%, 22%, 0.25);
+  color: hsl(165, 50%, 78%);
+}
+.picker-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid hsl(220, 14%, 16%);
+}
+.picker-btn {
+  font-size: 0.875rem;
+}
+.char-empty {
+  padding: 32px 20px;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: hsl(220, 10%, 40%);
 }
 
 /* ── Step3：预览并排布局（桌面 2 列 / 移动单列） ── */
