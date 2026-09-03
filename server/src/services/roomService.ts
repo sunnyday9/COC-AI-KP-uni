@@ -14,6 +14,7 @@ import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, OPENING_RAG_QUERY, MAX_MEMORY_ENTRIES, type RoomPromptInput } from './kpPromptService.js'
+import { listStories as listIndexedStories } from './ragService.js'
 import type {
   RoomEventPayloadMap,
   RoomEventType,
@@ -76,8 +77,9 @@ const LONG_TERM_SUMMARY_EVERY_TURNS = 10
  */
 export class RoomService {
   readonly roomId: string
-  readonly ownerId: number
-  readonly ownerName: string
+  /** 现任房主（转让/断线易主后随 syncFromDb 更新——KP/RAG/记忆全程跟随现任 owner）。 */
+  private ownerId: number
+  private ownerName: string
 
   private phase: RoomPhase = 'lobby'
   private storyId: string | null = null
@@ -254,19 +256,14 @@ export class RoomService {
     this.emit({ type: 'room_meta', payload: { phase, turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
   }
 
-  /** 广播成员列表（room_meta）——成员加入/离开/绑定角色后调用（Phase C2）。 */
+  /** 广播成员列表（room_meta）——成员加入/离开/绑定角色/就绪后调用（Phase C2 / ADR-0005）。 */
   broadcastMembers(members: RoomMember[]): void {
     this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members } })
   }
 
   /** 从 DB 加载成员列表（room_meta 事件携带真实 members，避免清空客户端列表——审查修复）。 */
   private membersFromDb(): RoomMember[] {
-    return roomStorage.listMembers(this.roomId).map((r) => ({
-      userId: r.user_id,
-      username: r.username,
-      role: r.role as MemberRole,
-      characterId: r.character_id,
-    }))
+    return roomStorage.listMembers(this.roomId).map(memberRowToInfo)
   }
 
   /** 设置回合窗口（房主控制，B6）；0 = 严格排队。广播 room_meta 全员可见。 */
@@ -299,6 +296,11 @@ export class RoomService {
     if (typeof r.phase === 'string' && (r.phase === 'lobby' || r.phase === 'playing' || r.phase === 'ended')) {
       this.phase = r.phase
     }
+    // 房主跟随 DB（ADR-0005 转让/断线易主）：KP/RAG/记忆解析账号 = 现任 owner
+    if (r.owner_id !== this.ownerId) {
+      this.ownerId = r.owner_id
+      this.ownerName = roomStorage.usernameOf(r.owner_id) ?? `user_${r.owner_id}`
+    }
     // 角色组：从 DB 绑定关系加载 sheet（characters 表是 sheet 权威）
     for (const b of roomStorage.boundCharacterSheets(this.roomId)) {
       try {
@@ -328,7 +330,8 @@ export class RoomService {
 
   /* ═══════════════ 回合窗口合并（D4） ═══════════════ */
 
-  /** 玩家聊天（领域方法，ADR-0001）：解析身份 → 消息流广播 → 回合缓冲。 */
+  /** 玩家聊天（领域方法，ADR-0001）：解析身份 → 消息流广播 →（playing 才）进回合缓冲。
+   *  Phase gate（ADR-0005）：lobby 等待室聊天只广播不触发 KP 回合。 */
   submitPlayerChat(userId: number, content: string): void {
     const username = roomStorage.usernameOf(userId) ?? `user_${userId}`
     const characterId = roomStorage.memberCharacterId(this.roomId, userId)
@@ -336,6 +339,7 @@ export class RoomService {
       { id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'player', playerName: username, content },
       { userId, roleName: username },
     )
+    if (this.phase !== 'playing') return
     // Phase B6 + D4：玩家消息触发 KP 回合——回合窗口合并；行动者 = 成员绑定的角色卡。
     // 单人房间 = 单成员（FR-M9）；turnWindowMs=0 时立即处理（严格排队）。
     this.bufferPlayerChat(username, content, characterId, userId)
@@ -708,13 +712,28 @@ function broadcastMemberMeta(roomId: string): void {
   const room = getRoom(roomId)
   if (!room) return
   room.broadcastMembers(
-    roomStorage.listMembers(roomId).map((m) => ({
-      userId: m.user_id,
-      username: m.username,
-      role: m.role as MemberRole,
-      characterId: m.character_id,
-    })),
+    roomStorage.listMembers(roomId).map(memberRowToInfo),
   )
+}
+
+/** room_members 行 → wire 成员信息（ready 列 0/1 → boolean；room_meta/详情共用）。 */
+function memberRowToInfo(m: roomStorage.RoomMemberRow): RoomMember {
+  return {
+    userId: m.user_id,
+    username: m.username,
+    role: m.role as MemberRole,
+    characterId: m.character_id,
+    ready: !!m.ready,
+  }
+}
+
+/** 房主已索引的剧本 id 集（开局门闩用；防 KP 无原文静默空跑，ADR-0005）。 */
+function listIndexedStoriesForOwner(ownerId: number): string[] {
+  try {
+    return listIndexedStories(ownerId).map((s) => s.storyId)
+  } catch {
+    return []
+  }
 }
 
 /** POST /api/rooms —— 创建房间（只持久化，不激活内存实例：懒激活，ADR-0001）。 */
@@ -772,13 +791,18 @@ export function createSoloRoom(
   }
 }
 
-/** POST /api/rooms/join —— 邀请码加入（幂等：INSERT OR IGNORE）。 */
+/** POST /api/rooms/join —— 邀请码加入（幂等：INSERT OR IGNORE）。
+ *  ADR-0005：playing 后锁房——开局后邀请码不可再加入（observer 旁观留后续）。 */
 export function joinRoomByInviteCode(
   userId: number,
   inviteCode: string,
-): { ok: true; roomId: string } | { ok: false; reason: 'not-found'; message: string } {
+): { ok: true; roomId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string } {
   const roomId = roomStorage.findRoomIdByInviteCode(inviteCode)
   if (!roomId) return { ok: false, reason: 'not-found', message: 'room not found' }
+  const room = roomStorage.getRoomRow(roomId)
+  if (room && room.phase !== 'lobby') {
+    return { ok: false, reason: 'conflict', message: 'room already started' }
+  }
   roomStorage.insertMember(roomId, userId, 'member')
   broadcastMemberMeta(roomId)
   return { ok: true, roomId }
@@ -807,6 +831,7 @@ export function getRoomDetail(
         username: m.username,
         role: m.role,
         characterId: m.character_id,
+        ready: !!m.ready,
       })),
       state,
       createdAt: room.created_at,
@@ -814,16 +839,34 @@ export function getRoomDetail(
   }
 }
 
-/** POST /api/rooms/:id/start —— 房主开始游戏（绑定剧本 + 活跃实例即时同步）。 */
+/** POST /api/rooms/:id/start —— 房主开始游戏。开局门闩（ADR-0005）：
+ *  房主已选且**已索引**剧本 + 每名成员已绑定角色卡 → 否则 409 带缺项提示。
+ *  就绪是软信号，开局不等待全员就绪。门闩通过 → 写库 + 活跃实例即时同步 + opening。 */
 export function startRoom(
   userId: number,
   roomId: string,
   storyId: string,
-): { ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'bad-request'; message: string } {
-  const room = roomStorage.getRoomRow(roomId)
-  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
-  if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
-  if (!storyId) return { ok: false, reason: 'bad-request', message: 'storyId required' }
+): { ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string } {
+  const g = governanceGate(userId, roomId)
+  if (!g.ok) return g
+  if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
+  // 门闩 1：已选剧本（storyId 必填——房间创建时允许为空，开局前必须选定）
+  if (!storyId) return { ok: false, reason: 'conflict', message: '请先在等待室选定剧本' }
+  // 门闩 2：剧本已索引（防 KP 无原文静默空跑——未索引故事不能开局）
+  const indexed = listIndexedStoriesForOwner(g.room.owner_id)
+  if (!indexed.includes(storyId)) {
+    return { ok: false, reason: 'conflict', message: '该剧本尚未索引，请先在「我的故事」中完成索引' }
+  }
+  // 门闩 3：每名成员已绑定角色卡（不等待就绪——软信号）
+  const members = roomStorage.listMembers(roomId)
+  const unbound = members.filter((m) => !m.character_id)
+  if (unbound.length > 0) {
+    return {
+      ok: false,
+      reason: 'conflict',
+      message: `${unbound.length} 名成员未绑定角色卡${unbound.length > 0 ? `（${unbound.map((m) => m.username).join('、')}）` : ''}`,
+    }
+  }
   roomStorage.updateRoomStart(roomId, storyId)
   syncActiveRoom(roomId)
   // opening 回合（ADR-0002）：实例已激活则立即触发；未激活时随首次 join 触发（懒激活保持）。
@@ -892,6 +935,135 @@ export function deleteRoomAsOwner(
   if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
   roomStorage.deleteRoomRows(roomId)
   return { ok: true }
+}
+
+/* ═══════════════ 等待室治理（ADR-0005：就绪/离开/踢出/转让/门闩） ═══════════════ */
+
+/** 领域失败（各治理方法共用）；路由只按 reason 映射 HTTP。 */
+export interface RoomGovernanceFail {
+  ok: false
+  reason: 'not-found' | 'not-owner' | 'not-member' | 'conflict' | 'bad-request'
+  message: string
+}
+
+/** 房间治理约束统一入口（成员资格 / 房主判定 / kind）。
+ *  - 治理动作只对多人房（kind='multi'）有意义；
+ *  - 房间不存在、调用者非成员、被操作者非成员 → not-found（与既有成员可见语义一致）。 */
+function governanceGate(
+  userId: number,
+  roomId: string,
+  targetUserId?: number,
+): { ok: true; room: roomStorage.RoomRow; callerRole: string | null } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string } {
+  const room = roomStorage.getRoomRow(roomId)
+  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+  if (room.kind !== 'multi') return { ok: false, reason: 'conflict', message: 'governance actions require a multiplayer room' }
+  if (targetUserId !== undefined) {
+    if (!roomStorage.memberRole(roomId, targetUserId)) return { ok: false, reason: 'not-found', message: 'member not found' }
+  }
+  const callerRole = roomStorage.memberRole(roomId, userId)
+  if (!callerRole) return { ok: false, reason: 'not-found', message: 'room not found' }
+  return { ok: true, room, callerRole }
+}
+
+/** POST /api/rooms/:id/ready —— 成员就绪/取消（ADR-0005 软信号；owner 不持有 ready）。
+ *  role='member' 的 UPDATE 天然保护 owner；重复设置幂等。就绪在开局（playing）后无意义，忽略之。 */
+export function setMemberReady(
+  userId: number,
+  roomId: string,
+  ready: boolean,
+): { ok: true } | RoomGovernanceFail {
+  const g = governanceGate(userId, roomId)
+  if (!g.ok) return g
+  if (g.callerRole === 'owner') return { ok: false, reason: 'not-owner', message: 'only members can toggle ready' }
+  if (g.room.phase !== 'lobby') return { ok: true } // playing 后就绪无意义：幂等成功
+  roomStorage.setMemberReady(roomId, userId, ready)
+  syncActiveRoom(roomId)
+  return { ok: true }
+}
+
+/** POST /api/rooms/:id/leave —— 成员主动离开（删行 + 广播；owner 离开走转让/解散）。
+ *  替代旧 ws room:leave 只退订不删行（成员列表只增不减的缺口，ADR-0005）。 */
+export function leaveRoomAsMember(
+  userId: number,
+  roomId: string,
+): { ok: true } | RoomGovernanceFail {
+  const g = governanceGate(userId, roomId)
+  if (!g.ok) return g
+  if (g.callerRole === 'owner') return leaveRoomAsOwner(userId, roomId)
+  roomStorage.deleteMemberRow(roomId, userId)
+  broadcastMemberMeta(roomId)
+  return { ok: true }
+}
+
+/** 房主离开的领域动作：还有成员 → 立即转让给最早成员（rowid 序）；否则解散（ADR-0005 无宽限）。 */
+export function leaveRoomAsOwner(
+  userId: number,
+  roomId: string,
+): { ok: true } | RoomGovernanceFail {
+  const g = governanceGate(userId, roomId)
+  if (!g.ok) return g
+  if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
+  const members = roomStorage.listMembersOrdered(roomId)
+  const successor = members.find((m) => m.user_id !== userId)
+  if (!successor) {
+    roomStorage.deleteRoomRows(roomId)
+    return { ok: true }
+  }
+  transferOwnerRow(roomId, userId, successor.user_id)
+  syncActiveRoom(roomId)
+  return { ok: true }
+}
+
+/** 转让房主行写库（新 owner 行 role='owner' + ready 清零；旧 owner 行降为 member 且留在房内）。 */
+function transferOwnerRow(roomId: string, oldOwnerId: number, newOwnerId: number): void {
+  roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId)
+}
+
+/** DELETE /api/rooms/:id/members/:userId —— 房主踢出成员（owner only；删行 + 广播；不可踢自己/owner）。 */
+export function kickRoomMember(
+  callerUserId: number,
+  roomId: string,
+  targetUserId: number,
+): { ok: true } | RoomGovernanceFail {
+  const g = governanceGate(callerUserId, roomId, targetUserId)
+  if (!g.ok) return g
+  if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can kick members' }
+  if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'owner cannot kick themselves' }
+  roomStorage.deleteMemberRow(roomId, targetUserId)
+  broadcastMemberMeta(roomId)
+  return { ok: true }
+}
+
+/** POST /api/rooms/:id/transfer —— 房主主动转让给指定成员（新 owner 获得治理权）。 */
+export function transferOwnership(
+  callerUserId: number,
+  roomId: string,
+  targetUserId: number,
+): { ok: true } | RoomGovernanceFail {
+  const g = governanceGate(callerUserId, roomId, targetUserId)
+  if (!g.ok) return g
+  if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can transfer ownership' }
+  if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'target is already the owner' }
+  transferOwnerRow(roomId, callerUserId, targetUserId)
+  syncActiveRoom(roomId)
+  return { ok: true }
+}
+
+/** 房主 WS 断线（无 REST 语义）：立即转让给最早成员 / 无其他成员解散（ADR-0005 无宽限）。
+ *  供 ws 层断线事件调用——仅当脱机的正是当前 owner 时执行（非 owner 断线不动房间；
+ *  刷新即易主是已知取舍）。solo 房主断线不转让（单人房主=唯一成员，solo 无等待室）。 */
+export function handleOwnerWsDisconnect(roomId: string, userId: number): void {
+  const room = roomStorage.getRoomRow(roomId)
+  if (!room || room.phase === 'ended') return
+  if (room.kind !== 'multi' || room.owner_id !== userId) return
+  const members = roomStorage.listMembersOrdered(roomId)
+  const successor = members.find((m) => m.user_id !== userId)
+  if (!successor) {
+    roomStorage.deleteRoomRows(roomId)
+    return
+  }
+  transferOwnerRow(roomId, userId, successor.user_id)
+  syncActiveRoom(roomId)
 }
 
 /** WS join：校验成员资格并返回活跃实例（不存在则 materialize——懒激活）。 */

@@ -28,6 +28,8 @@ export interface RoomMemberInfo {
   username: string
   role: RoomMemberRole
   characterId: string | null
+  /** 就绪（等待室软信号，ADR-0005；绑定角色卡是开局硬前提）。 */
+  ready: boolean
 }
 
 /** 房间事件 payload 单一来源（评审候选 3）。

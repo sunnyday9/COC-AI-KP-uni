@@ -25,6 +25,8 @@ export interface RoomMemberRow {
   username: string
   role: string
   character_id: string | null
+  /** 就绪（等待室软信号，ADR-0005）；SQLite 列存储为 0/1。 */
+  ready: number
 }
 
 export interface RoomListItemRow {
@@ -155,10 +157,10 @@ export function memberRole(roomId: string, userId: number): string | null {
   return row?.role ?? null
 }
 
-/** 成员列表（JOIN users；列名为 snake_case，由调用方映射 camelCase）。 */
+/** 成员列表（JOIN users；列名为 snake_case，由调用方映射 camelCase）。加入顺序由 rowid 保证（与 listMembersOrdered 一致）。 */
 export function listMembers(roomId: string): RoomMemberRow[] {
   return getDb()
-    .prepare(`SELECT m.user_id, m.role, m.character_id, u.username
+    .prepare(`SELECT m.user_id, m.role, m.character_id, m.ready, u.username
               FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ?`)
     .all(roomId) as unknown as RoomMemberRow[]
 }
@@ -180,6 +182,42 @@ export function boundMemberOf(roomId: string, characterId: string, exceptUserId:
     .prepare(`SELECT user_id FROM room_members WHERE room_id = ? AND character_id = ? AND user_id != ?`)
     .all(roomId, characterId, exceptUserId) as unknown as { user_id: number }[]
   return rows[0]?.user_id ?? null
+}
+
+/** 设置成员就绪状态（就绪/取消，ADR-0005 软信号；owner 行不动——房主无 ready 语义）。 */
+export function setMemberReady(roomId: string, userId: number, ready: boolean): void {
+  getDb()
+    .prepare(`UPDATE room_members SET ready = ? WHERE room_id = ? AND user_id = ? AND role = 'member'`)
+    .run(ready ? 1 : 0, roomId, userId)
+}
+
+/** 房主转让（ADR-0005）：新 owner 行 role='owner' 且 ready 清零；旧 owner 行降为 member。
+ *  写库事务内完成（一升一降原子）。 */
+export function transferRoomOwnership(roomId: string, oldOwnerId: number, newOwnerId: number): void {
+  const db = getDb()
+  db.exec('BEGIN')
+  try {
+    db.prepare(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`).run(roomId, oldOwnerId)
+    db.prepare(`UPDATE room_members SET role = 'owner', ready = 0 WHERE room_id = ? AND user_id = ?`).run(roomId, newOwnerId)
+    db.prepare(`UPDATE rooms SET owner_id = ? WHERE room_id = ?`).run(newOwnerId, roomId)
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
+}
+
+/** 删除成员行（主动离开/房主踢出，ADR-0005；owner 离开不删行——房主离开 = 转让/解散）。 */
+export function deleteMemberRow(roomId: string, userId: number): void {
+  getDb().prepare(`DELETE FROM room_members WHERE room_id = ? AND user_id = ?`).run(roomId, userId)
+}
+
+/** 成员列表（JOIN users；按加入顺序——房主断线转让取「最早成员」）。 */
+export function listMembersOrdered(roomId: string): RoomMemberRow[] {
+  return getDb()
+    .prepare(`SELECT m.room_id, m.user_id, m.role, m.character_id, m.ready, u.username
+              FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ? ORDER BY m.rowid ASC`)
+    .all(roomId) as unknown as RoomMemberRow[]
 }
 
 /* ═══════════════ 邻接只读（users / characters；供领域方法组装领域对象） ═══════════════ */

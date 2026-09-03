@@ -66,6 +66,11 @@ export function subscribersOf(roomId: string): RoomSubscriber[] {
   return [...(roomSockets.get(roomId) ?? [])]
 }
 
+/** socket 订阅的房间 id 快照（断线清理时枚举——cleanupSocket 会清空注册表，须先取）。 */
+export function roomIdsOfSocket(socket: RoomSubscriber): string[] {
+  return [...(socketRooms.get(socket) ?? [])]
+}
+
 /* ═══════════════ 扇出挂接（幂等） ═══════════════ */
 
 /** 同一 RoomService 实例只挂一次扇出监听；帧编码由 adapter 的 listener 完成。 */

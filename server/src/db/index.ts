@@ -113,4 +113,9 @@ function initSchema(database: DatabaseSync): void {
   if (!roomCols.some((c) => c.name === 'kind')) {
     database.exec(`ALTER TABLE rooms ADD COLUMN kind TEXT NOT NULL DEFAULT 'multi'`)
   }
+  // 幂等迁移：旧库的 room_members 表没有 ready 列（ADR-0005 等待室就绪软信号）。
+  const memberCols = database.prepare(`PRAGMA table_info(room_members)`).all() as { name: string }[]
+  if (!memberCols.some((c) => c.name === 'ready')) {
+    database.exec(`ALTER TABLE room_members ADD COLUMN ready INTEGER NOT NULL DEFAULT 0`)
+  }
 }

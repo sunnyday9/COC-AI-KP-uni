@@ -72,13 +72,13 @@ export function createWsServer(httpServer: Server): WebSocketServer {
 
     socket.on('close', () => {
       unregisterProgressSocket(socket)
-      cleanupSocketRooms(socket)
+      cleanupSocketRooms(socket, userId)
       logger.info('ws client disconnected', { userId })
     })
 
     socket.on('error', (err) => {
       unregisterProgressSocket(socket)
-      cleanupSocketRooms(socket)
+      cleanupSocketRooms(socket, userId)
       logger.warn('ws socket error', { userId, error: String(err) })
     })
   })

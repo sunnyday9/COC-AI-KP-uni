@@ -21,21 +21,26 @@ import {
   deleteRoomAsOwner,
   getRoomDetail,
   joinRoomByInviteCode,
+  kickRoomMember,
+  leaveRoomAsMember,
   listRoomsForUser,
   listSoloRoomsForUser,
+  setMemberReady,
   startRoom,
+  transferOwnership,
 } from '../services/roomService.js'
 
 const router = Router()
 
 router.use(requireAuth)
 
-/** 领域失败结果 → HTTP 错误（状态码语义与旧实现逐一对齐）。 */
+/** 领域失败结果 → HTTP 错误（状态码语义与旧实现逐一对齐；RoomGovernanceFail 通用）。
+ *  not-member 复用 not-found 的 404 语义；not-owner/conflict → 409。 */
 function sendDomainError(
   res: import('express').Response,
-  fail: { reason: 'not-found' | 'not-owner' | 'bad-request' | 'conflict'; message: string },
+  fail: { reason: 'not-found' | 'not-owner' | 'not-member' | 'conflict' | 'bad-request'; message: string },
 ): void {
-  if (fail.reason === 'not-found') sendError(res, new NotFoundError(fail.message))
+  if (fail.reason === 'not-found' || fail.reason === 'not-member') sendError(res, new NotFoundError(fail.message))
   else if (fail.reason === 'conflict' || fail.reason === 'not-owner') sendError(res, new ConflictError(fail.message))
   else sendError(res, new BadRequestError(fail.message))
 }
@@ -123,6 +128,65 @@ router.post('/:id/character', (req: AuthRequest, res) => {
     return
   }
   res.json({ ok: true, roomId: result.roomId, characterId: result.characterId })
+})
+
+/** POST /api/rooms/:id/ready — 成员就绪/取消（ADR-0005 等待室软信号；body { ready }）。 */
+router.post('/:id/ready', (req: AuthRequest, res) => {
+  const userId = req.userId as number
+  const roomId = String(req.params.id ?? '')
+  const ready = (req.body as { ready?: unknown } | undefined)?.ready === true
+  const result = setMemberReady(userId, roomId, ready)
+  if (!result.ok) {
+    sendDomainError(res, result)
+    return
+  }
+  res.json({ ok: true })
+})
+
+/** POST /api/rooms/:id/leave — 成员主动离开（删行+广播；owner 离开→转让/解散）。 */
+router.post('/:id/leave', (req: AuthRequest, res) => {
+  const userId = req.userId as number
+  const roomId = String(req.params.id ?? '')
+  const result = leaveRoomAsMember(userId, roomId)
+  if (!result.ok) {
+    sendDomainError(res, result)
+    return
+  }
+  res.json({ ok: true })
+})
+
+/** DELETE /api/rooms/:id/members/:userId — 房主踢出成员（owner only）。 */
+router.delete('/:id/members/:userId', (req: AuthRequest, res) => {
+  const callerUserId = req.userId as number
+  const roomId = String(req.params.id ?? '')
+  const targetUserId = Number(req.params.userId)
+  if (!Number.isInteger(targetUserId) || targetUserId <= 0) {
+    sendError(res, new BadRequestError('invalid userId'))
+    return
+  }
+  const result = kickRoomMember(callerUserId, roomId, targetUserId)
+  if (!result.ok) {
+    sendDomainError(res, result)
+    return
+  }
+  res.json({ ok: true })
+})
+
+/** POST /api/rooms/:id/transfer — 房主主动转让（body { userId } → 新 owner）。 */
+router.post('/:id/transfer', (req: AuthRequest, res) => {
+  const callerUserId = req.userId as number
+  const roomId = String(req.params.id ?? '')
+  const targetUserId = Number((req.body as { userId?: unknown } | undefined)?.userId)
+  if (!Number.isInteger(targetUserId) || targetUserId <= 0) {
+    sendError(res, new BadRequestError('invalid userId'))
+    return
+  }
+  const result = transferOwnership(callerUserId, roomId, targetUserId)
+  if (!result.ok) {
+    sendDomainError(res, result)
+    return
+  }
+  res.json({ ok: true })
 })
 
 /** DELETE /api/rooms/:id — 房主解散。 */

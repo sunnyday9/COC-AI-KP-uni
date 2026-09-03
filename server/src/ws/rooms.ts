@@ -18,7 +18,8 @@
  */
 import type { WebSocket } from 'ws'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
-import { cleanupSocket, ensureFanout, planAction, planJoin, planSync, subscribeSocket, subscribersOf, unsubscribeSocket } from './roomLedger.js'
+import { handleOwnerWsDisconnect } from '../services/roomService.js'
+import { cleanupSocket, ensureFanout, planAction, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeSocket } from './roomLedger.js'
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 
@@ -119,7 +120,12 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
   })
 }
 
-/** 连接关闭：清理所有订阅（注册表在订阅簿）。 */
-export function cleanupSocketRooms(socket: WebSocket): void {
+/** 连接关闭：清理所有订阅（注册表在订阅簿）。
+ *  房主断线 → 领域立即转让给最早成员 / 无成员解散（ADR-0005 无宽限——刷新即易主；
+ *  领域内判定脱机者身份：非 owner 断线不动房间，成员行保留——主动离开走 REST leave）。 */
+export function cleanupSocketRooms(socket: WebSocket, userId?: number | null): void {
+  const roomIds = roomIdsOfSocket(socket)
   cleanupSocket(socket)
+  if (!userId) return
+  for (const roomId of roomIds) handleOwnerWsDisconnect(roomId, userId)
 }
