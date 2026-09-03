@@ -56,11 +56,19 @@ const outcomeLabel = computed(() => {
 
 const outcomeColor = computed(() => {
   const o = outcome.value
-  // T9 结局分级视觉（文本/边框走令牌；glow 为 rgba 字面量供 boxShadow 拼接）
-  if (o === 'victory') return { text: 'var(--c-ritual-200)', border: 'var(--c-ritual-500)', glow: 'hsla(42, 70%, 50%, 0.12)' }
-  if (o === 'defeat') return { text: 'var(--c-blood-200)', border: 'var(--c-blood-500)', glow: 'hsla(0, 65%, 45%, 0.12)' }
-  if (o === 'survival') return { text: 'var(--c-eld-200)', border: 'var(--c-eld-500)', glow: 'hsla(165, 60%, 40%, 0.12)' }
-  return { text: 'var(--c-sanity-200)', border: 'var(--c-sanity-500)', glow: 'hsla(260, 55%, 50%, 0.12)' }
+  // T9 结局分级视觉（#27 项 5：三元链 → 令牌映射；glow 半透明走 color-mix）
+  const RAMP: Record<string, { ramp: 'ritual' | 'blood' | 'eld' | 'sanity'; text: number; border: number; glowAlpha: number }> = {
+    victory: { ramp: 'ritual', text: 200, border: 500, glowAlpha: 0.12 },
+    defeat: { ramp: 'blood', text: 200, border: 500, glowAlpha: 0.12 },
+    survival: { ramp: 'eld', text: 200, border: 500, glowAlpha: 0.12 },
+    unknown: { ramp: 'sanity', text: 200, border: 500, glowAlpha: 0.12 },
+  }
+  const cfg = RAMP[o] ?? RAMP.unknown!
+  return {
+    text: `var(--c-${cfg.ramp}-${cfg.text})`,
+    border: `var(--c-${cfg.ramp}-${cfg.border})`,
+    glow: `color-mix(in srgb, var(--c-${cfg.ramp}-${cfg.border}) ${Math.round(cfg.glowAlpha * 100)}%, transparent)`,
+  }
 })
 
 function buildMarkdownReport(): string {
@@ -254,7 +262,6 @@ onShow(() => {
 @media (min-width: 768px) {
   .ending-card { padding: 32px; }
 }
-
 .card-head {
   display: flex;
   align-items: flex-start;
@@ -274,7 +281,7 @@ onShow(() => {
   display: block;
   margin-top: 8px;
   font-size: 0.875rem;
-  color: hsl(220, 10%, 65%);
+  color: var(--c-fog);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 .head-actions {
@@ -306,7 +313,7 @@ onShow(() => {
   font-size: 1.125rem;
   letter-spacing: 0.05em;
   margin-bottom: 8px;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 .summary-card {
   padding: 20px;
@@ -316,9 +323,9 @@ onShow(() => {
   white-space: pre-wrap;
   word-break: break-all;
   font-family: $font-serif;
-  background: hsla(38, 18%, 18%, 0.2);
-  border: 1px solid hsla(38, 20%, 30%, 0.2);
-  color: hsl(38, 40%, 78%);
+  background: color-mix(in srgb, var(--c-paper-900) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-paper-700) 20%, transparent);
+  color: var(--c-paper-300);
 }
 .side-col {
   display: flex;
@@ -332,14 +339,14 @@ onShow(() => {
   gap: 10px;
   padding: 16px;
   border-radius: 8px;
-  background: hsla(38, 18%, 18%, 0.25);
-  border: 1px solid hsla(38, 20%, 30%, 0.25);
+  background: color-mix(in srgb, var(--c-paper-900) 25%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-paper-700) 25%, transparent);
 }
 .info-card {
   padding: 16px;
   border-radius: 8px;
-  background: hsla(220, 16%, 11%, 0.5);
-  border: 1px solid hsla(220, 14%, 16%, 0.5);
+  background: color-mix(in srgb, var(--c-obsidian) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
 }
 .list {
   display: flex;
@@ -349,13 +356,13 @@ onShow(() => {
 .list-item {
   font-size: 12px;
   line-height: 1.6;
-  color: hsl(38, 30%, 65%);
+  color: var(--c-paper-500);
 }
 .none-text {
   font-size: 12px;
   font-family: $font-serif;
   font-style: italic;
-  color: hsl(220, 10%, 22%);
+  color: var(--c-ash);
 }
 .next-actions {
   display: flex;

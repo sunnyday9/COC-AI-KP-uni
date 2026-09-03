@@ -224,10 +224,10 @@ function stripPrefix(content: string, prefix: string): string {
 @keyframes blood-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(160, 34, 34, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--c-blood-600) 0%, transparent);
   }
   50% {
-    box-shadow: 0 0 14px 0 rgba(160, 34, 34, 0.35);
+    box-shadow: 0 0 14px 0 color-mix(in srgb, var(--c-blood-600) 35%, transparent);
   }
 }
 

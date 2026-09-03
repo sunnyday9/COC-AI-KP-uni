@@ -371,9 +371,9 @@ function confirmExit() {
   gap: 4px;
   padding: 4px 10px;
   border-radius: 6px;
-  border: 1px solid hsla(0, 60%, 40%, 0.35);
-  background: rgba(24, 8, 10, 0.75);
-  color: hsl(0, 45%, 72%);
+  border: 1px solid color-mix(in srgb, var(--c-blood-500) 35%, transparent);
+  background: color-mix(in srgb, var(--c-blood-900) 60%, var(--c-void));
+  color: var(--c-blood-100);
   font-size: 0.75rem;
   line-height: 1.2;
   letter-spacing: 0.04em;
@@ -381,10 +381,10 @@ function confirmExit() {
   transition: all 0.25s;
 }
 .game-exit:hover {
-  color: hsl(0, 90%, 90%);
-  border-color: hsla(0, 90%, 55%, 0.9);
-  background: hsla(0, 55%, 24%, 0.92);
-  box-shadow: 0 0 10px hsla(0, 60%, 45%, 0.35);
+  color: var(--c-blood-50);
+  border-color: color-mix(in srgb, var(--c-blood-300) 90%, transparent);
+  background: color-mix(in srgb, var(--c-blood-700) 92%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--c-blood-400) 35%, transparent);
 }
 
 .main-col {
@@ -402,8 +402,8 @@ function confirmExit() {
   gap: 16px;
   padding: 12px 20px;
   flex-shrink: 0;
-  border-bottom: 1px solid hsla(220, 14%, 16%, 0.5);
-  background: hsla(220, 18%, 7%, 0.98);
+  border-bottom: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
+  background: color-mix(in srgb, var(--c-abyss) 98%, transparent);
   flex-wrap: wrap;
 }
 .header-info {
@@ -416,7 +416,7 @@ function confirmExit() {
   font-size: 1.125rem;
   letter-spacing: 0.05em;
   word-break: break-all;
-  color: hsl(38, 55%, 92%);
+  color: var(--c-paper-100);
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
 }
 .header-meta {
@@ -425,7 +425,7 @@ function confirmExit() {
   gap: 12px;
   margin-top: 2px;
   font-size: 12px;
-  color: hsl(220, 10%, 65%);
+  color: var(--c-fog);
   flex-wrap: wrap;
 }
 .header-player {
@@ -435,7 +435,7 @@ function confirmExit() {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: hsl(165, 50%, 60%);
+  color: var(--c-eld-200);
 }
 .scene-icon { font-size: 12px; }
 .mobile-actions {
@@ -454,14 +454,14 @@ function confirmExit() {
   font-weight: 500;
   line-height: 1.5;
   box-sizing: border-box;
-  background: hsla(220, 16%, 11%, 0.7);
-  border: 1px solid hsla(220, 14%, 16%, 0.5);
-  color: hsl(220, 10%, 65%);
+  background: color-mix(in srgb, var(--c-obsidian) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
+  color: var(--c-fog);
 }
 .action-btn:active {
-  background: hsla(220, 16%, 14%, 0.8);
-  color: hsl(38, 25%, 55%);
-  border-color: hsla(220, 12%, 22%, 0.8);
+  background: color-mix(in srgb, var(--c-obsidian-light) 80%, transparent);
+  color: var(--c-paper-600);
+  border-color: color-mix(in srgb, var(--c-slate-light) 80%, transparent);
 }
 .clue-badge {
   margin-left: 4px;
@@ -469,8 +469,8 @@ function confirmExit() {
   border-radius: 9999px;
   font-size: 10px;
   font-family: $font-mono;
-  background: hsla(38, 18%, 18%, 0.5);
-  color: hsl(38, 40%, 78%);
+  background: color-mix(in srgb, var(--c-paper-900) 50%, transparent);
+  color: var(--c-paper-300);
 }
 
 /* ── 聊天区 ── */
@@ -487,7 +487,7 @@ function confirmExit() {
   font-family: $font-serif;
   font-size: 0.875rem;
   font-style: italic;
-  color: hsl(220, 10%, 55%);
+  color: var(--c-fog);
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 .msg-wrap {
@@ -506,14 +506,14 @@ function confirmExit() {
   font-family: $font-serif;
   font-size: 0.8125rem;
   font-style: italic;
-  color: hsl(220, 10%, 55%);
+  color: var(--c-fog);
 }
 
 /* ── 输入区 ── */
 .input-area {
   flex-shrink: 0;
-  border-top: 1px solid hsla(220, 14%, 16%, 0.5);
-  background: hsla(220, 18%, 7%, 1);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
+  background: var(--c-abyss);
   padding: 12px 16px;
 }
 .input-row {
@@ -529,9 +529,9 @@ function confirmExit() {
   font-size: 0.875rem;
   line-height: 1.6;
   font-family: $font-serif;
-  background: hsla(220, 18%, 7%, 0.85);
-  color: hsl(38, 40%, 78%);
-  border: 1px solid hsl(220, 14%, 16%);
+  background: color-mix(in srgb, var(--c-abyss) 85%, transparent);
+  color: var(--c-paper-300);
+  border: 1px solid var(--c-slate);
   box-sizing: border-box;
 }
 .send-btn {
@@ -541,8 +541,8 @@ function confirmExit() {
 }
 /* 发送主 CTA 按压态（Task 9 / Task 8 Minor ③：MP 端 :active 不生效 → hover-class） */
 .send-btn-hover {
-  background: hsla(165, 50%, 25%, 0.85);
-  border-color: hsl(165, 60%, 35%);
+  background: color-mix(in srgb, var(--c-eld-600) 85%, transparent);
+  border-color: var(--c-eld-500);
 }
 .small-spinner {
   width: 16px;
@@ -568,23 +568,23 @@ function confirmExit() {
   display: none;
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 768px) {
   .left-rail {
     display: flex;
     flex-direction: column;
-    width: 248px;
+    width: 200px;
     flex-shrink: 0;
-    border-right: 1px solid hsl(220, 14%, 16%);
-    background: hsla(220, 18%, 7%, 0.98);
+    border-right: 1px solid var(--c-slate);
+    background: color-mix(in srgb, var(--c-abyss) 98%, transparent);
     min-height: 0;
   }
   .right-rail {
     display: flex;
     flex-direction: column;
-    width: 280px;
+    width: 232px;
     flex-shrink: 0;
-    border-left: 1px solid hsl(220, 14%, 16%);
-    background: hsla(220, 18%, 7%, 0.98);
+    border-left: 1px solid var(--c-slate);
+    background: color-mix(in srgb, var(--c-abyss) 98%, transparent);
     min-height: 0;
     overflow-y: auto;
     gap: 16px;
@@ -601,6 +601,14 @@ function confirmExit() {
     display: flex;
   }
 }
+@media (min-width: 1024px) {
+  .left-rail {
+    width: 248px;
+  }
+  .right-rail {
+    width: 280px;
+  }
+}
 
 .rail-block {
   display: flex;
@@ -609,7 +617,7 @@ function confirmExit() {
   box-sizing: border-box;
 }
 .scene-block {
-  border-bottom: 1px solid hsl(220, 14%, 16%);
+  border-bottom: 1px solid var(--c-slate);
   gap: 8px;
 }
 .clues-rail {
@@ -627,19 +635,19 @@ function confirmExit() {
   gap: 6px;
 }
 .rail-title-icon {
-  color: hsl(165, 45%, 45%);
+  color: var(--c-eld-400);
 }
 .rail-title {
   font-family: $font-display;
   font-size: 0.8125rem;
   letter-spacing: 0.08em;
-  color: hsl(38, 35%, 75%);
+  color: var(--c-paper-300);
 }
 .scene-text {
   font-family: $font-serif;
   font-size: 13px;
   line-height: 1.6;
-  color: hsl(165, 40%, 60%);
+  color: var(--c-eld-200);
 }
 .clues-empty {
   padding: 16px 0;
@@ -649,7 +657,7 @@ function confirmExit() {
   font-family: $font-serif;
   font-size: 12px;
   font-style: italic;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .clue-card {
   padding: 10px 12px;
@@ -657,9 +665,9 @@ function confirmExit() {
   font-size: 12px;
   line-height: 1.6;
   font-family: $font-serif;
-  background: hsla(38, 18%, 18%, 0.25);
-  border: 1px solid hsla(38, 20%, 30%, 0.2);
-  color: hsl(38, 35%, 68%);
+  background: color-mix(in srgb, var(--c-paper-900) 25%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-paper-800) 20%, transparent);
+  color: var(--c-paper-400);
   margin-bottom: 8px;
 }
 .dossier-block {
@@ -681,7 +689,7 @@ function confirmExit() {
   font-family: $font-serif;
   font-style: italic;
   font-size: 12px;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
   padding: 32px 0;
   text-align: center;
 }
@@ -694,7 +702,7 @@ function confirmExit() {
   right: 0;
   bottom: 0;
   z-index: 60;
-  background: hsla(220, 20%, 4%, 0.6);
+  background: color-mix(in srgb, var(--c-void) 60%, transparent);
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -703,9 +711,9 @@ function confirmExit() {
   width: 100%;
   max-width: 720px;
   max-height: 72vh;
-  background: hsl(220, 18%, 7%);
+  background: var(--c-abyss);
   border-radius: 16px 16px 0 0;
-  border: 1px solid hsl(220, 14%, 16%);
+  border: 1px solid var(--c-slate);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -715,18 +723,18 @@ function confirmExit() {
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
-  border-bottom: 1px solid hsl(220, 14%, 16%);
+  border-bottom: 1px solid var(--c-slate);
   flex-shrink: 0;
 }
 .sheet-title {
   font-family: $font-display;
   font-size: 0.9375rem;
   letter-spacing: 0.06em;
-  color: hsl(38, 45%, 85%);
+  color: var(--c-paper-100);
 }
 .sheet-close {
   font-size: 14px;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
   padding: 0 6px;
 }
 .sheet-body {
@@ -735,7 +743,7 @@ function confirmExit() {
   padding: 16px;
   box-sizing: border-box;
 }
-@media (min-width: 1024px) {
+@media (min-width: 768px) {
   .sheet-mask {
     display: none;
   }

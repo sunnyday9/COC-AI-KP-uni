@@ -3,7 +3,9 @@
  * ConfirmModal —— 危险/重要操作确认对话框（T2 基础基件，ADR-0004 设计稿 ModalConfirm）。
  * 跨端：不用 Teleport（小程序不支持），由页面在根节点条件渲染 <confirm-modal v-if>，
  * fixed 遮罩 + 居中面板。按钮分级：danger（血，确认删除类）/ warning（金）/ 默认（绿主）。
+ * 按钮复用 ui/Button（#27 项 2），类名 .btn* 契约不变。
  */
+import Button from './Button.vue'
 withDefaults(
   defineProps<{
     /** 面板标题（如「删除这条调查？」） */
@@ -41,18 +43,17 @@ const emit = defineEmits<{
       </view>
       <text class="cm-msg">{{ message }}</text>
       <view class="cm-foot">
-        <button class="btn btn-ghost cm-btn" :disabled="loading" @click="emit('cancel')">
+        <Button variant="ghost" extra-class="cm-btn" :disabled="loading" @click="emit('cancel')">
           {{ cancelText }}
-        </button>
-        <button
-          class="btn cm-btn"
-          :class="tone === 'danger' ? 'btn-danger-solid' : tone === 'warning' ? 'btn-warning' : 'btn-primary'"
+        </Button>
+        <Button
+          :variant="tone === 'danger' ? 'danger-solid' : tone === 'warning' ? 'warning' : 'primary'"
+          extra-class="cm-btn"
           :disabled="loading"
-          :hover-class="loading ? 'none' : 'btn-hover-press'"
           @click="emit('confirm')"
         >
           {{ loading ? '处理中…' : confirmText }}
-        </button>
+        </Button>
       </view>
     </view>
   </view>

@@ -6,6 +6,7 @@ import { getBridge } from '../../platform'
 import type { SoloRoomListItem } from '../../../../../shared/types/room'
 import AppLayout from '../../components/layout/AppLayout.vue'
 import AppIcon from '../../components/ui/AppIcon.vue'
+import Button from '../../components/ui/Button.vue'
 
 const settingsStore = useSettingsStore()
 
@@ -94,14 +95,14 @@ function goSettings() {
       <view class="page-body">
         <!-- 操作条：导入故事（T2 按钮级）+ 多人联机入口 -->
         <view class="action-bar">
-          <button class="btn-primary action-import" hover-class="btn-press" @click="goScripts">
+          <Button variant="primary" extra-class="action-import" @click="goScripts">
             <app-icon name="book-open" :size="14" class="action-icon" />
             <text>导入故事</text>
-          </button>
-          <button class="btn-outline action-rooms" hover-class="btn-press" @click="goRooms">
+          </Button>
+          <Button variant="outline" extra-class="action-rooms" @click="goRooms">
             <app-icon name="users" :size="14" class="action-icon" />
             <text>多人联机</text>
-          </button>
+          </Button>
         </view>
 
         <!-- 未登录引导（点击 → 设置档案卡登录） -->
@@ -137,6 +138,8 @@ function goSettings() {
               </view>
               <view class="story-info">
                 <text class="story-name">{{ story.name }}</text>
+                <!-- 幕/场景结构仅在用户剧本带分级标题时存在（索引层不解析章节骨架）——
+                     卡片元数据以信息块计数兜底，见 #27 项 3 -->
                 <text class="story-meta">{{ story.chunkCount }} 个信息块</text>
               </view>
               <!-- T7：进行中角标（续玩入口，替代独立「继续游戏」块） -->
@@ -189,7 +192,7 @@ function goSettings() {
   right: 0;
   bottom: 0;
   pointer-events: none;
-  background: radial-gradient(ellipse at center top, hsla(165, 40%, 15%, 0.14) 0%, transparent 62%);
+  background: radial-gradient(ellipse at center top, color-mix(in srgb, var(--c-eld-800) 14%, transparent) 0%, transparent 62%);
 }
 .sigil {
   position: absolute;
@@ -199,7 +202,7 @@ function goSettings() {
   height: 200px;
   margin-left: -100px;
   opacity: 0.035;
-  color: hsl(165, 60%, 35%);
+  color: var(--c-eld-500);
 }
 .ring {
   position: absolute;
@@ -240,7 +243,7 @@ function goSettings() {
   font-size: 10px;
   letter-spacing: 0.34em;
   text-transform: uppercase;
-  color: hsl(165, 45%, 40%);
+  color: var(--c-eld-600);
   margin-bottom: 10px;
 }
 .hero-title {
@@ -250,8 +253,8 @@ function goSettings() {
   font-family: $font-display;
   font-size: 2rem;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
-  text-shadow: 0 2px 14px hsla(220, 20%, 4%, 0.9);
+  color: var(--c-paper-100);
+  text-shadow: 0 2px 14px color-mix(in srgb, var(--c-void) 90%, transparent);
 }
 .hero-sub {
   position: relative;
@@ -261,7 +264,7 @@ function goSettings() {
   font-size: 0.8125rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: hsl(220, 10%, 38%);
+  color: var(--c-slate-light);
   font-family: $font-body;
 }
 .hero-divider {
@@ -299,9 +302,6 @@ function goSettings() {
 .action-icon {
   color: inherit;
 }
-.btn-press {
-  opacity: 0.82;
-}
 
 /* ── 未登录引导 ── */
 .login-hint {
@@ -312,18 +312,18 @@ function goSettings() {
   margin-bottom: 20px;
   padding: 10px 14px;
   border-radius: 10px;
-  background: hsla(42, 40%, 10%, 0.35);
-  border: 1px dashed hsla(42, 60%, 45%, 0.35);
+  background: color-mix(in srgb, var(--c-ritual-900) 35%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--c-ritual-400) 35%, transparent);
   cursor: pointer;
 }
 .login-hint-icon {
-  color: hsl(42, 60%, 60%);
+  color: var(--c-ritual-300);
   flex-shrink: 0;
 }
 .login-hint-text {
   font-size: 12.5px;
   font-family: $font-serif;
-  color: hsl(42, 40%, 70%);
+  color: var(--c-ritual-200);
 }
 
 /* ── 新调查板块 ── */
@@ -334,13 +334,13 @@ function goSettings() {
   margin-bottom: 16px;
 }
 .stories-icon {
-  color: hsl(165, 50%, 45%);
+  color: var(--c-eld-400);
 }
 .stories-title {
   font-family: $font-display;
   font-size: 1.125rem;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
   letter-spacing: 0.06em;
 }
 
@@ -355,7 +355,7 @@ function goSettings() {
   font-size: 0.875rem;
   font-family: $font-serif;
   font-style: italic;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 
 .story-grid {
@@ -372,8 +372,8 @@ function goSettings() {
   gap: 14px;
   padding: 18px 16px;
   background: rgba(0, 0, 0, 0.6);
-  border-left: 3px solid hsla(165, 60%, 35%, 0.4);
-  border-color: hsla(220, 15%, 15%, 0.8);
+  border-left: 3px solid color-mix(in srgb, var(--c-eld-500) 40%, transparent);
+  border-color: color-mix(in srgb, var(--c-obsidian-light) 80%, transparent);
   position: relative;
   overflow: hidden;
   transition: all 0.2s;
@@ -382,7 +382,7 @@ function goSettings() {
 .story-card-hover {
   background: rgba(0, 0, 0, 0.75);
   transform: translateY(-1px);
-  box-shadow: 0 0 18px hsla(165, 60%, 35%, 0.14), inset 0 0 30px hsla(165, 60%, 35%, 0.03);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--c-eld-500) 14%, transparent), inset 0 0 30px color-mix(in srgb, var(--c-eld-500) 3%, transparent);
 }
 .story-badge {
   flex-shrink: 0;
@@ -394,9 +394,9 @@ function goSettings() {
   justify-content: center;
   font-family: $font-display;
   font-size: 1.125rem;
-  border: 1px solid hsla(165, 45%, 22%, 0.6);
-  background: hsla(165, 35%, 10%, 0.7);
-  color: hsl(165, 50%, 78%);
+  border: 1px solid color-mix(in srgb, var(--c-eld-700) 60%, transparent);
+  background: color-mix(in srgb, var(--c-eld-900) 70%, transparent);
+  color: var(--c-eld-100);
 }
 .story-info {
   min-width: 0;
@@ -408,7 +408,7 @@ function goSettings() {
   font-weight: 600;
   font-size: 1rem;
   word-break: break-all;
-  color: #fff;
+  color: var(--c-paper-50);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 .story-meta {
@@ -416,7 +416,7 @@ function goSettings() {
   margin-top: 2px;
   font-size: 12px;
   font-family: $font-mono;
-  color: hsl(220, 10%, 45%);
+  color: var(--c-fog);
 }
 .story-cta {
   flex-shrink: 0;
@@ -424,9 +424,9 @@ function goSettings() {
   font-weight: 500;
   padding: 6px 12px;
   border-radius: 0.5rem;
-  border: 1px solid hsla(165, 45%, 22%, 0.5);
-  background: hsla(165, 35%, 10%, 0.6);
-  color: hsl(165, 50%, 78%);
+  border: 1px solid color-mix(in srgb, var(--c-eld-700) 50%, transparent);
+  background: color-mix(in srgb, var(--c-eld-900) 60%, transparent);
+  color: var(--c-eld-100);
   opacity: 0.75;
 }
 /* 进行中角标（eldritch 绿脉冲点） */
@@ -439,16 +439,16 @@ function goSettings() {
   font-weight: 600;
   padding: 6px 12px;
   border-radius: 9999px;
-  border: 1px solid hsla(165, 55%, 30%, 0.6);
-  background: hsla(165, 40%, 14%, 0.6);
-  color: hsl(165, 55%, 75%);
+  border: 1px solid color-mix(in srgb, var(--c-eld-600) 60%, transparent);
+  background: color-mix(in srgb, var(--c-eld-800) 60%, transparent);
+  color: var(--c-eld-100);
 }
 .resume-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: hsl(165, 60%, 45%);
-  box-shadow: 0 0 6px hsl(165, 60%, 45%);
+  background: var(--c-eld-400);
+  box-shadow: 0 0 6px var(--c-eld-400);
   animation: resume-pulse 1.6s ease-in-out infinite;
 }
 @keyframes resume-pulse {
@@ -471,13 +471,13 @@ function goSettings() {
   font-family: $font-serif;
   font-style: italic;
   margin-bottom: 12px;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 .empty-hint {
   display: block;
   font-size: 0.875rem;
   margin-bottom: 24px;
-  color: hsl(220, 10%, 45%);
+  color: var(--c-fog);
 }
 .empty-btn {
   background: rgba(0, 0, 0, 0.6);

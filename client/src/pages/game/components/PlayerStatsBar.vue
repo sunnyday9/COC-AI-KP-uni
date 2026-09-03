@@ -131,9 +131,9 @@ const sanPct = computed(() => {
   align-items: center;
   gap: 12px 32px;
   padding: 16px 24px;
-  background: hsla(220, 18%, 7%, 0.95);
-  border-top: 1px solid hsla(220, 14%, 22%, 0.8);
-  box-shadow: 0 -4px 24px hsla(220, 20%, 4%, 0.8);
+  background: color-mix(in srgb, var(--c-abyss) 95%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate-light) 80%, transparent);
+  box-shadow: 0 -4px 24px color-mix(in srgb, var(--c-void) 80%, transparent);
   backdrop-filter: blur(12px);
 }
 
@@ -153,10 +153,10 @@ const sanPct = computed(() => {
   justify-content: center;
   font-family: $font-display;
   font-size: 1.125rem;
-  background: hsla(38, 18%, 18%, 0.4);
-  border: 1px solid hsla(38, 20%, 30%, 0.3);
-  color: hsl(38, 35%, 68%);
-  box-shadow: inset 0 0 10px hsla(220, 20%, 4%, 0.5);
+  background: color-mix(in srgb, var(--c-paper-900) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-paper-800) 30%, transparent);
+  color: var(--c-paper-400);
+  box-shadow: inset 0 0 10px color-mix(in srgb, var(--c-void) 50%, transparent);
 }
 .identity-text {
   display: flex;
@@ -166,14 +166,14 @@ const sanPct = computed(() => {
   font-family: $font-serif;
   font-size: 0.875rem;
   letter-spacing: 0.05em;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 .record-label {
   font-family: $font-mono;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: hsl(220, 8%, 50%);
+  color: var(--c-fog);
 }
 
 .core-stats {
@@ -194,7 +194,7 @@ const sanPct = computed(() => {
   font-size: 0.65rem;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 .stat-values {
   display: flex;
@@ -205,31 +205,31 @@ const sanPct = computed(() => {
 .stat-current {
   font-size: 1.75rem;
   line-height: 1;
-  color: hsl(38, 40%, 78%);
+  color: var(--c-paper-300);
   transition: all 0.3s;
 }
 .stat-divider {
   font-size: 1rem;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .stat-max {
   font-size: 1rem;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 
 /* 危险状态 */
 .san-critical .stat-current {
-  color: hsl(330, 60%, 65%);
-  text-shadow: 0 0 12px hsla(330, 60%, 50%, 0.6), 0 0 24px hsla(330, 60%, 40%, 0.4);
+  color: #E05AB5; /* sanity 危机粉（专属色，不入色板） */
+  text-shadow: 0 0 12px color-mix(in srgb, #D22D5A 60%, transparent), 0 0 24px color-mix(in srgb, #E05AB5 40%, transparent);
   animation: sanity-flicker 3s ease-in-out infinite alternate;
 }
 .hp-critical .stat-current {
-  color: hsl(0, 60%, 60%);
-  text-shadow: 0 0 12px hsla(0, 65%, 45%, 0.6);
+  color: var(--c-blood-200);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--c-blood-400) 60%, transparent);
   animation: pulse-slow 2s ease-in-out infinite;
 }
 .luck-values .stat-current {
-  color: hsl(42, 50%, 60%);
+  color: var(--c-ritual-300);
   font-size: 1.25rem;
 }
 
@@ -242,10 +242,10 @@ const sanPct = computed(() => {
   font-family: $font-mono;
   letter-spacing: 0.15em;
   padding: 4px 16px;
-  background: hsla(220, 16%, 11%, 0.5);
-  border: 1px solid hsla(220, 14%, 16%, 0.5);
+  background: color-mix(in srgb, var(--c-obsidian) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
   border-radius: 4px;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 @media (min-width: 1280px) {
   .attr-strip {
@@ -253,7 +253,7 @@ const sanPct = computed(() => {
   }
 }
 .attr-dot {
-  color: hsl(220, 14%, 22%);
+  color: var(--c-slate-light);
 }
 
 /* 分类标签按钮 */
@@ -267,17 +267,17 @@ const sanPct = computed(() => {
   font-family: $font-mono;
   font-size: 0.7rem;
   letter-spacing: 0.1em;
-  color: hsl(220, 10%, 40%);
-  background: hsla(220, 16%, 11%, 0.6);
-  border: 1px solid hsla(220, 14%, 22%, 0.4);
+  color: var(--c-ash);
+  background: color-mix(in srgb, var(--c-obsidian) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-slate-light) 40%, transparent);
   border-radius: 4px;
   line-height: 1.4;
 }
 .classified-tab:active,
 .tab-active {
-  color: hsl(38, 35%, 68%);
-  border-color: hsla(38, 30%, 40%, 0.4);
-  background: hsla(220, 16%, 14%, 0.8);
+  color: var(--c-paper-400);
+  border-color: color-mix(in srgb, var(--c-paper-700) 40%, transparent);
+  background: color-mix(in srgb, var(--c-obsidian-light) 80%, transparent);
 }
 .dot {
   width: 6px;
@@ -285,7 +285,7 @@ const sanPct = computed(() => {
   border-radius: 50%;
 }
 .dot-on { background: $c-eldritch-400; }
-.dot-off { background: hsl(220, 8%, 50%); }
+.dot-off { background: var(--c-fog); }
 
 /* 技能抽屉 */
 .skills-drawer {
@@ -295,12 +295,12 @@ const sanPct = computed(() => {
   width: 100%;
   padding: 24px;
   box-sizing: border-box;
-  background: hsla(220, 18%, 6%, 0.96);
-  border-top: 1px solid hsla(38, 20%, 30%, 0.2);
+  background: color-mix(in srgb, var(--c-abyss) 96%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--c-paper-800) 20%, transparent);
   backdrop-filter: blur(16px);
   max-height: 50vh;
   overflow-y: auto;
-  box-shadow: 0 -8px 32px hsla(220, 20%, 4%, 0.7);
+  box-shadow: 0 -8px 32px color-mix(in srgb, var(--c-void) 70%, transparent);
 }
 .drawer-head {
   display: flex;
@@ -308,13 +308,13 @@ const sanPct = computed(() => {
   justify-content: space-between;
   margin-bottom: 24px;
   padding-bottom: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid color-mix(in srgb, var(--c-paper-50) 5%, transparent);
 }
 .drawer-title {
   font-family: $font-display;
   font-size: 1.125rem;
   letter-spacing: 0.1em;
-  color: hsl(38, 40%, 78%);
+  color: var(--c-paper-300);
 }
 .drawer-close {
   background: transparent;
@@ -322,7 +322,7 @@ const sanPct = computed(() => {
   padding: 0;
   font-family: $font-mono;
   font-size: 12px;
-  color: hsl(220, 8%, 50%);
+  color: var(--c-fog);
   line-height: 1.4;
 }
 .skills-grid {
@@ -341,24 +341,24 @@ const sanPct = computed(() => {
   justify-content: space-between;
   align-items: baseline;
   padding-bottom: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid color-mix(in srgb, var(--c-paper-50) 5%, transparent);
 }
 .skill-name {
   font-family: $font-serif;
   font-size: 0.875rem;
-  color: hsl(220, 8%, 50%);
+  color: var(--c-fog);
 }
 .skill-val {
   font-family: $font-mono;
   font-size: 0.875rem;
-  color: hsl(38, 30%, 60%);
+  color: var(--c-paper-500);
 }
 
 /* 动画 */
 @keyframes sanity-flicker {
-  0%, 100% { opacity: 1; text-shadow: 0 0 12px hsla(330, 60%, 50%, 0.6); }
-  30% { opacity: 0.8; text-shadow: 0 0 16px hsla(330, 60%, 50%, 0.8); }
-  40% { opacity: 1; text-shadow: 0 0 8px hsla(330, 60%, 50%, 0.4); }
-  80% { opacity: 0.9; text-shadow: 0 0 20px hsla(330, 60%, 50%, 0.7); }
+  0%, 100% { opacity: 1; text-shadow: 0 0 12px color-mix(in srgb, #D22D5A 60%, transparent); }
+  30% { opacity: 0.8; text-shadow: 0 0 16px color-mix(in srgb, #E05AB5 80%, transparent); }
+  40% { opacity: 1; text-shadow: 0 0 8px color-mix(in srgb, #E05AB5 40%, transparent); }
+  80% { opacity: 0.9; text-shadow: 0 0 20px color-mix(in srgb, #E05AB5 70%, transparent); }
 }
 </style>

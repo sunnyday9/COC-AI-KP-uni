@@ -33,7 +33,7 @@ export default {
 page,
 body {
   background-color: $c-void;
-  color: hsl(38, 40%, 78%);
+  color: var(--c-paper-300);
   font-family: $font-body;
 }
 
@@ -170,6 +170,13 @@ page {
   --shadow-mana: #{$shadow-mana};
   --shadow-ink: #{$shadow-ink};
   --shadow-ink-lg: #{$shadow-ink-lg};
+
+  /* 辉光浓度层（语义色半透明；收敛 .btn-* 等散落 rgba(51,204,166,…) 字面量，
+     页面同款发光一律 color-mix(in srgb, var(--c-X) 浓度, transparent) 引用） */
+  --glow-primary: color-mix(in srgb, var(--c-primary) 20%, transparent);
+  --glow-primary-strong: color-mix(in srgb, var(--c-primary) 40%, transparent);
+  --glow-danger: color-mix(in srgb, var(--c-danger) 20%, transparent);
+  --glow-warning: color-mix(in srgb, var(--c-warning) 20%, transparent);
 }
 
 /* 大气滚动条（H5；小程序使用原生滚动条） */
@@ -178,20 +185,20 @@ page {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: hsl(220, 18%, 7%);
+  background: var(--c-abyss);
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(220, 14%, 16%);
+  background: var(--c-slate);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(220, 10%, 30%);
+  background: var(--c-ash);
 }
 
 /* 选中色（H5） */
 ::selection {
-  background: hsla(165, 60%, 35%, 0.3);
-  color: hsl(38, 50%, 88%);
+  background: color-mix(in srgb, var(--c-eld-500) 30%, transparent);
+  color: var(--c-paper-100);
 }
 
 /* 移除 uni button 默认边框（小程序 button::after）与内边距差异 */
@@ -205,11 +212,11 @@ button {
 /* ── 卡片：墨迹边框、微内辉光 ── */
 .gothic-card {
   border-radius: 0.5rem;
-  background: hsla(220, 16%, 11%, 0.88);
-  border: 1px solid hsl(220, 14%, 16%);
+  background: color-mix(in srgb, var(--c-obsidian) 88%, transparent);
+  border: 1px solid var(--c-slate);
   box-shadow:
-    0 1px 3px hsla(220, 20%, 4%, 0.6),
-    0 0 0 1px hsla(220, 14%, 16%, 0.3);
+    0 1px 3px color-mix(in srgb, var(--c-void) 60%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--c-slate) 30%, transparent);
 }
 
 /* ── 按钮：克苏鲁辉光主按钮 ── */
@@ -228,40 +235,40 @@ button {
   box-sizing: border-box;
 }
 .gothic-btn {
-  background: hsla(165, 45%, 22%, 0.7);
-  color: hsl(165, 50%, 78%);
-  border: 1px solid hsla(165, 55%, 28%, 0.6);
+  background: color-mix(in srgb, var(--c-eld-700) 70%, transparent);
+  color: var(--c-eld-100);
+  border: 1px solid color-mix(in srgb, var(--c-eld-600) 60%, transparent);
 }
 .gothic-btn-danger {
-  background: hsla(0, 55%, 22%, 0.7);
-  color: hsl(0, 55%, 82%);
-  border: 1px solid hsla(0, 60%, 28%, 0.6);
+  background: color-mix(in srgb, var(--c-blood-700) 70%, transparent);
+  color: var(--c-blood-100);
+  border: 1px solid color-mix(in srgb, var(--c-blood-600) 60%, transparent);
 }
 .gothic-btn-secondary {
-  background: hsla(220, 16%, 11%, 0.75);
-  color: hsl(38, 25%, 55%);
-  border: 1px solid hsl(220, 14%, 16%);
+  background: color-mix(in srgb, var(--c-obsidian) 75%, transparent);
+  color: var(--c-paper-600);
+  border: 1px solid var(--c-slate);
 }
 
 /* hover 态（Task 9 / Task 8 Minor ⑤）：H5 保留（原 style.css hover 规则），
    MP 端无 :hover 概念，跳过（MP 用 hover-class 按压态，见各页关键按钮） */
 // #ifdef H5
 .gothic-card:hover {
-  border-color: hsla(220, 14%, 22%, 0.8);
-  background: hsla(220, 16%, 12%, 0.92);
+  border-color: color-mix(in srgb, var(--c-slate-light) 80%, transparent);
+  background: color-mix(in srgb, var(--c-obsidian-light) 92%, transparent);
 }
 .gothic-btn:hover:not(:disabled) {
-  background: hsla(165, 50%, 25%, 0.85);
-  border-color: hsl(165, 60%, 35%);
+  background: color-mix(in srgb, var(--c-eld-500) 85%, transparent);
+  border-color: var(--c-eld-400);
 }
 .gothic-btn-danger:hover:not(:disabled) {
-  background: hsla(0, 60%, 25%, 0.85);
-  border-color: hsl(0, 65%, 35%);
+  background: color-mix(in srgb, var(--c-blood-500) 85%, transparent);
+  border-color: var(--c-blood-400);
 }
 .gothic-btn-secondary:hover:not(:disabled) {
-  background: hsla(220, 16%, 14%, 0.9);
-  color: hsl(38, 40%, 78%);
-  border-color: hsl(220, 12%, 22%);
+  background: color-mix(in srgb, var(--c-slate) 90%, transparent);
+  color: var(--c-paper-300);
+  border-color: var(--c-slate-light);
 }
 // #endif
 
@@ -289,7 +296,7 @@ button {
 .btn-primary {
   background: var(--c-primary);
   color: var(--c-on-primary);
-  box-shadow: 0 0 10px rgba(51, 204, 166, 0.2);
+  box-shadow: 0 0 10px var(--glow-primary);
 }
 /* outline 绿 — 次级 */
 .btn-outline {
@@ -311,14 +318,14 @@ button {
 /* 实底血 — 危险主操作 */
 .btn-danger-solid {
   background: var(--c-danger);
-  color: #f9f4ec;
-  box-shadow: 0 0 10px rgba(210, 45, 45, 0.2);
+  color: var(--c-paper-50);
+  box-shadow: 0 0 10px var(--glow-danger);
 }
 /* 实底金 — 警示主操作（如清除/重置类） */
 .btn-warning {
   background: var(--c-warning);
   color: var(--c-on-primary);
-  box-shadow: 0 0 10px rgba(217, 163, 38, 0.2);
+  box-shadow: 0 0 10px var(--glow-warning);
 }
 .btn:disabled,
 .btn.is-disabled {
@@ -329,7 +336,7 @@ button {
 // #ifdef H5
 .btn-primary:hover:not(:disabled) {
   background: var(--c-eld-200);
-  box-shadow: 0 0 16px rgba(51, 204, 166, 0.4);
+  box-shadow: 0 0 16px var(--glow-primary-strong);
 }
 .btn-outline:hover:not(:disabled) {
   border-color: var(--c-eld-300);
@@ -364,33 +371,33 @@ button {
   border-radius: 0.5rem;
   font-size: 0.875rem;
   line-height: 1.5;
-  background: hsla(220, 18%, 7%, 0.85);
-  color: hsl(38, 40%, 78%);
-  border: 1px solid hsl(220, 14%, 16%);
+  background: color-mix(in srgb, var(--c-abyss) 85%, transparent);
+  color: var(--c-paper-300);
+  border: 1px solid var(--c-slate);
   box-sizing: border-box;
 }
 .gothic-input::placeholder {
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .gothic-input:focus {
   outline: none;
-  border-color: hsla(165, 55%, 28%, 0.6);
+  border-color: color-mix(in srgb, var(--c-eld-600) 60%, transparent);
 }
 
 /* placeholder 类（小程序 input/textarea 无 ::placeholder，用 placeholder-class） */
 .gothic-ph {
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 
 /* ── 标题排版 ── */
 .gothic-heading {
   font-family: $font-display;
   letter-spacing: 0.05em;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 .gothic-body {
   font-family: $font-serif;
-  color: hsl(38, 40%, 78%);
+  color: var(--c-paper-300);
 }
 
 /* ── 装饰工具 ── */
@@ -399,9 +406,9 @@ button {
   background: linear-gradient(
     to right,
     transparent,
-    hsl(220, 14%, 16%),
-    hsla(165, 60%, 35%, 0.2),
-    hsl(220, 14%, 16%),
+    var(--c-slate),
+    color-mix(in srgb, var(--c-eld-500) 20%, transparent),
+    var(--c-slate),
     transparent
   );
 }
@@ -416,7 +423,7 @@ button {
   background: radial-gradient(
     ellipse at center,
     transparent 70%,
-    hsla(220, 20%, 4%, 0.4) 100%
+    color-mix(in srgb, var(--c-void) 40%, transparent) 100%
   );
   pointer-events: none;
   z-index: 1;
@@ -427,8 +434,8 @@ button {
   display: inline-block;
   width: 1.5rem;
   height: 1.5rem;
-  border: 2px solid hsla(165, 60%, 35%, 0.2);
-  border-top-color: hsl(165, 60%, 35%);
+  border: 2px solid color-mix(in srgb, var(--c-eld-500) 20%, transparent);
+  border-top-color: var(--c-eld-500);
   border-radius: 50%;
   animation: sigil-spin 2s linear infinite;
 }
@@ -452,8 +459,8 @@ button {
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 8px hsla(165, 60%, 35%, 0.2); }
-  50% { box-shadow: 0 0 20px hsla(165, 60%, 35%, 0.45); }
+  0%, 100% { box-shadow: 0 0 8px color-mix(in srgb, var(--c-eld-500) 20%, transparent); }
+  50% { box-shadow: 0 0 20px color-mix(in srgb, var(--c-eld-500) 45%, transparent); }
 }
 @keyframes ink-spread {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }

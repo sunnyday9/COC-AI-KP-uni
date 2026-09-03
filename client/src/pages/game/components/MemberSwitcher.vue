@@ -56,22 +56,22 @@ const emit = defineEmits<{ select: [userId: number] }>()
   padding: 3px 10px;
   margin-right: 6px;
   border-radius: 9999px;
-  border: 1px solid hsla(220, 14%, 16%, 0.55);
-  background: hsla(220, 16%, 11%, 0.55);
-  color: hsl(220, 10%, 58%);
+  border: 1px solid color-mix(in srgb, var(--c-slate) 55%, transparent);
+  background: color-mix(in srgb, var(--c-obsidian) 55%, transparent);
+  color: var(--c-fog);
   font-size: 11px;
   line-height: 1.5;
   cursor: pointer;
   transition: all 0.2s;
 }
 .member-chip-active {
-  background: hsla(165, 45%, 22%, 0.3);
-  border-color: hsla(165, 55%, 32%, 0.55);
-  color: hsl(165, 50%, 82%);
+  background: color-mix(in srgb, var(--c-eld-700) 30%, transparent);
+  border-color: color-mix(in srgb, var(--c-eld-500) 55%, transparent);
+  color: var(--c-eld-100);
 }
 .member-chip:active {
-  color: hsl(38, 25%, 55%);
-  border-color: hsla(220, 12%, 22%, 0.6);
+  color: var(--c-paper-600);
+  border-color: color-mix(in srgb, var(--c-slate-light) 60%, transparent);
 }
 .chip-avatar {
   display: inline-flex;
@@ -81,9 +81,9 @@ const emit = defineEmits<{ select: [userId: number] }>()
   height: 16px;
   border-radius: 50%;
   font-size: 10px;
-  background: hsla(165, 45%, 22%, 0.5);
-  border: 1px solid hsla(165, 55%, 28%, 0.4);
-  color: hsl(165, 50%, 78%);
+  background: color-mix(in srgb, var(--c-eld-700) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-eld-600) 40%, transparent);
+  color: var(--c-eld-100);
 }
 .chip-name {
   max-width: 96px;
@@ -93,16 +93,16 @@ const emit = defineEmits<{ select: [userId: number] }>()
 }
 .chip-self {
   font-size: 10px;
-  color: hsl(220, 10%, 42%);
+  color: var(--c-ash);
 }
 .chip-bind {
   font-size: 10px;
   margin-left: 1px;
 }
 .chip-bind-ok {
-  color: hsl(165, 45%, 62%);
+  color: var(--c-eld-200);
 }
 .chip-bind-none {
-  color: hsl(0, 30%, 52%);
+  color: var(--c-blood-400);
 }
 </style>

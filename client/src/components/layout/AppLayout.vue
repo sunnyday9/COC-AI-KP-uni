@@ -166,7 +166,7 @@ function go(item: { key: string; path: string }) {
   position: absolute;
   width: 32px;
   height: 32px;
-  border-color: hsla(165, 60%, 35%, 0.3);
+  border-color: color-mix(in srgb, var(--c-eld-500) 30%, transparent);
 }
 .corner.tl { top: 0; left: 0; border-top: 1px solid; border-left: 1px solid; }
 .corner.tr { top: 0; right: 0; border-top: 1px solid; border-right: 1px solid; }
@@ -179,8 +179,8 @@ function go(item: { key: string; path: string }) {
   font-size: 1.25rem;
   font-weight: bold;
   letter-spacing: 0.1em;
-  color: hsl(38, 50%, 88%);
-  text-shadow: 0 0 20px hsla(165, 60%, 35%, 0.2);
+  color: var(--c-paper-100);
+  text-shadow: 0 0 20px color-mix(in srgb, var(--c-eld-500) 20%, transparent);
   position: relative;
   z-index: 10;
 }
@@ -190,7 +190,7 @@ function go(item: { key: string; path: string }) {
   font-size: 10px;
   letter-spacing: 0.25em;
   text-transform: uppercase;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
   position: relative;
   z-index: 10;
 }
@@ -231,7 +231,7 @@ function go(item: { key: string; path: string }) {
   width: 2px;
   border-radius: 9999px;
   background: $c-eldritch-400;
-  box-shadow: 0 0 8px hsla(165, 60%, 35%, 0.5);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--c-eld-500) 50%, transparent);
 }
 .nav-icon {
   font-size: 1rem;
@@ -244,7 +244,7 @@ function go(item: { key: string; path: string }) {
 
 .sidebar-footer {
   padding: 12px 20px;
-  border-top: 1px solid hsla(220, 14%, 16%, 0.4);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate) 40%, transparent);
 }
 .footer-quote {
   display: block;
@@ -252,7 +252,7 @@ function go(item: { key: string; path: string }) {
   font-style: italic;
   font-family: $font-serif;
   line-height: 1.6;
-  color: hsl(220, 10%, 25%);
+  color: var(--c-obsidian-light);
 }
 .footer-line {
   margin-top: 8px;
@@ -260,7 +260,7 @@ function go(item: { key: string; path: string }) {
   opacity: 0.1;
   background: repeating-linear-gradient(
     to bottom,
-    hsl(165, 60%, 35%) 0 1px,
+    var(--c-eld-500) 0 1px,
     transparent 1px 4px
   );
 }
@@ -292,8 +292,8 @@ function go(item: { key: string; path: string }) {
   left: 0;
   right: 0;
   z-index: 50;
-  border-top: 1px solid hsla(220, 14%, 16%, 0.6);
-  background: hsla(220, 18%, 7%, 0.85);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate) 60%, transparent);
+  background: color-mix(in srgb, var(--c-abyss) 85%, transparent);
   backdrop-filter: blur(12px);
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -326,7 +326,7 @@ function go(item: { key: string; path: string }) {
   height: 4px;
   border-radius: 50%;
   background: $c-eldritch-400;
-  box-shadow: 0 0 6px hsla(165, 60%, 35%, 0.6);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--c-eld-500) 60%, transparent);
 }
 .bottom-icon {
   font-size: 1.125rem;

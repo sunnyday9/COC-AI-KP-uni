@@ -15,6 +15,7 @@ import { useRoomStore } from '../../../stores/roomStore'
 import { useToast } from '../../../composables/useToast'
 import ChatMessage from '../components/ChatMessage.vue'
 import ConfirmModal from '../../../components/ui/ConfirmModal.vue'
+import Button from '../../../components/ui/Button.vue'
 import { getBridge } from '../../../platform'
 import type { CharacterListItem } from '../../../../../shared/types/room'
 import type { IndexedStory } from '../../../../../shared/types/bridge'
@@ -501,12 +502,13 @@ function readRoomId(): string {
           </view>
         </scroll-view>
         <view class="picker-foot">
-          <button class="btn btn-ghost picker-btn" @click="storyPickerOpen = false">取消</button>
-          <button
-            class="btn btn-primary picker-btn"
+          <Button variant="ghost" extra-class="picker-btn" @click="storyPickerOpen = false">取消</Button>
+          <Button
+            variant="primary"
+            extra-class="picker-btn"
             :disabled="!pickedStoryId"
             @click="confirmStorySelection"
-          >确定</button>
+          >确定</Button>
         </view>
       </view>
     </view>
@@ -531,8 +533,8 @@ function readRoomId(): string {
           </view>
         </scroll-view>
         <view class="picker-foot">
-          <button class="btn btn-ghost picker-btn" @click="showCharPicker = false">取消</button>
-          <button class="btn btn-primary picker-btn" :disabled="!selectedCharId" @click="bindCharacter">确认绑定</button>
+          <Button variant="ghost" extra-class="picker-btn" @click="showCharPicker = false">取消</Button>
+          <Button variant="primary" extra-class="picker-btn" :disabled="!selectedCharId" @click="bindCharacter">确认绑定</Button>
         </view>
       </view>
     </view>
@@ -603,9 +605,9 @@ function readRoomId(): string {
   flex-direction: column;
   height: 100vh;
   background:
-    radial-gradient(ellipse at top, hsla(165, 30%, 12%, 0.4), transparent 60%),
-    #080a0c;
-  color: hsl(38, 40%, 80%);
+    radial-gradient(ellipse at top, color-mix(in srgb, var(--c-eld-900) 40%, transparent), transparent 60%),
+    var(--c-void);
+  color: var(--c-paper-200);
   overflow: hidden;
 }
 
@@ -616,7 +618,7 @@ function readRoomId(): string {
   justify-content: space-between;
   gap: 10px;
   padding: 12px 16px;
-  border-bottom: 1px solid hsla(220, 14%, 16%, 0.8);
+  border-bottom: 1px solid color-mix(in srgb, var(--c-slate) 80%, transparent);
   background: rgba(0, 0, 0, 0.5);
   flex-wrap: wrap;
 }
@@ -631,19 +633,19 @@ function readRoomId(): string {
   font-family: $font-display;
   font-size: 1.125rem;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 .room-phase {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 9999px;
-  border: 1px solid hsla(165, 50%, 30%, 0.4);
-  color: hsl(165, 50%, 70%);
+  border: 1px solid color-mix(in srgb, var(--c-eld-600) 40%, transparent);
+  color: var(--c-eld-200);
 }
 .room-code {
   font-size: 12px;
   font-family: $font-mono;
-  color: hsl(42, 50%, 70%);
+  color: var(--c-ritual-200);
 }
 .header-right {
   display: flex;
@@ -655,20 +657,20 @@ function readRoomId(): string {
   padding: 6px 12px;
   border-radius: 0.5rem;
   background: rgba(0, 0, 0, 0.4);
-  border: 1px solid hsla(220, 14%, 20%, 0.8);
-  color: hsl(220, 20%, 70%);
+  border: 1px solid color-mix(in srgb, var(--c-slate-light) 80%, transparent);
+  color: var(--c-fog);
 }
 .mini-btn:disabled {
   opacity: 0.45;
   pointer-events: none;
 }
 .start-btn {
-  color: hsl(165, 50%, 70%);
-  border-color: hsla(165, 50%, 30%, 0.5);
+  color: var(--c-eld-200);
+  border-color: color-mix(in srgb, var(--c-eld-600) 50%, transparent);
 }
 .danger-btn {
-  color: hsl(0, 50%, 65%);
-  border-color: hsla(0, 50%, 30%, 0.5);
+  color: var(--c-blood-200);
+  border-color: color-mix(in srgb, var(--c-blood-600) 50%, transparent);
 }
 
 /* ── 错误横幅 ── */
@@ -678,8 +680,8 @@ function readRoomId(): string {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 16px;
-  background: hsla(0, 50%, 15%, 0.5);
-  color: hsl(0, 55%, 75%);
+  background: color-mix(in srgb, var(--c-blood-800) 50%, transparent);
+  color: var(--c-blood-100);
   font-size: 0.875rem;
 }
 
@@ -693,7 +695,7 @@ function readRoomId(): string {
   width: 280px;
   flex-shrink: 0;
   padding: 14px 16px;
-  border-right: 1px solid hsla(220, 14%, 16%, 0.8);
+  border-right: 1px solid color-mix(in srgb, var(--c-slate) 80%, transparent);
   overflow-y: auto;
   box-sizing: border-box;
 }
@@ -703,7 +705,7 @@ function readRoomId(): string {
 .side-title {
   font-family: $font-display;
   font-size: 0.875rem;
-  color: hsl(38, 40%, 70%);
+  color: var(--c-paper-300);
   margin-bottom: 10px;
   letter-spacing: 0.05em;
 }
@@ -717,11 +719,11 @@ function readRoomId(): string {
   padding: 8px 10px;
   border-radius: 0.5rem;
   background: rgba(0, 0, 0, 0.35);
-  border: 1px solid hsla(165, 45%, 25%, 0.35);
+  border: 1px solid color-mix(in srgb, var(--c-eld-700) 35%, transparent);
 }
 .story-name {
   font-size: 0.8125rem;
-  color: hsl(165, 50%, 75%);
+  color: var(--c-eld-100);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -733,7 +735,7 @@ function readRoomId(): string {
 }
 .story-empty-text {
   font-size: 0.8125rem;
-  color: hsl(38, 30%, 55%);
+  color: var(--c-paper-600);
   font-style: italic;
 }
 
@@ -743,7 +745,7 @@ function readRoomId(): string {
   align-items: flex-start;
   gap: 10px;
   padding: 8px 0;
-  border-bottom: 1px solid hsla(220, 14%, 14%, 0.4);
+  border-bottom: 1px solid color-mix(in srgb, var(--c-slate) 40%, transparent);
 }
 .member-avatar {
   width: 28px;
@@ -754,9 +756,9 @@ function readRoomId(): string {
   align-items: center;
   justify-content: center;
   font-size: 11px;
-  background: hsla(165, 45%, 22%, 0.5);
-  border: 1px solid hsla(165, 55%, 28%, 0.4);
-  color: hsl(165, 50%, 78%);
+  background: color-mix(in srgb, var(--c-eld-700) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-eld-600) 40%, transparent);
+  color: var(--c-eld-100);
 }
 .member-info {
   flex: 1;
@@ -773,18 +775,18 @@ function readRoomId(): string {
 }
 .member-name {
   font-size: 0.875rem;
-  color: hsl(38, 40%, 80%);
+  color: var(--c-paper-200);
 }
 .member-self {
   font-size: 11px;
-  color: hsl(220, 10%, 45%);
+  color: var(--c-ash);
 }
 .member-role {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 9999px;
-  border: 1px solid hsla(165, 50%, 30%, 0.35);
-  color: hsl(165, 50%, 70%);
+  border: 1px solid color-mix(in srgb, var(--c-eld-600) 35%, transparent);
+  color: var(--c-eld-200);
 }
 .member-sub-row {
   display: flex;
@@ -794,17 +796,17 @@ function readRoomId(): string {
 }
 .member-bind {
   font-size: 11px;
-  color: hsl(0, 30%, 55%);
+  color: var(--c-blood-300);
 }
 .member-bind.bind-ok {
-  color: hsl(165, 45%, 65%);
+  color: var(--c-eld-200);
 }
 .member-ready {
   font-size: 11px;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 .member-ready.ready-on {
-  color: hsl(165, 60%, 65%);
+  color: var(--c-eld-200);
 }
 .member-act {
   padding: 2px 8px;
@@ -814,7 +816,7 @@ function readRoomId(): string {
 /* 我的准备（成员） */
 .me-panel {
   padding-top: 12px;
-  border-top: 1px solid hsla(220, 14%, 16%, 0.7);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate) 70%, transparent);
 }
 .me-bound {
   display: flex;
@@ -824,7 +826,7 @@ function readRoomId(): string {
 }
 .me-bound-text {
   font-size: 0.8125rem;
-  color: hsl(165, 50%, 70%);
+  color: var(--c-eld-200);
 }
 .me-unbound {
   display: flex;
@@ -833,7 +835,7 @@ function readRoomId(): string {
 }
 .me-unbound-text {
   font-size: 0.8125rem;
-  color: hsl(38, 25%, 50%);
+  color: var(--c-paper-600);
 }
 .me-unbound-actions {
   display: flex;
@@ -850,19 +852,19 @@ function readRoomId(): string {
   flex-wrap: wrap;
 }
 .ready-btn-on {
-  color: hsl(165, 50%, 70%);
-  border-color: hsla(165, 50%, 30%, 0.5);
+  color: var(--c-eld-200);
+  border-color: color-mix(in srgb, var(--c-eld-600) 50%, transparent);
 }
 
 /* 房主开局条 */
 .start-panel {
   padding-top: 12px;
-  border-top: 1px solid hsla(220, 14%, 16%, 0.7);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate) 70%, transparent);
 }
 .start-hint {
   display: block;
   font-size: 12px;
-  color: hsl(42, 60%, 60%);
+  color: var(--c-ritual-300);
   margin-bottom: 8px;
   font-style: italic;
 }
@@ -889,7 +891,7 @@ function readRoomId(): string {
   width: 100%;
 }
 .chat-empty {
-  color: hsl(220, 10%, 35%);
+  color: var(--c-ash);
   font-style: italic;
   font-family: $font-serif;
   text-align: center;
@@ -899,15 +901,15 @@ function readRoomId(): string {
   display: flex;
   gap: 10px;
   padding: 12px 20px;
-  border-top: 1px solid hsla(220, 14%, 16%, 0.8);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate) 80%, transparent);
   background: rgba(0, 0, 0, 0.5);
 }
 .chat-input {
   flex: 1;
   background: rgba(0, 0, 0, 0.4);
-  border: 1px solid hsla(220, 14%, 20%, 0.8);
+  border: 1px solid color-mix(in srgb, var(--c-slate-light) 80%, transparent);
   border-radius: 0.5rem;
-  color: hsl(38, 40%, 80%);
+  color: var(--c-paper-200);
   padding: 10px 14px;
   font-size: 0.9375rem;
 }
@@ -933,8 +935,8 @@ function readRoomId(): string {
   max-height: 76vh;
   display: flex;
   flex-direction: column;
-  background: #0d1114;
-  border: 1px solid hsla(220, 14%, 20%, 0.8);
+  background: var(--c-abyss);
+  border: 1px solid color-mix(in srgb, var(--c-slate-light) 80%, transparent);
   border-radius: 0.75rem;
   padding: 18px;
   box-sizing: border-box;
@@ -942,7 +944,7 @@ function readRoomId(): string {
 .picker-title {
   font-family: $font-display;
   font-size: 1rem;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
   margin-bottom: 12px;
 }
 .picker-scroll {
@@ -954,9 +956,9 @@ function readRoomId(): string {
 .char-option {
   padding: 10px 12px;
   border-radius: 0.5rem;
-  border: 1px solid hsla(220, 14%, 18%, 0.8);
+  border: 1px solid color-mix(in srgb, var(--c-slate) 80%, transparent);
   margin-bottom: 8px;
-  color: hsl(38, 35%, 75%);
+  color: var(--c-paper-300);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -964,8 +966,8 @@ function readRoomId(): string {
 }
 .story-option.active,
 .char-option.active {
-  border-color: hsla(165, 50%, 35%, 0.6);
-  background: hsla(165, 30%, 12%, 0.5);
+  border-color: color-mix(in srgb, var(--c-eld-500) 60%, transparent);
+  background: color-mix(in srgb, var(--c-eld-900) 50%, transparent);
 }
 .story-option-name {
   overflow: hidden;
@@ -975,10 +977,10 @@ function readRoomId(): string {
 .story-option-meta {
   flex-shrink: 0;
   font-size: 11px;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 .picker-empty {
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
   font-size: 0.875rem;
   padding: 12px 0;
   display: flex;
@@ -1010,15 +1012,15 @@ function readRoomId(): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(8, 10, 12, 0.86);
+  background: color-mix(in srgb, var(--c-void) 86%, transparent);
   padding: 24px;
   box-sizing: border-box;
 }
 .removed-card {
   width: 340px;
   max-width: 100%;
-  background: #0d1114;
-  border: 1px solid hsla(220, 14%, 20%, 0.8);
+  background: var(--c-abyss);
+  border: 1px solid color-mix(in srgb, var(--c-slate-light) 80%, transparent);
   border-radius: 0.75rem;
   padding: 24px 20px;
   display: flex;
@@ -1030,12 +1032,12 @@ function readRoomId(): string {
 .removed-title {
   font-family: $font-display;
   font-size: 1.125rem;
-  color: hsl(0, 50%, 70%);
+  color: var(--c-blood-100);
 }
 .removed-desc {
   font-size: 0.875rem;
   line-height: 1.6;
-  color: hsl(38, 30%, 60%);
+  color: var(--c-paper-500);
   font-family: $font-serif;
 }
 
@@ -1049,7 +1051,7 @@ function readRoomId(): string {
     position: sticky;
     top: 0;
     z-index: 20;
-    background: rgba(5, 7, 9, 0.94);
+    background: color-mix(in srgb, var(--c-void) 94%, transparent);
   }
   .lobby-body {
     flex-direction: column;
@@ -1058,7 +1060,7 @@ function readRoomId(): string {
   .side-panel {
     width: 100%;
     border-right: none;
-    border-bottom: 1px solid hsla(220, 14%, 16%, 0.8);
+    border-bottom: 1px solid color-mix(in srgb, var(--c-slate) 80%, transparent);
     max-height: none;
     overflow-y: visible;
   }

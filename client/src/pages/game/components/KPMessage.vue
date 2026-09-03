@@ -1,70 +1,22 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Message } from '../../../types/game'
+import { parseActionOptions, shouldParseOptions } from '../../../utils/parseActionOptions'
 import AppIcon from '../../../components/ui/AppIcon.vue'
 
 /**
  * T4：KP 消息（ADR-0004）——左对齐羊皮纸卡 + 徽记 + 流式光标。
- * 「可选行动」解析保留 ChatMessage 现行为：选项按钮点击 → emit select-option(text)。
+ * 「可选行动」解析抽自公共 util（#27 项 5，client/src/utils/parseActionOptions）：
+ * 选项按钮点击 → emit select-option(text)。
  */
 const props = defineProps<{ msg: Message }>()
 const emit = defineEmits<{ (e: 'select-option', text: string): void }>()
 
 const parsedMessage = computed(() => {
   const content = props.msg.content ?? ''
-  if (props.msg.role !== 'kp') return { text: content, options: [] }
-
   // During streaming, show raw text to prevent jitter
-  if (props.msg.isStreaming) return { text: content, options: [] }
-
-  // Try to find the options header
-  const headerRegex = /(?:【?可选行动】?|你可以选择[：:]|接下来[你]?打算怎么做[？?]|选项[：:]|你[可以]?的选择[：:])\s*\n+/
-  const match = content.match(headerRegex)
-
-  if (match) {
-    const mainText = content.substring(0, match.index).trim()
-    const afterHeader = content.substring(match.index + match[0].length)
-
-    const lines = afterHeader.split('\n')
-    const options: string[] = []
-    const trailingText: string[] = []
-    let stillInList = true
-
-    for (const line of lines) {
-      if (line.trim() === '') continue
-
-      const isListItem = /^(?:[-*+]|\d+\.)\s+/.test(line)
-      if (stillInList && isListItem) {
-        // Strip out the bullet/number and markdown bolding for cleaner buttons
-        options.push(line.replace(/^(?:[-*+]|\d+\.)\s+/, '').replace(/\*\*/g, '').trim())
-      } else {
-        stillInList = false
-        trailingText.push(line)
-      }
-    }
-
-    if (options.length > 0 && options.length <= 6) {
-      const finalMainText = mainText + (trailingText.length > 0 ? '\n\n' + trailingText.join('\n') : '')
-      return { text: finalMainText || content, options }
-    }
-  } else {
-    // Fallback: Check if there's just a raw list at the very end
-    const fallbackRegex = /\n+((?:(?:[-*+]|\d+\.)\s+[^\n]+(?:\n|$))+)$/
-    const fbMatch = content.match(fallbackRegex)
-    if (fbMatch) {
-      const mainText = content.substring(0, fbMatch.index).trim()
-      const options = fbMatch[1]
-        .split('\n')
-        .map(line => line.replace(/^(?:[-*+]|\d+\.)\s+/, '').replace(/\*\*/g, '').trim())
-        .filter(line => line.length > 0)
-
-      if (options.length > 0 && options.length <= 6) {
-        return { text: mainText || content, options }
-      }
-    }
-  }
-
-  return { text: content, options: [] }
+  if (!shouldParseOptions(props.msg)) return { text: content, options: [] }
+  return parseActionOptions(content, props.msg.role)
 })
 </script>
 

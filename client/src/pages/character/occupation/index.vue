@@ -574,7 +574,7 @@ onLoad((options) => {
             </view>
             <view class="slot-list">
               <view v-for="(key, i) in occupationSkillKeys" :key="i" class="slot-row">
-                <text class="slot-value" :style="{ color: (OCCUPATION_SKILL_VALUES[i] ?? 0) >= 60 ? 'hsl(38, 35%, 68%)' : 'hsl(220, 10%, 30%)' }">
+                <text class="slot-value" :style="{ color: (OCCUPATION_SKILL_VALUES[i] ?? 0) >= 60 ? 'var(--c-paper-400)' : 'var(--c-ash)' }">
                   {{ OCCUPATION_SKILL_VALUES[i] ?? 0 }}%
                 </text>
 
@@ -791,58 +791,58 @@ onLoad((options) => {
   box-sizing: border-box;
 }
 .step-active {
-  background: hsla(165, 45%, 22%, 0.6);
-  border: 1px solid hsl(165, 55%, 28%);
-  color: hsl(165, 50%, 78%);
-  box-shadow: 0 0 10px hsla(165, 60%, 35%, 0.2);
+  background: color-mix(in srgb, var(--c-eld-700) 60%, transparent);
+  border: 1px solid var(--c-eld-600);
+  color: var(--c-eld-100);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--c-eld-500) 20%, transparent);
 }
 .step-done {
-  background: hsla(165, 40%, 15%, 0.5);
-  border: 1px solid hsla(165, 45%, 22%, 0.5);
-  color: hsl(165, 50%, 60%);
+  background: color-mix(in srgb, var(--c-eld-800) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-eld-700) 50%, transparent);
+  color: var(--c-eld-200);
 }
 .step-dim {
-  background: hsl(220, 16%, 11%);
-  border: 1px solid hsl(220, 14%, 16%);
-  color: hsl(220, 10%, 25%);
+  background: var(--c-obsidian);
+  border: 1px solid var(--c-slate);
+  color: var(--c-obsidian-light);
 }
 .step-line {
   width: 32px;
   height: 1px;
 }
-.step-line-dim { background: hsl(220, 14%, 16%); }
-.step-line-active { background: hsl(165, 55%, 28%); }
+.step-line-dim { background: var(--c-slate); }
+.step-line-active { background: var(--c-eld-600); }
 .step-label {
   font-size: 12px;
-  color: hsl(220, 10%, 45%);
+  color: var(--c-ash);
 }
 .step-label-on {
   font-weight: 500;
-  color: hsl(38, 35%, 85%);
+  color: var(--c-paper-100);
 }
 .step-label-dim {
-  color: hsl(220, 10%, 60%);
+  color: var(--c-fog);
 }
 .page-title {
   display: block;
   font-family: $font-display;
   font-size: 1.5rem;
   font-weight: bold;
-  color: #fff;
+  color: var(--c-paper-50);
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
 .page-desc {
   display: block;
   margin-top: 8px;
   font-size: 0.875rem;
-  color: hsl(220, 10%, 60%);
+  color: var(--c-fog);
 }
 .story-name {
-  color: hsl(38, 50%, 75%);
+  color: var(--c-paper-100);
 }
 .occupation-name {
   font-family: $font-display;
-  color: hsl(38, 50%, 75%);
+  color: var(--c-paper-100);
   text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
 }
 .head-divider {
@@ -873,7 +873,7 @@ onLoad((options) => {
   top: 50%;
   transform: translateY(-50%);
   font-size: 14px;
-  color: hsl(220, 10%, 50%);
+  color: var(--c-fog);
   pointer-events: none;
 }
 .filter-row {
@@ -884,7 +884,7 @@ onLoad((options) => {
 .filter-label {
   flex-shrink: 0;
   font-size: 12px;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .pills {
   display: flex;
@@ -903,18 +903,18 @@ onLoad((options) => {
   border: 1px solid transparent;
 }
 .filter-pill-active {
-  background: hsla(165, 45%, 22%, 0.3);
-  border-color: hsla(165, 55%, 28%, 0.5);
-  color: hsl(165, 50%, 78%);
+  background: color-mix(in srgb, var(--c-eld-700) 30%, transparent);
+  border-color: color-mix(in srgb, var(--c-eld-600) 50%, transparent);
+  color: var(--c-eld-100);
 }
 .filter-pill-dim {
-  background: hsla(220, 16%, 11%, 0.5);
-  border-color: hsla(220, 14%, 16%, 0.5);
-  color: hsl(220, 10%, 30%);
+  background: color-mix(in srgb, var(--c-obsidian) 50%, transparent);
+  border-color: color-mix(in srgb, var(--c-slate) 50%, transparent);
+  color: var(--c-ash);
 }
 .filter-pill-dim:active {
-  color: hsl(38, 25%, 55%);
-  border-color: hsla(220, 12%, 22%, 0.6);
+  color: var(--c-paper-600);
+  border-color: color-mix(in srgb, var(--c-slate-light) 60%, transparent);
 }
 .count {
   margin-left: 4px;
@@ -937,7 +937,7 @@ onLoad((options) => {
   font-size: 0.875rem;
   font-family: $font-serif;
   font-style: italic;
-  color: hsl(220, 10%, 22%);
+  color: var(--c-slate-light);
 }
 .grid {
   display: grid;
@@ -960,7 +960,7 @@ onLoad((options) => {
 .occ-card-hover {
   background: rgba(0, 0, 0, 0.7);
   transform: translateY(-2px);
-  box-shadow: 0 0 15px hsla(165, 60%, 35%, 0.25), inset 0 0 30px hsla(165, 60%, 35%, 0.05);
+  box-shadow: 0 0 15px color-mix(in srgb, var(--c-eld-500) 25%, transparent), inset 0 0 30px color-mix(in srgb, var(--c-eld-500) 5%, transparent);
 }
 .occ-head {
   display: flex;
@@ -977,14 +977,14 @@ onLoad((options) => {
   font-family: $font-serif;
   font-weight: 600;
   word-break: break-all;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 .occ-name-en {
   display: block;
   margin-top: 2px;
   font-size: 12px;
   word-break: break-all;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .era-badge {
   flex-shrink: 0;
@@ -993,14 +993,14 @@ onLoad((options) => {
   border-radius: 4px;
 }
 .era-classic {
-  background: hsla(42, 40%, 14%, 0.4);
-  border: 1px solid hsla(42, 55%, 35%, 0.3);
-  color: hsl(42, 60%, 70%);
+  background: color-mix(in srgb, var(--c-ritual-800) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-ritual-500) 30%, transparent);
+  color: var(--c-ritual-200);
 }
 .era-modern {
-  background: hsla(210, 35%, 15%, 0.4);
-  border: 1px solid hsla(210, 50%, 35%, 0.3);
-  color: hsl(210, 50%, 70%);
+  background: color-mix(in srgb, var(--c-mana-800) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-mana-500) 30%, transparent);
+  color: var(--c-mana-200);
 }
 
 .credit-row {
@@ -1011,26 +1011,26 @@ onLoad((options) => {
 }
 .credit-label {
   font-size: 10px;
-  color: hsl(220, 10%, 25%);
+  color: var(--c-obsidian-light);
 }
 .credit-bar {
   flex: 1;
   height: 4px;
   border-radius: 9999px;
   overflow: hidden;
-  background: hsl(220, 16%, 11%);
+  background: var(--c-obsidian);
 }
 .credit-fill {
   height: 100%;
   border-radius: 9999px;
-  background: linear-gradient(90deg, hsl(42, 55%, 32%), hsl(42, 70%, 50%));
+  background: linear-gradient(90deg, var(--c-ritual-600), var(--c-ritual-400));
 }
 .credit-value {
   font-size: 10px;
   font-family: $font-mono;
   width: 56px;
   text-align: right;
-  color: hsl(220, 10%, 25%);
+  color: var(--c-obsidian-light);
 }
 
 .select-hint {
@@ -1042,9 +1042,9 @@ onLoad((options) => {
   border-radius: 6px;
   opacity: 0;
   transition: all 0.2s;
-  background: hsla(165, 35%, 10%, 0.5);
-  border: 1px solid hsla(165, 45%, 22%, 0.3);
-  color: hsl(165, 50%, 78%);
+  background: color-mix(in srgb, var(--c-eld-900) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-eld-700) 30%, transparent);
+  color: var(--c-eld-100);
 }
 .occ-card-hover .select-hint {
   opacity: 1;
@@ -1055,7 +1055,7 @@ onLoad((options) => {
   margin-top: 24px;
   text-align: center;
   font-size: 12px;
-  color: hsl(220, 10%, 45%);
+  color: var(--c-ash);
 }
 
 /* ── Step2/3 通用 body ── */
@@ -1086,16 +1086,16 @@ onLoad((options) => {
   font-family: $font-display;
   font-size: 1rem;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
   letter-spacing: 0.05em;
 }
 .section-hint {
   font-size: 12px;
   font-weight: normal;
-  color: hsl(220, 10%, 60%);
+  color: var(--c-fog);
 }
 .section-warn {
-  color: hsl(42, 60%, 60%);
+  color: var(--c-ritual-300);
 }
 
 .slot-list {
@@ -1121,7 +1121,7 @@ onLoad((options) => {
   font-size: 0.875rem;
   font-family: $font-serif;
   font-weight: 500;
-  color: hsl(38, 40%, 78%);
+  color: var(--c-paper-300);
 }
 .picker-view {
   min-width: 192px;
@@ -1129,16 +1129,16 @@ onLoad((options) => {
   padding: 6px 12px;
   border-radius: 8px;
   font-size: 0.875rem;
-  background: hsla(220, 18%, 7%, 0.85);
-  color: hsl(38, 40%, 78%);
-  border: 1px solid hsl(220, 14%, 16%);
+  background: color-mix(in srgb, var(--c-abyss) 85%, transparent);
+  color: var(--c-paper-300);
+  border: 1px solid var(--c-slate);
   box-sizing: border-box;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .picker-empty {
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .flex-1 {
   flex: 1;
@@ -1160,8 +1160,8 @@ onLoad((options) => {
   justify-content: space-between;
   padding: 10px 12px;
   border-radius: 8px;
-  background: hsla(220, 16%, 11%, 0.6);
-  border: 1px solid hsla(220, 14%, 16%, 0.5);
+  background: color-mix(in srgb, var(--c-obsidian) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
 }
 .attr-key {
   font-size: 12px;
@@ -1169,12 +1169,12 @@ onLoad((options) => {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   font-family: $font-mono;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .attr-val {
   font-family: $font-mono;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 
 .interest-bonus {
@@ -1183,7 +1183,7 @@ onLoad((options) => {
   font-size: 12px;
   font-family: $font-mono;
   flex-shrink: 0;
-  color: hsl(165, 50%, 50%);
+  color: var(--c-eld-300);
 }
 
 .name-input {
@@ -1205,14 +1205,14 @@ onLoad((options) => {
 }
 /* 确认主 CTA 按压态（Task 8 Minor ③：MP 端 :active 不生效 → hover-class） */
 .confirm-btn-hover {
-  background: hsla(165, 50%, 25%, 0.85);
-  border-color: hsl(165, 60%, 35%);
+  background: color-mix(in srgb, var(--c-eld-600) 85%, transparent);
+  border-color: var(--c-eld-500);
 }
 .create-error {
   display: block;
   font-size: 0.8125rem;
   font-family: $font-serif;
-  color: hsl(0, 55%, 65%);
+  color: var(--c-blood-200);
   padding: 8px 0 16px;
 }
 .create-error-head {
@@ -1239,8 +1239,8 @@ onLoad((options) => {
   max-height: 70vh;
   display: flex;
   flex-direction: column;
-  background: #0b0d10;
-  border: 1px solid hsl(220, 14%, 16%);
+  background: var(--c-abyss);
+  border: 1px solid var(--c-slate);
   border-radius: 12px;
   overflow: hidden;
 }
@@ -1248,7 +1248,7 @@ onLoad((options) => {
   padding: 16px 20px 8px;
   font-family: $font-display;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 .picker-scroll {
   flex: 1;
@@ -1256,21 +1256,21 @@ onLoad((options) => {
 }
 .char-option {
   padding: 12px 20px;
-  border-bottom: 1px solid hsl(220, 14%, 12%);
-  color: hsl(38, 40%, 78%);
+  border-bottom: 1px solid var(--c-slate);
+  color: var(--c-paper-300);
   font-family: $font-serif;
   font-size: 0.9375rem;
 }
 .char-option.active {
-  background: hsla(165, 45%, 22%, 0.25);
-  color: hsl(165, 50%, 78%);
+  background: color-mix(in srgb, var(--c-eld-700) 25%, transparent);
+  color: var(--c-eld-100);
 }
 .picker-foot {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
   padding: 12px 20px;
-  border-top: 1px solid hsl(220, 14%, 16%);
+  border-top: 1px solid var(--c-slate);
 }
 .picker-btn {
   font-size: 0.875rem;
@@ -1279,7 +1279,7 @@ onLoad((options) => {
   padding: 32px 20px;
   text-align: center;
   font-size: 0.8125rem;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 
 /* ── Step3：预览并排布局（桌面 2 列 / 移动单列） ── */
@@ -1304,12 +1304,12 @@ onLoad((options) => {
   letter-spacing: 0.2em;
   text-transform: uppercase;
   font-family: $font-mono;
-  color: hsl(220, 10%, 35%);
+  color: var(--c-ash);
 }
 .preview-empty {
   padding: 40px;
   font-size: 0.8125rem;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 @media (min-width: 900px) {
   .step3-body {

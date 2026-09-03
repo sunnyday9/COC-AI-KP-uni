@@ -127,19 +127,19 @@ function openRoom(room: RoomListItem) {
   font-family: $font-display;
   font-size: 1.5rem;
   font-weight: bold;
-  color: hsl(38, 50%, 88%);
+  color: var(--c-paper-100);
 }
 .head-sub {
   display: block;
   margin-top: 6px;
   font-size: 0.875rem;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
   font-family: $font-serif;
 }
 .panel {
   background: rgba(0, 0, 0, 0.5);
-  border: 1px solid hsla(220, 14%, 16%, 0.8);
-  border-left: 3px solid hsla(165, 60%, 35%, 0.4);
+  border: 1px solid color-mix(in srgb, var(--c-slate) 80%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--c-eld-500) 40%, transparent);
   border-radius: 0.75rem;
   padding: 20px;
   margin-bottom: 16px;
@@ -148,7 +148,7 @@ function openRoom(room: RoomListItem) {
   font-family: $font-display;
   font-size: 1rem;
   font-weight: bold;
-  color: hsl(38, 40%, 80%);
+  color: var(--c-paper-200);
   margin-bottom: 14px;
   letter-spacing: 0.05em;
 }
@@ -160,7 +160,7 @@ function openRoom(room: RoomListItem) {
 }
 .hint {
   font-size: 12px;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 .join-row {
   width: 100%;
@@ -169,9 +169,9 @@ function openRoom(room: RoomListItem) {
   flex: 1;
   min-width: 160px;
   background: rgba(0, 0, 0, 0.4);
-  border: 1px solid hsla(220, 14%, 20%, 0.8);
+  border: 1px solid color-mix(in srgb, var(--c-slate-light) 80%, transparent);
   border-radius: 0.5rem;
-  color: hsl(38, 40%, 80%);
+  color: var(--c-paper-200);
   padding: 10px 14px;
   font-size: 1rem;
   letter-spacing: 0.2em;
@@ -180,18 +180,18 @@ function openRoom(room: RoomListItem) {
 }
 .err-text {
   display: block;
-  color: hsl(0, 60%, 65%);
+  color: var(--c-blood-200);
   font-size: 0.875rem;
   margin: 0 0 12px;
 }
 .notice-text {
   display: block;
-  color: hsl(165, 50%, 65%);
+  color: var(--c-eld-200);
   font-size: 0.875rem;
   margin: 0 0 12px;
 }
 .empty {
-  color: hsl(220, 10%, 35%);
+  color: var(--c-ash);
   font-size: 0.875rem;
   font-family: $font-serif;
   font-style: italic;
@@ -202,7 +202,7 @@ function openRoom(room: RoomListItem) {
   align-items: center;
   justify-content: space-between;
   padding: 14px 4px;
-  border-bottom: 1px solid hsla(220, 14%, 14%, 0.5);
+  border-bottom: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
 }
 .room-info {
   display: flex;
@@ -212,11 +212,11 @@ function openRoom(room: RoomListItem) {
 .room-id {
   font-family: $font-mono;
   font-size: 0.875rem;
-  color: hsl(38, 40%, 80%);
+  color: var(--c-paper-200);
 }
 .room-code {
   font-size: 12px;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 .room-phase {
   font-size: 12px;
@@ -224,7 +224,7 @@ function openRoom(room: RoomListItem) {
   border-radius: 9999px;
   border: 1px solid;
 }
-.phase-lobby { color: hsl(42, 50%, 70%); border-color: hsla(42, 50%, 40%, 0.4); }
-.phase-playing { color: hsl(165, 50%, 70%); border-color: hsla(165, 50%, 30%, 0.4); }
-.phase-ended { color: hsl(0, 40%, 65%); border-color: hsla(0, 40%, 35%, 0.4); }
+.phase-lobby { color: var(--c-ritual-200); border-color: color-mix(in srgb, var(--c-ritual-600) 40%, transparent); }
+.phase-playing { color: var(--c-eld-200); border-color: color-mix(in srgb, var(--c-eld-600) 40%, transparent); }
+.phase-ended { color: var(--c-blood-200); border-color: color-mix(in srgb, var(--c-blood-600) 40%, transparent); }
 </style>

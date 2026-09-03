@@ -123,7 +123,7 @@ const era = computed(() => (props.sheet.occupationName?.includes('现代') ? '�
   background: var(--c-paper-900);
   border: 1px solid var(--c-paper-700);
   border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(8, 10, 12, 0.2);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--c-void) 20%, transparent);
 }
 .cs-head {
   display: flex;
@@ -200,7 +200,7 @@ const era = computed(() => (props.sheet.occupationName?.includes('现代') ? '�
   gap: 2px;
   width: calc((100% - 12px) / 4);
   padding: 4px 0;
-  background: rgba(8, 10, 12, 0.5);
+  background: color-mix(in srgb, var(--c-void) 50%, transparent);
   border-radius: 2px;
   box-sizing: border-box;
 }
