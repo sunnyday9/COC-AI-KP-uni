@@ -59,3 +59,19 @@ Mimosa「11 包 17 条」来自其离线 advisory 库（OSV 子集）；npm 实�
   `@dcloudio/vite-plugin-uni/node_modules/*`（构建期 dev 链，不碰生产）+ 顶层 qs 6.15.3
   （express 5 锁 `^6.14.0` 能装的最新，qs 上游 6.x 无修复版 → 生态残余，非本次可消除）。
 - 遗留建议：adm-zip/sharp overrides 强升（另一张票）。
+
+## 处置进展：overrides 强升 adm-zip/sharp 完成（2026-09-04，issue #35）
+
+- 根 package.json 加 overrides：`adm-zip: 0.6.0` + `epub2: { adm-zip: 0.6.0 }` + `sharp: 0.35.4` +
+  `@huggingface/transformers: { sharp: 0.35.4 }`。
+- **关键坑（npm workspace）**：overrides 必须放根 package.json，且需 `npm install --workspaces`
+  从根全量重算 lockfile 才生效；放 server 子包不生效；单独删 node_modules + install 会触发
+  npm bug 漏装传递依赖（obug/tldts/playwright-core 丢失）→ 正解 = 根 overrides + `npm install
+  --workspaces` 一步到位（本次踩坑后验证）。
+- 结果：顶层 + epub2 私有嵌套 adm-zip 全 0.6.0；根 + server 树 sharp 全 0.35.4（干净重装后
+  epub2 私有嵌套副本消失，Node 解析到顶层 0.6.0）。
+- **验证**：npm audit 69→64 条，adm-zip/sharp/epub2/transformers 全 cleared；剩余 high 全在
+  @dcloudio uni-* 构建期 dev 链（express 嵌套/intlify/vite/rollup/ws 嵌套，不碰生产）；
+  server 457 + client 113 + 三 journey 14×3 全绿；**epub 解析冒烟 PASS**（最小 epub 走
+  parseEpub 提取章节文本，adm-zip 0.6.0 + epub2 兼容）。
+- **server 运行时 high 漏洞清零**（express 线 #34 + adm-zip/sharp #35 全处理）。
