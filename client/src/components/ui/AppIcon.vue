@@ -144,7 +144,8 @@ const parts = computed<IconPart[]>(() => {
   </svg>
   <!-- #endif -->
   <!-- #ifdef MP-WEIXIN -->
-  <text v-bind="$attrs" class="app-icon-fallback" :style="{ fontSize: size + 'px' }">{{ MP_FALLBACK[name] || '' }}</text>
+  <!-- 小程序 text 不支持 $attrs 动态展开（v-bind="" 编译错）——class 已静态落根 -->
+  <text class="app-icon-fallback" :style="{ fontSize: size + 'px' }">{{ MP_FALLBACK[name] || '' }}</text>
   <!-- #endif -->
 </template>
 
