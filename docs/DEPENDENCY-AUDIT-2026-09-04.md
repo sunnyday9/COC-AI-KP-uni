@@ -47,3 +47,15 @@
 
 Mimosa「11 包 17 条」来自其离线 advisory 库（OSV 子集）；npm 实时库更全（69 条）。
 本报告以 npm 官方实时数据为准（2026-09-04）。
+
+## 处置进展：express 4 → 5 升级完成（2026-09-04，issue #34）
+
+- server/package.json：express `^4.21.2` → `^5.2.1`、@types/express `^4` → `^5`。
+- **零代码破坏**：server 457/457 + client 113/113 + 三 journey 14×3 + server tsc 全绿（代码面干净：
+  无 `*` 通配路由/无 app.del/req.query 仅读字符串，v5 破坏点全不命中；`express.json()` 内置
+  body-parser 2.x 的 entity.parse.failed 错误契约未变）。
+- **audit 复跑**：express 5.2.1（根）已移出漏洞 range（`3.0.0-alpha1 - 5.0.1`）→ **server 运行时
+  express 线漏洞全清**。剩余 express/body-parser/path-to-regexp/qs 报的全为
+  `@dcloudio/vite-plugin-uni/node_modules/*`（构建期 dev 链，不碰生产）+ 顶层 qs 6.15.3
+  （express 5 锁 `^6.14.0` 能装的最新，qs 上游 6.x 无修复版 → 生态残余，非本次可消除）。
+- 遗留建议：adm-zip/sharp overrides 强升（另一张票）。
