@@ -50,6 +50,33 @@ Nginx（TLS / WebSocket 升级）
 | `MOCK_AI` | 未设 | `1` = 无 LLM 测试模式（**生产禁用**） |
 | `LLM_REQUEST_TIMEOUT_MS` | 60000 | 出站 LLM 超时 |
 
+## 4.1 BYOK（玩家自带 API Key）使用引导
+
+**服务端零 Key 架构**：本项目不持有、不配置任何 LLM API Key（`config.ts` 无 key 类环境变量；`server/.env.example` 也没有）。每个玩家的 Key 只存自己的服务端设置，且：
+
+- **加密存储**：API Key 经 AES-256-GCM 加密落库（`settingsService`，派生自 `JWT_SECRET`）。
+- **永不下发**：`GET /api/settings` 一律省略 `apiKey` 字段，客户端只能写入不能读回。
+- **服务端代发**：AI 请求由服务端用**当前用户自己的 Key** 发出（`resolveAiConfig(userId)` → 四协议适配器）；多人房间的 KP 回合与 RAG 全程以**房主**的 Key/模型/剧本解析（成员无需配置）。
+
+**玩家配置步骤**（任一端 H5 / 小程序均可）：
+
+1. 打开 **设置 → AI 提供商**；
+2. 选**接入协议**（OpenAI 兼容 Chat / Responses / Anthropic / Google）；多数中转站选 OpenAI 兼容；
+3. **Base URL**：留空用协议默认值；自建/中转填完整地址（如 `https://api.openai.com/v1`）；
+4. **API Key**：填自己的 Key（password 框，仅存服务端不回显）；
+5. **模型**：点「刷新列表」实时拉取（带 Key 请求）或手动输入；
+6. 点**保存设置** → 点**测试连接**（调真实模型返回一句确认）→ ✓ 连接正常。
+
+**未配置时的表现**：
+
+- 协议未选 → 「请先在设置中配置 AI 协议」；模型未填 → 「请先在设置中选择或输入模型名称」；
+- Anthropic / Google 未填 Key → 「需要 API Key」；OpenAI 兼容本地端点（如 Ollama）可无 Key 运行；
+- 上述错误会以 toast/消息形式出现在设置页与游戏页，指引回设置补全。
+
+**离线试玩**：不配置任何 Key 也能完整跑通全部功能——`MOCK_AI=1` 启动后端进入确定性内置 AI（e2e 同款），适合本地体验/开发/CI（**生产禁用**）。
+
+**真实 Key 验证**：`e2e/byok-smoke.mjs`（自备 Key 冒烟：settings 加密存储 → GET 不回传 → models 实时拉取 → chat 真实返回），用法见脚本头注释。
+
 ## 5. 数据库
 
 - 首次启动自动建表 + 幂等迁移（`stories.file_path` / `scripts.file_path` 列自动 ALTER）。
