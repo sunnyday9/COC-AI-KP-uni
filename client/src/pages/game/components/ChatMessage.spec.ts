@@ -12,12 +12,13 @@ import KPMessage from './KPMessage.vue'
 import SystemMessage from './SystemMessage.vue'
 import PlayerMessage from './PlayerMessage.vue'
 import { classifySystemMessage } from '../../../utils/classifySystemMessage'
+import type { Message } from '../../../types/game'
 
 const mountCm = (msg: unknown) =>
-  mount(ChatMessage as never, { props: { msg }, global: { stubs: { 'kp-message': true, 'player-message': true, 'system-message': true } } })
+  mount(ChatMessage as unknown as typeof ChatMessage, { props: { msg: msg as Message }, global: { stubs: { 'kp-message': true, 'player-message': true, 'system-message': true } } })
 
-function msgOf(role: 'kp' | 'player' | 'system', content: string) {
-  return { id: 'm1', timestamp: 1, role, content }
+function msgOf<R extends Message['role']>(role: R, content: string): Extract<Message, { role: R }> {
+  return { id: 'm1', timestamp: 1, role, content } as Extract<Message, { role: R }>
 }
 
 describe('ChatMessage 路由', () => {
