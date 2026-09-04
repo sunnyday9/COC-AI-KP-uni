@@ -662,14 +662,14 @@ async function confirmLogout() {
   font-family: $font-display;
   font-size: 1.5rem;
   font-weight: bold;
-  color: #fff;
+  color: var(--c-paper-50);
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
 .page-desc {
   display: block;
   margin-top: 4px;
   font-size: 0.875rem;
-  color: hsl(220, 10%, 65%);
+  color: var(--c-fog);
 }
 .head-divider {
   margin-top: 12px;
@@ -831,11 +831,11 @@ async function confirmLogout() {
 }
 .section-arrow {
   font-size: 12px;
-  color: hsl(220, 10%, 55%);
+  color: var(--c-fog);
 }
 .section-content {
   padding: 16px 20px 20px;
-  border-top: 1px solid hsla(220, 14%, 16%, 0.5);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -846,20 +846,20 @@ async function confirmLogout() {
   font-size: 12px;
   font-weight: 500;
   margin-bottom: 6px;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .field-note {
   display: block;
   font-size: 11px;
   margin-top: 4px;
-  color: hsl(220, 10%, 22%);
+  color: var(--c-slate-light);
   line-height: 1.6;
 }
 .field-warn {
   display: block;
   font-size: 11px;
   margin-top: 4px;
-  color: hsl(42, 65%, 55%);
+  color: var(--c-ritual-300);
 }
 
 .provider-grid {
@@ -874,17 +874,17 @@ async function confirmLogout() {
   transition: all 0.2s;
 }
 .provider-active {
-  background: hsla(165, 45%, 22%, 0.2);
-  border-color: hsla(165, 55%, 28%, 0.5);
-  box-shadow: 0 0 8px hsla(165, 60%, 35%, 0.1);
+  background: color-mix(in srgb, var(--c-eld-700) 20%, transparent);
+  border-color: color-mix(in srgb, var(--c-eld-600) 50%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--c-eld-500) 10%, transparent);
 }
 .provider-dim {
-  background: hsla(220, 16%, 11%, 0.4);
-  border-color: hsla(220, 14%, 16%, 0.4);
+  background: color-mix(in srgb, var(--c-obsidian) 40%, transparent);
+  border-color: color-mix(in srgb, var(--c-slate) 40%, transparent);
 }
 .provider-dim:active {
-  border-color: hsla(220, 12%, 22%, 0.6);
-  background: hsla(220, 16%, 14%, 0.5);
+  border-color: color-mix(in srgb, var(--c-slate-light) 60%, transparent);
+  background: color-mix(in srgb, var(--c-obsidian-light) 50%, transparent);
 }
 .provider-name {
   display: block;
@@ -918,7 +918,7 @@ async function confirmLogout() {
 }
 .link-btn {
   font-size: 10px;
-  color: hsl(165, 50%, 50%);
+  color: var(--c-eld-300);
   padding: 2px 4px;
 }
 .link-btn:active {
@@ -928,9 +928,9 @@ async function confirmLogout() {
   padding: 8px 12px;
   border-radius: 8px;
   font-size: 0.875rem;
-  background: hsla(220, 18%, 7%, 0.85);
-  color: hsl(38, 40%, 78%);
-  border: 1px solid hsl(220, 14%, 16%);
+  background: color-mix(in srgb, var(--c-abyss) 85%, transparent);
+  color: var(--c-paper-300);
+  border: 1px solid var(--c-slate);
 }
 .custom-row {
   display: flex;
@@ -949,7 +949,7 @@ async function confirmLogout() {
   display: block;
   margin-top: 6px;
   font-size: 11px;
-  color: hsl(38, 25%, 55%);
+  color: var(--c-paper-600);
 }
 
 .param-grid {
@@ -967,16 +967,16 @@ async function confirmLogout() {
 }
 /* 保存主 CTA 按压态（Task 9 / Task 8 Minor ③：MP 端 :active 不生效 → hover-class） */
 .gothic-btn-press {
-  background: hsla(165, 50%, 25%, 0.85);
-  border-color: hsl(165, 60%, 35%);
+  background: color-mix(in srgb, var(--c-eld-600) 85%, transparent);
+  border-color: var(--c-eld-500);
 }
 .ok-text {
   font-size: 12px;
-  color: hsl(165, 50%, 60%);
+  color: var(--c-eld-200);
 }
 .err-text {
   font-size: 12px;
-  color: hsl(0, 55%, 65%);
+  color: var(--c-blood-200);
 }
 
 /* ── RAG ── */
@@ -986,19 +986,19 @@ async function confirmLogout() {
   gap: 8px;
   padding: 8px 12px;
   border-radius: 6px;
-  background: hsla(165, 35%, 10%, 0.3);
-  border: 1px solid hsla(165, 45%, 22%, 0.2);
+  background: color-mix(in srgb, var(--c-eld-900) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-eld-700) 20%, transparent);
 }
 .rag-notice-icon {
   font-size: 12px;
-  color: hsl(165, 50%, 50%);
+  color: var(--c-eld-300);
 }
 .rag-notice-text {
   font-size: 12px;
-  color: hsl(165, 40%, 65%);
+  color: var(--c-eld-200);
 }
 .rag-options {
-  border-left: 2px solid hsla(220, 14%, 16%, 0.5);
+  border-left: 2px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
   padding-left: 12px;
   display: flex;
   flex-direction: column;
@@ -1013,26 +1013,26 @@ async function confirmLogout() {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  border: 1px solid hsl(220, 14%, 16%);
-  background: hsl(220, 16%, 11%);
+  border: 1px solid var(--c-slate);
+  background: var(--c-obsidian);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 .radio-on {
-  border-color: hsl(165, 60%, 35%);
+  border-color: var(--c-eld-500);
 }
 .radio-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: hsl(165, 60%, 35%);
+  background: var(--c-eld-500);
 }
 .radio-label {
   font-size: 12px;
   font-weight: 500;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 .embed-test-btn {
   font-size: 12px;
@@ -1053,8 +1053,8 @@ async function confirmLogout() {
   width: 16px;
   height: 16px;
   border-radius: 4px;
-  border: 1px solid hsl(220, 14%, 16%);
-  background: hsl(220, 16%, 11%);
+  border: 1px solid var(--c-slate);
+  background: var(--c-obsidian);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1062,28 +1062,28 @@ async function confirmLogout() {
   margin-top: 2px;
 }
 .checkbox-on {
-  border-color: hsl(42, 65%, 55%);
+  border-color: var(--c-ritual-300);
 }
 .check-mark {
   font-size: 10px;
-  color: hsl(42, 65%, 55%);
+  color: var(--c-ritual-300);
 }
 .toggle-label {
   display: block;
   font-size: 0.875rem;
-  color: hsl(38, 30%, 65%);
+  color: var(--c-paper-400);
 }
 .dev-badge {
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 4px;
-  background: hsla(42, 40%, 14%, 0.4);
-  border: 1px solid hsla(42, 55%, 35%, 0.3);
-  color: hsl(42, 60%, 60%);
+  background: color-mix(in srgb, var(--c-ritual-800) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-ritual-500) 30%, transparent);
+  color: var(--c-ritual-300);
 }
 .kbd-hint {
   font-size: 12px;
-  color: hsl(220, 10%, 30%);
+  color: var(--c-ash);
 }
 
 .logout-row {

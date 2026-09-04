@@ -242,7 +242,7 @@ async function handleTestGraphRagExtract(storyId: string) {
                 </view>
                 <view class="file-info">
                   <text class="file-name">{{ story.name }}</text>
-                  <text class="file-status" :style="{ color: isIndexed(story.id) ? 'hsl(165, 50%, 50%)' : 'hsl(220, 10%, 25%)' }">
+                  <text class="file-status" :style="{ color: isIndexed(story.id) ? 'var(--c-eld-300)' : 'var(--c-obsidian-light)' }">
                     {{ isIndexed(story.id) ? '已索引' : '未索引' }}
                   </text>
                 </view>
@@ -383,14 +383,14 @@ async function handleTestGraphRagExtract(storyId: string) {
   font-family: $font-display;
   font-size: 1.5rem;
   font-weight: bold;
-  color: #fff;
+  color: var(--c-paper-50);
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
 .page-desc {
   display: block;
   margin-top: 4px;
   font-size: 0.875rem;
-  color: hsl(220, 10%, 60%);
+  color: var(--c-fog);
 }
 .import-btn {
   background: rgba(0, 0, 0, 0.6);
@@ -440,7 +440,7 @@ async function handleTestGraphRagExtract(storyId: string) {
 }
 .link-btn {
   font-size: 11px;
-  color: hsl(165, 50%, 50%);
+  color: var(--c-eld-300);
   padding: 2px 4px;
 }
 .link-btn:active {
@@ -458,7 +458,7 @@ async function handleTestGraphRagExtract(storyId: string) {
   font-size: 0.875rem;
   font-family: $font-serif;
   font-style: italic;
-  color: hsl(220, 10%, 50%);
+  color: var(--c-fog);
 }
 
 .file-list {
@@ -498,13 +498,13 @@ async function handleTestGraphRagExtract(storyId: string) {
   justify-content: center;
   font-family: $font-display;
   font-size: 0.875rem;
-  background: hsla(38, 18%, 18%, 0.4);
-  border: 1px solid hsla(38, 20%, 30%, 0.3);
+  background: color-mix(in srgb, var(--c-paper-900) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-paper-800) 30%, transparent);
   color: var(--c-paper-400);
 }
 .idx-badge {
-  background: hsla(165, 35%, 10%, 0.5);
-  border-color: hsla(165, 45%, 22%, 0.4);
+  background: color-mix(in srgb, var(--c-eld-900) 50%, transparent);
+  border-color: color-mix(in srgb, var(--c-eld-700) 40%, transparent);
   color: var(--c-eld-100);
 }
 .file-info {
@@ -544,19 +544,19 @@ async function handleTestGraphRagExtract(storyId: string) {
   box-sizing: border-box;
 }
 .index-btn {
-  background: hsla(165, 35%, 10%, 0.5);
-  border: 1px solid hsla(165, 45%, 22%, 0.3);
+  background: color-mix(in srgb, var(--c-eld-900) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-eld-700) 30%, transparent);
   color: var(--c-eld-100);
 }
 .delete-btn {
-  background: hsla(0, 50%, 15%, 0.3);
-  border: 1px solid hsla(0, 55%, 22%, 0.3);
-  color: hsl(0, 55%, 65%);
+  background: color-mix(in srgb, var(--c-blood-800) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-blood-700) 30%, transparent);
+  color: var(--c-blood-200);
 }
 .graph-btn {
-  background: hsla(220, 16%, 11%, 0.5);
-  border: 1px solid hsla(220, 14%, 16%, 0.5);
-  color: hsl(38, 25%, 55%);
+  background: color-mix(in srgb, var(--c-obsidian) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
+  color: var(--c-paper-600);
 }
 
 .empty-card {
@@ -570,12 +570,12 @@ async function handleTestGraphRagExtract(storyId: string) {
   font-style: italic;
   font-size: 1.125rem;
   margin-bottom: 8px;
-  color: hsl(220, 10%, 45%);
+  color: var(--c-ash);
 }
 .empty-hint {
   display: block;
   font-size: 0.875rem;
-  color: hsl(220, 10%, 55%);
+  color: var(--c-fog);
 }
 
 .indexed-head {
@@ -591,14 +591,14 @@ async function handleTestGraphRagExtract(storyId: string) {
   text-align: center;
   font-style: italic;
   font-family: $font-serif;
-  color: hsl(220, 10%, 40%);
+  color: var(--c-ash);
 }
 
 /* GraphRAG 面板 */
 .graph-panel {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid hsla(220, 14%, 16%, 0.5);
+  border-top: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
 }
 .graph-tools {
   display: flex;
@@ -612,11 +612,11 @@ async function handleTestGraphRagExtract(storyId: string) {
 }
 .ok-text {
   font-size: 12px;
-  color: hsl(165, 50%, 60%);
+  color: var(--c-eld-200);
 }
 .err-text {
   font-size: 12px;
-  color: hsl(0, 55%, 65%);
+  color: var(--c-blood-200);
 }
 .preview-text {
   display: block;
@@ -628,14 +628,14 @@ async function handleTestGraphRagExtract(storyId: string) {
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
-  color: hsl(38, 25%, 55%);
-  background: hsla(220, 20%, 4%, 0.5);
+  color: var(--c-paper-600);
+  background: color-mix(in srgb, var(--c-void) 50%, transparent);
   border: 1px solid var(--c-slate);
 }
 .graph-placeholder {
   margin-top: 12px;
   padding: 24px;
-  border: 1px dashed hsla(220, 14%, 16%, 0.6);
+  border: 1px dashed color-mix(in srgb, var(--c-slate) 60%, transparent);
   border-radius: 8px;
   text-align: center;
 }
