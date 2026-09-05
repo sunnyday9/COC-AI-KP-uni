@@ -64,6 +64,12 @@ RAG 嵌入固定走 OpenAI 兼容端点 `POST {baseUrl}/v1/embeddings`，与主�
 ### 模板（template）
 已废除的 provider 概念残留：旧 `provider` 字段（openai/deepseek/gemini/…）作为「默认 endpoint + 默认模型列表」的速填模板，不再参与协议解析，仅设置页点选时填充 `protocol + baseUrl`。自填 endpoint 后模板失去唯一性（Q1-B 删 provider，模板随之移除，仅遗留配置经映射表惰性识别）。
 
+### KP 模型（self-trained KP model）
+为「更会当守秘人」在项目回合契约上 SFT 出的自训模型：输出与现有回合管线一致（中文叙事正文 + 工具调用），上下文形态由服务端提示词构造决定。基座 Qwen3-8B；训练框架/算力分工/评测 gate 见 ADR-0006。
+
+### 内置模型（built-in model）
+服务端持有端点配置、用户无需自带 key 即可使用的守秘人模型，与 BYOK（用户自带 key）相对。**目标态**：KP 模型过三层评测 gate 后才启动 serving/配额/降级独立票；上线前自用走用户自己配置的端点。
+
 ## 不重议的决策
 
 - ADR-0001：房间 schema 只归 RoomService（经 roomStorage）所有，REST/ws 不接触。
