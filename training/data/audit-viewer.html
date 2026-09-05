@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>KP 蒸馏数据抽检查看器（票 #40）</title>
+<!--
+  静态查看器模板（仓库资产，不由管线生成）。
+  用法：npm run distill -- audit 生成 out/distill/audit/{data.js, checklist.md}，
+  把本文件复制为 out/distill/audit/viewer.html（audit 阶段自动完成）后双击打开。
+  数据经 <script src="data.js"> 同目录加载（file:// 下 fetch 不可用，故用脚本赋值）。
+-->
+<style>
+body{font-family:system-ui,"Microsoft YaHei",sans-serif;margin:0;background:#14161a;color:#d7dce3}
+header{padding:14px 20px;background:#1b1e24;border-bottom:1px solid #2a2f37;position:sticky;top:0}
+h1{font-size:16px;margin:0} .meta{font-size:12px;color:#8b93a1;margin-top:4px}
+main{padding:16px 20px;max-width:900px;margin:0 auto}
+article{background:#1b1e24;border:1px solid #2a2f37;border-radius:8px;margin-bottom:18px;overflow:hidden}
+article>h2{font-size:14px;margin:0;padding:10px 14px;background:#22262d;cursor:pointer}
+.msg{padding:10px 14px;border-top:1px solid #262b33;font-size:13px;line-height:1.65;white-space:pre-wrap}
+.role{display:inline-block;font-size:11px;font-weight:600;border-radius:4px;padding:1px 6px;margin-right:8px}
+.system .role{background:#3a3325;color:#d9b96a}.user .role{background:#25404a;color:#7ec8e3}
+.assistant .role{background:#2c3a2c;color:#9fd49f}.tool .role{background:#3a2a2a;color:#d9a0a0}
+.tc{font-size:12px;color:#c9a86a;margin-top:6px}
+</style>
+</head>
+<body>
+<header><h1>KP 蒸馏数据抽检查看器</h1><div class="meta" id="meta">票 #40 · 数据侧变量块瘦身形态</div></header>
+<main id="list"></main>
+<script src="data.js"></script>
+<script>
+(function () {
+  var DATA = window.AUDIT_DATA || [];
+  document.getElementById('meta').textContent += ' · 共 ' + DATA.length + ' 条';
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  var list = document.getElementById('list');
+  DATA.forEach(function (s, i) {
+    var art = document.createElement('article');
+    var msgs = s.messages.map(function (m) {
+      var tc = m.toolNames && m.toolNames.length ? '<div class="tc">⚙ tool_calls: ' + esc(m.toolNames.join(', ')) + '</div>' : '';
+      return '<div class="msg ' + esc(m.role) + '"><span class="role">' + esc(m.role) + '</span>' + esc(m.content) + tc + '</div>';
+    }).join('');
+    art.innerHTML = '<h2>' + (i + 1) + '. [' + esc(s.meta.source) + '] ' + esc(s.meta.turnType) + ' — ' + esc(s.meta.storyName) + '（' + esc(s.meta.id) + '）</h2>' + msgs;
+    art.querySelector('h2').addEventListener('click', function () {
+      var items = art.querySelectorAll('.msg');
+      var collapsed = art.dataset.c === '1';
+      items.forEach(function (el) { el.style.display = collapsed ? '' : 'none'; });
+      art.dataset.c = collapsed ? '0' : '1';
+    });
+    list.appendChild(art);
+  });
+})();
+</script>
+</body>
+</html>

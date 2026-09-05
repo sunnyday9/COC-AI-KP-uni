@@ -225,7 +225,7 @@ interface GameContextSource {
 }
 
 /** opening 重建输入：线上 opening 恒在空状态运行（messages/memory/clues/scene 皆空）。 */
-function openingPromptInput(src: GameContextSource): RoomPromptInput {
+export function openingPromptInput(src: GameContextSource): RoomPromptInput {
   return {
     storyName: src.storyName,
     scene: null,
@@ -243,8 +243,9 @@ function characterMap(src: GameContextSource): Record<string, COCCharacterSheet>
     : src.characters
 }
 
-/** 终局快照确定性重建一个回合的 context（与 flushTurn → runKpTurn 的组装路径同源）。 */
-function rebuildContext(src: GameContextSource, turn: StreamTurn): RoomChatMessage[] {
+/** 终局快照确定性重建一个回合的 context（与 flushTurn → runKpTurn 的组装路径同源）。
+ *  导出面：#40 蒸馏管线的 seed 路径复用同一重建（单源，不复制）。 */
+export function rebuildContext(src: GameContextSource, turn: StreamTurn): RoomChatMessage[] {
   const map = characterMap(src)
   const input: RoomPromptInput =
     turn.kind === 'opening'

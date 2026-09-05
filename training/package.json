@@ -8,12 +8,14 @@
   },
   "scripts": {
     "export": "tsx src/cli.ts",
+    "distill": "tsx src/distill/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "openai": "^4.104.0",
+    "pdf-parse": "^2.4.5",
     "tsx": "^4.19.2",
     "typescript": "~5.9.3",
     "vitest": "^4.0.18"

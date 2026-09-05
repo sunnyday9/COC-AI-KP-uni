@@ -18,7 +18,7 @@ export interface EvalEndpoint {
 
 export interface ChatCallResult {
   content: string
-  toolCalls: { name: string; arguments: string }[]
+  toolCalls: { id: string; name: string; arguments: string }[]
   usage: { promptTokens: number; completionTokens: number }
 }
 

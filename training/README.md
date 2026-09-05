@@ -2,17 +2,20 @@
 
 独立工作区（ADR-0006「后果」第 1 条）：训练/数据/评测脚本不进 server 运行时依赖树；
 server 不依赖本目录。本工作区只依赖 Node ≥24 标准库 + vitest/tsx/typescript，
-跨工作区**只 import 服务端提示词纯函数与 shared 常量**（kpPromptService / cocTools），
-不 import 任何带运行时副作用的 server 模块（db/config/agent 栈）。
+跨工作区**只 import 服务端提示词纯函数与 shared 常量**（kpPromptService / cocTools）、
+#40 蒸馏管线追加的**离线规则引擎只读复用**（rule-engine orchestrator/toolContextFactory/
+characterMutators——依赖树仅 shared/*，无 db/config/agent 栈）与 **client 纯函数**
+（storyService.textToChunks，RAG 索引的真实切块器），不 import 任何带运行时副作用的
+server 模块（db/config/agent 栈）。
 
 ## 票链（spec #36）
 
 | 票 | 内容 | 位置 |
 | --- | --- | --- |
 | #37 T1 ✅ | wire 采样日志 | server（唯一新缝） |
-| #38 T2 | **数据导出器（本目录 `src/exporter.ts`）** | training |
-| #39 T3 | 金样本评测集 + 评测 harness | training（`eval/`） |
-| #40 T4 | 蒸馏数据生成（教师重放 → validate 过滤） | training |
+| #38 T2 ✅ | 数据导出器（本目录 `src/exporter.ts`） | training |
+| #39 T3 ✅ | 金样本评测集 + 评测 harness | training（`eval/`） |
+| #40 T4 | **蒸馏数据生成（本目录 `src/distill/`）** | training |
 | #41 T5 | Kaggle 训练管线（LLaMA-Factory QLoRA） | training |
 | #42/#43 T6/T7 | 三层评测 gate / gate 判定 | training |
 
@@ -71,6 +74,41 @@ KP_EXPORT_DB_ROOT=/data/prod KP_EXPORT_OUT_ROOT=/data/out npm run export:kp-cont
 - wire 匹配算法：批量内容双指针顺序配对（采样序是回合序的子序列）；已知近似——
   同一局内两个完全相同文案的批量且前者无采样时会错配（见 exporter.ts 存证注释）。
 
+## 蒸馏数据生成（#40）
+
+教师模型（DeepSeek V4 Flash，用户 command code 端点，**凭据只走环境变量**）在
+「context 骨架 → 理想回复」上蒸馏 SFT 语料。管线六阶段（`npm run distill -- <stage>`）：
+
+```bash
+corpus   # 剧本语料（AI-COC-KP Story Document/）PDF/txt 抽取 → 产品切块器 → 词面检索索引
+plan     # 调查员卡池（DB 只读）+ rollout 计划（剧本×小队×回合类型）+ train/held-out 指派
+run      # Phase A（教师合成玩家批次）+ Phase B（教师重放 KP 回复）+ 离线规则引擎真实执行工具
+         # + validate 过滤；断点续跑（samples/rejected.jsonl 按 skeletonId 去重）
+anchors  # 金样本锚：#39 情境 × 教师重放 × #39 judge 裁定，通过者并入；+ mock/e2e 场景锚
+pack     # train / held-out 切分（rollout/房间级整体归属 + contextHash 跨侧零重叠）+ 统计
+audit    # 分层抽检包（checklist.md + 自包含 viewer.html）——人工抽检 ≥50 条的用户入口
+```
+
+环境变量：`KP_DISTILL_BASE_URL` / `KP_DISTILL_API_KEY` / `KP_DISTILL_MODEL`（教师），
+`KP_DISTILL_DB_ROOT` / `KP_DISTILL_OUT_ROOT` / `KP_DISTILL_CORPUS_ROOT`（IO 根边界，
+越界一律拒绝）。产物在 `out/distill/`（gitignore）：`train.jsonl` / `heldout.jsonl` /
+`anchors.jsonl` / `datacard.json` / `audit/`。
+
+### 关键设计（票 #40 开工对齐结论 + ADR-0006）
+
+- **素材扩展**：本地 DB 仅 53 条真实骨架（0 wire 采样）→ rollout 式合成——教师按
+  剧本语料与回合类型生成玩家行动批次（只写玩家侧，绝不代写 KP/骰子），KP 回复由
+  Phase B 重放产出；状态（场景/线索/记忆/角色卡）跨回合演化与回滚，与线上语义对齐。
+- **工具结果 = 离线规则引擎真实执行**（真骰子、真结算），回填形态与线上一致
+  （【结果摘要】头 + 截断）——教师自拟工具结果污染 SFT，不可接受。
+- **变量块瘦身在数据侧**（ADR-0006 决策 3「训练集构建时」）：对话窗 18→8、记忆
+  30→12、RAG 取前 4 节、序列 cap ~6k；BASE_INSTRUCTIONS 与角色卡全长。
+- **validate 过滤单源**：`shared/tools/kpValidation.ts`（文字骰点正则 +
+  coversRequiredTools 等价展开）+ 回合类型 required 契约（`turnTypes.ts`，覆盖
+  24 工具主组合；seed_organic 不设 required 只跑机械检查）。
+- **数据卡**：`out/distill/datacard.json`（来源配比/教师成本/过滤分布/工具覆盖/
+  零重叠证据）——#41 注册数据集与 #42 gate 的依据。
+
 ## 测试
 
 ```bash
@@ -81,4 +119,7 @@ npm run test:training   # 根目录脚本（CI 步骤同款）
   构建确定性 sqlite 库（房间 wire×2 / 无采样回合 / 孤儿采样 / 旧版存档）；
 - 输出快照：`fixtures/gold-demo-export.json`（meta + messages + toolNames 投影；
   tools 全量由独立断言与 `COC_KP_TOOLS` 深等）；
-- 同构对拍：重建行直接与 `buildRoomTurnMessages + injectCharacterRoster` 输出深等。
+- 同构对拍：重建行直接与 `buildRoomTurnMessages + injectCharacterRoster` 输出深等；
+- 蒸馏管线（`test/distill.spec.ts`）：语料检索/注入串同形、过滤器 validate 单源行为、
+  切分零重叠、wire 组装与 #37 同形、rollout 状态机演化/回滚、重放循环（教师 mock +
+  真 rule-engine：真执行/角色卡变更/characterId 分派/世界增量）。
