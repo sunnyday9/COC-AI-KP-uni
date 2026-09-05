@@ -1,0 +1,378 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-05T14:58:12.635Z",
+  "endpoint": {
+    "baseUrl": "https://opencode.ai/zen/go/v1",
+    "model": "mimo-v2.5",
+    "temperature": 0.7,
+    "maxTokens": 2048
+  },
+  "sampleCount": 57,
+  "judgedCount": 57,
+  "formatRate": 0.8070175438596491,
+  "verdictRate": 0.631578947368421,
+  "failureBreakdown": {
+    "bad_args": 10,
+    "wrong_tool": 7,
+    "unparseable": 1,
+    "no_tool_call": 2,
+    "text_dice": 1
+  },
+  "failures": [
+    {
+      "id": "roll-damage-10",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 roll_dice: {\"sides\":4}；差异: （未找到同名工具调用）"
+    },
+    {
+      "id": "adjust-hp-12",
+      "category": "wrong_tool",
+      "detail": "调用的工具不在期望集合内（实际: opposed_check；期望其一: adjust_hp）"
+    },
+    {
+      "id": "first-aid-fail-16",
+      "category": "unparseable",
+      "detail": "未知工具名: \"search_memory\""
+    },
+    {
+      "id": "melee-basic-23",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 melee_attack: {\"sideAValue\":60,\"sideBValue\":40,\"tieBreaker\":\"defender\",\"damageExpr\":\"1d4\",\"investigatorSide\":\"A\"}；差异: tieBreaker: 期望 \"defender\" 实际 \"attacker\""
+    },
+    {
+      "id": "opposed-assist-22",
+      "category": "wrong_tool",
+      "detail": "调用的工具不在期望集合内（实际: melee_attack；期望其一: opposed_check）"
+    },
+    {
+      "id": "melee-impale-24",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 melee_attack: {\"sideAValue\":60,\"sideBValue\":40,\"tieBreaker\":\"defender\",\"damageExpr\":\"1d4\",\"investigatorSide\":\"A\",\"isImpaling\":true}；差异: tieBreaker: 期望 \"defender\" 实际 \"attacker\""
+    },
+    {
+      "id": "ranged-long-27",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 ranged_attack: {\"skillName\":\"步枪\",\"skillValue\":45,\"difficulty\":\"hard\",\"damageExpr\":\"2d6\",\"targetIsInvestigator\":false,\"isImpaling\":true}；差异: 缺参数 isImpaling"
+    },
+    {
+      "id": "melee-npc-25",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 melee_attack: {\"sideAValue\":50,\"sideBValue\":40,\"tieBreaker\":\"defender\",\"damageExpr\":\"1d6\",\"investigatorSide\":\"B\"}；差异: sideBValue: 期望 40 实际 60；tieBreaker: 期望 \"defender\" 实际 \"attacker\""
+    },
+    {
+      "id": "ranged-npc-28",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 ranged_attack: {\"skillName\":\"手枪\",\"skillValue\":45,\"damageExpr\":\"1d8\",\"targetIsInvestigator\":true}；差异: skillName: 期望 \"手枪\" 实际 \"射击\""
+    },
+    {
+      "id": "clue-freeform-31",
+      "category": "no_tool_call",
+      "detail": "应调用工具但未调用任何工具（期望其一: grant_clue）"
+    },
+    {
+      "id": "scene-transition-32",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 transition_scene: {\"sceneName\":\"档案馆地下层\",\"sceneId\":\"s5\"}；差异: 缺参数 sceneId"
+    },
+    {
+      "id": "inspiration-extreme-38",
+      "category": "wrong_tool",
+      "detail": "调用的工具不在期望集合内（实际: skill_check；期望其一: inspiration_check）"
+    },
+    {
+      "id": "cast-repeat-40",
+      "category": "wrong_tool",
+      "detail": "调用的工具不在期望集合内（实际: adjust_mp, adjust_san；期望其一: cast_spell）"
+    },
+    {
+      "id": "adjust-mp-41",
+      "category": "text_dice",
+      "detail": "叙事正文命中文字模拟骰子正则: 「咒文的效力如涟漪般扩散——\n\n周围的声音开始变得遥远而模糊，仿佛你们被包裹在一层无形的棉絮之中。守门人依旧站在那里，但他的目光似乎无法准确捕捉到你们的位置，就像你们的存在变成了一团模糊的阴影。\n\n法术消耗了你大量的精力——你感到思维有些恍惚，魔法的反噬让太阳穴隐隐作痛。（MP降至3，SAN降至59）\n\n**现在，他听不…」"
+    },
+    {
+      "id": "inspiration-hard-37",
+      "category": "wrong_tool",
+      "detail": "调用的工具不在期望集合内（实际: skill_check；期望其一: inspiration_check）"
+    },
+    {
+      "id": "chase-hazard-46",
+      "category": "wrong_tool",
+      "detail": "调用的工具不在期望集合内（实际: skill_check；期望其一: chase_turn）"
+    },
+    {
+      "id": "chase-attack-47",
+      "category": "wrong_tool",
+      "detail": "调用的工具不在期望集合内（实际: melee_attack；期望其一: chase_turn）"
+    },
+    {
+      "id": "chase-start-45",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 chase_turn: {\"participants\":[{\"name\":\"林逸\",\"mov\":8},{\"name\":\"教徒\",\"mov\":7}],\"map\":[{\"id\":\"鱼市\"}],\"actions\":[{\"name\":\"林逸\",\"action\":\"move\"}],\"speedChecksDone\":true}；差异: participants: 期望 [{\"name\":\"林逸\",\"mov\":8},{\"name\":\"教徒\",\"mov\":7}] 实际 [{\"name\":\"林逸\",\"mov\":12,\"dex\":70,\"actionPoints\":2,\"location\":\"悬崖小径\"},{\"name\":\"教徒\",\"mov\":11,\"dex\":60,\"actionPoints\":1,\"location\":\"鱼市\"}]；map: 期望 [{\"id\":\"鱼市\"}] 实际 [{\"id\":\"悬崖小径\",\"hazard\":{\"skill\":\"跳跃\",\"damageExpr\":\"1d10\",\"difficulty\":\"regular\"}},{\"id\":\"鱼市\"},{\"id\":\"码头\",\"obstacle\":{\"durability\":1}}]；actions: 期望 [{\"name\":\"林逸\",\"action\":\"move\"}] 实际 [{\"name\":\"教徒\",\"action\":\"move\",\"targetLocation\":\"码头\"},{\"name\":\"林逸\",\"action\":\"move\",\"targetLocation\":\"鱼市\"}]"
+    },
+    {
+      "id": "multi-two-actions-54",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 skill_check: {\"skillName\":\"侦查\",\"skillValue\":65,\"characterId\":\"char_lin\"}；差异: 缺参数 characterId"
+    },
+    {
+      "id": "multi-characterId-53",
+      "category": "bad_args",
+      "detail": "工具已调用但参数不匹配期望。期望 skill_check: {\"skillName\":\"侦查\",\"skillValue\":65,\"characterId\":\"char_lin\"}；差异: 缺参数 characterId"
+    },
+    {
+      "id": "tome-study-43",
+      "category": "no_tool_call",
+      "detail": "应调用工具但未调用任何工具（期望其一: read_tome）"
+    }
+  ],
+  "perTool": [
+    {
+      "tool": "adjust_hp",
+      "samples": 2,
+      "formatPass": 1,
+      "verdictPass": 0
+    },
+    {
+      "tool": "adjust_mp",
+      "samples": 1,
+      "formatPass": 0,
+      "verdictPass": 0
+    },
+    {
+      "tool": "adjust_san",
+      "samples": 1,
+      "formatPass": 1,
+      "verdictPass": 1
+    },
+    {
+      "tool": "apply_major_wound",
+      "samples": 2,
+      "formatPass": 2,
+      "verdictPass": 2
+    },
+    {
+      "tool": "cast_spell",
+      "samples": 2,
+      "formatPass": 1,
+      "verdictPass": 1
+    },
+    {
+      "tool": "chase_turn",
+      "samples": 3,
+      "formatPass": 1,
+      "verdictPass": 0
+    },
+    {
+      "tool": "development_phase",
+      "samples": 1,
+      "formatPass": 1,
+      "verdictPass": 1
+    },
+    {
+      "tool": "end_game",
+      "samples": 2,
+      "formatPass": 2,
+      "verdictPass": 2
+    },
+    {
+      "tool": "environment_damage",
+      "samples": 4,
+      "formatPass": 4,
+      "verdictPass": 4
+    },
+    {
+      "tool": "first_aid",
+      "samples": 2,
+      "formatPass": 1,
+      "verdictPass": 1
+    },
+    {
+      "tool": "grant_clue",
+      "samples": 3,
+      "formatPass": 2,
+      "verdictPass": 2
+    },
+    {
+      "tool": "inspiration_check",
+      "samples": 3,
+      "formatPass": 1,
+      "verdictPass": 1
+    },
+    {
+      "tool": "medicine",
+      "samples": 1,
+      "formatPass": 1,
+      "verdictPass": 1
+    },
+    {
+      "tool": "melee_attack",
+      "samples": 3,
+      "formatPass": 3,
+      "verdictPass": 0
+    },
+    {
+      "tool": "opposed_check",
+      "samples": 4,
+      "formatPass": 3,
+      "verdictPass": 3
+    },
+    {
+      "tool": "ranged_attack",
+      "samples": 3,
+      "formatPass": 3,
+      "verdictPass": 1
+    },
+    {
+      "tool": "read_tome",
+      "samples": 3,
+      "formatPass": 2,
+      "verdictPass": 2
+    },
+    {
+      "tool": "reset_day",
+      "samples": 1,
+      "formatPass": 1,
+      "verdictPass": 1
+    },
+    {
+      "tool": "roll_dice",
+      "samples": 3,
+      "formatPass": 3,
+      "verdictPass": 1
+    },
+    {
+      "tool": "san_check",
+      "samples": 3,
+      "formatPass": 3,
+      "verdictPass": 3
+    },
+    {
+      "tool": "skill_check",
+      "samples": 9,
+      "formatPass": 9,
+      "verdictPass": 5
+    },
+    {
+      "tool": "spend_luck",
+      "samples": 1,
+      "formatPass": 1,
+      "verdictPass": 1
+    },
+    {
+      "tool": "transition_scene",
+      "samples": 1,
+      "formatPass": 1,
+      "verdictPass": 0
+    },
+    {
+      "tool": "trigger_insanity",
+      "samples": 2,
+      "formatPass": 2,
+      "verdictPass": 2
+    }
+  ],
+  "toolCoverage": [
+    {
+      "tool": "skill_check",
+      "covered": true
+    },
+    {
+      "tool": "opposed_check",
+      "covered": true
+    },
+    {
+      "tool": "san_check",
+      "covered": true
+    },
+    {
+      "tool": "roll_dice",
+      "covered": true
+    },
+    {
+      "tool": "adjust_hp",
+      "covered": true
+    },
+    {
+      "tool": "first_aid",
+      "covered": true
+    },
+    {
+      "tool": "adjust_san",
+      "covered": true
+    },
+    {
+      "tool": "adjust_mp",
+      "covered": true
+    },
+    {
+      "tool": "medicine",
+      "covered": true
+    },
+    {
+      "tool": "spend_luck",
+      "covered": true
+    },
+    {
+      "tool": "transition_scene",
+      "covered": true
+    },
+    {
+      "tool": "grant_clue",
+      "covered": true
+    },
+    {
+      "tool": "end_game",
+      "covered": true
+    },
+    {
+      "tool": "trigger_insanity",
+      "covered": true
+    },
+    {
+      "tool": "apply_major_wound",
+      "covered": true
+    },
+    {
+      "tool": "reset_day",
+      "covered": true
+    },
+    {
+      "tool": "melee_attack",
+      "covered": true
+    },
+    {
+      "tool": "ranged_attack",
+      "covered": true
+    },
+    {
+      "tool": "inspiration_check",
+      "covered": true
+    },
+    {
+      "tool": "cast_spell",
+      "covered": true
+    },
+    {
+      "tool": "read_tome",
+      "covered": true
+    },
+    {
+      "tool": "chase_turn",
+      "covered": true
+    },
+    {
+      "tool": "environment_damage",
+      "covered": true
+    },
+    {
+      "tool": "development_phase",
+      "covered": true
+    }
+  ],
+  "endpointErrors": [],
+  "usage": {
+    "promptTokens": 567377,
+    "completionTokens": 20365
+  },
+  "durationMs": 183441
+}

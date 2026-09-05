@@ -73,6 +73,12 @@ RAG 嵌入固定走 OpenAI 兼容端点 `POST {baseUrl}/v1/embeddings`，与主�
 ### wire 采样日志（wire sampling log）
 KP 回合管线上的唯一新增缝（T1，spec #36 / ADR-0006）：每个真实 KP 回合把完整 wire 消息序列——原始 assistant `tool_calls`（含参数 JSON）、工具结果回填（线上同形态：摘要+截断）、当轮 RAG 注入原文、最终叙事回复——落库到 node:sqlite 的 `kp_wire_samples` 表（读走 `wireSampleService.listWireSamplesForRoom`，后续导出器共用）。默认开启，`KP_WIRE_SAMPLING=0` 关闭（关闭时零额外写入）；MOCK_AI 确定性脚本回合与图中断/无叙事回合不采样；数据不进 `rooms.state`，房间快照协议零改动（ADR-0001/0002）。
 
+### 金样本评测集（golden eval set）
+三层评测的第二层资产（T3，spec #36 / ADR-0006）：57 条标准情境 → 期望工具/参数，覆盖 24 个 COC 工具主组合；评测 harness 对任意 openai_chat 端点产出格式遵循率与裁定正确率 + 可分类失败明细（未调工具/调错工具/参数错/文字骰点）。判定规则与请求形态都**单源复用产品代码**：格式判定用 `shared/tools/kpValidation.ts`（kpGraph validate 节点同源），请求构建用 `kpPromptService` 提示词纯函数 + 线上同形态工具结果回填。落点 `training/eval/`（独立工作区，不入 server 运行时依赖树）；基线报告落盘 `training/eval/reports/`，是 #42 gate 的对照基准。
+
+### 校验规则单源（kpValidation）
+`shared/tools/kpValidation.ts`：文字模拟骰子正则（TEXT_SIMULATION_PATTERNS/hasTextSimulation/cleanTextSimulation）、工具等价表（TOOL_EQUIVALENTS：melee/ranged_attack 隐含 skill_check+roll_dice+adjust_hp）与 required 覆盖判定。产品侧质量门槛（kpGraph validate 节点）与训练评测侧客观评测器（training/eval）共用这一份，防止两处漂移。
+
 ## 不重议的决策
 
 - ADR-0001：房间 schema 只归 RoomService（经 roomStorage）所有，REST/ws 不接触。

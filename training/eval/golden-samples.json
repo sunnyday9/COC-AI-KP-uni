@@ -1,0 +1,1280 @@
+{
+  "version": 1,
+  "description": "KP 金样本裁定评测集（T3 #39 / spec #36 三层评测之金样本层）。57 条标准情境 → 期望工具与参数，覆盖 24 个 COC 工具主组合。情境人工编写（剧本「雾停镇的灯塔」mini 场景 + 规则书规则场景）。期望参数只强制「规则/剧本可判定」的键：技能值来自角色卡、tieBreaker/难度反转/奖励骰来自规则、损失表达式/花费/剧本地名来自 RAG 注入原文；KP 自由裁量项（普通检定难度、bonusDice 判断等）不进匹配。人工复核注记见各条 notes。",
+  "samples": [
+    {
+      "id": "skill-check-regular-01",
+      "category": "skill_check",
+      "tools": ["skill_check"],
+      "notes": "侦查 65 来自角色卡；难度属 KP 裁量，不强制匹配。暗格探查有戏剧不确定性 → 必须检定。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "渔民小屋",
+      "clues": [{ "id": "c1", "description": "桌上的航海日记摊开着，最后一页被撕掉" }],
+      "history": [
+        { "role": "kp", "content": "渔民小屋内，咸腥的海风从窗缝钻进来。书架抵着北墙，架后的墙皮有一道可疑的接缝。" },
+        { "role": "player", "playerName": "林逸", "content": "我环视这间屋子。" }
+      ],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【渔民小屋】书架后藏着通往地窖的暗格，需要侦查检定（难度常规）才能发现接缝的异样。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我举灯仔细检查书架和它后面的墙。",
+      "expect": {
+        "alternatives": [[{ "name": "skill_check", "args": { "skillName": "侦查", "skillValue": 65 } }]]
+      }
+    },
+    {
+      "id": "skill-check-library-02",
+      "category": "skill_check",
+      "tools": ["skill_check"],
+      "notes": "图书馆使用 70 来自角色卡；翻找档案属于文书检索，必须走检定而非直接给结论。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【档案馆】1923 年的航运记录与失踪人口档案存放在二楼档案堆中，未做索引。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我在档案堆里翻找 1923 年灯塔守夜人失踪的记录。",
+      "expect": {
+        "alternatives": [[{ "name": "skill_check", "args": { "skillName": "图书馆使用", "skillValue": 70 } }]]
+      }
+    },
+    {
+      "id": "skill-check-push-03",
+      "category": "skill_check",
+      "tools": ["skill_check"],
+      "notes": "玩家明确宣布孤注一掷并描述代价（规则书 push roll；非幸运/SAN/战斗检定）→ isPush: true 为规则强制。锁匠 55 来自角色卡。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "那把锈死的铁门锁纹丝不动。刚才的撬锁失败了，撬棍在锁孔里滑脱，发出刺耳的刮擦声。" },
+        { "role": "player", "playerName": "陈默", "content": "我孤注一掷：把撬棍整个插进锁孔，用肩膀顶住门框全力压——要是再失败，手八成要被夹伤。" }
+      ],
+      "kpMemory": ["陈默尝试撬锁失败。"],
+      "longTermSummary": "",
+      "ragContext": "【教堂地下室】地下室的铁门锁锈死，需要锁匠检定；失败可孤注一掷。",
+      "characters": ["char_chen"],
+      "batchUserContent": "【陈默】我孤注一掷，把撬棍整根插进锁孔用肩膀压。",
+      "expect": {
+        "alternatives": [[{ "name": "skill_check", "args": { "skillName": "锁匠", "skillValue": 55, "isPush": true } }]]
+      }
+    },
+    {
+      "id": "san-check-script-04",
+      "category": "san_check",
+      "tools": ["san_check"],
+      "notes": "损失表达式 1/1d6 来自剧本惊吓值（RAG 注入）；currentSan 60 来自角色卡。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "悬崖小径",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【悬崖小径】退潮后的礁石上趴着一具深潜者尸体：鱼腹人形，鳃还在缓慢开合。理智惊吓：成功 1，失败 1d6。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我凑近看清楚那具尸体到底是什么。",
+      "expect": {
+        "alternatives": [[{ "name": "san_check", "args": { "currentSan": 60, "successLoss": "1", "failureLoss": "1d6" } }]]
+      }
+    },
+    {
+      "id": "san-check-script-05",
+      "category": "san_check",
+      "tools": ["san_check"],
+      "notes": "损失表达式 1d3/1d10 来自剧本惊吓值；currentSan 55 来自陈默角色卡。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "灯塔",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【灯塔顶】灯室中央的神像在灯光下显露真容：无数触须从石雕的脸后垂落。理智惊吓：成功 1d3，失败 1d10。",
+      "characters": ["char_chen"],
+      "batchUserContent": "【陈默】我举灯照向神像的脸。",
+      "expect": {
+        "alternatives": [[{ "name": "san_check", "args": { "currentSan": 55, "successLoss": "1d3", "failureLoss": "1d10" } }]]
+      }
+    },
+    {
+      "id": "san-check-script-06",
+      "category": "san_check",
+      "tools": ["san_check"],
+      "notes": "轻微惊吓 0/1 来自剧本；当前 SAN 60 来自角色卡。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "渔民小屋",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【渔民小屋·夜】日记突然自行翻页，屋里响起一声压低的叹息。理智惊吓：成功 0，失败 1。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】日记突然自己翻页了，我僵在原地。",
+      "expect": {
+        "alternatives": [[{ "name": "san_check", "args": { "currentSan": 60, "successLoss": "0", "failureLoss": "1" } }]]
+      }
+    },
+    {
+      "id": "adjust-san-07",
+      "category": "continuation",
+      "tools": ["adjust_san"],
+      "notes": "san_check 已结算 sanLost=6，规则要求把损失回写 → adjust_san delta=-6（取自工具结果，非裁量）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "悬崖小径",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【悬崖小径】深潜者尸体的鳃还在开合。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（看着检定结果）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "san_check", "arguments": "{\"currentSan\":60,\"successLoss\":\"1\",\"failureLoss\":\"1d6\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 72；currentSan: 60；passed: false；lossExpr: 1d6；sanLost: 6\n{\"roll\":72,\"currentSan\":60,\"passed\":false,\"lossExpr\":\"1d6\",\"sanLost\":6}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "adjust_san", "args": { "delta": -6 } }]]
+      }
+    },
+    {
+      "id": "insanity-int-08",
+      "category": "continuation",
+      "tools": ["trigger_insanity"],
+      "notes": "单次 SAN 损失 8 ≥ 5 → 需 INT 检定判临时疯狂（工具描述强制）；intValue 75 来自林逸 INT。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "悬崖小径",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（检定结束了）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "san_check", "arguments": "{\"currentSan\":60,\"successLoss\":\"1\",\"failureLoss\":\"2d6\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 88；currentSan: 60；passed: false；lossExpr: 2d6；sanLost: 8\n{\"roll\":88,\"currentSan\":60,\"passed\":false,\"lossExpr\":\"2d6\",\"sanLost\":8}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "trigger_insanity", "args": { "sanLost": 8, "intValue": 75 } }]]
+      }
+    },
+    {
+      "id": "insanity-permanent-09",
+      "category": "continuation",
+      "tools": ["trigger_insanity"],
+      "notes": "SAN 60-4=56 归零路径演示改为：currentSan 2 损失 4 → SAN 0 → 永久疯狂（工具描述：SAN 降至 0 即 permanent）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "灯塔",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（我的理智见底了）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "san_check", "arguments": "{\"currentSan\":2,\"successLoss\":\"1\",\"failureLoss\":\"1d10\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 55；currentSan: 2；passed: false；lossExpr: 1d10；sanLost: 4\n{\"roll\":55,\"currentSan\":2,\"passed\":false,\"lossExpr\":\"1d10\",\"sanLost\":4}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "trigger_insanity", "args": { "sanLost": 4, "intValue": 75 } }]]
+      }
+    },
+    {
+      "id": "roll-damage-10",
+      "category": "continuation",
+      "tools": ["roll_dice"],
+      "notes": "格斗检定成功 → 伤害骰；匕首 1d4（卡内武器）+ DB 0 → sides=4。链路：skill_check → roll_dice → adjust_hp。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（我挥匕首刺向教徒）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "skill_check", "arguments": "{\"skillName\":\"斗殴\",\"skillValue\":60,\"difficulty\":\"regular\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 34；threshold: 60；result: regular_success；success: true\n{\"roll\":34,\"skillName\":\"斗殴\",\"skillValue\":60,\"difficulty\":\"regular\",\"threshold\":60,\"result\":\"regular_success\",\"success\":true}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "roll_dice", "args": { "sides": 4 } }]]
+      }
+    },
+    {
+      "id": "roll-random-11",
+      "category": "roll_dice",
+      "tools": ["roll_dice"],
+      "notes": "剧本规则明确用 1d6 决定随机事件 → sides=6 来自剧本（非战斗伤害，roll_dice 是正确工具）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【旧仓库】每当调查员翻找垃圾堆，掷 1d6：1-2 窜出老鼠惊吓众人，3-6 一无所获。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我戴上手套去翻那个垃圾堆。",
+      "expect": {
+        "alternatives": [[{ "name": "roll_dice", "args": { "sides": 6 } }]]
+      }
+    },
+    {
+      "id": "adjust-hp-12",
+      "category": "continuation",
+      "tools": ["adjust_hp"],
+      "notes": "伤害骰已出 roll=3（1d4）+ DB 0 → delta=-3。链路第三步。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（结算伤害）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [
+            { "id": "tc1", "name": "skill_check", "arguments": "{\"skillName\":\"斗殴\",\"skillValue\":60,\"difficulty\":\"regular\"}" },
+            { "id": "tc2", "name": "roll_dice", "arguments": "{\"sides\":4}" }
+          ],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 34；threshold: 60；result: regular_success；success: true\n{\"roll\":34,\"skillName\":\"斗殴\",\"skillValue\":60,\"difficulty\":\"regular\",\"threshold\":60,\"result\":\"regular_success\",\"success\":true}" },
+            { "tool_call_id": "tc2", "content": "【结果摘要】roll: 3；sides: 4\n{\"roll\":3,\"sides\":4}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "adjust_hp", "args": { "delta": -3 } }]]
+      }
+    },
+    {
+      "id": "major-wound-13",
+      "category": "continuation",
+      "tools": ["apply_major_wound"],
+      "notes": "damageDealt 6 ≥ hpMax 12/2 → 重伤判定（规则强制）。三项参数全部来自 adjust_hp 工具结果。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（我受了这一击）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "adjust_hp", "arguments": "{\"delta\":-6}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】delta: -6；hp: 6；hpMax: 12\n{\"delta\":-6,\"hp\":6,\"hpMax\":12}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "apply_major_wound", "args": { "hpMax": 12, "damageDealt": 6, "hpAfter": 6 } }]]
+      }
+    },
+    {
+      "id": "major-wound-dying-14",
+      "category": "continuation",
+      "tools": ["apply_major_wound"],
+      "notes": "伤害 14 使 hp=-2（≤0 且已重伤线）→ 濒死判定；参数取自工具结果。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（枪声之后我倒下了）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "adjust_hp", "arguments": "{\"delta\":-14}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】delta: -14；hp: -2；hpMax: 12\n{\"delta\":-14,\"hp\":-2,\"hpMax\":12}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "apply_major_wound", "args": { "hpMax": 12, "damageDealt": 14, "hpAfter": -2 } }]]
+      }
+    },
+    {
+      "id": "first-aid-15",
+      "category": "continuation",
+      "tools": ["first_aid"],
+      "notes": "急救检定成功后调用 first_aid(success=true)——濒死者稳定 +1HP（工具描述）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_chen"],
+      "batchUserContent": "【陈默】我按住林逸的伤口做急救。",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "skill_check", "arguments": "{\"skillName\":\"急救\",\"skillValue\":40,\"difficulty\":\"regular\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 12；threshold: 40；result: regular_success；success: true\n{\"roll\":12,\"skillName\":\"急救\",\"skillValue\":40,\"difficulty\":\"regular\",\"threshold\":40,\"result\":\"regular_success\",\"success\":true}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "first_aid", "args": { "success": true } }]]
+      }
+    },
+    {
+      "id": "first-aid-fail-16",
+      "category": "continuation",
+      "tools": ["first_aid"],
+      "notes": "急救检定失败 → first_aid(success=false)：HP 与濒死状态不变，仅叙事（工具描述）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_chen"],
+      "batchUserContent": "【陈默】我再次尝试给林逸止血。",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "skill_check", "arguments": "{\"skillName\":\"急救\",\"skillValue\":40,\"difficulty\":\"regular\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 77；threshold: 40；result: failure；success: false\n{\"roll\":77,\"skillName\":\"急救\",\"skillValue\":40,\"difficulty\":\"regular\",\"threshold\":40,\"result\":\"failure\",\"success\":false}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "first_aid", "args": { "success": false } }]]
+      }
+    },
+    {
+      "id": "medicine-17",
+      "category": "continuation",
+      "tools": ["medicine"],
+      "notes": "医学检定成功 → medicine(success=true)，healExpr 默认 1d3 不强制。医学 30 来自角色卡。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "渔民小屋",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "渔民小屋里有基本的药品箱。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我来处理陈默背上的伤口，做正规处理。",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "skill_check", "arguments": "{\"skillName\":\"医学\",\"skillValue\":30,\"difficulty\":\"regular\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 9；threshold: 30；result: regular_success；success: true\n{\"roll\":9,\"skillName\":\"医学\",\"skillValue\":30,\"difficulty\":\"regular\",\"threshold\":30,\"result\":\"regular_success\",\"success\":true}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "medicine", "args": { "success": true } }]]
+      }
+    },
+    {
+      "id": "spend-luck-18",
+      "category": "continuation",
+      "tools": ["spend_luck"],
+      "notes": "玩家宣布花 5 幸运改骰（68→63 ≤ 65 转败为胜）→ amount=5 由玩家选择强制。幸运不可用于幸运/SAN/伤害骰。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "渔民小屋",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我花 5 点幸运，把刚才那掷 68 改成 63。",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "skill_check", "arguments": "{\"skillName\":\"侦查\",\"skillValue\":65,\"difficulty\":\"regular\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 68；threshold: 65；result: failure；success: false\n{\"roll\":68,\"skillName\":\"侦查\",\"skillValue\":65,\"difficulty\":\"regular\",\"threshold\":65,\"result\":\"failure\",\"success\":false}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "spend_luck", "args": { "amount": 5 } }]]
+      }
+    },
+    {
+      "id": "opposed-counter-19",
+      "category": "opposed_check",
+      "tools": ["opposed_check"],
+      "notes": "林逸选择反击（格斗 60）vs 教徒格斗 50 → tieBreaker=attacker（工具描述：反击=attacker）。双方技能值来自上下文。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "教徒的木棒带着风声横扫过来，被林逸侧身躲过——现在轮到他还手了。" }
+      ],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】雾停镇邪教的看门人：格斗 50，闪避 40。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我不退反进，抢棍进去贴身反击。",
+      "expect": {
+        "alternatives": [
+          [{ "name": "opposed_check", "args": { "sideAValue": 60, "sideBValue": 50, "tieBreaker": "attacker" } }],
+          [{ "name": "melee_attack", "args": { "sideAValue": 60, "sideBValue": 50, "tieBreaker": "attacker" } }]
+        ]
+      }
+    },
+    {
+      "id": "opposed-dodge-20",
+      "category": "opposed_check",
+      "tools": ["opposed_check"],
+      "notes": "林逸选择闪避（40）vs 教徒攻击（格斗 50）→ tieBreaker=defender（工具描述：闪避=defender）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】雾停镇邪教的看门人：格斗 50，闪避 40。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我后撤半步，全力闪避他的木棒。",
+      "expect": {
+        "alternatives": [[{ "name": "opposed_check", "args": { "sideAValue": 50, "sideBValue": 40, "tieBreaker": "defender" } }]]
+      }
+    },
+    {
+      "id": "opposed-social-21",
+      "category": "opposed_check",
+      "tools": ["opposed_check"],
+      "notes": "社交对抗：林逸说服 55 vs 教徒 40（RAG 给出）→ opposed_check，tieBreaker=attacker（sideA=调查员）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】看门人对教义深信不疑，但并非不可动摇（对抗意志 40）。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我告诉他灯塔昨晚的死人是他的教友，劝他放我进去看一眼。",
+      "expect": {
+        "alternatives": [[{ "name": "opposed_check", "args": { "sideAValue": 55, "sideBValue": 40, "tieBreaker": "attacker" } }]]
+      }
+    },
+    {
+      "id": "opposed-assist-22",
+      "category": "opposed_check",
+      "tools": ["opposed_check"],
+      "notes": "以多打少：陈默主攻（格斗 65），林逸助拳 → sideABonusDice=1（规则书助拳 +1 奖励骰）。sideB 教徒闪避 40。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】看门人：闪避 40。",
+      "characters": ["char_chen", "char_lin"],
+      "batchUserContent": "【林逸】我绊住他的脚，陈默看你的了！\n【陈默】我抡起撬棍砸他持棒的手。",
+      "expect": {
+        "alternatives": [[{ "name": "opposed_check", "args": { "sideAValue": 65, "sideABonusDice": 1, "sideBValue": 40, "tieBreaker": "attacker" } }]]
+      }
+    },
+    {
+      "id": "melee-basic-23",
+      "category": "melee_attack",
+      "tools": ["melee_attack", "skill_check"],
+      "notes": "近战首选 melee_attack 一步结算（BASE_INSTRUCTIONS）；damageExpr=1d4（匕首）、investigatorSide=A、tieBreaker=defender（对方闪避）。分步链第一步=斗殴 skill_check 亦可。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】看门人：格斗 50，闪避 40，无护甲。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我欺身而上，匕首直刺他持棒的手腕。",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "melee_attack",
+              "args": { "sideAValue": 60, "sideBValue": 40, "tieBreaker": "defender", "damageExpr": "1d4", "investigatorSide": "A" }
+            }
+          ],
+          [{ "name": "skill_check", "args": { "skillName": "斗殴", "skillValue": 60 } }]
+        ]
+      }
+    },
+    {
+      "id": "melee-impale-24",
+      "category": "melee_attack",
+      "tools": ["melee_attack"],
+      "notes": "匕首是贯穿武器（刃器）→ isImpaling=true（工具描述：blades/spears 贯穿）。其余同 melee-basic。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】看门人：格斗 50，闪避 40，无护甲。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我趁他弯腰的空档，双手握匕首全力捅进去。",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "melee_attack",
+              "args": { "sideAValue": 60, "sideBValue": 40, "tieBreaker": "defender", "damageExpr": "1d4", "investigatorSide": "A", "isImpaling": true }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "melee-npc-25",
+      "category": "melee_attack",
+      "tools": ["melee_attack", "skill_check", "roll_dice", "adjust_hp"],
+      "notes": "NPC 攻击玩家：sideA=教徒（格斗 50、棍棒 1d6），sideB=林逸闪避 40，investigatorSide=B（HP/重伤自动结算）。tieBreaker=defender（调查员闪避）。分步链（opposed_check/roll_dice/adjust_hp）亦可。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】看门人：格斗 50，闪避 40；武器为橡木棍（伤害 1d6）。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（他抡棍砸向我，我抬臂格挡不及）",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "melee_attack",
+              "args": { "sideAValue": 50, "sideBValue": 40, "tieBreaker": "defender", "damageExpr": "1d6", "investigatorSide": "B" }
+            }
+          ],
+          [{ "name": "opposed_check", "args": { "sideAValue": 50, "sideBValue": 40, "tieBreaker": "defender" } }]
+        ]
+      }
+    },
+    {
+      "id": "ranged-pointblank-26",
+      "category": "ranged_attack",
+      "tools": ["ranged_attack", "skill_check"],
+      "notes": "抵近射击 → bonusDice=1（规则书：point blank +1 奖励骰）；手枪 55、伤害 1d10 来自角色卡；子弹贯穿 isImpaling=true（工具描述）。分步 skill_check 手枪亦可。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】看门人：无护甲。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我把枪口顶到他胸口开火。",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "ranged_attack",
+              "args": { "skillName": "手枪", "skillValue": 55, "damageExpr": "1d10", "targetIsInvestigator": false, "bonusDice": 1, "isImpaling": true }
+            }
+          ],
+          [{ "name": "skill_check", "args": { "skillName": "手枪", "skillValue": 55 } }]
+        ]
+      }
+    },
+    {
+      "id": "ranged-long-27",
+      "category": "ranged_attack",
+      "tools": ["ranged_attack"],
+      "notes": "远距离 → difficulty=hard（规则书射程表，规则强制）；步枪 45、伤害 2d6 来自角色卡；子弹 isImpaling=true。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "悬崖小径",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【悬崖小径】教徒正在 hundred 米外的码头登船，无掩体，无护甲。",
+      "characters": ["char_chen"],
+      "batchUserContent": "【陈默】我用步枪朝码头那个教徒开枪。",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "ranged_attack",
+              "args": { "skillName": "步枪", "skillValue": 45, "difficulty": "hard", "damageExpr": "2d6", "targetIsInvestigator": false, "isImpaling": true }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "ranged-npc-28",
+      "category": "ranged_attack",
+      "tools": ["ranged_attack"],
+      "notes": "NPC 射击玩家：教徒手枪 45、伤害 1d8（RAG 给出）→ targetIsInvestigator=true（HP 自动结算）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教徒】看门人拔出了左轮（射击 45，伤害 1d8），朝仓库里的林逸开枪。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（枪响了，我正站在明处）",
+      "expect": {
+        "alternatives": [
+          [{ "name": "ranged_attack", "args": { "skillName": "手枪", "skillValue": 45, "damageExpr": "1d8", "targetIsInvestigator": true } }]
+        ]
+      }
+    },
+    {
+      "id": "clue-obvious-29",
+      "category": "grant_clue",
+      "tools": ["grant_clue"],
+      "notes": "显明线索免检定直接 grant_clue（BASE_INSTRUCTIONS）；clueId=c3 来自剧本结构化线索。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "渔民小屋",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【渔民小屋】显明线索 c3：桌上摊开的航海日记，最后一页写着「灯不该亮第三次」。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我拿起桌上的日记读最后一页。",
+      "expect": {
+        "alternatives": [[{ "name": "grant_clue", "args": { "clueId": "c3" } }]]
+      }
+    },
+    {
+      "id": "clue-hidden-30",
+      "category": "continuation",
+      "tools": ["grant_clue"],
+      "notes": "隐秘线索：检定成功后才 grant_clue（续接）；描述自由文本不强制匹配。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【档案馆】成功检索可发现 1923 年守夜人失踪前的报告残页（隐秘线索）。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（翻到了什么）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "skill_check", "arguments": "{\"skillName\":\"图书馆使用\",\"skillValue\":70,\"difficulty\":\"regular\"}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】roll: 21；threshold: 70；result: regular_success；success: true\n{\"roll\":21,\"skillName\":\"图书馆使用\",\"skillValue\":70,\"difficulty\":\"regular\",\"threshold\":70,\"result\":\"regular_success\",\"success\":true}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "grant_clue" }]]
+      }
+    },
+    {
+      "id": "clue-freeform-31",
+      "category": "grant_clue",
+      "tools": ["grant_clue"],
+      "notes": "无剧本 id 的显明线索 → 只需调用 grant_clue，描述为自由文本。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "渔民小屋",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我蹲下看门板——上面有几道新鲜的抓痕。",
+      "expect": {
+        "alternatives": [[{ "name": "grant_clue" }]]
+      }
+    },
+    {
+      "id": "scene-transition-32",
+      "category": "transition_scene",
+      "tools": ["transition_scene"],
+      "notes": "场景名/sceneId 都来自剧本（s5 档案馆地下层）；移动到新地点必须 transition_scene。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【档案馆】地下层（s5）存放教会的禁书柜，入口在阅览室后的暗门后。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我推开暗门，顺着台阶走进档案馆地下层。",
+      "expect": {
+        "alternatives": [[{ "name": "transition_scene", "args": { "sceneName": "档案馆地下层", "sceneId": "s5" } }]]
+      }
+    },
+    {
+      "id": "end-victory-33",
+      "category": "end_game",
+      "tools": ["end_game"],
+      "notes": "剧本胜利条件达成 → outcome=victory（枚举强制）；title/summary 为自由文本。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "灯塔",
+      "clues": [{ "id": "c7", "description": "熄灯仪式的完整步骤" }],
+      "history": [
+        { "role": "kp", "content": "灯室的齿轮在你手中停转，灯第三次熄灭了。海面上那盏回应的绿光缓缓沉了下去。" }
+      ],
+      "kpMemory": ["灯被熄灭，海上的绿光沉没。"],
+      "longTermSummary": "调查员找到了熄灯仪式的完整步骤并执行。",
+      "ragContext": "【终幕】熄灯仪式完成后，雾停镇解除诅咒，故事以胜利结束。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（仪式完成了）",
+      "expect": {
+        "alternatives": [[{ "name": "end_game", "args": { "outcome": "victory" } }]]
+      }
+    },
+    {
+      "id": "end-defeat-34",
+      "category": "end_game",
+      "tools": ["end_game"],
+      "notes": "剧本败北条件（守夜人祭品齐全）达成 → outcome=defeat。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "灯塔",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "灯亮起了第三次。海面下传来回应的震动，整座灯塔开始倾斜。" }
+      ],
+      "kpMemory": [],
+      "longTermSummary": "调查员未能阻止仪式，林逸重伤濒死，陈默陷入永久疯狂。",
+      "ragContext": "【终幕】若灯第三次亮起且无人阻止，教团完成召唤，故事以败北结束。",
+      "characters": ["char_chen"],
+      "batchUserContent": "【陈默】（一切结束了）",
+      "expect": {
+        "alternatives": [[{ "name": "end_game", "args": { "outcome": "defeat" } }]]
+      }
+    },
+    {
+      "id": "reset-day-35",
+      "category": "reset_day",
+      "tools": ["reset_day"],
+      "notes": "新游戏日开始（过夜休息）→ 必须调用 reset_day 重置当日 SAN 损失计数（BASE_INSTRUCTIONS/工具描述强制），无参数。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "渔民小屋",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我们在小屋里休息到天亮。",
+      "expect": {
+        "alternatives": [[{ "name": "reset_day", "args": {} }]]
+      }
+    },
+    {
+      "id": "inspiration-regular-36",
+      "category": "inspiration_check",
+      "tools": ["inspiration_check"],
+      "notes": "线索从未提及 → 难度常规（灵感检定难度按提及度反转，规则强制）；INT 75 来自角色卡；线索描述为自由文本。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "你们在档案馆翻了一下午，一无所获。窗外雾更浓了。" },
+        { "role": "player", "playerName": "林逸", "content": "没别的线索了吗？我们卡住了。" }
+      ],
+      "kpMemory": ["档案馆一下午的检索没有结果。"],
+      "longTermSummary": "",
+      "ragContext": "【档案馆】守夜人失踪前曾把一份报告藏在禁书柜第三层的假封皮里（本线索尚未向玩家提及）。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我再想想……还能从哪里入手？",
+      "expect": {
+        "alternatives": [[{ "name": "inspiration_check", "args": { "skillValue": 75, "difficulty": "regular" } }]]
+      }
+    },
+    {
+      "id": "inspiration-hard-37",
+      "category": "inspiration_check",
+      "tools": ["inspiration_check"],
+      "notes": "线索提及但未强调 → 难度困难（规则强制反转）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "你想起馆长提过一句「禁书柜的东西别乱碰」，当时没人在意。" }
+      ],
+      "kpMemory": ["馆长提过禁书柜的事。"],
+      "longTermSummary": "",
+      "ragContext": "【档案馆】报告藏在禁书柜第三层的假封皮里。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】馆长那句「禁书柜」……我们再去看看？",
+      "expect": {
+        "alternatives": [[{ "name": "inspiration_check", "args": { "skillValue": 75, "difficulty": "hard" } }]]
+      }
+    },
+    {
+      "id": "inspiration-extreme-38",
+      "category": "inspiration_check",
+      "tools": ["inspiration_check"],
+      "notes": "线索已被挑明讨论过 → 难度极难（规则强制反转）；失败的 setback 为自由文本。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "你们把禁书柜翻了个遍，还是没找到那份报告——你们已经讨论过它藏在哪里了。" }
+      ],
+      "kpMemory": ["禁书柜被彻底搜过一遍。"],
+      "longTermSummary": "",
+      "ragContext": "【档案馆】报告藏在禁书柜第三层的假封皮里。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】报告肯定还在禁书柜里，我们再找一次。",
+      "expect": {
+        "alternatives": [[{ "name": "inspiration_check", "args": { "skillValue": 75, "difficulty": "extreme" } }]]
+      }
+    },
+    {
+      "id": "cast-first-39",
+      "category": "cast_spell",
+      "tools": ["cast_spell"],
+      "notes": "首次施放 → firstCast=true（触发困难 POW 检定，工具内处理）；消耗 MP 10 / SAN 1 来自剧本；powValue 65 来自角色卡。spellName 用别名属自由文本。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆地下层",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【禁书柜】法术「静默之语」：使十步内声音消隐一幕。首次施放需困难 POW 检定。消耗：MP 10，SAN 1。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我按书上画的符，默诵那些音节——第一次施展「静默之语」。",
+      "expect": {
+        "alternatives": [[{ "name": "cast_spell", "args": { "costMp": 10, "costSan": 1, "powValue": 65, "firstCast": true } }]]
+      }
+    },
+    {
+      "id": "cast-repeat-40",
+      "category": "continuation",
+      "tools": ["cast_spell"],
+      "notes": "重复施放同一法术 → 不得再带 firstCast=true（forbid）；消耗同剧本。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆地下层",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【禁书柜】法术「静默之语」：消耗 MP 10，SAN 1。首次施放需困难 POW 检定。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我再施一次「静默之语」。",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "cast_spell", "arguments": "{\"spellName\":\"静默之语\",\"costMp\":10,\"costSan\":1,\"powValue\":65,\"firstCast\":true}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】spellName: 静默之语；costMp: 10；costSan: 1；powPassed: true\n{\"spellName\":\"静默之语\",\"costMp\":10,\"costSan\":1,\"powPassed\":true}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "cast_spell", "args": { "costMp": 10, "costSan": 1, "powValue": 65 }, "forbid": { "firstCast": true } }]]
+      }
+    },
+    {
+      "id": "adjust-mp-41",
+      "category": "continuation",
+      "tools": ["adjust_mp"],
+      "notes": "施法结果已结算 costMp=10 → adjust_mp delta=-10（取自工具结果）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆地下层",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（咒文生效了）",
+      "priorIterations": [
+        {
+          "assistantContent": "",
+          "toolCalls": [{ "id": "tc1", "name": "cast_spell", "arguments": "{\"spellName\":\"静默之语\",\"costMp\":10,\"costSan\":1,\"powValue\":65,\"firstCast\":true}" }],
+          "toolResults": [
+            { "tool_call_id": "tc1", "content": "【结果摘要】spellName: 静默之语；costMp: 10；costSan: 1；powPassed: true；mp: 3；san: 59\n{\"spellName\":\"静默之语\",\"costMp\":10,\"costSan\":1,\"powPassed\":true,\"mp\":3,\"san\":59}" }
+          ]
+        }
+      ],
+      "expect": {
+        "alternatives": [[{ "name": "adjust_mp", "args": { "delta": -10 } }]]
+      }
+    },
+    {
+      "id": "tome-browse-42",
+      "category": "read_tome",
+      "tools": ["read_tome"],
+      "notes": "泛读 → mode=browse；tomeId/sanLossExpr 来自剧本；mythosCurrent 3 来自角色卡（克苏鲁神话）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆地下层",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【禁书柜】《死灵之书抄本》：泛读可得神话 +4%、SAN 损失 1d6、揭示其中法术；精读需数月（MR 12）；查资料 1D100 ≤ MR。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我快速翻一遍这本抄本，看看里面写了什么。",
+      "expect": {
+        "alternatives": [[{ "name": "read_tome", "args": { "tomeId": "死灵之书抄本", "mode": "browse", "mythosCurrent": 3, "sanLossExpr": "1d6" } }]]
+      }
+    },
+    {
+      "id": "tome-study-43",
+      "category": "read_tome",
+      "tools": ["read_tome"],
+      "notes": "精读 → mode=study（MR 比较在工具内结算）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆地下层",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【禁书柜】《死灵之书抄本》：精读需数月（MR 12）。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】接下来的几个月，我要系统地精读这本抄本。",
+      "expect": {
+        "alternatives": [[{ "name": "read_tome", "args": { "tomeId": "死灵之书抄本", "mode": "study", "mythosCurrent": 3 } }]]
+      }
+    },
+    {
+      "id": "tome-consult-44",
+      "category": "read_tome",
+      "tools": ["read_tome"],
+      "notes": "查资料 → mode=consult（1D100 ≤ MR 在工具内结算）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "档案馆地下层",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【禁书柜】《死灵之书抄本》：查资料 1D100 ≤ MR 12。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我翻开抄本的索引，查「灯塔」相关的记载。",
+      "expect": {
+        "alternatives": [[{ "name": "read_tome", "args": { "tomeId": "死灵之书抄本", "mode": "consult", "mythosCurrent": 3 } }]]
+      }
+    },
+    {
+      "id": "chase-start-45",
+      "category": "chase_turn",
+      "tools": ["chase_turn"],
+      "notes": "追逐开局轮：速度检定已在上一轮完成 → speedChecksDone=true；参与者 MOV/AP 来自规则（AP=1+MOV 高出最慢者）与剧本地图；数组按包含匹配。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "悬崖小径",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "速度检定都过了。教徒沿着悬崖小径逃向码头——追逐开始！" }
+      ],
+      "kpMemory": ["追逐开始：教徒逃向码头。"],
+      "longTermSummary": "",
+      "ragContext": "【追逐】地图：悬崖小径 → 鱼市 → 码头。教徒目标：登船离开。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我全力追上去！",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "chase_turn",
+              "args": {
+                "participants": [{ "name": "林逸", "mov": 8 }, { "name": "教徒", "mov": 7 }],
+                "map": [{ "id": "鱼市" }],
+                "actions": [{ "name": "林逸", "action": "move" }],
+                "speedChecksDone": true
+              }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "chase-hazard-46",
+      "category": "chase_turn",
+      "tools": ["chase_turn"],
+      "notes": "追逐中途轮：翻越栅栏障碍 → 行动带攀爬检定（skillName/value 来自角色卡）；数组按包含匹配。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "悬崖小径",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【追逐】鱼市尽头有一道倒塌的栅栏（障碍，需攀爬翻越）。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】我手脚并用翻过那道栅栏，继续追！",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "chase_turn",
+              "args": {
+                "actions": [{ "name": "林逸", "action": "move", "skillName": "攀爬", "skillValue": 50 }],
+                "speedChecksDone": true
+              }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "chase-attack-47",
+      "category": "chase_turn",
+      "tools": ["chase_turn"],
+      "notes": "追逐中攻击同一地点的目标 → action=attack（规则：只能攻击同地点目标）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "悬崖小径",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【追逐】教徒在码头等船，与林逸同处一个地点。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】他跑不动了——我扑上去用匕首攻击他！",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "chase_turn",
+              "args": {
+                "actions": [{ "name": "林逸", "action": "attack" }],
+                "speedChecksDone": true
+              }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "env-fall-48",
+      "category": "environment_damage",
+      "tools": ["environment_damage"],
+      "notes": "坠落（混凝土 1D10/10 尺）→ kind=fall；调查员是受害者 → targetIsInvestigator=true；severity 映射属实现细节不强制。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【旧仓库】屋顶天窗的木板朽了——调查员从三米高的屋顶跌在混凝土地面上。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（地板塌了，我摔了下去）",
+      "expect": {
+        "alternatives": [[{ "name": "environment_damage", "args": { "kind": "fall", "targetIsInvestigator": true } }]]
+      }
+    },
+    {
+      "id": "env-fire-49",
+      "category": "environment_damage",
+      "tools": ["environment_damage"],
+      "notes": "火焰（燃烧房间每轮）→ kind=fire，targetIsInvestigator=true。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "旧仓库",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【旧仓库】火势蔓延，整个房间开始燃烧（每轮火焰伤害 1D10）。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】火封住了出口——我必须冲过去！",
+      "expect": {
+        "alternatives": [[{ "name": "environment_damage", "args": { "kind": "fire", "targetIsInvestigator": true } }]]
+      }
+    },
+    {
+      "id": "env-poison-50",
+      "category": "environment_damage",
+      "tools": ["environment_damage"],
+      "notes": "剧毒 → severity=lethal（剧本给定 4D10 毒）；conValue 60 来自角色卡（豁免检定用）。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教堂地下室】地窖的青铜罐破裂，涌出剧毒绿雾（剧毒：4D10；CON 极难成功减半，大成功豁免）。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（绿雾扑面而来，我吸了一口）",
+      "expect": {
+        "alternatives": [[{ "name": "environment_damage", "args": { "kind": "poison", "severity": "lethal", "conValue": 60, "targetIsInvestigator": true } }]]
+      }
+    },
+    {
+      "id": "env-drowning-51",
+      "category": "environment_damage",
+      "tools": ["environment_damage"],
+      "notes": "溺水（每轮 CON 检定）→ kind=drowning，conValue 来自角色卡。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "码头",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【码头】落水的调查员每轮需做 CON 检定，失败受到溺水伤害。",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（我掉进了海里，浪把我往下拖）",
+      "expect": {
+        "alternatives": [[{ "name": "environment_damage", "args": { "kind": "drowning", "conValue": 60, "targetIsInvestigator": true } }]]
+      }
+    },
+    {
+      "id": "development-52",
+      "category": "development_phase",
+      "tools": ["development_phase"],
+      "notes": "幕间成长：本局标记成长的是侦查(65)与斗殴(60)（来自上下文）→ growthSkills 数组包含匹配；克苏鲁神话与信用评级不参与成长。",
+      "storyName": "雾停镇的灯塔",
+      "scene": null,
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "第一幕结束：调查员揭开了教团的轮廓。",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】（第一幕结束，进入幕间成长——侦查和斗殴本局都用了不少次）",
+      "expect": {
+        "alternatives": [
+          [
+            {
+              "name": "development_phase",
+              "args": { "growthSkills": [{ "name": "侦查", "value": 65 }, { "name": "斗殴", "value": 60 }] }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "multi-characterId-53",
+      "category": "multi",
+      "tools": ["skill_check"],
+      "notes": "多人房间（花名册注入）→ 调用工具必须带 characterId（roster 提示强制）；侦查 65 来自林逸卡。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教堂地下室】祭坛上刻满了细密的符号，需要侦查检定才能分辨。",
+      "characters": ["char_lin", "char_chen"],
+      "batchUserContent": "【林逸】我凑近祭坛，辨认上面的刻痕。",
+      "expect": {
+        "alternatives": [[{ "name": "skill_check", "args": { "skillName": "侦查", "skillValue": 65, "characterId": "char_lin" } }]]
+      }
+    },
+    {
+      "id": "multi-two-actions-54",
+      "category": "multi",
+      "tools": ["skill_check"],
+      "notes": "合并批次（D4）两人独立行动 → KP 应逐一接住：两个 skill_check（可任意顺序，两条备选序列）；characterId 各自对应。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教堂地下室】铁门锁锈死需要锁匠检定；祭坛刻痕需要侦查检定。",
+      "characters": ["char_lin", "char_chen"],
+      "batchUserContent": "【林逸】我检查祭坛上的刻痕。\n【陈默】我去撬那扇铁门。",
+      "expect": {
+        "alternatives": [
+          [
+            { "name": "skill_check", "args": { "skillName": "侦查", "skillValue": 65, "characterId": "char_lin" } },
+            { "name": "skill_check", "args": { "skillName": "锁匠", "skillValue": 55, "characterId": "char_chen" } }
+          ],
+          [
+            { "name": "skill_check", "args": { "skillName": "锁匠", "skillValue": 55, "characterId": "char_chen" } },
+            { "name": "skill_check", "args": { "skillName": "侦查", "skillValue": 65, "characterId": "char_lin" } }
+          ]
+        ]
+      }
+    },
+    {
+      "id": "narr-routine-55",
+      "category": "narrative",
+      "tools": [],
+      "notes": "职业常规（考古学家辨文物年代）→ 自动成功，不检定（BASE_INSTRUCTIONS：仅在有戏剧性冲突/不确定性/危险时检定）。负例：调工具即败。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "渔民小屋",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "桌上散着几片陶片，釉色斑驳。" }
+      ],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】这些陶片大概是什么年代的？",
+      "expect": {
+        "noTools": true,
+        "alternatives": []
+      }
+    },
+    {
+      "id": "narr-chitchat-56",
+      "category": "narrative",
+      "tools": [],
+      "notes": "NPC 闲聊（打听天气）无戏剧性冲突 → 无检定、无工具。负例。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "酒馆",
+      "clues": [],
+      "history": [
+        { "role": "kp", "content": "酒馆里人声嘈杂，老板擦着杯子给你们腾了个位子。" }
+      ],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "",
+      "characters": ["char_lin"],
+      "batchUserContent": "【林逸】老板，今年这雾下得比往年早吧？",
+      "expect": {
+        "noTools": true,
+        "alternatives": []
+      }
+    },
+    {
+      "id": "narr-no-dice-57",
+      "category": "narrative",
+      "tools": ["skill_check"],
+      "notes": "玩家要求「别骰了直接说结果」→ KP 绝不能在文字里模拟骰点（严禁事项），仍必须用工具检定（撬锁情境，锁匠 55）。双重考验：格式禁令 + 检定纪律。",
+      "storyName": "雾停镇的灯塔",
+      "scene": "教堂地下室",
+      "clues": [],
+      "history": [],
+      "kpMemory": [],
+      "longTermSummary": "",
+      "ragContext": "【教堂地下室】铁门锁锈死，需要锁匠检定。",
+      "characters": ["char_chen"],
+      "batchUserContent": "【陈默】别给我放骰子动画了，你直接告诉我这次撬锁成没成。",
+      "expect": {
+        "alternatives": [[{ "name": "skill_check", "args": { "skillName": "锁匠", "skillValue": 55 } }]]
+      }
+    }
+  ]
+}

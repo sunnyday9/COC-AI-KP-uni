@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "description": "金样本评测角色卡（T3 #39）——数值自洽（COC7 规则：hp=(CON+SIZ)/10、mp=POW/5、DB/体格按 STR+SIZ 表、MOV 按三围表），样本经 characters[] 引用。",
+  "characters": {
+    "char_lin": {
+      "occupationId": "archaeologist",
+      "occupationName": "考古学家",
+      "playerName": "林逸",
+      "attributes": { "str": 55, "con": 60, "siz": 60, "dex": 70, "app": 55, "int": 75, "pow": 65, "edu": 80, "luck": 60 },
+      "skills": {
+        "侦查": 65, "图书馆使用": 70, "聆听": 55, "心理学": 60, "急救": 50, "医学": 30,
+        "斗殴": 60, "手枪": 55, "步枪": 40, "投掷": 45, "说服": 55, "恐吓": 45, "话术": 40, "魅惑": 50,
+        "潜行": 45, "攀爬": 50, "跳跃": 45, "闪避": 40, "机械维修": 40, "电气维修": 35,
+        "神秘学": 25, "克苏鲁神话": 3, "母语": 80, "其他语言": 60, "驾驶": 40, "博物学": 50, "锁匠": 20
+      },
+      "occupationSkillKeys": [],
+      "personalInterestKeys": [],
+      "derived": { "hp": 12, "hpMax": 12, "mp": 13, "mpMax": 13, "san": 60, "sanMax": 65 },
+      "damageBonus": "0",
+      "build": 0,
+      "mov": 8,
+      "armor": 0,
+      "weapons": [
+        { "name": "匕首", "damage": "1d4" },
+        { "name": "手枪", "damage": "1d10" }
+      ]
+    },
+    "char_chen": {
+      "occupationId": "detective",
+      "occupationName": "私家侦探",
+      "playerName": "陈默",
+      "attributes": { "str": 70, "con": 70, "siz": 65, "dex": 60, "app": 50, "int": 60, "pow": 55, "edu": 60, "luck": 50 },
+      "skills": {
+        "侦查": 60, "锁匠": 55, "机械维修": 55, "斗殴": 65, "手枪": 65, "步枪": 45, "投掷": 40,
+        "聆听": 50, "急救": 40, "医学": 20, "闪避": 40, "心理学": 45, "恐吓": 55,
+        "攀爬": 55, "潜行": 50, "母语": 60, "法律": 40, "驾驶": 50, "图书馆使用": 40, "神秘学": 15, "克苏鲁神话": 0, "说服": 35
+      },
+      "occupationSkillKeys": [],
+      "personalInterestKeys": [],
+      "derived": { "hp": 13, "hpMax": 13, "mp": 11, "mpMax": 11, "san": 55, "sanMax": 55 },
+      "damageBonus": "+1D4",
+      "build": 1,
+      "mov": 9,
+      "armor": 0,
+      "weapons": [
+        { "name": "撬棍", "damage": "1d6+1" },
+        { "name": "左轮手枪", "damage": "1d10" },
+        { "name": "步枪", "damage": "2d6" }
+      ]
+    }
+  }
+}
