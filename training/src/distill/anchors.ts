@@ -17,11 +17,13 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
+import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import { callTurn, type EvalEndpoint } from '../../eval/lib/client.js'
 import { judgeSample } from '../../eval/lib/judge.js'
 import { buildTurnRequest, type KpWireMessage } from '../../eval/lib/request.js'
 import { loadSamples } from '../../eval/lib/runner.js'
 import type { GoldenSample, ModelResponse } from '../../eval/lib/types.js'
+import { toOpenAiToolCall } from './sample.js'
 import type { DistillSample } from './types.js'
 
 const EVAL_DIR = fileURLToPath(new URL('../../eval', import.meta.url))
@@ -31,12 +33,12 @@ export async function buildGoldenAnchors(options: {
   ep: EvalEndpoint
   limit?: number
   usage: { promptTokens: number; completionTokens: number; calls: number }
-}): Promise<{ samples: DistillSample[]; judged: number; rejected: { id: string; category: string; detail: string }[]; errors: string[] }> {
+}): Promise<{ samples: DistillSample[]; judged: number; rejected: { id: string; category: string; detail: string; usage: { promptTokens: number; completionTokens: number; calls: number } }[]; errors: string[] }> {
   const goldenPath = resolve(EVAL_DIR, 'golden-samples.json')
   const samples: GoldenSample[] = loadSamples(goldenPath)
   const selected = options.limit ? samples.slice(0, options.limit) : samples
   const out: DistillSample[] = []
-  const rejected: { id: string; category: string; detail: string }[] = []
+  const rejected: { id: string; category: string; detail: string; usage: { promptTokens: number; completionTokens: number; calls: number } }[] = []
   const errors: string[] = []
 
   for (const sample of selected) {
@@ -49,7 +51,12 @@ export async function buildGoldenAnchors(options: {
       const response: ModelResponse = { content: r.content, toolCalls: r.toolCalls.map((t) => ({ name: t.name, arguments: t.arguments })) }
       const verdict = judgeSample(sample, response)
       if (verdict.category !== 'pass') {
-        rejected.push({ id: sample.id, category: verdict.category, detail: verdict.detail })
+        rejected.push({
+          id: sample.id,
+          category: verdict.category,
+          detail: verdict.detail,
+          usage: { promptTokens: r.usage.promptTokens, completionTokens: r.usage.completionTokens, calls: 1 },
+        })
         continue
       }
       out.push({
@@ -72,15 +79,7 @@ export async function buildGoldenAnchors(options: {
           {
             role: 'assistant',
             content: r.content,
-            ...(r.toolCalls.length
-              ? {
-                  tool_calls: r.toolCalls.map((t) => ({
-                    id: t.id,
-                    type: 'function' as const,
-                    function: { name: t.name, arguments: t.arguments },
-                  })),
-                }
-              : {}),
+            ...(r.toolCalls.length ? { tool_calls: r.toolCalls.map(toOpenAiToolCall) } : {}),
           },
         ],
         tools: COC_KP_TOOLS,
@@ -136,13 +135,17 @@ export function buildMockAnchorSeeds(demoStoryText: string): MockAnchorSeed[] {
 }
 
 /** mock/e2e 锚的极简调查员卡（演示情境无卡面；工具上下文需要基础 sheet 形状）。 */
-const MOCK_ANCHOR_SHEET: import('../../../shared/types/character.js').COCCharacterSheet = {
-  playerName: '调查员',
+const MOCK_ANCHOR_SHEET: COCCharacterSheet = {
+  occupationId: 'archaeologist',
   occupationName: '考古学家',
+  playerName: '调查员',
   attributes: { str: 60, con: 60, siz: 55, dex: 65, app: 50, int: 75, pow: 60, edu: 80, luck: 55 },
   skills: { 侦查: 65, 格斗: 55, 图书馆使用: 70, 聆听: 60, 神秘学: 50, 心理学: 60 },
+  occupationSkillKeys: ['侦查', '图书馆使用', '神秘学', '心理学', '聆听', '格斗', '信用评级'],
+  personalInterestKeys: ['格斗', '聆听', '神秘学', '心理学'],
   derived: { hp: 11, hpMax: 11, mp: 12, mpMax: 12, san: 55, sanMax: 55 },
-} as unknown as import('../../../shared/types/character.js').COCCharacterSheet
+  weapons: [],
+}
 
 /** mock/e2e 锚的固定 skeleton（走正常 Phase B 重放 + validate 过滤）。 */
 export function mockAnchorSkeleton(seed: MockAnchorSeed): import('./types.js').DistillSkeleton {

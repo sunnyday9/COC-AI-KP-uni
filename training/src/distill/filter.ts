@@ -11,20 +11,12 @@
  */
 import { COC_TOOL_NAMES } from '../../../shared/tools/cocTools.js'
 import { coversRequiredTools, hasTextSimulation } from '../../../shared/tools/kpValidation.js'
+import { parseToolArguments } from '../../eval/lib/rules.js'
+import { TOOL_LOOP_MAX } from './types.js'
 import { TURN_TYPE_SPECS } from './turnTypes.js'
 import type { FilterVerdict, ReplayedTurn } from './types.js'
 
-const MAX_TOOL_ITERATIONS = 8
-
-function parseToolArguments(raw: string): Record<string, unknown> | null {
-  if (!raw || !String(raw).trim()) return null
-  try {
-    const v = JSON.parse(String(raw)) as unknown
-    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
-  } catch {
-    return null
-  }
-}
+const MAX_TOOL_ITERATIONS = TOOL_LOOP_MAX
 
 /** 过滤一个重放回合：首个失败即返回（分类见 FilterVerdict.category）。 */
 export function filterTurn(turn: ReplayedTurn): FilterVerdict {

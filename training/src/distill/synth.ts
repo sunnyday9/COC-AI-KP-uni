@@ -52,7 +52,7 @@ export function initRolloutState(plan: RolloutState['plan']): RolloutState {
 }
 
 /** 线上 rememberTurn 的确定性兜底分支（finalContent 前 80 字 + …；上限 30 同值）。 */
-export function rememberTurn(state: RolloutState, finalContent: string): void {
+function rememberTurn(state: RolloutState, finalContent: string): void {
   state.kpMemory = [...state.kpMemory, `${finalContent.slice(0, 80)}…`].slice(-30)
 }
 

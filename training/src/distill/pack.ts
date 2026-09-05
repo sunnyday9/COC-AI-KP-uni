@@ -22,7 +22,7 @@ export function contextHash(sample: DistillSample): string {
 
 /** 出处分组键：synthetic=rollout id；seed=room/save id；anchor=独立文件不参与。 */
 export function provenanceKey(sample: DistillSample): string | null {
-  if (sample.meta.source === 'anchor') return null
+  if (sample.meta.source === 'anchor' || sample.meta.source === 'human') return null
   return sample.meta.origin
 }
 
@@ -135,7 +135,7 @@ export function toolAppearance(samples: DistillSample[]): { tool: string; count:
 /* ── 分层抽检包（用户人工抽检 ≥50 条的动作入口）────────────────────────── */
 
 export interface AuditPack {
-  manifest: { id: string; source: string; turnType: string; storyName: string; file: string }[]
+  manifest: { id: string; source: string; turnType: string; storyName: string }[]
   checklistMarkdown: string
   /** data.js 内容（window.AUDIT_DATA = …；查看器模板同目录加载）。 */
   dataJs: string
@@ -178,7 +178,6 @@ export function buildAuditPack(selected: DistillSample[]): AuditPack {
     source: s.meta.source,
     turnType: s.meta.turnType,
     storyName: s.meta.storyName,
-    file: '#',
   }))
 
   const checklistLines = [

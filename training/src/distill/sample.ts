@@ -8,9 +8,10 @@
  */
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
 import { buildSlimTurnMessages } from './replay.js'
-import type { DistillSample, DistillSkeleton, ReplayedTurn } from './types.js'
+import type { DistillSample, DistillSkeleton, ReplayedTurn, SampleSource } from './types.js'
 
-function toOpenAiToolCall(t: { id: string; name: string; arguments: string }): {
+/** 原始 tool_call → OpenAI wire 形态（replay 组装与样本组装共用，格式单点）。 */
+export function toOpenAiToolCall(t: { id: string; name: string; arguments: string }): {
   id: string
   type: 'function'
   function: { name: string; arguments: string }
@@ -36,7 +37,7 @@ export function buildWireSequence(turn: ReplayedTurn): unknown[] {
 }
 
 /** 重放回合 → 训练样本行（调用方保证已通过 filterTurn）。 */
-export function buildSample(turn: ReplayedTurn, source: 'seed' | 'synthetic' | 'anchor'): DistillSample {
+export function buildSample(turn: ReplayedTurn, source: SampleSource): DistillSample {
   const toolCallCount = turn.iterations.reduce((acc, it) => acc + it.toolCalls.length, 0)
   return {
     meta: {

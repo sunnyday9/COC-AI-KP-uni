@@ -17,6 +17,15 @@ export const SLIM_CONVERSATION_WINDOW = 8
 export const SLIM_MEMORY_ENTRIES = 12
 /** 序列上限（粗估 token ≈ chars / 1.6，中文为主）。 */
 export const SLIM_SEQ_TOKEN_CAP = 6000
+/** 工具循环上限（与线上 kpTurnService.MAX_TOOL_ITERATIONS 同值；replay/filter 共用）。 */
+export const TOOL_LOOP_MAX = 8
+
+/** 工具执行的世界增量（与 kpTurnService onEnd.worldDeltas 同形的最小集）。 */
+export interface WorldDeltas {
+  cluesAdded: { description: string; clueId?: string }[]
+  sceneChanged?: string
+  ending?: { outcome: string; title: string; summary: string }
+}
 
 /** 回合类型（蒸馏调度用；覆盖 24 工具的主组合，含纯叙事与多人合并行动）。 */
 export type TurnType =
@@ -108,11 +117,7 @@ export interface ReplayedTurn {
   finalContent: string
   usage: { promptTokens: number; completionTokens: number; calls: number }
   /** 工具执行的世界增量（rollout 状态演化输入）。 */
-  worldDeltas: {
-    cluesAdded: { description: string; clueId?: string }[]
-    sceneChanged?: string
-    ending?: { outcome: string; title: string; summary: string }
-  }
+  worldDeltas: WorldDeltas
   /** true = 打满 8 轮仍想调工具（未收口的半截回合，过滤器拒收）。 */
   hitCap: boolean
 }
@@ -125,11 +130,14 @@ export interface FilterVerdict {
   detail: string
 }
 
+/** 样本来源（数据卡配比的四个桶；human = 用户提供的少量人工示范）。 */
+export type SampleSource = 'seed' | 'synthetic' | 'anchor' | 'human'
+
 /** 最终训练样本（messages+tools JSONL 行）。 */
 export interface DistillSample {
   meta: {
     id: string
-    source: 'seed' | 'synthetic' | 'anchor'
+    source: SampleSource
     origin: string
     kind: 'opening' | 'turn'
     turnType: TurnType | 'anchor'

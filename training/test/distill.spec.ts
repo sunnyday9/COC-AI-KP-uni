@@ -19,6 +19,7 @@ import { buildWireSequence, buildSample } from '../src/distill/sample.js'
 import { buildSlimTurnMessages, estimateTokens, pruneForSeqCap, replaySkeleton } from '../src/distill/replay.js'
 import { applyTurnOutcome, initRolloutState, restoreState, snapshotState } from '../src/distill/synth.js'
 import { planRollouts, makeRng, pickTurnType, type SheetEntry } from '../src/distill/pool.js'
+import { buildMockAnchorSeeds, mockAnchorSkeleton } from '../src/distill/anchors.js'
 import type { COCCharacterSheet } from '../../shared/types/character.js'
 import type { DistillSample, DistillSkeleton, ReplayedTurn } from '../src/distill/types.js'
 import { createCharacterMutatorFactory } from '../../server/src/rule-engine/characterMutators.js'
@@ -446,6 +447,26 @@ describe('planRollouts / RNG', () => {
       const t = pickTurnType(rng)
       expect(t).not.toBe('opening')
     }
+  })
+})
+
+/* ── 锚样本种子 ─────────────────────────────────────── */
+
+describe('mock/e2e 锚种子', () => {
+  it('3 条种子：类型覆盖侦查/战斗/SAN，RAG 注入串为线上同形', () => {
+    const seeds = buildMockAnchorSeeds('旧图书馆的铜钥匙藏在书架后的暗格里。'.repeat(20))
+    expect(seeds.map((s) => s.turnType).sort()).toEqual(['combat_melee', 'investigate_check', 'san_encounter'])
+    for (const s of seeds) {
+      expect(s.ragContext.startsWith('## 剧本相关情报\n### [1] rule\n')).toBe(true)
+    }
+  })
+
+  it('mockAnchorSkeleton：极简卡在场 + required 来自回合类型契约', () => {
+    const [seed] = buildMockAnchorSeeds('旧图书馆')
+    const skeleton = mockAnchorSkeleton(seed!)
+    expect(skeleton.characters['char_0']!.derived!.san).toBe(55)
+    expect(skeleton.turnType).toBe(seed!.turnType)
+    expect(skeleton.batchContent).toContain('【调查员】')
   })
 })
 

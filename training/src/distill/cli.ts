@@ -54,6 +54,10 @@ const ANCHORS_FILE = path.join(OUT_DIR, 'anchors.jsonl')
 const TRAIN_FILE = path.join(OUT_DIR, 'train.jsonl')
 const HELDOUT_FILE = path.join(OUT_DIR, 'heldout.jsonl')
 const DATACARD_FILE = path.join(OUT_DIR, 'datacard.json')
+/** Phase A（合成批次）的教师用量台账——Phase B 用量已在 sample/rejected 行内。 */
+const USAGE_LEDGER_FILE = path.join(OUT_DIR, 'usage.jsonl')
+/** 人工示范入口（可选）：用户提供时并入训练侧（票 #40「少量人工示范并入」）。 */
+const HUMAN_FILE = path.join(REPO_ROOT, 'training', 'data', 'human-samples.jsonl')
 
 function ensureOutDir(): void {
   fs.mkdirSync(OUT_DIR, { recursive: true })
@@ -71,6 +75,12 @@ function readJsonl<T>(file: string): T[] {
 function appendJsonl(file: string, rows: unknown[]): void {
   if (rows.length === 0) return
   fs.appendFileSync(file, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf-8')
+}
+
+/** 教师用量台账（Phase A 等不落入样本/拒绝行的调用；数据卡成本 = 三处求和）。 */
+function appendUsage(usage: { promptTokens: number; completionTokens: number; calls: number }): void {
+  if (usage.calls === 0) return
+  fs.appendFileSync(USAGE_LEDGER_FILE, JSON.stringify({ at: new Date().toISOString(), ...usage }) + '\n', 'utf-8')
 }
 
 /* ── CLI 参数 ─────────────────────────────────────────────── */
@@ -347,10 +357,14 @@ async function runRollout(
     }
     const snapshot = snapshotState(state)
     try {
-      const batch =
-        turnType === 'opening'
-          ? null
-          : (await synthesizeBatch({ ep, state, turnType, storyChunks })).batch
+      let phaseAUsage: { promptTokens: number; completionTokens: number; calls: number } | null = null
+      let batch = null
+      if (turnType !== 'opening') {
+        const synth = await synthesizeBatch({ ep, state, turnType, storyChunks })
+        batch = synth.batch
+        phaseAUsage = synth.usage
+        appendUsage(synth.usage)
+      }
       const skeleton = buildSkeleton({ rolloutId: rollout.rolloutId, state, turnIndex, turnType, batch, ragIndex })
       const turn = await replaySkeleton(ep, skeleton)
       const result = settleTurn(turn, 'synthetic')
@@ -404,7 +418,7 @@ async function stageAnchors(args: CliArgs): Promise<void> {
   const all = [...golden.samples, ...mockOut]
   fs.writeFileSync(ANCHORS_FILE, all.map((s) => JSON.stringify(s)).join('\n') + (all.length ? '\n' : ''), 'utf-8')
   appendJsonl(REJECTED_FILE, [
-    ...golden.rejected.map((r) => ({ skeletonId: `anchor:golden:${r.id}`, turnType: 'anchor', source: 'anchor', category: r.category, detail: r.detail, usage: { promptTokens: 0, completionTokens: 0, calls: 0 } })),
+    ...golden.rejected.map((r) => ({ skeletonId: `anchor:golden:${r.id}`, turnType: 'anchor', source: 'anchor', category: r.category, detail: r.detail, usage: r.usage })),
     ...mockRejected,
   ])
   console.log(
@@ -418,11 +432,14 @@ async function stagePack(): Promise<void> {
   const plan: PlanState = JSON.parse(fs.readFileSync(PLAN_FILE, 'utf-8'))
   const samples = readJsonl<DistillSample>(SAMPLES_FILE)
   const anchors = readJsonl<DistillSample>(ANCHORS_FILE)
+  // 人工示范（可选）：用户把样本放入 training/data/human-samples.jsonl 即并入训练侧
+  const human = fs.existsSync(HUMAN_FILE) ? readJsonl<DistillSample>(HUMAN_FILE) : []
+  const rejectedRows = readJsonl<RejectedRow>(REJECTED_FILE)
   const heldoutProvenance = new Set<string>([
     ...plan.rollouts.filter((r) => r.split === 'heldout').map((r) => r.rolloutId),
     ...plan.heldoutSeedProvenance,
   ])
-  const result = packSplit({ core: samples, anchors, heldoutProvenance })
+  const result = packSplit({ core: [...samples, ...human], anchors, heldoutProvenance })
   if (result.conflicts.length) throw new Error(`切分出处冲突（实现 bug）: ${result.conflicts.join(', ')}`)
 
   fs.writeFileSync(TRAIN_FILE, result.train.map((s) => JSON.stringify(s)).join('\n') + (result.train.length ? '\n' : ''), 'utf-8')
@@ -433,16 +450,29 @@ async function stagePack(): Promise<void> {
   const heldoutStats = computeStats(result.heldout)
   const anchorStats = computeStats(result.anchors)
   const all = [...result.train, ...result.heldout, ...result.anchors]
-  const filterStats = readJsonl<RejectedRow>(REJECTED_FILE).reduce<Record<string, number>>((acc, r) => {
+  const filterStats = rejectedRows.reduce<Record<string, number>>((acc, r) => {
     acc[r.category] = (acc[r.category] ?? 0) + 1
     return acc
   }, {})
+
+  // 教师总成本 = 已收样本 + 被拒回合 + Phase A 台账（拒绝/合成阶段的调用也花钱）
+  const ledger = readJsonl<{ promptTokens: number; completionTokens: number; calls: number }>(USAGE_LEDGER_FILE)
+  const sumUsage = (usages: { promptTokens: number; completionTokens: number; calls: number }[]) =>
+    usages.reduce((acc, u) => ({ promptTokens: acc.promptTokens + u.promptTokens, completionTokens: acc.completionTokens + u.completionTokens, calls: acc.calls + u.calls }), { promptTokens: 0, completionTokens: 0, calls: 0 })
+  const fromSamples = sumUsage(all.map((s) => s.meta.usage))
+  const fromRejected = sumUsage(rejectedRows.map((r) => r.usage))
+  const fromLedger = sumUsage(ledger)
+
+  if (trainStats.multiStep + heldoutStats.multiStep < 500) {
+    console.warn(`[警告] 多步工具链 ${trainStats.multiStep + heldoutStats.multiStep} < 500——继续补跑 rollouts 后重新 pack`)
+  }
   const datacard = {
     generatedAt: new Date().toISOString(),
     plan: { seed: plan.seed, rollouts: plan.rollouts.length, seedSkeletons: plan.seedSkeletonIds.length },
     train: trainStats,
     heldout: heldoutStats,
     anchors: anchorStats,
+    human: { count: human.length, note: 'training/data/human-samples.jsonl 提供时并入训练侧；当前无则记 0' },
     filter: filterStats,
     toolAppearance: toolAppearance(all),
     zeroOverlap: {
@@ -452,9 +482,10 @@ async function stagePack(): Promise<void> {
     },
     teacher: {
       model: process.env.KP_DISTILL_MODEL ?? 'deepseek/deepseek-v4-flash',
-      totalPromptTokens: all.reduce((acc, s) => acc + s.meta.usage.promptTokens, 0),
-      totalCompletionTokens: all.reduce((acc, s) => acc + s.meta.usage.completionTokens, 0),
-      totalCalls: all.reduce((acc, s) => acc + s.meta.usage.calls, 0),
+      totalPromptTokens: fromSamples.promptTokens + fromRejected.promptTokens + fromLedger.promptTokens,
+      totalCompletionTokens: fromSamples.completionTokens + fromRejected.completionTokens + fromLedger.completionTokens,
+      totalCalls: fromSamples.calls + fromRejected.calls + fromLedger.calls,
+      breakdown: { acceptedSamples: fromSamples, rejectedTurns: fromRejected, phaseALedger: fromLedger },
     },
   }
   fs.writeFileSync(DATACARD_FILE, JSON.stringify(datacard, null, 2), 'utf-8')

@@ -89,9 +89,10 @@ pack     # train / held-out 切分（rollout/房间级整体归属 + contextHash
 audit    # 分层抽检包（checklist.md + 自包含 viewer.html）——人工抽检 ≥50 条的用户入口
 ```
 
-环境变量：`KP_DISTILL_BASE_URL` / `KP_DISTILL_API_KEY` / `KP_DISTILL_MODEL`（教师），
-`KP_DISTILL_DB_ROOT` / `KP_DISTILL_OUT_ROOT` / `KP_DISTILL_CORPUS_ROOT`（IO 根边界，
-越界一律拒绝）。产物在 `out/distill/`（gitignore）：`train.jsonl` / `heldout.jsonl` /
+环境变量：`KP_DISTILL_BASE_URL` / `KP_DISTILL_API_KEY` / `KP_DISTILL_MODEL`（教师
+端点；凭据只走环境变量）。IO 路径全部为模块常量（仓库内定位：语料
+`AI-COC-KP Story Document/`、DB `server/data/ai-kp.db`、产物 `training/out/distill/`，
+零 argv/env→fs 流）。产物在 `out/distill/`（gitignore）：`train.jsonl` / `heldout.jsonl` /
 `anchors.jsonl` / `datacard.json` / `audit/`。
 
 ### 关键设计（票 #40 开工对齐结论 + ADR-0006）

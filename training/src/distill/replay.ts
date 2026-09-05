@@ -23,18 +23,18 @@ import {
 import { processToolCalls } from '../../../server/src/rule-engine/orchestrator.js'
 import { buildToolContext } from '../../../server/src/rule-engine/toolContextFactory.js'
 import { createCharacterMutatorFactory } from '../../../server/src/rule-engine/characterMutators.js'
-import type { TurnCharacterMutators } from '../../../server/src/services/kpTurnService.js'
 import { callTurn, type EvalEndpoint } from '../../eval/lib/client.js'
 import type { KpWireMessage } from '../../eval/lib/request.js'
 import {
   SLIM_CONVERSATION_WINDOW,
   SLIM_SEQ_TOKEN_CAP,
+  TOOL_LOOP_MAX,
   type DistillSkeleton,
   type ReplayedTurn,
+  type WorldDeltas,
 } from './types.js'
+import { toOpenAiToolCall } from './sample.js'
 
-const MAX_TOOL_ITERATIONS = 8
-/** Cap the tool-result payload echoed back into the conversation（kpTurnService 同值同语义）。 */
 const MAX_TOOL_RESULT_CHARS = 600
 const MAX_TOOL_RESULT_SUMMARY_CHARS = 120
 
@@ -103,11 +103,7 @@ export function buildSlimTurnMessages(skeleton: DistillSkeleton): KpWireMessage[
   return pruneForSeqCap(injectCharacterRoster(base, skeleton.characters) as KpWireMessage[])
 }
 
-function makeMutatorFactory(characters: Record<string, COCCharacterSheet>, activeCharacterId: string | null, worldDeltas: {
-  cluesAdded: { description: string; clueId?: string }[]
-  sceneChanged?: string
-  ending?: { outcome: string; title: string; summary: string }
-}) {
+function makeMutatorFactory(characters: Record<string, COCCharacterSheet>, activeCharacterId: string | null, worldDeltas: WorldDeltas) {
   return createCharacterMutatorFactory({
     resolveSheet: (id) => (id && characters[id] ? characters[id] : (activeCharacterId ? characters[activeCharacterId] : null)) ?? null,
     transitionToScene: (sceneName) => {
@@ -126,11 +122,7 @@ function makeMutatorFactory(characters: Record<string, COCCharacterSheet>, activ
 export async function replaySkeleton(ep: EvalEndpoint, skeleton: DistillSkeleton): Promise<ReplayedTurn> {
   const characters = skeleton.characters
   const allowedCharacterIds = new Set(Object.keys(characters))
-  const worldDeltas: {
-    cluesAdded: { description: string; clueId?: string }[]
-    sceneChanged?: string
-    ending?: { outcome: string; title: string; summary: string }
-  } = { cluesAdded: [] }
+  const worldDeltas: WorldDeltas = { cluesAdded: [] }
   const mutatorFactory = makeMutatorFactory(characters, skeleton.activeCharacterId, worldDeltas)
 
   let msgs: KpWireMessage[] = buildSlimTurnMessages(skeleton)
@@ -142,7 +134,7 @@ export async function replaySkeleton(ep: EvalEndpoint, skeleton: DistillSkeleton
   let idCounter = 0
   const generateId = (): string => `distill_${Date.now()}_${idCounter++}`
 
-  for (let loop = 0; loop < MAX_TOOL_ITERATIONS; loop++) {
+  for (let loop = 0; loop < TOOL_LOOP_MAX; loop++) {
     const r = await callTurn(ep, msgs, COC_KP_TOOLS)
     usage.promptTokens += r.usage.promptTokens
     usage.completionTokens += r.usage.completionTokens
@@ -163,7 +155,7 @@ export async function replaySkeleton(ep: EvalEndpoint, skeleton: DistillSkeleton
       } catch {
         /* 参数解析失败 → 行动者（filter 侧另判 bad_args） */
       }
-      const m: TurnCharacterMutators = mutatorFactory(targetId)
+      const m = mutatorFactory(targetId)
       const ctx = buildToolContext({
         characterSheet: targetId ? characters[targetId] ?? null : null,
         ...m,
@@ -190,11 +182,11 @@ export async function replaySkeleton(ep: EvalEndpoint, skeleton: DistillSkeleton
       {
         role: 'assistant',
         content: iterContent,
-        tool_calls: r.toolCalls.map((t) => ({ id: t.id, type: 'function' as const, function: { name: t.name, arguments: t.arguments } })),
+        tool_calls: r.toolCalls.map(toOpenAiToolCall),
       },
       ...wireToolMessages,
     ]
-    if (loop === MAX_TOOL_ITERATIONS - 1) hitCap = true
+    if (loop === TOOL_LOOP_MAX - 1) hitCap = true
   }
 
   return {

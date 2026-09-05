@@ -79,6 +79,9 @@ KP 回合管线上的唯一新增缝（T1，spec #36 / ADR-0006）：每个真�
 ### 校验规则单源（kpValidation）
 `shared/tools/kpValidation.ts`：文字模拟骰子正则（TEXT_SIMULATION_PATTERNS/hasTextSimulation/cleanTextSimulation）、工具等价表（TOOL_EQUIVALENTS：melee/ranged_attack 隐含 skill_check+roll_dice+adjust_hp）与 required 覆盖判定。产品侧质量门槛（kpGraph validate 节点）与训练评测侧客观评测器（training/eval）共用这一份，防止两处漂移。
 
+### 蒸馏数据管线（distill pipeline）
+T4（spec #36 / 票 #40 / ADR-0006 决策 4）落点 `training/src/distill/`：教师（DeepSeek V4 Flash）对 context 骨架重放理想回复生成 SFT 语料。关键约定——多步工具链的工具结果由离线规则引擎真实执行（真骰子、真结算，教师不得自拟）；变量块瘦身旁数据侧（对话窗 18→8、记忆 30→12、RAG 取前 4 节、序列 cap ~6k）；validate 过滤与 #42 gate 同源 kpValidation；样本出处标注 `meta.source`（seed=真实骨架重放 / synthetic=rollout 合成 / anchor=金样本裁定锚 / human=人工示范）与 caveat（`rag_lexical_approximation_offline`=离线词面检索近似、`rag_context_unavailable_offline`=重建行无故事情报）。
+
 ## 不重议的决策
 
 - ADR-0001：房间 schema 只归 RoomService（经 roomStorage）所有，REST/ws 不接触。
