@@ -286,10 +286,13 @@ describe('抽检包', () => {
     }
     const picked = stratifyAudit(pool, 60, 4)
     expect(picked.length).toBe(60)
+    // 含 <script> 内容的样本：data.js 必须转义 <，防 </script> 提前闭合
+    picked[0]!.messages = [{ role: 'system', content: '<script>alert(1)</script>' }]
     const pack = buildAuditPack(picked)
     expect(pack.checklistMarkdown).toContain('| 1 |')
     expect(pack.dataJs).toContain('window.AUDIT_DATA')
-    expect(pack.dataJs).toContain('\\u003c')
+    expect(pack.dataJs).toContain('\\u003cscript\\u003e')
+    expect(pack.dataJs).not.toContain('<script>')
   })
 })
 
