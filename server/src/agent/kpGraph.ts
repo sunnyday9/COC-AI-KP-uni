@@ -21,6 +21,11 @@
  */
 import { StateGraph, Annotation, START, END } from '@langchain/langgraph'
 import {
+  cleanTextSimulation,
+  coversRequiredTools,
+  hasTextSimulation,
+} from '../../../shared/tools/kpValidation.js'
+import {
   findScene,
   getAvailableClues,
   getSceneNpcs,
@@ -199,43 +204,8 @@ export function classifyIntentByRules(userText: string): string | null {
 }
 
 /* ================================================================== */
-/*  Text-simulation detection                                          */
+/*  Text-simulation detection (rules live in shared/tools/kpValidation) */
 /* ================================================================== */
-
-const TEXT_SIMULATION_PATTERNS: RegExp[] = [
-  /\bd\d+\s*[:=：]\s*\d+/i,
-  /\d+d\d+\s*[:=：]\s*\d+/i,
-  /投骰[结果]*\s*[:：]\s*\d+/,
-  /HP\s*[降变至为低到].{0,8}\d+/,
-  /SAN\s*[降损失至为低到].{0,8}\d+/,
-  /MP\s*[降消耗至为低到].{0,8}\d+/,
-  /受到\s*\d+\s*点.{0,4}伤害/,
-  /伤害\s*\d+d\d+/,
-  /d100\s*[:：]?\s*\d+/i,
-  /目标[值≤]\s*\d+/,
-]
-
-function hasTextSimulation(text: string | null | undefined): boolean {
-  if (!text) return false
-  for (let i = 0; i < TEXT_SIMULATION_PATTERNS.length; i++) {
-    if (TEXT_SIMULATION_PATTERNS[i].test(text)) return true
-  }
-  return false
-}
-
-function cleanTextSimulation(text: string | null | undefined): string {
-  if (!text) return ''
-  const cleaned = text
-    .replace(/\*\*[^*]*(?:检定|伤害结算|d\d+|投骰|目标值)[^*]*\*\*/g, '')
-    .replace(/[（(][^)）]*d\d+[^)）]*[)）]/g, '')
-    .replace(/→\s*(?:成功|失败|大成功|大失败|极难成功|困难成功)/g, '')
-    .replace(/HP\s*[降变至为].{0,15}\d+\/\d+/g, '')
-    .replace(/SAN\s*[降损失].{0,15}\d+/g, '')
-    .replace(/受到\s*\d+\s*点.{0,4}伤害[，。]?/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-  return cleaned || text
-}
 
 /* ================================================================== */
 /*  Tool-continuation analysis                                         */
@@ -880,14 +850,10 @@ function createGenerateNode(invokeLLM: InvokeLLM, agentKind: string) {
 /* ================================================================== */
 /*  Node 4: Validate (programmatic — no LLM call)                      */
 /* ================================================================== */
-
 // Unidirectional: calling the key tool implicitly satisfies all value tools.
 // e.g. melee_attack internally performs skill_check + roll_dice + adjust_hp.
 // Reverse does NOT hold — calling skill_check+roll_dice+adjust_hp won't satisfy melee_attack.
-const TOOL_EQUIVALENTS: Record<string, string[]> = {
-  'melee_attack': ['skill_check', 'roll_dice', 'adjust_hp'],
-  'ranged_attack': ['skill_check', 'roll_dice', 'adjust_hp'],
-}
+// (TOOL_EQUIVALENTS + coversRequiredTools live in shared/tools/kpValidation.ts)
 
 function createValidateNode() {
   return async function validate(state: KpAgentState) {
@@ -903,22 +869,7 @@ function createValidateNode() {
       }
     }
 
-    const expandedNames = calledNames.slice()
-    for (let e = 0; e < calledNames.length; e++) {
-      const equiv = TOOL_EQUIVALENTS[calledNames[e]]
-      if (equiv) {
-        for (let q = 0; q < equiv.length; q++) {
-          if (expandedNames.indexOf(equiv[q]) < 0) expandedNames.push(equiv[q])
-        }
-      }
-    }
-
-    const missingTools: string[] = []
-    for (let j = 0; j < required.length; j++) {
-      if (expandedNames.indexOf(required[j]) < 0) {
-        missingTools.push(required[j])
-      }
-    }
+    const { missing: missingTools } = coversRequiredTools(calledNames, required)
 
     const simulated = hasTextSimulation(response)
 

@@ -17,6 +17,10 @@ const CONVERSATION_WINDOW = 18
 /** opening 回合的 RAG 检索词（与旧客户端 requestOpening 同词）。 */
 export const OPENING_RAG_QUERY = '开场 故事背景 场景描述 第一幕'
 
+/** opening 回合收尾的固定 user 消息（buildRoomOpeningMessages 产出；wire 采样
+ *  initialMessages 的最后一条即它——导出器（training 工作区）据此识别开局样本）。 */
+export const OPENING_USER_REQUEST = '请开始游戏，向调查员做开场白。'
+
 export const BASE_INSTRUCTIONS = [
   '你是克苏鲁的呼唤第七版（COC 7th）的守密人（Keeper/KP）。',
   '你的所有故事知识来源于「故事情报」中检索到的原文片段。请严格基于这些片段进行叙事，不要凭空编造场景或 NPC。',
@@ -242,5 +246,65 @@ export function buildRoomOpeningMessages(input: RoomPromptInput, ragContext: str
     role: 'system',
     content: `${buildSystemBody(input, ragContext)}\n\n请根据故事情报，向调查员做开场白：1）先交代背景（时间、地点、开场情境）；2）建立基调与恐怖氛围；3）提供最初的线索或可行动的调查方向（让调查员无法忽视、立刻有可做的事）。`,
   }
-  return [system, { role: 'user', content: '请开始游戏，向调查员做开场白。' }]
+  return [system, { role: 'user', content: OPENING_USER_REQUEST }]
+}
+
+/* ═══════════════════ B5 多角色卡花名册注入 ═══════════════════ */
+
+/**
+ * 构建「房间内调查员花名册」prompt 块（B5 多角色卡 prompt 注入）。
+ * 让 LLM 知道房间内有哪些调查员（id + 名称 + 关键属性），并提示用 characterId 调工具。
+ * 单角色时返回空串（单人模式不注入，保持 prompt 精简）。
+ * （自 kpTurnService 原样迁入——花名册是 prompt 组装的一部分，与回合消息同源单点；
+ *  kpTurnService 经再导出保持原导入面不变，训练/评测工作区由此复用同一提示词纯函数。）
+ */
+export function buildCharacterRosterPrompt(characters: Record<string, COCCharacterSheet> | null): string {
+  if (!characters) return ''
+  const entries = Object.entries(characters)
+  if (entries.length <= 1) return ''
+  const lines: string[] = []
+  for (const [id, sheet] of entries) {
+    const name = sheet?.playerName || id
+    const derived = sheet?.derived
+    const attrs = sheet?.attributes
+    const hp = derived?.hp != null ? `HP ${derived.hp}/${derived.hpMax ?? '?'}` : ''
+    const san = derived?.san != null ? `SAN ${derived.san}/${derived.sanMax ?? '?'}` : ''
+    const luck = attrs?.luck != null ? `幸运 ${attrs.luck}` : ''
+    const stats = [hp, san, luck].filter(Boolean).join(' ')
+    lines.push(`- ${name}（id: ${id}）${stats ? ' — ' + stats : ''}`)
+  }
+  return (
+    '\n\n### 房间内调查员（多人模式）\n' +
+    lines.join('\n') +
+    '\n当某个调查员行动时，调用工具必须在参数中带上对应 characterId（如 "characterId": "' +
+    (entries[0]?.[0] ?? '') +
+    '"）。若工具缺省 characterId，将作用于最后行动的调查员。'
+  )
+}
+
+/** wire/对话消息的最小结构（与 agent/kpGraph 的 KpMessage 同形——本模块不依赖
+ *  agent 运行时栈，训练/评测工作区由此复用同一提示词纯函数）。 */
+export interface RosterMessage {
+  role: string
+  content: string
+  tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown }; _thoughtSignature?: unknown }[]
+  tool_call_id?: string
+}
+
+/** 把角色花名册注入 messages 的 system 消息（B5）。KpMessage 与本形互为结构子类型，
+ *  调用方（kpTurnService / 导出器）进出类型不变。 */
+export function injectCharacterRoster(
+  messages: RosterMessage[],
+  characters: Record<string, COCCharacterSheet> | null,
+): RosterMessage[] {
+  const roster = buildCharacterRosterPrompt(characters)
+  if (!roster) return messages
+  const out = messages.slice()
+  let systemIdx = out.findIndex((m) => m.role === 'system')
+  if (systemIdx >= 0) {
+    out[systemIdx] = { ...out[systemIdx], content: (out[systemIdx]?.content ?? '') + roster }
+  } else {
+    out.unshift({ role: 'system', content: roster })
+  }
+  return out
 }
