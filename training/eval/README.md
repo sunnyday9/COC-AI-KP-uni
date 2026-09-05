@@ -35,6 +35,15 @@ EVAL_API_KEY=sk-... node --import ./training/eval/register-ts.ts training/eval/r
 
 只强制**规则/剧本可判定**的参数：技能值（来自角色卡）、tieBreaker（反击=attacker/闪避=defender）、灵感检定难度反转、射程难度、奖励/惩罚骰的规则强制项、损失表达式与法术消耗（剧本给定）、sceneId/clueId（剧本结构化 id）、多人 characterId（花名册要求）。KP 自由裁量项（普通检定难度、叙事措辞）不进匹配；近战/远程允许「一步结算工具或分步链」两条备选序列。每条样本的 `notes` 记录依据。
 
+判定尺度补充（与线上行为对齐）：
+- 响应中混入**任一**未知工具名或 arguments 非 JSON 对象 → 整样本记 `unparseable`，双指标皆败——线上客户端按工具名校验、未知工具会中断回合，一票否决是忠实模拟；
+- 空/空白 arguments 按线上 openaiChat 适配器同规则归一为 `{}`（随后因缺参数在裁定层判 `bad_args`，不会漏判）；
+- 失败明细里 `wrong_tool` 有两种格式位形态：`formatOk:false`（required 未覆盖，对应「调错工具」）与 `formatOk:true`（纯叙事情境多调了工具，属裁定层错）。
+
+## 基线报告
+
+当前基线 `reports/baseline-mimo-v2.5-2026-09-05.json`：**格式遵循 80.7% / 裁定正确 63.2%**（57/57 判定，0 端点错误；bad_args 10 / wrong_tool 7 / unparseable 1 / no_tool_call 2 / text_dice 1；含 `search_memory` 幻视工具名、chase_turn 用 skill_check/melee_attack 替代、多人漏 characterId 等真实失败样本）。端点 = 用户当前 BYOK KP 配置（opencode `mimo-v2.5`，temperature 0.7 / max_tokens 2048，与 server 适配器默认一致），报告内含 baseUrl/model 可复核；这是 #42 gate（格式 ≥99% / 裁定 ≥90%）的对照基准。
+
 ## 工程边界
 
 - 独立工作区：零 npm 依赖，Node ≥24 原生 TS（type stripping）+ `--import` resolve hook（`.js`→`.ts`，仅为复用 server 源码）；不进 server 运行时依赖树，产品行为零改动。

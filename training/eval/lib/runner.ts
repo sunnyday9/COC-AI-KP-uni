@@ -27,7 +27,7 @@ export interface EvalReport {
   formatRate: number
   verdictRate: number
   failureBreakdown: Record<string, number>
-  failures: { id: string; category: string; detail: string }[]
+  failures: { id: string; category: string; detail: string; formatOk: boolean; verdictOk: boolean }[]
   perTool: { tool: string; samples: number; formatPass: number; verdictPass: number }[]
   toolCoverage: { tool: string; covered: boolean }[]
   endpointErrors: { id: string; message: string }[]
@@ -74,10 +74,14 @@ export function loadSamples(samplesPath: string): GoldenSample[] {
   return samples
 }
 
-/** 24 工具覆盖校验：返回每个工具是否有样本覆盖。 */
+/** 24 工具覆盖校验：返回每个工具是否有样本覆盖。覆盖来源 = 样本 tools[] 声明
+ * ∪ expect.alternatives 里实际出现的工具名（后者防「声明虚增覆盖」）。 */
 export function toolCoverage(samples: GoldenSample[]): { tool: string; covered: boolean }[] {
   const covered = new Set<string>()
-  for (const s of samples) for (const t of s.tools) covered.add(t)
+  for (const s of samples) {
+    for (const t of s.tools) covered.add(t)
+    for (const seq of s.expect.alternatives) for (const c of seq) covered.add(c.name)
+  }
   return COC_TOOL_NAMES.map((t) => ({ tool: t, covered: covered.has(t) }))
 }
 
@@ -149,7 +153,7 @@ export async function runEval(opts: EvalOptions): Promise<{ report: EvalReport; 
     failureBreakdown: breakdown,
     failures: judged
       .filter((j) => j.category !== 'pass')
-      .map((j) => ({ id: j.id, category: j.category, detail: j.detail })),
+      .map((j) => ({ id: j.id, category: j.category, detail: j.detail, formatOk: j.formatOk, verdictOk: j.verdictOk })),
     perTool,
     toolCoverage: coverage,
     endpointErrors,
