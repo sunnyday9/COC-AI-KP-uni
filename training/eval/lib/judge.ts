@@ -9,7 +9,7 @@
  * 另有 unparseable（工具名未知或参数非 JSON 对象）。
  */
 import { hasTextSimulation } from '../../../shared/tools/kpValidation.ts'
-import { isKnownToolName, parseToolArguments, requiredToolsCovered, sequenceMatches } from './rules.ts'
+import { isKnownToolName, parseToolArguments, requiredToolsCovered, sequenceMatches, valueMatches } from './rules.ts'
 import type { GoldenSample, ModelResponse, SampleJudgement } from './types.ts'
 
 interface ParsedCall {
@@ -97,7 +97,8 @@ export function judgeSample(sample: GoldenSample, response: ModelResponse): Samp
     }
   }
 
-  // 工具对了但参数不匹配 → 给出首个期望调用的参数差异明细
+  // 工具对了但参数不匹配 → 给出首个期望调用的参数差异明细（用与裁定器同一的
+  // 匹配语义 valueMatches，避免明细报出裁定语义本可通过的「假差异」）
   const first = sample.expect.alternatives[0]?.[0]
   const actualOfExpected = first ? calls.find((c) => c.name === first.name) : undefined
   const diff = first && actualOfExpected ? describeArgsDiff(actualOfExpected.args, first.args ?? {}) : '（未找到同名工具调用）'
@@ -114,7 +115,7 @@ function describeArgsDiff(actual: Record<string, unknown>, expected: Record<stri
   const parts: string[] = []
   for (const [k, v] of Object.entries(expected)) {
     if (!(k in actual)) parts.push(`缺参数 ${k}`)
-    else if (JSON.stringify(actual[k]) !== JSON.stringify(v)) parts.push(`${k}: 期望 ${JSON.stringify(v)} 实际 ${JSON.stringify(actual[k])}`)
+    else if (!valueMatches(actual[k], v)) parts.push(`${k}: 期望 ${JSON.stringify(v)} 实际 ${JSON.stringify(actual[k])}`)
   }
   return parts.length ? parts.join('；') : '参数表层一致（可能其余键值不符）'
 }

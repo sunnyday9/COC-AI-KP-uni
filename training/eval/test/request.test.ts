@@ -1,8 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildTurnRequest } from '../lib/request.ts'
+import type { GoldenSample } from '../lib/types.ts'
+import type { COCCharacterSheet } from '../../../../shared/types/character.ts'
 
-const card = {
+const card: COCCharacterSheet = {
   occupationId: 'x',
   occupationName: '考古学家',
   playerName: '林逸',
@@ -14,7 +16,7 @@ const card = {
 }
 const cardChen = { ...card, playerName: '陈默', occupationName: '私家侦探' }
 
-function sample(overrides: Record<string, unknown>) {
+function sample(overrides: Partial<GoldenSample> = {}): GoldenSample {
   return {
     id: 't',
     category: 't',
@@ -36,7 +38,7 @@ function sample(overrides: Record<string, unknown>) {
 }
 
 test('buildTurnRequest: 单人——system 收口（BASE_INSTRUCTIONS+状态+RAG），批次 user 收尾', () => {
-  const msgs = buildTurnRequest(sample({}) as never)
+  const msgs = buildTurnRequest(sample())
   assert.equal(msgs[msgs.length - 1].role, 'user')
   assert.equal(msgs[msgs.length - 1].content, '【林逸】我检查书架。')
   const system = msgs[0]
@@ -58,7 +60,7 @@ test('buildTurnRequest: 单人——system 收口（BASE_INSTRUCTIONS+状态+RAG
 })
 
 test('buildTurnRequest: 多人——花名册注入 system', () => {
-  const msgs = buildTurnRequest(sample({ characters: ['char_lin', 'char_chen'], charactersById: { char_lin: card, char_chen: cardChen } }) as never)
+  const msgs = buildTurnRequest(sample({ characters: ['char_lin', 'char_chen'], charactersById: { char_lin: card, char_chen: cardChen } }))
   assert.ok(msgs[0].content.includes('### 房间内调查员（多人模式）'))
   assert.ok(msgs[0].content.includes('char_lin'))
   assert.ok(msgs[0].content.includes('char_chen'))
@@ -74,7 +76,7 @@ test('buildTurnRequest: 续接样本——assistant(tool_calls) + tool(结果原
           toolResults: [{ tool_call_id: 'tc1', content: '【结果摘要】roll: 34\n{"roll":34}' }],
         },
       ],
-    }) as never,
+    }),
   )
   const assistant = msgs[msgs.length - 2]
   const tool = msgs[msgs.length - 1]

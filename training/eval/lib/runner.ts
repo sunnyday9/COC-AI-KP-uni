@@ -5,7 +5,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import { COC_TOOL_NAMES } from '../../../shared/tools/cocTools.ts'
+import { COC_KP_TOOLS, COC_TOOL_NAMES } from '../../../shared/tools/cocTools.ts'
 import { callTurn, EndpointError, type EvalEndpoint } from './client.ts'
 import { judgeSample } from './judge.ts'
 import { buildTurnRequest } from './request.ts'
@@ -74,12 +74,11 @@ export function loadSamples(samplesPath: string): GoldenSample[] {
   return samples
 }
 
-/** 24 工具覆盖校验：返回每个工具是否有样本覆盖。覆盖来源 = 样本 tools[] 声明
- * ∪ expect.alternatives 里实际出现的工具名（后者防「声明虚增覆盖」）。 */
+/** 24 工具覆盖校验：返回每个工具是否有样本覆盖。覆盖**只**由 expect.alternatives
+ * 里实际出现的工具名推导（防 tools[] 声明虚增覆盖——期望序列才是可验证的行为契约）。 */
 export function toolCoverage(samples: GoldenSample[]): { tool: string; covered: boolean }[] {
   const covered = new Set<string>()
   for (const s of samples) {
-    for (const t of s.tools) covered.add(t)
     for (const seq of s.expect.alternatives) for (const c of seq) covered.add(c.name)
   }
   return COC_TOOL_NAMES.map((t) => ({ tool: t, covered: covered.has(t) }))
@@ -97,7 +96,7 @@ export async function runEval(opts: EvalOptions): Promise<{ report: EvalReport; 
   const judged: (SampleJudgement & { tools: string[] })[] = []
   const endpointErrors: { id: string; message: string }[] = []
   const usage = { promptTokens: 0, completionTokens: 0 }
-  const tools = (await import('../../../shared/tools/cocTools.ts')).COC_KP_TOOLS
+  const tools = COC_KP_TOOLS
 
   let cursor = 0
   async function worker() {

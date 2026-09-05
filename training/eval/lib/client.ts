@@ -3,6 +3,7 @@
  * 同参同形（temperature/max_tokens 默认 0.7/2048，tools + tool_choice auto），
  * 但用裸 fetch 直连 `{baseUrl}/chat/completions`——评测 harness 不背 OpenAI SDK。
  */
+import type { ModelResponse } from './types.ts'
 import type { KpWireMessage } from './request.ts'
 
 export interface EvalEndpoint {
@@ -14,13 +15,8 @@ export interface EvalEndpoint {
   timeoutMs: number
 }
 
-export interface ChatCallResult extends ModelResponseShape {
+export interface ChatCallResult extends ModelResponse {
   usage: { promptTokens: number; completionTokens: number }
-}
-
-interface ModelResponseShape {
-  content: string
-  toolCalls: { name: string; arguments: string }[]
 }
 
 export class EndpointError extends Error {
