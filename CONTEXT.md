@@ -70,6 +70,9 @@ RAG 嵌入固定走 OpenAI 兼容端点 `POST {baseUrl}/v1/embeddings`，与主�
 ### 内置模型（built-in model）
 服务端持有端点配置、用户无需自带 key 即可使用的守秘人模型，与 BYOK（用户自带 key）相对。**目标态**：KP 模型过三层评测 gate 后才启动 serving/配额/降级独立票；上线前自用走用户自己配置的端点。
 
+### wire 采样日志（wire sampling log）
+KP 回合管线上的唯一新增缝（T1，spec #36 / ADR-0006）：每个真实 KP 回合把完整 wire 消息序列——原始 assistant `tool_calls`（含参数 JSON）、工具结果回填（线上同形态：摘要+截断）、当轮 RAG 注入原文、最终叙事回复——落库到 node:sqlite 的 `kp_wire_samples` 表（读走 `wireSampleService.listWireSamplesForRoom`，后续导出器共用）。默认开启，`KP_WIRE_SAMPLING=0` 关闭（关闭时零额外写入）；MOCK_AI 确定性脚本回合与图中断/无叙事回合不采样；数据不进 `rooms.state`，房间快照协议零改动（ADR-0001/0002）。
+
 ## 不重议的决策
 
 - ADR-0001：房间 schema 只归 RoomService（经 roomStorage）所有，REST/ws 不接触。

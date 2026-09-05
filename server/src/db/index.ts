@@ -98,6 +98,19 @@ function initSchema(database: DatabaseSync): void {
       character_id TEXT,
       PRIMARY KEY (room_id, user_id)
     );
+    CREATE TABLE IF NOT EXISTS kp_wire_samples (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_id TEXT NOT NULL,
+      turn_seq INTEGER NOT NULL,
+      owner_id INTEGER NOT NULL,
+      story_id TEXT,
+      rag_context TEXT NOT NULL DEFAULT '',
+      tool_calls TEXT NOT NULL DEFAULT '[]',
+      wire_messages TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_kp_wire_samples_room ON kp_wire_samples (room_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_kp_wire_samples_room_seq ON kp_wire_samples (room_id, turn_seq);
   `)
   // 幂等迁移：旧库的 stories 表没有 file_path 列（DB 映射重构，2026-08-20）。
   const storyCols = database.prepare(`PRAGMA table_info(stories)`).all() as { name: string }[]

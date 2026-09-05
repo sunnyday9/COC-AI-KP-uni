@@ -409,6 +409,7 @@ export class RoomService {
         activeCharacterId,
         () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
         allowedCharacterIds,
+        ragContext,
       )
     } finally {
       this.turnFlushing = false
@@ -451,6 +452,8 @@ export class RoomService {
     activeCharacterId: string | null,
     onChunk: (chunk: string) => void,
     allowedCharacterIds?: Set<string>,
+    /** 当轮 RAG 注入原文（wire 采样 T1；缺省 = 无注入）。 */
+    ragContext = '',
   ): Promise<void> {
     const { runKpTurn } = await import('./kpTurnService.js')
     const characterMap = this.getCharacterMap()
@@ -475,6 +478,7 @@ export class RoomService {
         activeCharacterId,
         mutatorFactory,
         allowedCharacterIds, // D5：归属校验（窗口内行动者可用的角色卡集）
+        sampling: { roomId: this.roomId, storyId: this.storyId, ragContext }, // T1 wire 采样（唯一新缝）
         handlers: {
           onChunk,
           onEnd: (result) => {
@@ -604,6 +608,8 @@ export class RoomService {
           this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
           firstCharacterId,
           () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
+          undefined,
+          ragContext,
         ),
       )
     } catch (err) {

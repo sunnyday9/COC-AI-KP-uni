@@ -78,3 +78,13 @@ export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 50 * 1024
 export function isMockAiMode(): boolean {
   return process.env.MOCK_AI === '1'
 }
+
+/**
+ * KP 回合 wire 采样（T1，spec #36 / ADR-0006「唯一新缝」）：默认开启——每个真实
+ * KP 回合把完整 wire 消息序列（assistant tool_calls / 工具结果回填 / RAG 注入 /
+ * 最终叙事）落库为 SFT 训练素材。`KP_WIRE_SAMPLING=0` 关闭（关闭时零额外写入）。
+ * 实现为函数（同 isMockAiMode），测试可 vi.stubEnv 按用例切换。
+ */
+export function isKpWireSamplingEnabled(): boolean {
+  return process.env.KP_WIRE_SAMPLING !== '0'
+}

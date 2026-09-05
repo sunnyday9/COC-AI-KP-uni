@@ -21,6 +21,7 @@ import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import type { Message } from '../../../shared/types/game.js'
 import { logger } from '../utils/logging.js'
 import { errorMessage } from '../utils/errors.js'
+import { recordKpWireSample, toOpenAiToolCall, type KpWireSampleIteration, type KpWireSamplingMeta } from './wireSampleService.js'
 
 const MAX_TOOL_ITERATIONS = 8
 
@@ -175,6 +176,9 @@ export interface KpTurnDeps {
   mutatorFactory: (characterId: string | null) => TurnCharacterMutators
   /** 归属校验（D5）：工具 characterId 必须在此集内，否则回退行动者（防跨角色篡改）；缺省 = 不限制（单卡路径） */
   allowedCharacterIds?: Set<string>
+  /** wire 采样元数据（T1，spec #36「唯一新缝」）：提供且回合完整完成（图未中断、
+   *  产生了最终叙事）时，把完整 wire 消息序列落库（见 wireSampleService）。 */
+  sampling?: KpWireSamplingMeta
   handlers: KpTurnHandlers
 }
 
@@ -203,6 +207,10 @@ export async function runKpTurn(
 
   let fullContent = ''
   let msgs: KpMessage[] = messages
+  // wire 采样累积（T1）：初始消息 + 各工具循环轮的 assistant/tool 消息（与 msgs 追加同源）
+  const wireInitialMessages: KpMessage[] = messages
+  const wireIterations: KpWireSampleIteration[] = []
+  let graphFailed = false
   const allDisplayMessages: Message[] = []
   const executedToolCalls: { id: string; name: string; arguments: string }[] = []
   const worldDeltas: {
@@ -221,6 +229,7 @@ export async function runKpTurn(
       r = await invokeKPAgent(msgs, invokeLLM, body?.storyContext ?? null, userId, getSharedGraph(invokeLLM, userId, false))
     } catch (err) {
       logger.warn('kp:turn graph iteration failed', { userId, loop, error: errorMessage(err) })
+      graphFailed = true
       break
     }
     const iterFinal = r?.content || ''
@@ -277,27 +286,45 @@ export async function runKpTurn(
     const toolResults = results
     const displayMessages = iterDisplay
     allDisplayMessages.push(...displayMessages)
-    executedToolCalls.push(...toolCalls.map((t) => ({ id: t.id, name: t.name, arguments: t.arguments })))
 
+    // wire 采样：回填进会话的 tool 消息与追加进 msgs 的完全同源（摘要+截断 = LLM 实际看到的 wire）
+    const wireToolMessages = toolResults.map((tr) => ({
+      ...tr,
+      content: summarizeToolResult(tr.content) + truncateToolResult(tr.content),
+    }))
+    const rawToolCalls = toolCalls.map((t) => ({ id: t.id, name: t.name, arguments: t.arguments }))
+    wireIterations.push({
+      assistantContent: iterFinal,
+      toolCalls: rawToolCalls,
+      toolResults: wireToolMessages,
+    })
+    executedToolCalls.push(...rawToolCalls)
     msgs = [
       ...msgs,
       {
         role: 'assistant',
         content: iterFinal,
-        tool_calls: toolCalls.map((t) => ({
-          id: t.id,
-          type: 'function' as const,
-          function: { name: t.name, arguments: t.arguments },
-        })),
+        tool_calls: toolCalls.map(toOpenAiToolCall),
       },
-      ...toolResults.map((tr) => ({
-        ...tr,
-        content: summarizeToolResult(tr.content) + truncateToolResult(tr.content),
-      })),
+      ...wireToolMessages,
     ]
   }
 
-  if (!fullContent.trim()) {
+  // wire 采样收口（T1）：只收完整回合——图中断或无最终叙事（兜底文案）不进 SFT 语料。
+  // recordKpWireSample 内部处理开关/MOCK_AI gate，且绝不抛错（采样不影响回合）。
+  const narrativeProduced = fullContent.trim().length > 0
+  if (turn.sampling && !graphFailed && narrativeProduced) {
+    recordKpWireSample({
+      roomId: turn.sampling.roomId,
+      ownerId: userId,
+      storyId: turn.sampling.storyId,
+      ragContext: turn.sampling.ragContext,
+      initialMessages: wireInitialMessages,
+      iterations: wireIterations,
+      finalContent: fullContent,
+    })
+  }
+  if (!narrativeProduced) {
     fullContent = '守密人正在思考……请稍候再试，或换一种方式描述你的行动。'
   }
   turn.handlers.onEnd({ content: fullContent, displayMessages: allDisplayMessages, toolCalls: executedToolCalls, worldDeltas, characterSheet: activeSheet })
