@@ -45,7 +45,7 @@ server/data/
 server/uploads/
 server/storage/
 
-# 用户自有剧本语料（#40 蒸馏语料根，体积大且非代码资产；训练时经 KP_DISTILL_CORPUS_ROOT 引用）
+# 用户自有剧本语料（#40 蒸馏语料根，体积大且非代码资产；蒸馏管线常量引用不入库）
 AI-COC-KP Story Document/
 
 # training 工作区产物（导出 JSONL / 蒸馏数据集 / 抽检包）
