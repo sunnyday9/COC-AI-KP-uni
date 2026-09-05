@@ -288,8 +288,8 @@ describe('抽检包', () => {
     expect(picked.length).toBe(60)
     const pack = buildAuditPack(picked)
     expect(pack.checklistMarkdown).toContain('| 1 |')
-    expect(pack.viewerHtml).toContain('KP 蒸馏数据抽检查看器')
-    expect(pack.viewerHtml).toContain('"meta"')
+    expect(pack.dataJs).toContain('window.AUDIT_DATA')
+    expect(pack.dataJs).toContain('\\u003c')
   })
 })
 
