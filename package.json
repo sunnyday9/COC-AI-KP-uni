@@ -5,7 +5,8 @@
   "workspaces": [
     "server",
     "client",
-    "shared"
+    "shared",
+    "training"
   ],
   "scripts": {
     "dev:server": "cd server && npm run dev",
@@ -14,8 +15,10 @@
     "test": "npm run test --workspace=server",
     "test:server": "npm run test --workspace=server",
     "test:client": "npm run test --workspace=client",
+    "test:training": "npm run test --workspace=training",
+    "export:kp-context": "npm run export --workspace=training --",
     "test:e2e:h5": "node e2e/h5.journey.mjs",
-    "test:all": "npm run test --workspace=server && npm run test --workspace=client"
+    "test:all": "npm run test --workspace=server && npm run test --workspace=client && npm run test --workspace=training"
   },
   "engines": {
     "node": ">=24"

@@ -44,6 +44,9 @@ jobs:
         working-directory: client
         run: npx tsc --noEmit
 
+      - name: KP training exporter tests (T2 #38)
+        run: npm run test:training
+
       - name: Build server
         working-directory: server
         run: npm run build

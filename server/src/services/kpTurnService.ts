@@ -22,6 +22,7 @@ import type { Message } from '../../../shared/types/game.js'
 import { logger } from '../utils/logging.js'
 import { errorMessage } from '../utils/errors.js'
 import { recordKpWireSample, toOpenAiToolCall, type KpWireSampleIteration, type KpWireSamplingMeta } from './wireSampleService.js'
+import { injectCharacterRoster } from './kpPromptService.js'
 
 const MAX_TOOL_ITERATIONS = 8
 
@@ -38,48 +39,8 @@ function truncateToolResult(content: string): string {
   return `${content.slice(0, MAX_TOOL_RESULT_CHARS)}\n…(truncated)`
 }
 
-/**
- * 构建「房间内调查员花名册」prompt 块（B5 多角色卡 prompt 注入）。
- * 让 LLM 知道房间内有哪些调查员（id + 名称 + 关键属性），并提示用 characterId 调工具。
- * 单角色时返回空串（单人模式不注入，保持 prompt 精简）。
- */
-export function buildCharacterRosterPrompt(characters: Record<string, COCCharacterSheet> | null): string {
-  if (!characters) return ''
-  const entries = Object.entries(characters)
-  if (entries.length <= 1) return ''
-  const lines: string[] = []
-  for (const [id, sheet] of entries) {
-    const name = sheet?.playerName || id
-    const derived = sheet?.derived
-    const attrs = sheet?.attributes
-    const hp = derived?.hp != null ? `HP ${derived.hp}/${derived.hpMax ?? '?'}` : ''
-    const san = derived?.san != null ? `SAN ${derived.san}/${derived.sanMax ?? '?'}` : ''
-    const luck = attrs?.luck != null ? `幸运 ${attrs.luck}` : ''
-    const stats = [hp, san, luck].filter(Boolean).join(' ')
-    lines.push(`- ${name}（id: ${id}）${stats ? ' — ' + stats : ''}`)
-  }
-  return (
-    '\n\n### 房间内调查员（多人模式）\n' +
-    lines.join('\n') +
-    '\n当某个调查员行动时，调用工具必须在参数中带上对应 characterId（如 "characterId": "' +
-    (entries[0]?.[0] ?? '') +
-    '"）。若工具缺省 characterId，将作用于最后行动的调查员。'
-  )
-}
-
-/** 把角色花名册注入 messages 的 system 消息（B5）。 */
-export function injectCharacterRoster(messages: KpMessage[], characters: Record<string, COCCharacterSheet> | null): KpMessage[] {
-  const roster = buildCharacterRosterPrompt(characters)
-  if (!roster) return messages
-  const out = messages.slice()
-  let systemIdx = out.findIndex((m) => m.role === 'system')
-  if (systemIdx >= 0) {
-    out[systemIdx] = { ...out[systemIdx], content: (out[systemIdx]?.content ?? '') + roster }
-  } else {
-    out.unshift({ role: 'system', content: roster })
-  }
-  return out
-}
+/** 把角色花名册注入 messages 的 system 消息（B5）——实现随花名册块迁入 kpPromptService，此处再导出保持原导入面。 */
+export { buildCharacterRosterPrompt, injectCharacterRoster } from './kpPromptService.js'
 
 /** Build a compact `{success, skillName, roll, …}` summary head for tool results. */
 function summarizeToolResult(content: string): string {
