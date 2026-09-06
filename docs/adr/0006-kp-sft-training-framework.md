@@ -40,3 +40,13 @@
 ## 附注
 
 本 ADR 首次落盘时恰逢 F: 盘硬件级 I/O 故障窗口，Write 曾报 fsync 错误；故障修复（chkdsk）后原文件被清除，本文为重建版（内容与决策不变）。
+
+## 评估记录：基座更换提案被否（2026-09-06）
+
+#40 数据集完成后、#41 开工前，评估了将基座换为 [`empero-ai/Qwen3.8-9B-Distill`](https://huggingface.co/empero-ai/Qwen3.8-9B-Distill)（社区蒸馏产物，Qwen3.5 家族 9.65B，线性注意力 Gated DeltaNet 架构，Apache-2.0，原生 function calling）的提案。**结论：训练侧 No-Go，维持 Qwen3-8B。** 三重独立否决：
+
+1. **内核依赖链不含 Kaggle GPU**：flash-linear-attention 要求 Triton≥3.3 → 仅支持 CC 8.0+（T4 为 SM75）；内核缺失则回退慢速 PyTorch 实现，9.65B bf16 权重 19.3GB > 16GB 显存必 OOM；
+2. **QLoRA 4bit 在该架构上被否**：Unsloth 官方不建议 Qwen3.5 做 QLoRA 4bit；NVIDIA 论坛实测 bitsandbytes 跳过该架构约 90% 的层；
+3. **bf16 LoRA 需 ~22GB > 16GB**；P100 备选被 PyTorch CUDA 12.4+ 弃用 Pascal 掐死。
+
+附加风险：该仓库为社区蒸馏而非 Qwen 官方（HF 讨论约 10/16 条为 spam 举报/命名批评），官方 chat template Jinja 有已知 bug；其数学/代码向密集推理蒸馏与 KP 简洁叙事倾向相悖。部署侧 vLLM（≥0.28.0）条件可行，但训练不可行则无从谈起。**若未来算力升级（≥24GB LoRA 单卡或 A100），可依据调研文档重开此案。** 评估全文与引用：[docs/research/2026-09-06-qwen35-9b-distill-compat.md](../research/2026-09-06-qwen35-9b-distill-compat.md)。数据侧零影响：#40 数据集（messages+tools JSONL）与基座解耦，#39 评测 harness 测任意 openai 端点。
