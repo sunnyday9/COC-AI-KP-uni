@@ -175,8 +175,9 @@ function assignSplit(id: string, seed: number): 'train' | 'heldout' {
   for (let i = 0; i < id.length; i++) {
     h = (Math.imul(31, h) + id.charCodeAt(i)) >>> 0
   }
-  // ~30% → held-out（500/2000 目标 + 通过率余量）
-  return h % 100 < 30 ? 'heldout' : 'train'
+  // held-out 配比：只需 ≥500 条验收线（数据侧最终定稿 18%；计划阶段 30% 是余量估值，
+  // 过滤通过率稳定后收紧，把余量还给训练侧）
+  return h % 100 < 18 ? 'heldout' : 'train'
 }
 
 async function stagePlan(args: CliArgs): Promise<void> {
