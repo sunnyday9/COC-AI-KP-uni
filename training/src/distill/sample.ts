@@ -36,13 +36,14 @@ export function buildWireSequence(turn: ReplayedTurn): unknown[] {
   return out
 }
 
-/** 重放回合 → 训练样本行（调用方保证已通过 filterTurn）。 */
-export function buildSample(turn: ReplayedTurn, source: SampleSource): DistillSample {
+/** 重放回合 → 训练样本行（调用方保证已通过 filterTurn；teacher 记入 meta 供数据卡分桶）。 */
+export function buildSample(turn: ReplayedTurn, source: SampleSource, teacher?: string): DistillSample {
   const toolCallCount = turn.iterations.reduce((acc, it) => acc + it.toolCalls.length, 0)
   return {
     meta: {
       id: turn.skeleton.id,
       source,
+      ...(teacher ? { teacher } : {}),
       origin: turn.skeleton.originId,
       kind: turn.skeleton.kind,
       turnType: turn.skeleton.turnType,

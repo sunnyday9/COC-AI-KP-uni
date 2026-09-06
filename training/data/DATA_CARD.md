@@ -37,12 +37,13 @@
 
 ## 4. 教师与成本
 
-- 教师：DeepSeek V4 Flash（用户 command code 端点；`deepseek/deepseek-v4-flash`）。
+- 教师（分桶见 `datacard.json` 的 `teacher.breakdown`，样本 `meta.teacher` 逐条可溯）：
+  1. **deepseek/deepseek-v4-flash**（用户 command code 端点）——初版教师，~992 条后配额/余额耗尽停用（用户指示不再使用）；
+  2. **mimo-v2.5**（opencode zen 端点）——接续教师。候选 muse-spark-1.2-contributor 因上游持续 500 弃用；mimo-v2.5 冒烟：叙事风格与初版教师同族（洛式氛围/结构化开场/organic 工具调用），工具纪律偏松（missing_required 主导拒绝，与 #39 基线格式遵循 80.7% 一致）。
+- **对齐机制**（教师可替换的保证）：context 由 kpPromptService 纯函数构造（与教师无关的同一 wire）、COC_KP_TOOLS 逐字、结果回填与过滤全走管线单源——教师差异只体现在叙事文风与工具选择倾向，格式底线由 validate 过滤统一钉死。
 - 调用形态：openai SDK，与线上 openaiChat 适配器同参（tools + tool_choice auto）。
-- 实测（冒烟）：seed 重放 ~10.2k prompt tokens/条；合成 rollout 每回合
-  Phase A ≈ 2.5k + Phase B ≈ 10k×1.4 次调用。
 - 全量计量：`datacard.json` 的 `teacher.totalPromptTokens / totalCompletionTokens /
-  totalCalls`（按样本 meta.usage 求和）。
+  totalCalls`（按样本 meta.usage + 拒绝行 usage + Phase A 台账三处求和）。
 
 ## 5. 离线近似与如实标注（caveats）
 

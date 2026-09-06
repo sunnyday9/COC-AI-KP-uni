@@ -211,13 +211,15 @@ interface RejectedRow {
   skeletonId: string
   turnType: string
   source: string
+  /** 教师模型（教师切换后分桶；无此字段 = 初版教师）。 */
+  teacher?: string
   category: string
   detail: string
   usage: { promptTokens: number; completionTokens: number; calls: number }
 }
 
 /** 单个重放回合的公共收口：过滤 → 采样 → 落盘或记拒绝。 */
-function settleTurn(turn: ReplayedTurn, source: 'seed' | 'synthetic' | 'anchor'): { sample: DistillSample | null; rejected: RejectedRow | null } {
+function settleTurn(turn: ReplayedTurn, source: 'seed' | 'synthetic' | 'anchor', teacher?: string): { sample: DistillSample | null; rejected: RejectedRow | null } {
   const verdict = filterTurn(turn)
   if (!verdict.ok) {
     return {
@@ -226,13 +228,14 @@ function settleTurn(turn: ReplayedTurn, source: 'seed' | 'synthetic' | 'anchor')
         skeletonId: turn.skeleton.id,
         turnType: turn.skeleton.turnType,
         source,
+        ...(teacher ? { teacher } : {}),
         category: verdict.category,
         detail: verdict.detail,
         usage: turn.usage,
       },
     }
   }
-  return { sample: buildSample(turn, source), rejected: null }
+  return { sample: buildSample(turn, source, teacher), rejected: null }
 }
 
 async function stageRun(args: CliArgs): Promise<void> {
@@ -284,7 +287,7 @@ async function stageRun(args: CliArgs): Promise<void> {
         if (args.limit && processed >= args.limit) return
         if (done.has(skeleton.id)) continue
         try {
-          record(settleTurn(await replaySkeleton(ep, skeleton), 'seed'))
+          record(settleTurn(await replaySkeleton(ep, skeleton), 'seed', ep.model))
         } catch (err) {
           console.warn(`  [seed 失败] ${skeleton.id}: ${err instanceof Error ? err.message : String(err)}`)
         }
@@ -367,7 +370,7 @@ async function runRollout(
       }
       const skeleton = buildSkeleton({ rolloutId: rollout.rolloutId, state, turnIndex, turnType, batch, ragIndex })
       const turn = await replaySkeleton(ep, skeleton)
-      const result = settleTurn(turn, 'synthetic')
+      const result = settleTurn(turn, 'synthetic', ep.model)
       record(result)
       if (result.sample) {
         applyTurnOutcome(
@@ -395,14 +398,14 @@ async function stageAnchors(args: CliArgs): Promise<void> {
   ensureOutDir()
   const ep = teacherEndpointFromEnv()
   const usage = { promptTokens: 0, completionTokens: 0, calls: 0 }
-  const golden = await buildGoldenAnchors({ ep, limit: args.limit || undefined, usage })
+  const golden = await buildGoldenAnchors({ ep, limit: args.limit || undefined, teacher: ep.model, usage })
   const mockSeeds = buildMockAnchorSeeds(loadDemoStoryText())
   const mockOut: DistillSample[] = []
   const mockRejected: RejectedRow[] = []
   for (const seed of mockSeeds) {
     try {
       const turn = await replaySkeleton(ep, mockAnchorSkeleton(seed))
-      const result = settleTurn(turn, 'anchor')
+      const result = settleTurn(turn, 'anchor', ep.model)
       if (result.sample) {
         result.sample.meta.id = seed.id
         result.sample.meta.origin = seed.id
@@ -466,6 +469,21 @@ async function stagePack(): Promise<void> {
   if (trainStats.multiStep + heldoutStats.multiStep < 500) {
     console.warn(`[警告] 多步工具链 ${trainStats.multiStep + heldoutStats.multiStep} < 500——继续补跑 rollouts 后重新 pack`)
   }
+  // 教师分桶（教师切换后新旧数据成本/配比可追溯；无 teacher 字段 = 初版教师）
+  const DEFAULT_TEACHER = 'deepseek/deepseek-v4-flash'
+  const teacherOf = (row: { teacher?: string }): string => row.teacher ?? DEFAULT_TEACHER
+  const teacherBreakdown: Record<string, { accepted: number; multiStep: number; rejected: Record<string, number> }> = {}
+  for (const s of all) {
+    const t = teacherOf(s.meta as { teacher?: string })
+    teacherBreakdown[t] ??= { accepted: 0, multiStep: 0, rejected: {} }
+    teacherBreakdown[t]!.accepted++
+    if (s.meta.multiStep) teacherBreakdown[t]!.multiStep++
+  }
+  for (const r of rejectedRows) {
+    const t = teacherOf(r)
+    teacherBreakdown[t] ??= { accepted: 0, multiStep: 0, rejected: {} }
+    teacherBreakdown[t]!.rejected[r.category] = (teacherBreakdown[t]!.rejected[r.category] ?? 0) + 1
+  }
   const datacard = {
     generatedAt: new Date().toISOString(),
     plan: { seed: plan.seed, rollouts: plan.rollouts.length, seedSkeletons: plan.seedSkeletonIds.length },
@@ -482,10 +500,11 @@ async function stagePack(): Promise<void> {
     },
     teacher: {
       model: process.env.KP_DISTILL_MODEL ?? 'deepseek/deepseek-v4-flash',
+      breakdown: teacherBreakdown,
       totalPromptTokens: fromSamples.promptTokens + fromRejected.promptTokens + fromLedger.promptTokens,
       totalCompletionTokens: fromSamples.completionTokens + fromRejected.completionTokens + fromLedger.completionTokens,
       totalCalls: fromSamples.calls + fromRejected.calls + fromLedger.calls,
-      breakdown: { acceptedSamples: fromSamples, rejectedTurns: fromRejected, phaseALedger: fromLedger },
+      costBreakdown: { acceptedSamples: fromSamples, rejectedTurns: fromRejected, phaseALedger: fromLedger },
     },
   }
   fs.writeFileSync(DATACARD_FILE, JSON.stringify(datacard, null, 2), 'utf-8')

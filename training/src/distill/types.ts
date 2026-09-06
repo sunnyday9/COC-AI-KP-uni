@@ -138,6 +138,8 @@ export interface DistillSample {
   meta: {
     id: string
     source: SampleSource
+    /** 教师模型（教师切换后新旧数据分桶；无此字段 = 初版教师 deepseek/deepseek-v4-flash）。 */
+    teacher?: string
     origin: string
     kind: 'opening' | 'turn'
     turnType: TurnType | 'anchor'

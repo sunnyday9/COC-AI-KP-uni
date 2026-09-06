@@ -32,6 +32,7 @@ const EVAL_DIR = fileURLToPath(new URL('../../eval', import.meta.url))
 export async function buildGoldenAnchors(options: {
   ep: EvalEndpoint
   limit?: number
+  teacher?: string
   usage: { promptTokens: number; completionTokens: number; calls: number }
 }): Promise<{ samples: DistillSample[]; judged: number; rejected: { id: string; category: string; detail: string; usage: { promptTokens: number; completionTokens: number; calls: number } }[]; errors: string[] }> {
   const goldenPath = resolve(EVAL_DIR, 'golden-samples.json')
@@ -63,6 +64,7 @@ export async function buildGoldenAnchors(options: {
         meta: {
           id: `anchor:golden:${sample.id}`,
           source: 'anchor',
+          ...(options.teacher ? { teacher: options.teacher } : {}),
           origin: `golden:${sample.id}`,
           kind: 'turn',
           turnType: 'anchor',
