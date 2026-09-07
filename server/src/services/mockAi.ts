@@ -34,6 +34,8 @@ export const MOCK_NARRATIVE = '（测试模式）守秘人回应：你听到了�
 
 /** Keyword → intent word for the classifier call (parseIntent-compatible). */
 const INTENT_RULES: [RegExp, string][] = [
+  // dossier 查证词：属叙事性信息动作 → narrative（避免被判 investigate 而强制授线索）
+  [/情报确认|查证一下|查一下档案|查阅档案|确认一下/, 'narrative'],
   [/战斗|攻击|开枪|射击|格斗|挥拳|扑向/, 'combat'],
   [/撬锁|开锁/, 'skill_check'],
   // 调查(?!员): the word 调查员 (investigator) must NOT trigger an action.

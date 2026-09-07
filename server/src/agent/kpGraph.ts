@@ -182,6 +182,8 @@ function parseIntent(raw: string | null | undefined): string {
  * classifier LLM in analyzeInput when no rule matches.
  */
 const INTENT_RULES_ORDER: Array<{ re: RegExp; intent: string }> = [
+  // dossier 查证词：叙事性信息动作 → narrative（避免误判 investigate 强制授线索）
+  { re: /情报确认|查证一下|查一下档案|查阅档案|确认一下/, intent: 'narrative' },
   { re: /战斗|攻击|开枪|射击|格斗|挥拳|扑向|砍|刺|开枪打/, intent: 'combat' },
   { re: /撬锁|开锁/, intent: 'skill_check' },
   // 调查(?!员): the word 调查员 (investigator) must NOT trigger an action.
@@ -325,8 +327,10 @@ export function shouldTriggerInsanity(state: SanState | null): boolean {
  * does NOT reset the counter, so "searching with checks but never receiving a
  * clue" escalates exactly as REPORT.md recommends (force grant_clue after 2
  * such turns, force transition_scene after 4).
+ * Dossier story-lookup tools (scene_list / scene_dossier / lexical_search) are
+ * also progress: the KP actively verifying story facts is not stalling.
  */
-const STALL_PROGRESS_TOOLS = ['grant_clue', 'transition_scene']
+const STALL_PROGRESS_TOOLS = ['grant_clue', 'transition_scene', 'scene_list', 'scene_dossier', 'lexical_search']
 
 export function computeStallLevelFromHistory(messages: KpMessage[]): number {
   let stall = 0

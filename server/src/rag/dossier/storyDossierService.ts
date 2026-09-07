@@ -18,8 +18,8 @@
  * returns deterministic JSON for dossier prompts (see mockAi.ts), so e2e can
  * run the whole dossier flow without an LLM.
  *
- * Path safety: every fs path is built from a sanitized script id AND checked
- * against the per-user dossier root via resolveFileInDir (utils/pathSafety).
+ * Path safety: dossier file names come from a whitelist-filtered script id
+ * (mirrors vectorStore.indexPath); the route layer asserts the id first.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -66,10 +66,12 @@ function userDir(userId: number): string {
   return path.join(DOSSIER_DATA_DIR, String(userId))
 }
 
-/** Resolve a script id to a file path inside the user dir (sanitize + boundary check). */
+/** Resolve a script id to a file path: whitelist-sanitize to a safe file name
+ * then boundary-check the result inside the user dir (白名单 + resolve 边界
+ * 双保险——路径穿越不可达). The route layer asserts/sanitizes first. */
 function dossierFile(userId: number, scriptId: string): string {
-  const fileName = `${sanitizeScriptId(scriptId)}.json`
-  return resolveFileInDir(userDir(userId), fileName, 'dossier file')
+  const safe = sanitizeScriptId(scriptId)
+  return resolveFileInDir(userDir(userId), `${safe}.json`, 'dossier file')
 }
 
 async function ensureDir(userId: number): Promise<string> {

@@ -20,22 +20,22 @@ const router = Router()
 
 router.use(requireAuth)
 
-/** scriptId 入口校验：非空 + 无路径穿越字符（防遍历；服务内另做 sanitize+边界双保险）。 */
+/** scriptId 入口净化：白名单过滤到安全字符集（与 vectorStore.indexPath 同款规则，
+ * 文件名只含 [a-zA-Z0-9_-\u4e00-\u9fff]，穿越字符/分隔符被替换——sanitize 幂等）。 */
 function parseScriptId(raw: unknown): string {
-  const scriptId = String(raw ?? '')
-  try {
-    return assertSafeId(scriptId, 'scriptId')
-  } catch {
-    throw new BadRequestError('invalid scriptId')
-  }
+  const scriptId = String(raw ?? '').replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_')
+  if (!scriptId) throw new BadRequestError('invalid scriptId')
+  return scriptId
 }
 
-/** POST /api/dossier/:scriptId/generate — 生成剧本档案。body: { model? }。 */
+/** POST /api/dossier/:scriptId/generate — 生成剧本档案。body: { model? }。
+ *  scriptId 必须保留原始 story id（读 story 原文）；assertSafeId 只校验不净化
+ *  （拒绝穿越/危险字符），服务层 generateDossier 内部白名单 sanitize 后落盘。 */
 router.post('/:scriptId/generate', (req: AuthRequest, res) => {
   const userId = req.userId as number
   let scriptId: string
   try {
-    scriptId = parseScriptId(req.params.scriptId)
+    scriptId = assertSafeId(String(req.params.scriptId ?? ''), 'scriptId')
   } catch (err) {
     sendError(res, err)
     return
