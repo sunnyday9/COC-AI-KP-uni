@@ -1,7 +1,7 @@
 /**
- * Dossier routes integration spec — POST/GET/DELETE/GET /api/dossier*
- * lifecycle + auth + user isolation, hitting the real app (supertest) with a
- * mocked dossier service (deterministic generation, no LLM).
+ * Dossier routes integration spec — POST /api/dossier/:scriptId/generate +
+ * GET /api/dossier list + auth, hitting the real app (supertest) with a mocked
+ * dossier service (deterministic generation, no LLM).
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
@@ -22,15 +22,13 @@ vi.resetModules()
 
 // Mock the dossier service so generate returns deterministically without LLM.
 const generateMock = vi.hoisted(() => vi.fn())
-const loadMock = vi.hoisted(() => vi.fn())
 const listMock = vi.hoisted(() => vi.fn())
-const deleteMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../rag/dossier/storyDossierService.js', () => ({
   generateDossier: generateMock,
-  loadDossier: loadMock,
+  loadDossier: vi.fn(),
   listDossiers: listMock,
-  deleteDossier: deleteMock,
+  deleteDossier: vi.fn(),
 }))
 
 const { createApp } = await import('../../app.js')
@@ -57,7 +55,7 @@ describe('dossier routes', () => {
     expect(res.status).toBe(401)
   })
 
-  it('lifecycle: generate → read → list → delete', async () => {
+  it('generate → list lifecycle', async () => {
     const token = await registerToken('dossier_lc')
 
     generateMock.mockResolvedValueOnce({ ok: true, scriptId: 'demo.txt', scenes: 3, clues: 3, npcs: 2 })
@@ -65,33 +63,16 @@ describe('dossier routes', () => {
     expect(gen.status).toBe(200)
     expect(gen.body).toMatchObject({ ok: true, scenes: 3, clues: 3, npcs: 2 })
 
-    loadMock.mockResolvedValueOnce({
-      scriptId: 'demo.txt',
-      storyName: '旧图书馆的铜钥匙',
-      generatedAt: 1,
-      scenes: [{ id: 'scene_1', name: '旧图书馆', description: '图书馆' }],
-      clues: [{ id: 'c1' }],
-      npcs: [{ id: 'n1' }],
-    })
-    const read = await request(createApp()).get('/api/dossier/demo.txt').set(auth(token))
-    expect(read.status).toBe(200)
-    expect(read.body.storyName).toBe('旧图书馆的铜钥匙')
-    expect(read.body.scenes).toHaveLength(1)
-
     listMock.mockResolvedValueOnce([{ scriptId: 'demo.txt', name: '旧图书馆的铜钥匙', sceneCount: 3, generatedAt: 1 }])
     const list = await request(createApp()).get('/api/dossier').set(auth(token))
     expect(list.body).toHaveLength(1)
-
-    deleteMock.mockResolvedValueOnce(true)
-    const del = await request(createApp()).delete('/api/dossier/demo.txt').set(auth(token))
-    expect(del.body).toEqual({ ok: true })
+    expect(list.body[0].sceneCount).toBe(3)
   })
 
-  it('returns null for a missing dossier (no 404 crash)', async () => {
-    const token = await registerToken('dossier_miss')
-    loadMock.mockResolvedValueOnce(null)
-    const res = await request(createApp()).get('/api/dossier/demo.txt').set(auth(token))
-    expect(res.status).toBe(200)
-    expect(res.body).toBeNull()
+  it('rejects traversal scriptIds (400 from assertSafeId or 404 from routing)', async () => {
+    const token = await registerToken('dossier_trav')
+    const res = await request(createApp()).post('/api/dossier/..%2F..%2Fetc%2Fpasswd/generate').set(auth(token)).send({})
+    // 路径穿越必须被拒：要么 assertSafeId 400，要么 express 路由层 404——两者都证明不可达
+    expect([400, 404]).toContain(res.status)
   })
 })

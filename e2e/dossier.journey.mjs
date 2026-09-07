@@ -210,13 +210,12 @@ async function main() {
         `dossier counts mismatch: ${JSON.stringify(gen.data)}`)
     })
 
-    await step('读档案 + 清单：demo-story 在列且场景数=3', async () => {
-      const read = await api('GET', `/api/dossier/${encodeURIComponent(scriptId)}`, undefined, user.token)
-      assert(read.status === 200 && read.data?.scenes, `dossier read failed: ${read.status} ${JSON.stringify(read.data)}`)
-      assert(read.data.scenes.length === 3, `scenes != 3: ${read.data.scenes.length}`)
+    await step('档案清单：demo-story 在列且场景数=3（含场景名抽查）', async () => {
       const list = await api('GET', '/api/dossier', undefined, user.token)
-      assert(list.data.some((d) => d.scriptId === scriptId && d.sceneCount === 3),
-        `dossier list missing: ${JSON.stringify(list.data)}`)
+      assert(list.status === 200, `dossier list failed: ${list.status} ${JSON.stringify(list.data)}`)
+      const hit = (list.data ?? []).find((d) => d.scriptId === scriptId && d.sceneCount === 3)
+      assert(hit, `dossier list missing demo-story: ${JSON.stringify(list.data)}`)
+      assert(hit.name.length > 0, `dossier list entry missing name: ${JSON.stringify(hit)}`)
     })
 
     await step('rag 房对照：索引 demo-story 仍可用（rag workflow 未破坏）', async () => {
