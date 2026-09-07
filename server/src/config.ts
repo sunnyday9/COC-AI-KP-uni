@@ -29,6 +29,17 @@ export const RAG_DATA_DIR = process.env.RAG_DATA_DIR
   : path.resolve(fileURLToPath(new URL('../data/rag', import.meta.url)))
 
 /**
+ * Dossier (剧本档案) persistence root: per-user generated story dossiers live
+ * under `DOSSIER_DATA_DIR/<userId>/<scriptId>.json`. Kept separate from
+ * RAG_DATA_DIR so the embedding workflow and the dossier workflow can coexist
+ * (experiment: feature/kp-dossier-workflow). `DOSSIER_DATA_DIR` env overrides
+ * the default (tests isolate per-worker into a temp dir).
+ */
+export const DOSSIER_DATA_DIR = process.env.DOSSIER_DATA_DIR
+  ? path.resolve(process.env.DOSSIER_DATA_DIR)
+  : path.resolve(fileURLToPath(new URL('../data/dossiers', import.meta.url)))
+
+/**
  * Local embedding model cache (task-4-brief decision 2): @huggingface/
  * transformers downloads the builtin model here on first use.
  */

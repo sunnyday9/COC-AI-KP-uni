@@ -250,7 +250,78 @@ export function mockChat(body: ChatBody): ChatResult {
 }
 
 /** RAG-path chat (graph extraction / summaries): fixed, parseable text. */
-export function mockChatForRag(): { content: string } {
+export function mockChatForRag(messages?: ChatMessage[]): { content: string } {
+  // Dossier generation prompt (server/src/rag/dossier/prompts.ts) → return a
+  // deterministic, valid dossier JSON matching e2e/fixtures/demo-story.txt
+  // (3 scenes / 3 clues / 2 NPCs) so the dossier workflow runs end-to-end
+  // under MOCK_AI without an LLM.
+  const system = messages?.find((m) => m.role === 'system')
+  if (system && typeof system.content === 'string' && system.content.includes('结构整理器')) {
+    return {
+      content: JSON.stringify({
+        scenes: [
+          {
+            id: 'scene_library',
+            name: '旧图书馆',
+            sceneText:
+              '旧图书馆常年笼罩在灰尘与霉味之中。管理员阿洛伊斯站在借阅台后，谨慎地打量着来访者。他不愿谈论地下室，只说"那里已经被封了很多年"。书架角落放着一只青瓷花瓶。花瓶旁边的桌上摊着一本破损日记，其中一页写道："铜钥匙藏在地板下，但我不知道它打开的是什么。"',
+            description: '市立图书馆旧馆，管理员阿洛伊斯在此看守，青瓷花瓶暗藏夹层。',
+            npcIds: ['npc_aloysius'],
+            clueIds: ['clue_vase'],
+            requiredClues: [],
+            hooks: ['与管理员阿洛伊斯交谈', '检查青瓷花瓶', '翻阅桌上的破损日记'],
+            keywords: ['图书馆', '花瓶', '日记', '阿洛伊斯'],
+          },
+          {
+            id: 'scene_basement',
+            name: '地下室',
+            sceneText:
+              '地下室的门被铁链锁住。锁头看起来很旧，但并非无法撬开。门后传来水滴落下的声音，以及若有若无的低语。',
+            description: '被铁链封锁的地下室，门后传来水滴与低语。',
+            npcIds: [],
+            clueIds: [],
+            requiredClues: ['clue_key'],
+            hooks: ['尝试撬开铁链锁', '倾听门后的声音'],
+            keywords: ['地下室', '铁链', '低语'],
+          },
+          {
+            id: 'scene_archive',
+            name: '档案室',
+            sceneText:
+              '档案室里堆满了泛黄的卷宗。其中一份卷宗记载：1920 年，图书馆前馆长失踪，他的办公室后来被封存，钥匙不知所终。',
+            description: '堆满卷宗的档案室，记载前馆长失踪与黑星教团的线索。',
+            npcIds: [],
+            clueIds: ['clue_archive'],
+            requiredClues: [],
+            hooks: ['翻阅泛黄的卷宗'],
+            keywords: ['档案室', '卷宗', '馆长', '黑星教团'],
+          },
+        ],
+        clues: [
+          { id: 'clue_vase', description: '青瓷花瓶是空心的，底部有夹层。', location: 'scene_library', requiredClues: [] },
+          { id: 'clue_key', description: '前馆长办公室的钥匙是一把黄铜钥匙，带有鸢尾花纹。', location: '旧图书馆地板下', requiredClues: ['clue_vase'] },
+          { id: 'clue_archive', description: '档案室卷宗提到，馆长失踪前曾收到一封信，署名是"黑星教团"。', location: 'scene_archive', requiredClues: [] },
+        ],
+        npcs: [
+          {
+            id: 'npc_aloysius',
+            name: '阿洛伊斯',
+            role: '图书馆管理员',
+            description: '谨慎、健谈但回避地下室话题。',
+            details: '管理员，不愿谈论地下室，只说"那里已经被封了很多年"。',
+          },
+          {
+            id: 'npc_mary',
+            name: '玛丽',
+            role: '前馆长的女儿',
+            description: '住在图书馆对面的公寓，愿意谈论父亲的失踪。',
+            details: '前馆长的女儿，住在图书馆对面的公寓。',
+          },
+        ],
+        meta: { title: '旧图书馆的铜钥匙' },
+      }),
+    }
+  }
   return { content: '（测试模式）' }
 }
 

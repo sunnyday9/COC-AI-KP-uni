@@ -232,9 +232,10 @@ export async function chatForRag(
   }
 
   if (isMockAiMode()) {
-    // Fixed parseable output keeps graph extraction / community summaries
-    // working without an LLM (parseExtractOutput tolerates garbage → empty).
-    return mockChatForRag()
+    // Fixed parseable output keeps graph extraction / community summaries /
+    // dossier generation working without an LLM. Messages are passed through
+    // so the mock can return prompt-shaped JSON (dossier) vs generic text.
+    return mockChatForRag(messages)
   }
 
   const { config } = resolveAiConfig(userId, params.model)
