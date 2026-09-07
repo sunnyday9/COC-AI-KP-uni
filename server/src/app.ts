@@ -13,6 +13,7 @@ import storiesRoutes from './routes/stories.routes.js'
 import scriptsRoutes from './routes/scripts.routes.js'
 import savesRoutes from './routes/saves.routes.js'
 import ragRoutes from './routes/rag.routes.js'
+import dossierRoutes from './routes/dossier.routes.js'
 import roomsRoutes from './routes/rooms.routes.js'
 import roomSettingsRoutes from './routes/roomSettings.routes.js'
 import charactersRoutes from './routes/characters.routes.js'
@@ -37,6 +38,7 @@ export function createApp(): Express {
   app.use('/api/scripts', scriptsRoutes)
   app.use('/api/saves', savesRoutes)
   app.use('/api/rag', ragRoutes)
+  app.use('/api/dossier', dossierRoutes) // 实验分支：剧本档案 workflow（与 rag 并行）
   app.use('/api/rooms', roomsRoutes)
   app.use('/api/rooms', roomSettingsRoutes)
   app.use('/api/characters', charactersRoutes)
