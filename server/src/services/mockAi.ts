@@ -150,6 +150,15 @@ function mockContinuation(messages: ChatMessage[]): { content: string; toolCalls
   if (last?.role !== 'tool') return { content: MOCK_NARRATIVE }
 
   const raw = String(last.content ?? '')
+  const trimmed = raw.trimStart()
+  // dossier workflow 查证链（与 roomService.buildStoryLookup 的文本输出形态对齐）：
+  // scene_list（"- 场景名：…" 行）→ scene_dossier → 叙事收尾。
+  if (trimmed.startsWith('- ')) {
+    return { content: '', toolCalls: [makeToolCall('scene_dossier', { sceneName: '旧图书馆' }, 0)] }
+  }
+  if (trimmed.startsWith('场景：')) {
+    return { content: '（测试模式）你确认了旧图书馆的档案：管理员阿洛伊斯在借阅台后，青瓷花瓶有夹层。' }
+  }
   const parsed = parseJsonContent(raw)
   if (parsed) {
     const skillName = typeof parsed.skillName === 'string' ? parsed.skillName : ''
@@ -184,6 +193,10 @@ function mockContinuation(messages: ChatMessage[]): { content: string; toolCalls
 /** Fresh-turn generate call: keyword → first tool of the chain. */
 function mockFreshTurn(messages: ChatMessage[]): { content: string; toolCalls?: ToolCallResult[] } {
   const userText = findLastUserText(messages)
+  // dossier workflow：查证型消息 → scene_list（查证工具链起点）
+  if (/打听|查证|查阅档案|剧本里|故事里|确认一下|情报/.test(userText)) {
+    return { content: '', toolCalls: [makeToolCall('scene_list', {}, 0)] }
+  }
   // 调查(?!员): the word 调查员 (investigator) must NOT trigger an action.
   if (/战斗|攻击|开枪|射击|格斗|挥拳|扑向/.test(userText)) {
     return { content: '', toolCalls: [makeToolCall('skill_check', { skillName: '格斗', skillValue: 60, difficulty: 'regular' }, 0)] }

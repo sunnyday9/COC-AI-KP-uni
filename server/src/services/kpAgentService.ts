@@ -90,8 +90,9 @@ function isForceToolCall(msgs: KpMessage[]): boolean {
 export function buildInvokeLLM(
   userId: number,
   ai: ReturnType<typeof getAiConfig>,
-  opts: { stream?: boolean; onChunk?: (chunk: string) => void },
+  opts: { stream?: boolean; onChunk?: (chunk: string) => void; tools?: typeof COC_KP_TOOLS },
 ): InvokeLLM {
+  const tools = opts.tools ?? COC_KP_TOOLS
   return async (msgs: KpMessage[]) => {
     const isClassifier = isIntentClassifierCall(msgs)
     const isForceTool = isForceToolCall(msgs)
@@ -102,7 +103,7 @@ export function buildInvokeLLM(
       temperature: ai.temperature,
       maxTokens: isClassifier ? 32 : ai.maxTokens,
       stream: canStream,
-      tools: isClassifier ? undefined : COC_KP_TOOLS,
+      tools: isClassifier ? undefined : tools,
       onChunk: canStream ? opts.onChunk : undefined,
     })
     return result?.toolCalls

@@ -15,6 +15,8 @@ import { buildInvokeLLM, normalizeMessages, GRAPH_TIMEOUT_MS, getSharedGraph } f
 import { getAiConfig } from './settingsService.js'
 import { processToolCalls } from '../rule-engine/orchestrator.js'
 import { buildToolContext } from '../rule-engine/toolContextFactory.js'
+import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
+import { STORY_LOOKUP_TOOLS, STORY_LOOKUP_TOOL_NAMES } from '../../../shared/tools/storyLookupTools.js'
 import type { KpMessage } from '../agent/kpGraph.js'
 import type { ToolCall } from '../rule-engine/types.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
@@ -140,6 +142,10 @@ export interface KpTurnDeps {
   /** wire 采样元数据（T1，spec #36「唯一新缝」）：提供且回合完整完成（图未中断、
    *  产生了最终叙事）时，把完整 wire 消息序列落库（见 wireSampleService）。 */
   sampling?: KpWireSamplingMeta
+  /** dossier workflow（实验分支）：注入剧本档案查证函数。提供时查证工具
+   *  (scene_list / scene_dossier / lexical_search) 在工具循环内特判执行，
+   *  并把它们并入下发 LLM 的工具集。缺省 = rag workflow（无查证工具）。 */
+  storyLookup?: (toolName: string, args: Record<string, unknown>) => Promise<{ content: string }>
   handlers: KpTurnHandlers
 }
 
@@ -164,7 +170,14 @@ export async function runKpTurn(
   }
 
   const ai = getAiConfig(userId)
-  const invokeLLM = buildInvokeLLM(userId, ai, { stream: true, onChunk: turn.handlers.onChunk })
+  const invokeLLM = buildInvokeLLM(userId, ai, {
+    stream: true,
+    onChunk: turn.handlers.onChunk,
+    // dossier workflow: append story-lookup tools to the base COC tool set.
+    tools: turn.storyLookup
+      ? (COC_KP_TOOLS as unknown[]).concat(STORY_LOOKUP_TOOLS) as typeof COC_KP_TOOLS
+      : undefined,
+  })
 
   let fullContent = ''
   let msgs: KpMessage[] = messages
@@ -207,6 +220,18 @@ export async function runKpTurn(
     const results: { role: 'tool'; tool_call_id: string; content: string }[] = []
     const iterDisplay: Message[] = []
     for (const tc of toolCalls) {
+      // dossier workflow 查证工具：只读、不进 rule-engine（同步 handler 无异步缝），
+      // 由注入的 storyLookup 特判执行（结果同样经摘要+截断回填）。
+      if (turn.storyLookup && STORY_LOOKUP_TOOL_NAMES.indexOf(tc.name) >= 0) {
+        try {
+          const args = JSON.parse(tc.arguments || '{}') as Record<string, unknown>
+          const res = await turn.storyLookup(tc.name, args)
+          results.push({ role: 'tool', tool_call_id: tc.id, content: res.content })
+        } catch (e) {
+          results.push({ role: 'tool', tool_call_id: tc.id, content: `error: ${e instanceof Error ? e.message : String(e)}` })
+        }
+        continue
+      }
       let targetId = turn.activeCharacterId
       try {
         const args = JSON.parse(tc.arguments || '{}') as { characterId?: unknown }
