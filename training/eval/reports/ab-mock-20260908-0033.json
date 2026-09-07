@@ -1,0 +1,98 @@
+{
+  "mode": "mock",
+  "workflow": {
+    "rag": {
+      "roomId": "room_defb837e",
+      "mode": "mock",
+      "note": "mock 下 rag 无 embedding → fetchRagContext 恒空（情报块 0 注入）",
+      "turns": [
+        {
+          "input": "我环顾四周，侦查一下这间旧图书馆。",
+          "kpReply": "（测试模式）线索已记录。",
+          "kpReplyTokens": 9
+        },
+        {
+          "input": "管理员先生，地下室为什么被封起来了？",
+          "kpReply": "（测试模式）守秘人回应：你听到了远处的脚步声。\n\n（测试模式）线索已记录。",
+          "kpReplyTokens": 28
+        },
+        {
+          "input": "我检查那只青瓷花瓶。",
+          "kpReply": "（测试模式）线索已记录。",
+          "kpReplyTokens": 9
+        },
+        {
+          "input": "我试着撬开地下室门上的铁链锁。",
+          "kpReply": "（测试模式）守秘人回应：你听到了远处的脚步声。",
+          "kpReplyTokens": 18
+        },
+        {
+          "input": "档案室里的卷宗都写了些什么？",
+          "kpReply": "（测试模式）守秘人回应：你听到了远处的脚步声。\n\n（测试模式）守秘人回应：你听到了远处的脚步声。",
+          "kpReplyTokens": 37
+        },
+        {
+          "input": "情报确认：剧本里还有哪些地点可以去？",
+          "kpReply": "（测试模式）守秘人回应：你听到了远处的脚步声。",
+          "kpReplyTokens": 18
+        }
+      ],
+      "totalKpReplyTokens": 119,
+      "wireSampleCount": 0,
+      "totalInjectedKnowledgeChars": 0,
+      "totalInjectedKnowledgeTokens": 0,
+      "toolCallDistribution": {}
+    },
+    "dossier": {
+      "roomId": "room_0bd7a3d0",
+      "mode": "mock",
+      "note": "mock 下 dossier 注入 = 档案首场景块（sceneText 实测）",
+      "turns": [
+        {
+          "input": "我环顾四周，侦查一下这间旧图书馆。",
+          "kpReply": "（测试模式）线索已记录。",
+          "kpReplyTokens": 9
+        },
+        {
+          "input": "管理员先生，地下室为什么被封起来了？",
+          "kpReply": "（测试模式）守秘人回应：你听到了远处的脚步声。\n\n（测试模式）线索已记录。",
+          "kpReplyTokens": 28
+        },
+        {
+          "input": "我检查那只青瓷花瓶。",
+          "kpReply": "（测试模式）线索已记录。",
+          "kpReplyTokens": 9
+        },
+        {
+          "input": "我试着撬开地下室门上的铁链锁。",
+          "kpReply": "（测试模式）守秘人回应：你听到了远处的脚步声。",
+          "kpReplyTokens": 18
+        },
+        {
+          "input": "档案室里的卷宗都写了些什么？",
+          "kpReply": "（测试模式）守秘人回应：你听到了远处的脚步声。\n\n（测试模式）守秘人回应：你听到了远处的脚步声。",
+          "kpReplyTokens": 37
+        },
+        {
+          "input": "情报确认：剧本里还有哪些地点可以去？",
+          "kpReply": "（测试模式）守秘人回应：你听到了远处的脚步声。",
+          "kpReplyTokens": 18
+        }
+      ],
+      "totalKpReplyTokens": 119,
+      "wireSampleCount": 0,
+      "totalInjectedKnowledgeChars": 2275,
+      "totalInjectedKnowledgeTokens": 2048,
+      "toolCallDistribution": {}
+    }
+  },
+  "script": [
+    "我环顾四周，侦查一下这间旧图书馆。",
+    "管理员先生，地下室为什么被封起来了？",
+    "我检查那只青瓷花瓶。",
+    "我试着撬开地下室门上的铁链锁。",
+    "档案室里的卷宗都写了些什么？",
+    "情报确认：剧本里还有哪些地点可以去？"
+  ],
+  "generatedAt": 1788798790811
+}
