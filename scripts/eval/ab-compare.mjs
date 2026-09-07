@@ -139,6 +139,29 @@ async function uploadStory(token) {
   return (data.id ?? data.scriptId ?? 'demo-story.txt')
 }
 
+/** Real mode: configure the user's AI settings from env (mimo / any OpenAI-compatible).
+ *  rag.useEmbeddings: true + provider builtin → server downloads text2vec locally
+ *  (no embedding API needed) so the rag room gets real retrieval for a fair A/B. */
+async function configureRealAi(token) {
+  const baseUrl = process.env.AB_AI_BASE_URL
+  const apiKey = process.env.AB_AI_API_KEY
+  const model = process.env.AB_AI_MODEL ?? 'mimo-v2.5'
+  assert(baseUrl && apiKey, 'real mode needs AB_AI_BASE_URL + AB_AI_API_KEY (see mimo-endpoint memory)')
+  const res = await api('PUT', '/api/settings', {
+    ai: {
+      provider: 'openai_compatible',
+      baseUrl,
+      apiKey,
+      model,
+      temperature: 0.7,
+      maxTokens: 2048,
+    },
+    rag: { useEmbeddings: true, provider: 'builtin', model: 'text-embedding-3-small', useGraphRAG: false, extractionModel: '' },
+  }, token)
+  assert(res.status === 200, `settings PUT failed: ${res.status} ${JSON.stringify(res.data)}`)
+  console.log(`  [real] AI 配置: ${model} @ ${baseUrl}（rag 用内置 text2vec 本地嵌入）`)
+}
+
 function openWs(token) {
   const socket = new WebSocket(`${WS_URL}/ws?token=${encodeURIComponent(token)}`)
   const frames = []
@@ -219,13 +242,16 @@ async function main() {
   try {
     await step('注册 + 上传 demo-story + rag 索引 + dossier 生成', async () => {
       user = await registerUser('main')
+      if (!MOCK) await configureRealAi(user.token)
       scriptId = await uploadStory(user.token)
       const rag = await api('GET', `/api/stories/${encodeURIComponent(scriptId)}/rag`, undefined, user.token)
       const content = typeof rag.data.content === 'string' ? rag.data.content : JSON.stringify(rag.data)
+      // real: 服务端 buildGetEmbedding 会为 chunks 生成向量；mock: 无向量（TF-IDF 占位）
       const idx = await api('POST', '/api/rag/index', { scriptId, chunks: [{ id: 'c0', content }], storyMeta: { name: 'demo-story' } }, user.token)
       assert(idx.data.ok, `rag index failed: ${JSON.stringify(idx.data)}`)
       const gen = await api('POST', `/api/dossier/${encodeURIComponent(scriptId)}/generate`, {}, user.token)
       assert(gen.data.ok, `dossier generate failed: ${JSON.stringify(gen.data)}`)
+      console.log(`  [${MOCK ? 'mock' : 'real'}] dossier 生成: ${JSON.stringify(gen.data)}`)
     })
 
     for (const workflow of ['rag', 'dossier']) {
