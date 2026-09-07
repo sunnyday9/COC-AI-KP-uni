@@ -62,6 +62,7 @@ const SNAPSHOT_KEYS = [
   'storyId',
   'turnWindowMs',
   'updatedAt',
+  'workflow',
 ]
 
 describe('wire 采样房间链路（T1）', () => {

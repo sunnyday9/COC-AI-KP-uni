@@ -45,12 +45,13 @@ function sendDomainError(
   else sendError(res, new BadRequestError(fail.message))
 }
 
-/** POST /api/rooms — 创建房间（单人模式 = 隐式建房，FR-M9）。 */
+/** POST /api/rooms — 创建房间（单人模式 = 隐式建房，FR-M9）。body.workflow 可选（实验分支双轨）。 */
 router.post('/', (req: AuthRequest, res) => {
   const userId = req.userId as number
   const username = (req as AuthRequest & { user?: { username?: string } }).user?.username ?? `user_${userId}`
-  const storyId = (req.body as { storyId?: unknown } | undefined)?.storyId
-  const { roomId, inviteCode } = createRoom(userId, typeof storyId === 'string' ? storyId : null)
+  const body = (req.body ?? {}) as { storyId?: unknown; workflow?: unknown }
+  const storyId = body.storyId
+  const { roomId, inviteCode } = createRoom(userId, typeof storyId === 'string' ? storyId : null, { workflow: body.workflow })
   res.json({ ok: true, roomId, inviteCode, ownerId: userId, ownerName: username })
 })
 
@@ -59,11 +60,12 @@ router.get('/', (req: AuthRequest, res) => {
   res.json(listRoomsForUser(req.userId as number))
 })
 
-/** POST /api/rooms/solo — 单人开局一体动作（ADR-0002：落角色卡 + 建 solo 房 + 绑卡 + start）。 */
+/** POST /api/rooms/solo — 单人开局一体动作（ADR-0002：落角色卡 + 建 solo 房 + 绑卡 + start）。
+ *  可选 body.workflow（实验分支双轨：'dossier' 走剧本档案，缺省 rag=现状）。 */
 router.post('/solo', (req: AuthRequest, res) => {
   const userId = req.userId as number
-  const body = (req.body ?? {}) as { storyId?: unknown; name?: unknown; sheet?: unknown }
-  const result = createSoloRoom(userId, { storyId: body.storyId, name: body.name, sheet: body.sheet })
+  const body = (req.body ?? {}) as { storyId?: unknown; name?: unknown; sheet?: unknown; workflow?: unknown }
+  const result = createSoloRoom(userId, { storyId: body.storyId, name: body.name, sheet: body.sheet, workflow: body.workflow })
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -105,11 +107,11 @@ router.get('/:id', (req: AuthRequest, res) => {
 })
 
 /** POST /api/rooms/:id/start — 房主开始游戏（绑定剧本）。 */
-router.post('/:id/start', (req: AuthRequest, res) => {
+router.post('/:id/start', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const storyId = String((req.body as { storyId?: unknown } | undefined)?.storyId ?? '')
-  const result = startRoom(userId, roomId, storyId)
+  const result = await startRoom(userId, roomId, storyId)
   if (!result.ok) {
     sendDomainError(res, result)
     return

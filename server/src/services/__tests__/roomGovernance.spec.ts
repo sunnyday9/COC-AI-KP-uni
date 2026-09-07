@@ -209,24 +209,24 @@ describe('transfer（房主主动转让）', () => {
 })
 
 describe('开局门闩（ADR-0005 start gate）', () => {
-  it('缺剧本 / 剧本未索引 / 成员未绑卡 → conflict 带缺项提示', () => {
+  it('缺剧本 / 剧本未索引 / 成员未绑卡 → conflict 带缺项提示', async () => {
     listStoriesMock.mockReturnValue([])
     const owner = seedUser('gate_owner')
     const memberA = seedUser('gate_a')
     const created = createRoom(owner, null)
     joinRoomByInviteCode(memberA, created.inviteCode)
 
-    const noStory = startRoom(owner, created.roomId, '')
+    const noStory = await startRoom(owner, created.roomId, '')
     expect(noStory.ok).toBe(false)
     if (!noStory.ok) expect(noStory.reason).toBe('conflict')
 
-    const notIndexed = startRoom(owner, created.roomId, 'story_not_indexed')
+    const notIndexed = await startRoom(owner, created.roomId, 'story_not_indexed')
     expect(notIndexed.ok).toBe(false)
     if (!notIndexed.ok) expect(notIndexed.reason).toBe('conflict')
 
     // 剧本已索引（mock 返回含该 storyId）但成员未绑卡
     listStoriesMock.mockReturnValue([{ storyId: 'story_gate_x', name: 'x', chunkCount: 1, indexedAt: 1 }])
-    const unbound = startRoom(owner, created.roomId, 'story_gate_x')
+    const unbound = await startRoom(owner, created.roomId, 'story_gate_x')
     expect(unbound.ok).toBe(false)
     if (!unbound.ok) {
       expect(unbound.reason).toBe('conflict')
@@ -234,7 +234,7 @@ describe('开局门闩（ADR-0005 start gate）', () => {
     }
   })
 
-  it('门闩全过（已索引 + 全员绑卡）→ start 成功 phase=playing；就绪不要求', () => {
+  it('门闩全过（已索引 + 全员绑卡）→ start 成功 phase=playing；就绪不要求', async () => {
     listStoriesMock.mockReturnValue([{ storyId: 'story_gate_ok', name: 'y', chunkCount: 1, indexedAt: 1 }])
     const owner = seedUser('gate_ok_owner')
     const memberA = seedUser('gate_ok_a')
@@ -246,19 +246,19 @@ describe('开局门闩（ADR-0005 start gate）', () => {
     expect(bindRoomCharacter(owner, created.roomId, charOwner).ok).toBe(true)
     expect(bindRoomCharacter(memberA, created.roomId, charA).ok).toBe(true)
 
-    const started = startRoom(owner, created.roomId, 'story_gate_ok')
+    const started = await startRoom(owner, created.roomId, 'story_gate_ok')
     expect(started.ok).toBe(true)
     const row = getDb().prepare(`SELECT phase FROM rooms WHERE room_id = ?`).get(created.roomId) as { phase: string }
     expect(row.phase).toBe('playing')
   })
 
-  it('非房主 start → not-owner', () => {
+  it('非房主 start → not-owner', async () => {
     listStoriesMock.mockReturnValue([])
     const owner = seedUser('gate_nowner')
     const memberA = seedUser('gate_nowner_a')
     const created = createRoom(owner, null)
     joinRoomByInviteCode(memberA, created.inviteCode)
-    const res = startRoom(memberA, created.roomId, 'x')
+    const res = await startRoom(memberA, created.roomId, 'x')
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.reason).toBe('not-owner')
   })
@@ -286,7 +286,7 @@ describe('phase gate（lobby 禁 KP）', () => {
 })
 
 describe('playing 锁房（ADR-0005 invite 拒绝）', () => {
-  it('playing 后邀请码加入 → conflict；lobby 正常加入', () => {
+  it('playing 后邀请码加入 → conflict；lobby 正常加入', async () => {
     listStoriesMock.mockReturnValue([{ storyId: 'story_lock_z', name: 'z', chunkCount: 1, indexedAt: 1 }])
     const owner = seedUser('lock_owner')
     const memberA = seedUser('lock_a')
@@ -296,7 +296,7 @@ describe('playing 锁房（ADR-0005 invite 拒绝）', () => {
     bindRoomCharacter(owner, created.roomId, charOwner)
     joinRoomByInviteCode(memberA, created.inviteCode)
     bindRoomCharacter(memberA, created.roomId, charA)
-    expect(startRoom(owner, created.roomId, 'story_lock_z').ok).toBe(true)
+    expect((await startRoom(owner, created.roomId, 'story_lock_z')).ok).toBe(true)
 
     const res = joinRoomByInviteCode(seedUser('lock_out'), created.inviteCode)
     expect(res.ok).toBe(false)

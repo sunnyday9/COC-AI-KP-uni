@@ -13,7 +13,7 @@
 import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
-import { buildRoomTurnMessages, buildRoomOpeningMessages, OPENING_RAG_QUERY, MAX_MEMORY_ENTRIES, type RoomPromptInput } from './kpPromptService.js'
+import { buildRoomTurnMessages, buildRoomOpeningMessages, OPENING_RAG_QUERY, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 import { listStories as listIndexedStories } from './ragService.js'
 import type {
   RoomEventPayloadMap,
@@ -27,6 +27,11 @@ import type { Message } from '../../../shared/types/game.js'
 
 /** 房间阶段（shared 单一来源别名——评审候选 3）。 */
 export type RoomPhase = SharedRoomPhase
+
+/** 解析 workflow 入参：仅接受 'dossier'，其余（含 undefined/非法）一律 rag（现状默认）。 */
+export function sanitizeWorkflow(value: unknown): StoryWorkflow {
+  return value === 'dossier' ? 'dossier' : 'rag'
+}
 
 /** 房间成员角色（shared 单一来源别名）。 */
 export type MemberRole = RoomMemberRole
@@ -47,6 +52,8 @@ export interface RoomSnapshot {
   scene: string | null
   ending: unknown | null
   turnWindowMs: number
+  /** 房间知识 workflow（实验分支双轨；缺省 rag=现状）。 */
+  workflow?: StoryWorkflow
   /** KP 记忆条目（ADR-0002 上下文收口，服务端持有）。 */
   kpMemory?: string[]
   /** 长期摘要（ADR-0002 上下文收口，服务端持有）。 */
@@ -60,6 +67,7 @@ interface RoomOptions {
   ownerName: string
   storyId?: string | null
   turnWindowMs?: number
+  workflow?: StoryWorkflow
   restore?: RoomSnapshot | null
 }
 
@@ -91,6 +99,8 @@ export class RoomService {
   private scene: string | null = null
   private ending: unknown = null
   private turnWindowMs: number
+  /** 房间知识 workflow（dossier 房 = 档案静态注入 + 查证工具）。 */
+  private workflow: StoryWorkflow
   /** KP 记忆条目（服务端持有，ADR-0002）。 */
   private kpMemory: string[] = []
   /** 长期摘要（服务端持有，ADR-0002）。 */
@@ -120,6 +130,7 @@ export class RoomService {
     this.ownerName = opts.ownerName
     this.storyId = opts.storyId ?? null
     this.turnWindowMs = opts.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
+    this.workflow = opts.workflow ?? 'rag'
     if (opts.restore) {
       this.phase = opts.restore.phase ?? 'lobby'
       this.storyId = opts.restore.storyId ?? null
@@ -130,6 +141,7 @@ export class RoomService {
       this.ending = opts.restore.ending ?? null
       this.seq = typeof opts.restore.seq === 'number' ? opts.restore.seq : 0
       this.turnWindowMs = opts.restore.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
+      this.workflow = opts.restore.workflow === 'dossier' ? 'dossier' : 'rag'
       this.kpMemory = Array.isArray(opts.restore.kpMemory) ? opts.restore.kpMemory : []
       this.longTermSummary = typeof opts.restore.longTermSummary === 'string' ? opts.restore.longTermSummary : ''
     }
@@ -142,6 +154,7 @@ export class RoomService {
   getPhase(): RoomPhase { return this.phase }
   getSeq(): number { return this.seq }
   getStoryId(): string | null { return this.storyId }
+  getWorkflow(): StoryWorkflow { return this.workflow }
   getScene(): string | null { return this.scene }
   getMessages(): readonly Message[] { return this.messages }
   getCharacters(): ReadonlyMap<string, COCCharacterSheet> { return this.characters }
@@ -161,6 +174,7 @@ export class RoomService {
       scene: this.scene,
       ending: this.ending,
       turnWindowMs: this.turnWindowMs,
+      workflow: this.workflow === 'dossier' ? 'dossier' : 'rag',
       kpMemory: this.kpMemory,
       longTermSummary: this.longTermSummary,
       updatedAt: Date.now(),
@@ -396,16 +410,23 @@ export class RoomService {
       // 上下文注入服务端收口（ADR-0002）：RAG + 记忆 + 近窗对话在本侧组装；
       // 历史不含本批（本批以合并 user 消息收尾），角色组随状态注入 system。
       const historyEnd = Math.max(0, this.messages.length - batch.length)
-      const [ragContext, storyName] = await Promise.all([this.fetchRagContext(merged), this.fetchStoryName()])
+      // 知识注入按 workflow 分派：rag = 玩家消息当 query 检索；dossier = 静态场景块
+      const [knowledge, storyName] = await Promise.all([
+        this.workflow === 'dossier' ? this.fetchKnowledge() : this.fetchRagContext(merged).then((ragContext) => ({ ragContext, sceneBlock: '' })),
+        this.fetchStoryName(),
+      ])
+      const ragContext = knowledge.ragContext
+      const sceneBlock = knowledge.sceneBlock
       const chatMessages = buildRoomTurnMessages(
         this.promptInput(storyName, this.messages.slice(0, historyEnd)),
         ragContext,
         merged,
+        { workflow: this.workflow, sceneBlock },
       )
       await this.runKpTurnForRoom(
         this.ownerId,
         chatMessages,
-        this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
+        this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined, workflow: this.workflow } : null,
         activeCharacterId,
         () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
         allowedCharacterIds,
@@ -510,7 +531,7 @@ export class RoomService {
 
   /* ═══════════════ 上下文注入与记忆（ADR-0002，服务端收口） ═══════════════ */
 
-  /** RAG 检索上下文（失败回退 ''——回合不因检索中断）。 */
+  /** RAG 检索上下文（失败回退 ''——回合不因检索中断）。rag workflow 专用。 */
   private async fetchRagContext(query: string): Promise<string> {
     if (!this.storyId) return ''
     try {
@@ -522,10 +543,43 @@ export class RoomService {
     }
   }
 
-  /** 剧本名（rag 索引清单；失败回退 ''）。 */
+  /** dossier workflow：按当前场景取档案静态块 + 场景清单（sceneId/当前场景名回填）。 */
+  private async fetchDossierContext(): Promise<{ block: string; currentSceneId?: string }> {
+    if (!this.storyId) return { block: '' }
+    try {
+      const { loadDossier, buildSceneBlock, listScenes } = await import('../rag/dossier/storyDossierService.js')
+      const dossier = await loadDossier(this.ownerId, this.storyId)
+      if (!dossier) return { block: '' }
+      const scenes = listScenes(dossier)
+      // 当前场景名（房间 scene 字段可能未设/未匹配档案）→ 档案场景 id
+      const currentSceneId = scenes.find((s) => s.name === this.scene)?.id ?? (scenes[0]?.id ?? undefined)
+      const sceneName = scenes.find((s) => s.id === currentSceneId)?.name ?? this.scene ?? undefined
+      const block = buildSceneBlock(dossier, currentSceneId || '')
+      return { block, currentSceneId: sceneName }
+    } catch {
+      return { block: '' }
+    }
+  }
+
+  /** 房间知识注入（workflow 分派）：rag → 检索上下文；dossier → 静态场景块 + 场景 id。 */
+  private async fetchKnowledge(): Promise<{ ragContext: string; sceneBlock: string; sceneName?: string }> {
+    if (!this.storyId) return { ragContext: '', sceneBlock: '' }
+    if (this.workflow === 'dossier') {
+      const d = await this.fetchDossierContext()
+      return { ragContext: '', sceneBlock: d.block, sceneName: d.currentSceneId }
+    }
+    return { ragContext: await this.fetchRagContext(OPENING_RAG_QUERY), sceneBlock: '' }
+  }
+
+  /** 剧本名（rag 索引清单 / dossier 档案；失败回退 ''）。 */
   private async fetchStoryName(): Promise<string> {
     if (!this.storyId) return ''
     try {
+      if (this.workflow === 'dossier') {
+        const { loadDossier } = await import('../rag/dossier/storyDossierService.js')
+        const dossier = await loadDossier(this.ownerId, this.storyId)
+        if (dossier?.storyName) return dossier.storyName
+      }
       const { listStories } = await import('./ragService.js')
       return listStories(this.ownerId).find((s) => s.storyId === this.storyId)?.name ?? ''
     } catch {
@@ -598,14 +652,21 @@ export class RoomService {
    */
   private async runOpeningTurn(): Promise<void> {
     try {
-      const [ragContext, storyName] = await Promise.all([this.fetchRagContext(OPENING_RAG_QUERY), this.fetchStoryName()])
-      const chatMessages = buildRoomOpeningMessages(this.promptInput(storyName, this.messages), ragContext)
+      const [knowledge, storyName] = await Promise.all([
+        this.workflow === 'dossier' ? this.fetchKnowledge() : this.fetchRagContext(OPENING_RAG_QUERY).then((ragContext) => ({ ragContext, sceneBlock: '' })),
+        this.fetchStoryName(),
+      ])
+      const ragContext = knowledge.ragContext
+      const chatMessages = buildRoomOpeningMessages(this.promptInput(storyName, this.messages), ragContext, {
+        workflow: this.workflow,
+        sceneBlock: knowledge.sceneBlock,
+      })
       const firstCharacterId = [...this.characters.keys()][0] ?? null
       await this.enqueue(() =>
         this.runKpTurnForRoom(
           this.ownerId,
           chatMessages,
-          this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined } : null,
+          this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined, workflow: this.workflow } : null,
           firstCharacterId,
           () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
           undefined,
@@ -743,7 +804,8 @@ function memberRowToInfo(m: roomStorage.RoomMemberRow): RoomMember {
   }
 }
 
-/** 房主已索引的剧本 id 集（开局门闩用；防 KP 无原文静默空跑，ADR-0005）。 */
+/** 房主已索引的剧本 id 集（开局门闩用；防 KP 无原文静默空跑，ADR-0005）。
+ * rag workflow 门闩：已有 embedding 索引即可。 */
 function listIndexedStoriesForOwner(ownerId: number): string[] {
   try {
     return listIndexedStories(ownerId).map((s) => s.storyId)
@@ -752,12 +814,41 @@ function listIndexedStoriesForOwner(ownerId: number): string[] {
   }
 }
 
+/** 房主已生成 dossiers 的剧本 id 集（dossier workflow 门闩）。 */
+async function listDossiersForOwner(ownerId: number): Promise<string[]> {
+  try {
+    const { listDossiers } = await import('../rag/dossier/storyDossierService.js')
+    return (await listDossiers(ownerId)).map((d) => d.scriptId)
+  } catch {
+    return []
+  }
+}
+
+/** 房间行内 workflow（lobby 期由 createRoom 写入 state；列无 workflow 列，走 state JSON）。 */
+function roomWorkflowFromRow(room: { state?: string | null }): StoryWorkflow {
+  if (!room.state) return 'rag'
+  try {
+    const s = JSON.parse(room.state) as { workflow?: unknown }
+    return sanitizeWorkflow(s.workflow)
+  } catch {
+    return 'rag'
+  }
+}
+
 /** POST /api/rooms —— 创建房间（只持久化，不激活内存实例：懒激活，ADR-0001）。 */
-export function createRoom(userId: number, storyId: string | null): { roomId: string; inviteCode: string } {
+export function createRoom(
+  userId: number,
+  storyId: string | null,
+  opts: { workflow?: unknown } = {},
+): { roomId: string; inviteCode: string } {
   const roomId = `room_${crypto.randomUUID().slice(0, 8)}`
   const inviteCode = ensureUniqueInviteCode()
   roomStorage.insertRoom(roomId, userId, inviteCode, storyId)
   roomStorage.insertMember(roomId, userId, 'owner')
+  // lobby 期即定 workflow（开局门闩/实例物化按它校验），存 state。
+  if (sanitizeWorkflow(opts.workflow) === 'dossier') {
+    roomStorage.updateRoomStateSettings(roomId, JSON.stringify({ workflow: 'dossier' }))
+  }
   return { roomId, inviteCode }
 }
 
@@ -771,14 +862,16 @@ export function listSoloRoomsForUser(userId: number): roomStorage.SoloRoomListIt
   return roomStorage.listSoloRoomsForUser(userId)
 }
 
-/** POST /api/rooms/solo —— 单人开局一体领域动作（ADR-0002）：落角色卡 + 建 solo 房 + 绑卡 + start。 */
+/** POST /api/rooms/solo —— 单人开局一体领域动作（ADR-0002）：落角色卡 + 建 solo 房 + 绑卡 + start。
+ *  可选 workflow（实验分支双轨；缺省 rag）。 */
 export function createSoloRoom(
   userId: number,
-  input: { storyId: unknown; name: unknown; sheet: unknown },
+  input: { storyId: unknown; name: unknown; sheet: unknown; workflow?: unknown },
 ): { ok: true; roomId: string; inviteCode: string; characterId: string } | { ok: false; reason: 'bad-request'; message: string } {
   const storyId = typeof input?.storyId === 'string' ? input.storyId.trim() : ''
   const name = typeof input?.name === 'string' ? input.name.trim() : ''
   const sheet = input?.sheet as COCCharacterSheet | undefined
+  const workflow = sanitizeWorkflow(input?.workflow)
   if (!storyId) return { ok: false, reason: 'bad-request', message: 'storyId required' }
   if (!name) return { ok: false, reason: 'bad-request', message: 'name required' }
   if (!sheet || typeof sheet !== 'object' || !sheet.derived) {
@@ -796,9 +889,10 @@ export function createSoloRoom(
     roomStorage.insertMember(roomId, userId, 'owner')
     roomStorage.bindMemberCharacter(roomId, userId, characterId)
     // 出生即 playing（列权威）；turnWindowMs=0 进 state（ADR-0002：solo 恒严格排队，restore 时实例取 0）。
+    // workflow（实验分支）一并进 state——实例物化时经 snapshot restore 读到。
     // 懒激活保持：REST 建房只持久化，不激活实例。
     roomStorage.updateRoomStart(roomId, storyId)
-    roomStorage.updateRoomStateSettings(roomId, JSON.stringify({ turnWindowMs: 0 }))
+    roomStorage.updateRoomStateSettings(roomId, JSON.stringify(workflow === 'dossier' ? { turnWindowMs: 0, workflow: 'dossier' } : { turnWindowMs: 0 }))
     db.exec('COMMIT')
     return { ok: true, roomId, inviteCode, characterId }
   } catch (err) {
@@ -856,22 +950,31 @@ export function getRoomDetail(
 }
 
 /** POST /api/rooms/:id/start —— 房主开始游戏。开局门闩（ADR-0005）：
- *  房主已选且**已索引**剧本 + 每名成员已绑定角色卡 → 否则 409 带缺项提示。
+ *  房主已选剧本 + 每名成员已绑定角色卡 → 否则 409 带缺项提示。
+ *  剧本门闩按 workflow：rag 房须已索引（embedding）；dossier 房须已生成档案。
  *  就绪是软信号，开局不等待全员就绪。门闩通过 → 写库 + 活跃实例即时同步 + opening。 */
-export function startRoom(
+export async function startRoom(
   userId: number,
   roomId: string,
   storyId: string,
-): { ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string } {
+): Promise<{ ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string }> {
   const g = governanceGate(userId, roomId)
   if (!g.ok) return g
   if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
   // 门闩 1：已选剧本（storyId 必填——房间创建时允许为空，开局前必须选定）
   if (!storyId) return { ok: false, reason: 'conflict', message: '请先在等待室选定剧本' }
-  // 门闩 2：剧本已索引（防 KP 无原文静默空跑——未索引故事不能开局）
-  const indexed = listIndexedStoriesForOwner(g.room.owner_id)
-  if (!indexed.includes(storyId)) {
-    return { ok: false, reason: 'conflict', message: '该剧本尚未索引，请先在「我的故事」中完成索引' }
+  // 门闩 2：剧本可用（按 workflow：rag=已索引 / dossier=已生成档案）
+  const workflow = roomWorkflowFromRow(g.room)
+  if (workflow === 'dossier') {
+    const dossiers = await listDossiersForOwner(g.room.owner_id)
+    if (!dossiers.includes(storyId)) {
+      return { ok: false, reason: 'conflict', message: '该剧本尚未生成档案，请先在「我的故事」中为剧本生成档案' }
+    }
+  } else {
+    const indexed = listIndexedStoriesForOwner(g.room.owner_id)
+    if (!indexed.includes(storyId)) {
+      return { ok: false, reason: 'conflict', message: '该剧本尚未索引，请先在「我的故事」中完成索引' }
+    }
   }
   // 门闩 3：每名成员已绑定角色卡（不等待就绪——软信号）
   const members = roomStorage.listMembers(roomId)

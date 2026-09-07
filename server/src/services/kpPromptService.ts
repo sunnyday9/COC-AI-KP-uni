@@ -17,13 +17,18 @@ const CONVERSATION_WINDOW = 18
 /** opening 回合的 RAG 检索词（与旧客户端 requestOpening 同词）。 */
 export const OPENING_RAG_QUERY = '开场 故事背景 场景描述 第一幕'
 
+/** 房间知识 workflow（实验分支 feature/kp-dossier-workflow 双轨开关）：
+ * 'rag' = 现状 embedding 检索（默认，行为逐字节不变）；
+ * 'dossier' = LLM 预生成剧本档案 + 按当前场景静态注入。 */
+export type StoryWorkflow = 'rag' | 'dossier'
+
 /** opening 回合收尾的固定 user 消息（buildRoomOpeningMessages 产出；wire 采样
  *  initialMessages 的最后一条即它——导出器（training 工作区）据此识别开局样本）。 */
 export const OPENING_USER_REQUEST = '请开始游戏，向调查员做开场白。'
 
 export const BASE_INSTRUCTIONS = [
   '你是克苏鲁的呼唤第七版（COC 7th）的守密人（Keeper/KP）。',
-  '你的所有故事知识来源于「故事情报」中检索到的原文片段。请严格基于这些片段进行叙事，不要凭空编造场景或 NPC。',
+  '{KNOWLEDGE_SOURCE_INSTRUCTION}',
   '保持洛夫克拉夫特式的恐怖氛围。',
   '',
   '【信息披露与防剧透】',
@@ -125,6 +130,37 @@ export const BASE_INSTRUCTIONS = [
   '- 多人时：分头行动只向当前场景调查员叙述；任何玩家不得声明其他调查员的行为。',
 ].join('\n')
 
+/**
+ * Workflow-specific instruction openers (dossier branch of BASE_INSTRUCTIONS).
+ * rag keeps the historical wording (逐字节不变); dossier tells the KP that
+ * story knowledge lives in the static 当前场景档案 block + the on-demand
+ * lookup tools (scene_list / scene_dossier / lexical_search).
+ */
+export const WORKFLOW_KNOWLEDGE_SOURCE: Record<StoryWorkflow, string> = {
+  rag: '你的所有故事知识来源于「故事情报」中检索到的原文片段。请严格基于这些片段进行叙事，不要凭空编造场景或 NPC。',
+  dossier:
+    '你的故事知识来自 system 中的「当前场景档案」（当前所在场景的权威描述、在场 NPC、可获得的线索）。' +
+    '叙述当前场景时必须严格依据这份档案。当需要确认其他场景、NPC 或线索的细节时，用 scene_list / scene_dossier / lexical_search 工具查证后再叙事；' +
+    '若查证不到，不要编造场景或 NPC。',
+}
+
+/** Replace the knowledge-source line in BASE_INSTRUCTIONS with the workflow variant. */
+export function baseInstructionsFor(workflow: StoryWorkflow): string {
+  return workflow === 'rag' ? BASE_INSTRUCTIONS : BASE_INSTRUCTIONS.replace('{KNOWLEDGE_SOURCE_INSTRUCTION}', WORKFLOW_KNOWLEDGE_SOURCE.dossier)
+}
+
+/** Rendered knowledge block: dossier → current-scene static block; rag → retrieved context. */
+export function buildKnowledgeBlock(workflow: StoryWorkflow, ragContext: string, sceneBlock: string): string {
+  if (workflow === 'dossier') {
+    if (sceneBlock) return `\n## 当前场景档案\n${sceneBlock}`
+    // Dossier room without a matching scene yet (e.g. opening before any
+    // transition): fall back to retrieved context so the KP still has a
+    // factual anchor.
+    return ragContext ? `\n## 故事情报\n${ragContext}` : ''
+  }
+  return ragContext ? `\n## 故事情报\n${ragContext}` : ''
+}
+
 /** 单张角色卡 → 调查员上下文块（与旧客户端 buildCharacterContext 的角色部分同语义）。 */
 export function buildCharacterBlock(sheet: COCCharacterSheet): string {
   const parts: string[] = []
@@ -202,11 +238,12 @@ export interface RoomPromptInput {
 
 export type RoomChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
-function buildSystemBody(input: RoomPromptInput, ragContext: string): string {
+function buildSystemBody(input: RoomPromptInput, ragContext: string, opts: { workflow?: StoryWorkflow; sceneBlock?: string } = {}): string {
+  const workflow: StoryWorkflow = opts.workflow ?? 'rag'
   const memoryBlock = buildMemoryBlock(input.kpMemory)
   const longTermBlock = input.longTermSummary ? `\n## 长期记忆（本局至今）\n${input.longTermSummary}\n` : ''
   const recentTurnsBlock = buildRecentTurnsBlock(input.messages)
-  const ragBlock = ragContext ? `\n## 故事情报\n${ragContext}` : ''
+  const knowledgeBlock = buildKnowledgeBlock(workflow, ragContext, opts.sceneBlock ?? '')
   const stateParts: string[] = []
   if (input.storyName) stateParts.push(`## 故事: ${input.storyName}`)
   if (input.scene) stateParts.push(`当前场景: ${input.scene}`)
@@ -217,7 +254,7 @@ function buildSystemBody(input: RoomPromptInput, ragContext: string): string {
   for (const sheet of input.characters) {
     stateParts.push(buildCharacterBlock(sheet))
   }
-  return `${BASE_INSTRUCTIONS}${longTermBlock}${memoryBlock}${recentTurnsBlock}${ragBlock}\n\n## 当前状态\n${stateParts.join('\n')}`
+  return `${baseInstructionsFor(workflow)}${longTermBlock}${memoryBlock}${recentTurnsBlock}${knowledgeBlock}\n\n## 当前状态\n${stateParts.join('\n')}`
 }
 
 function conversationMessages(input: RoomPromptInput): RoomChatMessage[] {
@@ -231,20 +268,34 @@ function conversationMessages(input: RoomPromptInput): RoomChatMessage[] {
 }
 
 /** 玩家回合：[system, ...近窗对话(不含本批), 合并后的本批行动]。
- * input.messages 须为**不含本批消息**的历史（调用方在 flushTurn 处切片），本批行动以合并 user 消息收尾（D4）。 */
-export function buildRoomTurnMessages(input: RoomPromptInput, ragContext: string, batchUserContent: string): RoomChatMessage[] {
+ * input.messages 须为**不含本批消息**的历史（调用方在 flushTurn 处切片），本批行动以合并 user 消息收尾（D4）。
+ * opts.workflow/sceneBlock: dossier 分支（rag 缺省 → 现状逐字节不变）。 */
+export function buildRoomTurnMessages(
+  input: RoomPromptInput,
+  ragContext: string,
+  batchUserContent: string,
+  opts: { workflow?: StoryWorkflow; sceneBlock?: string } = {},
+): RoomChatMessage[] {
   return [
-    { role: 'system', content: buildSystemBody(input, ragContext) },
+    { role: 'system', content: buildSystemBody(input, ragContext, opts) },
     ...conversationMessages(input),
     { role: 'user', content: batchUserContent },
   ]
 }
 
 /** opening 回合：[system(含开场指令), user(开场白请求)]。 */
-export function buildRoomOpeningMessages(input: RoomPromptInput, ragContext: string): RoomChatMessage[] {
+export function buildRoomOpeningMessages(
+  input: RoomPromptInput,
+  ragContext: string,
+  opts: { workflow?: StoryWorkflow; sceneBlock?: string } = {},
+): RoomChatMessage[] {
+  const workflow: StoryWorkflow = opts.workflow ?? 'rag'
   const system: RoomChatMessage = {
     role: 'system',
-    content: `${buildSystemBody(input, ragContext)}\n\n请根据故事情报，向调查员做开场白：1）先交代背景（时间、地点、开场情境）；2）建立基调与恐怖氛围；3）提供最初的线索或可行动的调查方向（让调查员无法忽视、立刻有可做的事）。`,
+    content:
+      `${buildSystemBody(input, ragContext, opts)}\n\n请根据` +
+      (workflow === 'dossier' ? '当前场景档案' : '故事情报') +
+      '，向调查员做开场白：1）先交代背景（时间、地点、开场情境）；2）建立基调与恐怖氛围；3）提供最初的线索或可行动的调查方向（让调查员无法忽视、立刻有可做的事）。',
   }
   return [system, { role: 'user', content: OPENING_USER_REQUEST }]
 }

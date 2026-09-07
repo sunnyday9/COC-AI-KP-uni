@@ -108,12 +108,38 @@ export function parseScriptContent(content: string): ScriptContext | null {
   return { meta: obj.meta as ScriptContext['meta'], scenes, clues, npcs }
 }
 
-/** Load the structured script for a user+scriptId; null when unavailable / not a script JSON. */
+/**
+ * Load the structured script for a user+scriptId; null when unavailable / not a script JSON.
+ *
+ * Two sources (experiment branch feature/kp-dossier-workflow):
+ *  1. A generated dossier (`rag/dossier/storyDossierService`), which is the
+ *     structured digest of ANY story format (PDF/txt/md…) produced by an LLM.
+ *     This makes clue/scene gating work for dossier rooms on arbitrary files.
+ *  2. Fallback: a hand-authored COC script JSON (legacy path) — behavior
+ *     unchanged when no dossier exists.
+ * Dynamic import keeps the dossier module off the hot graph path when unused.
+ */
 export async function loadScriptContext(userId: number, scriptId: string): Promise<ScriptContext | null> {
   if (!scriptId || !userId) return null
   const key = cacheKey(userId, scriptId)
   const hit = cache.get(key)
   if (hit && Date.now() - hit.loadedAt < CACHE_TTL_MS) return hit.ctx
+
+  // Source 1: generated dossier (dossier workflow).
+  try {
+    const { loadDossier } = await import('../rag/dossier/storyDossierService.js')
+    const dossier = await loadDossier(userId, scriptId)
+    if (dossier) {
+      const { toScriptContext } = await import('../rag/dossier/schema.js')
+      const ctx = toScriptContext(dossier)
+      if (ctx) cache.set(key, { loadedAt: Date.now(), ctx })
+      return ctx
+    }
+  } catch {
+    // dossier unavailable → fall through to legacy script JSON
+  }
+
+  // Source 2: hand-authored COC script JSON (legacy).
   let raw: { content: string } | null = null
   try {
     raw = await readStory(userId, scriptId)

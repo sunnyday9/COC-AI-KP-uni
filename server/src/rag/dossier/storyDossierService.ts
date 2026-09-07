@@ -151,7 +151,6 @@ export async function generateDossier(
           { role: 'system', content: DOSSIER_SYSTEM_PROMPT },
           { role: 'user', content: prompt },
         ],
-        stream: false,
         temperature: 0,
         maxTokens: 4096,
         model,
