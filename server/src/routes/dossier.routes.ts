@@ -13,7 +13,7 @@ import { Router } from 'express'
 import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError } from '../utils/errors.js'
-import { assertSafeId } from '../utils/pathSafety.js'
+import { assertId } from '../utils/fileNames.js'
 import * as dossierService from '../rag/dossier/storyDossierService.js'
 
 const router = Router()
@@ -27,7 +27,7 @@ router.post('/:scriptId/generate', (req: AuthRequest, res) => {
   const userId = req.userId as number
   let scriptId: string
   try {
-    scriptId = assertSafeId(String(req.params.scriptId ?? ''), 'scriptId')
+    scriptId = assertId(String(req.params.scriptId ?? ''), 'scriptId')
   } catch (err) {
     sendError(res, err)
     return
