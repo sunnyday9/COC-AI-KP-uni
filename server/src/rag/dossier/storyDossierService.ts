@@ -36,6 +36,8 @@ import {
 import {
   parseDossierJson,
   sanitizeScriptId,
+  resolveRefs,
+  assessDossier,
   type StoryDossier,
 } from './schema.js'
 
@@ -52,6 +54,12 @@ export interface GenerateResult {
   scenes?: number
   clues?: number
   npcs?: number
+  transitions?: number
+  events?: number
+  /** 结构质量告警（不阻断；见 assessDossier）。 */
+  warnings?: string[]
+  /** 档案 sceneText 覆盖剧本原文比例（%）。 */
+  coveragePct?: number
   error?: string
 }
 
@@ -138,6 +146,7 @@ export async function generateDossier(
   const seenClueDescriptions: string[] = []
   const parsedParts: StoryDossier[] = []
   let lastError = ''
+  let batchFailures = 0
 
   for (let bi = 0; bi < totalBatches; bi++) {
     const prompt = buildDossierPrompt({
@@ -163,7 +172,7 @@ export async function generateDossier(
         })
         parsed = parseDossierJson(stripCodeFence(res?.content || ''))
       }
-      if (parsed && parsed.scenes.length + parsed.clues.length + parsed.npcs.length > 0) {
+      if (parsed && parsed.scenes.length + parsed.clues.length + parsed.npcs.length + (parsed.transitions?.length ?? 0) + (parsed.events?.length ?? 0) > 0) {
         parsedParts.push({
           ...parsed,
           scriptId: parsed.scriptId || scriptId,
@@ -175,9 +184,11 @@ export async function generateDossier(
         for (const c of parsed.clues) if (c.description && !seenClueDescriptions.includes(c.description)) seenClueDescriptions.push(c.description)
       } else {
         lastError = `batch ${bi + 1}/${totalBatches}: 解析结果为空`
+        batchFailures++
       }
     } catch (e) {
       lastError = `batch ${bi + 1}/${totalBatches}: ${e instanceof Error ? e.message : String(e)}`
+      batchFailures++
     }
   }
 
@@ -186,12 +197,19 @@ export async function generateDossier(
   }
 
   const merged = mergeDossierParts(parsedParts)
+  const resolved = resolveRefs(merged)
   const dossier: StoryDossier = {
-    ...merged,
+    ...resolved,
     scriptId,
-    storyName: merged.storyName || raw.name || scriptId,
+    storyName: resolved.storyName || raw.name || scriptId,
     generatedAt: Date.now(),
-    generatedByModel: merged.generatedByModel || model,
+    generatedByModel: resolved.generatedByModel || model,
+  }
+
+  const quality = assessDossier(dossier, storyText.length)
+  const warnings: string[] = [...quality.warnings]
+  if (batchFailures > 0 && parsedParts.length < totalBatches) {
+    warnings.push(`有 ${batchFailures} 个分节解析失败，档案只覆盖前 ${parsedParts.length}/${totalBatches} 节——内容不完整`)
   }
 
   await persist(userId, dossier)
@@ -201,6 +219,10 @@ export async function generateDossier(
     scenes: dossier.scenes.length,
     clues: dossier.clues.length,
     npcs: dossier.npcs.length,
+    transitions: dossier.transitions?.length ?? 0,
+    events: dossier.events?.length ?? 0,
+    warnings: warnings.length ? warnings : undefined,
+    coveragePct: quality.coveragePct,
   }
 }
 
