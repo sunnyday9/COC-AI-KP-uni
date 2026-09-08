@@ -52,8 +52,10 @@ export interface ChatResult {
  * GRAPH_TIMEOUT_MS) shared by up to 3 serial calls. Streaming calls are NOT
  * time-limited: chunk activity is the liveness signal and long narratives
  * must not be killed by a fixed clock.
+ * LLM_TIMEOUT_MS env overrides the default (slow reasoning models; harness
+ * real-LLM A/B runs set 240s — 默认 60s 对测试/常规路径不变).
  */
-export const LLM_REQUEST_TIMEOUT_MS = 60_000
+export const LLM_REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) >= 5_000 ? Number(process.env.LLM_TIMEOUT_MS) : 60_000
 
 /** Race a promise against the request timeout (exported for tests). */
 export async function withRequestTimeout<T>(p: Promise<T>, label: string): Promise<T> {

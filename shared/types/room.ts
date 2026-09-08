@@ -41,6 +41,13 @@ export interface RoomEventPayloadMap {
   dice_result: RoomDiceResultPayload
   room_meta: RoomMetaPayload
   trace: RoomTracePayload
+  /** KP 回复流式增量（服务端 KP_CHUNK_STREAM=1 时广播；客户端暂不消费，整段 message_appended 为准）。 */
+  kp_chunk: RoomKpChunkPayload
+}
+
+/** KP 回复流式增量 payload（首帧到达时间 = TTFT 测量锚点）。 */
+export interface RoomKpChunkPayload {
+  content: string
 }
 
 /** 房间事件类型（从 payload map 派生）。 */

@@ -12,6 +12,7 @@
  */
 import { invokeKPAgent } from '../agent/kpGraph.js'
 import { buildInvokeLLM, normalizeMessages, GRAPH_TIMEOUT_MS, getSharedGraph } from './kpAgentService.js'
+import { isKpChunkStreamEnabled } from '../config.js'
 import { getAiConfig } from './settingsService.js'
 import { processToolCalls } from '../rule-engine/orchestrator.js'
 import { buildToolContext } from '../rule-engine/toolContextFactory.js'
@@ -200,7 +201,9 @@ export async function runKpTurn(
     const genStart = Date.now()
     let r: Awaited<ReturnType<typeof invokeKPAgent>>
     try {
-      r = await invokeKPAgent(msgs, invokeLLM, body?.storyContext ?? null, userId, getSharedGraph(invokeLLM, userId, false))
+      // chunk 流开启时禁用图缓存：缓存 key 取自 String(invokeLLM)，不含 onChunk 回调身份——
+      // 跨回合命中会带走上一回合（跨房间同理）的叙事流回调，导致 chunk 广播错房/漏播。
+      r = await invokeKPAgent(msgs, invokeLLM, body?.storyContext ?? null, userId, getSharedGraph(invokeLLM, userId, isKpChunkStreamEnabled()))
     } catch (err) {
       logger.warn('kp:turn graph iteration failed', { userId, loop, error: errorMessage(err) })
       graphFailed = true

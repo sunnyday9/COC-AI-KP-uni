@@ -11,9 +11,15 @@ import type { ChatMessage, ChatTool, LLMCallParams, LLMResult, ToolCallResult } 
 
 export async function openaiChatAdapter(config: AIProviderConfig, params: LLMCallParams): Promise<LLMResult> {
   const { messages, tools, onChunk, temperature, maxTokens, stream } = params
+  // 可选附加请求头：opencode.ai/zen/go 端点要求 x-opencode-session（非预注册会话 id）。
+  // 值只从环境变量读（OPENCODE_SESSION），避免凭据/会话 id 落入源码或存储。
+  const defaultHeaders: Record<string, string> = {}
+  const ocSession = process.env.OPENCODE_SESSION
+  if (ocSession) defaultHeaders['x-opencode-session'] = ocSession
   const client = new OpenAI({
     baseURL: config.baseUrl,
     apiKey: config.apiKey || 'not-needed',
+    defaultHeaders,
   })
 
   const opts: {

@@ -59,3 +59,6 @@ e2e/*.utf8.log
 
 # Local plans (ZCode)
 .zcode/
+# A/B 真实对局产物（本地缓存/报告数据）
+training/eval/reports/
+training/eval/dossier-cache/

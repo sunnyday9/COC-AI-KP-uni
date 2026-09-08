@@ -148,16 +148,21 @@ export async function generateDossier(
       seenClueDescriptions,
     })
     try {
-      const res = await chatForRag(userId, {
-        messages: [
-          { role: 'system', content: DOSSIER_SYSTEM_PROMPT },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0,
-        maxTokens: 4096,
-        model,
-      })
-      const parsed = parseDossierJson(stripCodeFence(res?.content || ''))
+      // 推理模型偶发把 output budget 耗在 reasoning 上导致 JSON 截断/解析空 → 重试最多 3 次
+      let parsed = null
+      let res = null
+      for (let attempt = 0; attempt < 4 && !parsed; attempt++) {
+        res = await chatForRag(userId, {
+          messages: [
+            { role: 'system', content: DOSSIER_SYSTEM_PROMPT },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0,
+          maxTokens: 8192,
+          model,
+        })
+        parsed = parseDossierJson(stripCodeFence(res?.content || ''))
+      }
       if (parsed && parsed.scenes.length + parsed.clues.length + parsed.npcs.length > 0) {
         parsedParts.push({
           ...parsed,

@@ -99,3 +99,12 @@ export function isMockAiMode(): boolean {
 export function isKpWireSamplingEnabled(): boolean {
   return process.env.KP_WIRE_SAMPLING !== '0'
 }
+
+/**
+ * KP 回合流式 chunk 广播门控（实验：dossier-workflow 真实 A/B 的 TTFT 测量）。
+ * 开启时 RoomService 把 LLM 内容增量作为 `kp_chunk` 房间事件广播（客户端未消费，
+ * 整段 message_appended 仍为准）；默认关闭，既有旅程/测试帧序列零变化。
+ */
+export function isKpChunkStreamEnabled(): boolean {
+  return process.env.KP_CHUNK_STREAM === '1'
+}

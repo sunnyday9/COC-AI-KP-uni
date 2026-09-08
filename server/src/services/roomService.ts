@@ -13,6 +13,7 @@
 import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
+import { isKpChunkStreamEnabled } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, OPENING_RAG_QUERY, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 import { listStories as listIndexedStories } from './ragService.js'
 import type {
@@ -428,7 +429,10 @@ export class RoomService {
         chatMessages,
         this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined, workflow: this.workflow } : null,
         activeCharacterId,
-        () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
+        (chunk) => {
+          // 实验（KP_CHUNK_STREAM=1）：KP 回复流式增量帧（TTFT 测量；客户端未消费，整段 message_appended 仍为准）
+          if (isKpChunkStreamEnabled() && chunk) this.emit({ type: 'kp_chunk', payload: { content: chunk } })
+        },
         allowedCharacterIds,
         ragContext,
       )
@@ -571,8 +575,10 @@ export class RoomService {
     try {
       const { context } = await import('./ragService.js')
       const res = await context(this.ownerId, { query, scriptId: this.storyId, sceneId: this.scene ?? undefined, topK: 8 })
+      if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch] room=${this.roomId} chars=${(res?.context ?? '').length}`)
       return res?.context || ''
-    } catch {
+    } catch (err) {
+      if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch-fail] room=${this.roomId} err=${err instanceof Error ? err.message : String(err)}`)
       return ''
     }
   }
@@ -702,7 +708,10 @@ export class RoomService {
           chatMessages,
           this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined, workflow: this.workflow } : null,
           firstCharacterId,
-          () => { /* 流式延后（spec Out of Scope）：KP 回复整段 message_appended */ },
+          (chunk) => {
+            // 实验（KP_CHUNK_STREAM=1）：同 flushTurn 的流式增量帧（TTFT 测量）
+            if (isKpChunkStreamEnabled() && chunk) this.emit({ type: 'kp_chunk', payload: { content: chunk } })
+          },
           undefined,
           ragContext,
         ),
