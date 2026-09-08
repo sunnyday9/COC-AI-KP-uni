@@ -77,7 +77,10 @@ async function callLLM(messages, maxTokens = 800) {
     signal: AbortSignal.timeout(240_000),
   })
   if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 200)}`)
-  return (await res.json()).choices?.[0]?.message?.content ?? ''
+  const content = (await res.json()).choices?.[0]?.message?.content ?? ''
+  // 推理模型偶发把 output budget 全耗在 reasoning → content 空：按失败重试
+  if (!content?.trim()) throw new Error('LLM empty content (reasoning consumed budget)')
+  return content
 }
 
 function parseJudgeJson(raw) {
@@ -88,13 +91,13 @@ function parseJudgeJson(raw) {
   try { return JSON.parse(s.slice(start, end + 1)) } catch { return null }
 }
 
-async function withRetry(fn, label) {
+async function withRetry(fn, label, attempts = 3) {
   let lastErr = ''
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try { return await fn() } catch (e) { lastErr = e.message || String(e) }
-    if (attempt === 0) { console.log(`  [retry] ${label}: ${lastErr}`); await sleep(3000) }
+    if (attempt < attempts - 1) { console.log(`  [retry] ${label} #${attempt + 1}: ${lastErr}`); await sleep(3000 * (attempt + 1)) }
   }
-  return { judgeError: `after retry: ${lastErr}` }
+  return { judgeError: `after ${attempts} attempts: ${lastErr}` }
 }
 
 /** 档案直答：档案 JSON（超长则压缩 sceneText）→ 答案。 */
@@ -121,7 +124,7 @@ async function answerFromDossier(dossier, q) {
   const raw = await withRetry(() => callLLM([
     { role: 'system', content: ANSWER_SYSTEM },
     { role: 'user', content: `【档案】\n${payload}\n\n【问题】${q}` },
-  ], 900), 'answer')
+  ], 1500), 'answer')
   return { raw, variant }
 }
 
@@ -134,13 +137,26 @@ async function judgeAnswer(storyTitle, probe, answer) {
     `【要点】${probe.ref}\n\n` +
     `【档案问答器回答】\n${String(answer ?? '（无回答）').slice(0, 1000)}\n\n` +
     `按 1-5 打忠实度分（5=要点全中且准确；3=大体正确但有含糊/细节偏离；1=答非所问、与依据矛盾、或档案缺该信息而未能回答）。` +
-    `fabrication=true 表示回答含剧本中不存在或被依据否定的内容。档案缺少该信息导致"档案中无此信息"式的如实回答时，打 1 分且 fabrication=false（这暴露的正是档案覆盖缺口）。` +
+    `fabrication=true 仅当回答与上述摘录直接冲突或明显超出剧本范围（编造 NPC/地点/真相）；摘录片段未覆盖、但可能属剧本其他部分的细节，不算 fabrication（可在 note 说明存疑）。` +
+    `档案缺少该信息导致"档案中无此信息"式的如实回答时，打 1 分且 fabrication=false（这暴露的正是档案覆盖缺口）。` +
     `只输出 JSON：{"score":1-5,"fabrication":true/false,"note":"≤60字"}`
-  const raw = await withRetry(() => callLLM([{ role: 'user', content: ask }], 2000), 'judge')
+  const raw = await withRetry(() => callLLM([{ role: 'user', content: ask }], 4000), 'judge', 3)
   if (raw && typeof raw === 'object' && raw.judgeError) return raw
   const j = parseJudgeJson(raw)
   if (j && j.score != null) return j
   return { judgeError: `unparseable judge output: ${String(raw ?? '').slice(0, 120)}` }
+}
+
+async function loadCachedDossier(key, probes, storyDir) {
+  // --skip-gen：直接复用 training/eval/dossier-cache/1/<sanitize(file)>.json（不重新生成）
+  const file = path.join(storyDir, probes[0].file ?? `${key}.pdf`)
+  const expected = path.join(CACHE_DIR, '1', `${sanitize(path.basename(file))}.json`)
+  try {
+    const dossier = JSON.parse(fs.readFileSync(expected, 'utf8'))
+    return { dossier, file, cachePath: expected }
+  } catch {
+    return { dossier: null, file, cachePath: expected }
+  }
 }
 
 async function main() {
@@ -203,30 +219,39 @@ async function main() {
     const file = path.join(STORY_DIR, probes[0].file ?? `${key}.pdf`)
     if (!fs.existsSync(file)) { console.log(`[skip-missing] ${key}: ${file}`); continue }
 
-    const fd = new FormData()
-    fd.append('file', new Blob([fs.readFileSync(file)], { type: 'application/octet-stream' }), path.basename(file))
-    const up = await fetch(`${API_BASE}/api/stories/upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd, signal: AbortSignal.timeout(180_000) })
-    const upData = await up.json()
-    const scriptId = upData.id ?? upData.scriptId
-    console.log(`\n=== ${key} === scriptId=${scriptId} probes=${probes.length}`)
-
-    // 生成 v2 档案
-    const genRes = await fetch(`${API_BASE}/api/dossier/${encodeURIComponent(scriptId)}/generate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: '{}',
-      signal: AbortSignal.timeout(7_200_000),
-    })
-    const gen = await genRes.json()
-    story.gen = { ...gen, ms: Date.now() - t0 }
-    console.log(`  [gen] ${JSON.stringify(gen)} (${Math.round((Date.now() - t0) / 1000)}s)`)
-    if (!gen?.ok) { story.error = gen?.error ?? 'gen failed'; console.log(`  [warn] ${key} dossier gen failed — 跳过问答`); continue }
-
-    // 读落盘档案（v2 JSON 全量）
-    const dossierPath = path.join(CACHE_DIR, String(userId ?? '1'), `${sanitize(scriptId)}.json`)
+    // --skip-gen：复用已缓存的档案（cache/1/<sanitize(file)>.json），只跑探针
     let dossier = null
-    for (let i = 0; i < 10 && !dossier; i++) {
-      try { dossier = JSON.parse(fs.readFileSync(dossierPath, 'utf8')) } catch { await sleep(2000) }
+    let gen = null
+    if (arg('skip-gen', '0') === '1') {
+      const cached = path.join(CACHE_DIR, '1', `${sanitize(path.basename(file))}.json`)
+      try { dossier = JSON.parse(fs.readFileSync(cached, 'utf8')); gen = { ok: true, reused: true, from: cached } } catch { /* fall through to gen */ }
     }
-    if (!dossier) { story.error = 'dossier file not found in cache'; console.log('  [warn] dossier cache miss'); continue }
+    if (!dossier) {
+      const fd = new FormData()
+      fd.append('file', new Blob([fs.readFileSync(file)], { type: 'application/octet-stream' }), path.basename(file))
+      const up = await fetch(`${API_BASE}/api/stories/upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd, signal: AbortSignal.timeout(180_000) })
+      const upData = await up.json()
+      const scriptId = upData.id ?? upData.scriptId
+      console.log(`\n=== ${key} === scriptId=${scriptId} probes=${probes.length}`)
+      // 生成 v2 档案
+      const genRes = await fetch(`${API_BASE}/api/dossier/${encodeURIComponent(scriptId)}/generate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: '{}',
+        signal: AbortSignal.timeout(7_200_000),
+      })
+      gen = await genRes.json()
+      story.gen = { ...gen, ms: Date.now() - t0 }
+      console.log(`  [gen] ${JSON.stringify(gen)} (${Math.round((Date.now() - t0) / 1000)}s)`)
+      if (!gen?.ok) { story.error = gen?.error ?? 'gen failed'; console.log(`  [warn] ${key} dossier gen failed — 跳过问答`); continue }
+      // 读落盘档案（v2 JSON 全量）
+      const dossierPath = path.join(CACHE_DIR, String(userId ?? '1'), `${sanitize(scriptId)}.json`)
+      for (let i = 0; i < 10 && !dossier; i++) {
+        try { dossier = JSON.parse(fs.readFileSync(dossierPath, 'utf8')) } catch { await sleep(2000) }
+      }
+      if (!dossier) { story.error = 'dossier file not found in cache'; console.log('  [warn] dossier cache miss'); continue }
+    } else {
+      story.gen = { ...gen, ms: 0 }
+      console.log(`\n=== ${key} === [skip-gen] 复用缓存档案 probes=${probes.length}`)
+    }
     // 结构质量自检（镜像 assessDossier 的孤儿引用口径，快速版）
     const sceneIds = new Set((dossier.scenes ?? []).map((s) => s.id))
     const sceneNames = new Set((dossier.scenes ?? []).map((s) => s.name))
