@@ -167,7 +167,9 @@ export async function generateDossier(
             { role: 'user', content: prompt },
           ],
           temperature: 0,
-          maxTokens: 8192,
+          // schema v2 每节还要输出 transitions/events/relations，推理模型 reasoning 会吃
+          // output budget → 8k 偶发截断/解析空（原型实测 5 节挂 3 节）→ 提到 16k
+          maxTokens: 16384,
           model,
         })
         parsed = parseDossierJson(stripCodeFence(res?.content || ''))
