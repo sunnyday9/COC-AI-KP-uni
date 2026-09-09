@@ -249,6 +249,15 @@ async function main() {
       story.gen = { ...gen, ms: Date.now() - t0 }
       console.log(`  [gen] ${JSON.stringify(gen)} (${Math.round((Date.now() - t0) / 1000)}s)`)
       if (!gen?.ok) { story.error = gen?.error ?? 'gen failed'; console.log(`  [warn] ${key} dossier gen failed — 跳过问答`); continue }
+      // 质量门（P12 建议落地）：严重欠抽/大面积分节失败档案禁止参战——探针分数会
+      // 误导结论，留给驱动重试。分节失败但覆盖仍 ≥20% 时放行（内容主体在，P24 实测）
+      const coverage = gen.coveragePct ?? 100
+      const batchFail = (gen.warnings ?? []).some((w) => w.includes('分节解析失败'))
+      if (coverage < 10 || (batchFail && coverage < 20)) {
+        story.error = `gen quality too low: coverage=${coverage}%${batchFail ? ' + 分节失败' : ''}`
+        console.log(`  [warn] ${key} gen 质量不达标（coverage ${coverage}%${batchFail ? ' + 分节失败' : ''}）——跳过问答，留待重试`)
+        continue
+      }
       // annex 明细（.annex.json：kept/dropReason/pending/merged 审计）随报告存档
       if (annex) {
         const annexPath = path.join(CACHE_DIR, String(userId ?? '1'), `${sanitize(scriptId)}.annex.json`)
