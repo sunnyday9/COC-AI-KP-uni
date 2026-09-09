@@ -50,6 +50,15 @@ const ANCHOR_WINDOW = 2_500 // gaps 定位：场景锚点后的取文长度
 const ANCHOR_LEAD = 300 // gaps 定位：锚点前的衔接语余量
 const GAP_CHUNK = 2_000 // gaps 定位：大 gap 再切块
 
+/* ── 原文读取（pdf-parse，与 readStory 的 pdf 分支同 API）── */
+async function pdfText(buffer) {
+  const { PDFParse } = await import('pdf-parse')
+  const uint8Array = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+  const parser = new PDFParse({ data: uint8Array })
+  const data = await parser.getText()
+  return String(data?.text ?? data ?? '')
+}
+
 /** 从 dossier-cache 找该剧本档案 JSON（scenes 供 gaps 计算）。 */
 function loadCachedDossier(key) {
   const dir = path.join(CACHE_DIR, '1')
