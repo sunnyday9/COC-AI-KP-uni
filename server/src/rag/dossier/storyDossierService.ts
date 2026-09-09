@@ -41,6 +41,7 @@ import {
   type StoryDossier,
 } from './schema.js'
 import { persistAnnex, deleteAnnex, runAnnex } from './annex.js'
+import { computeCoverageGaps, persistGaps, deleteGaps } from './coverageGaps.js'
 
 /** TTL for in-memory dossier cache (ms). */
 const CACHE_TTL_MS = 60_000
@@ -70,6 +71,10 @@ export interface GenerateResult {
   annexPending?: number
   annexTransitions?: number
   annexClues?: number
+  /** coverage gaps（原文覆盖缺口）：gapCount/gapChars/gapPct（明细在 .gaps.json）。 */
+  gapCount?: number
+  gapChars?: number
+  gapPct?: number
   error?: string
 }
 
@@ -234,6 +239,23 @@ export async function generateDossier(
     }
   }
 
+  // coverage gaps（P22）：本地计算原文未被 sceneText 覆盖的区间 + 场景锚点，
+  // 落盘 .gaps.json（回退定位/质量门用）；失败不阻断生成。
+  let gapsRan = false
+  try {
+    const gaps = computeCoverageGaps(storyText, dossier.scenes)
+    await persistGaps(userId, {
+      ...gaps,
+      scriptId,
+      storyName: dossier.storyName,
+      generatedAt: Date.now(),
+    })
+    dossier = { ...dossier, coverageGaps: { count: gaps.gapCount, chars: gaps.gapChars, pct: gaps.gapPct, at: Date.now() } }
+    gapsRan = true
+  } catch {
+    // gaps 失败仅缺失定位明细，不影响档案
+  }
+
   const quality = assessDossier(dossier, storyText.length)
   const warnings: string[] = [...quality.warnings]
   if (annex && annexNote) warnings.push(annexNote)
@@ -263,6 +285,11 @@ export async function generateDossier(
     result.annexTransitions = quality.annexTransitions
     result.annexClues = quality.annexClues
   }
+  if (gapsRan) {
+    result.gapCount = quality.gapCount
+    result.gapChars = quality.gapChars
+    result.gapPct = quality.gapPct
+  }
   return result
 }
 
@@ -287,6 +314,7 @@ export async function persist(userId: number, dossier: StoryDossier): Promise<vo
 export async function deleteDossier(userId: number, scriptId: string): Promise<boolean> {
   memoryCache.delete(cacheKey(userId, scriptId))
   await deleteAnnex(userId, scriptId)
+  await deleteGaps(userId, scriptId)
   try {
     await fs.unlink(dossierFile(userId, scriptId))
     return true

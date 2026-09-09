@@ -43,6 +43,23 @@ export interface StoryDossier {
    * 供 generate 响应与质量门读取，不承载剧透/图像内容。
    */
   annex?: DossierAnnexSummary
+  /**
+   * 原文覆盖缺口摘要（coverage gaps P22）：storyText 中未被任何 sceneText
+   * 覆盖的区间统计。明细（gap spans + 场景锚点）在同目录 .gaps.json——回退
+   * 原文理解时按 span 定位，不再靠词面猜。
+   */
+  coverageGaps?: DossierCoverageGapSummary
+}
+
+/** coverage gaps 计数摘要（非剧透；明细在 .gaps.json）。 */
+export interface DossierCoverageGapSummary {
+  /** 未覆盖区间数。 */
+  count: number
+  /** 未覆盖字符总数。 */
+  chars: number
+  /** 未覆盖 / 原文（%）。 */
+  pct: number
+  at: number
 }
 
 /** annex 摘要：随档案落盘的计数（非剧透；逐图明细在 .annex.json）。 */
@@ -256,7 +273,15 @@ export function parseDossierJson(raw: string): StoryDossier | null {
     meta,
     search: (obj.search && typeof obj.search === 'object') ? (obj.search as Record<string, number>) : undefined,
     annex: (obj.annex && typeof obj.annex === 'object') ? parseAnnexSummary(obj.annex) : undefined,
+    coverageGaps: (obj.coverageGaps && typeof obj.coverageGaps === 'object') ? parseCoverageGapSummary(obj.coverageGaps) : undefined,
   }
+}
+
+function parseCoverageGapSummary(a: unknown): DossierCoverageGapSummary | undefined {
+  const o = a as Record<string, unknown>
+  if (typeof o.at !== 'number') return undefined
+  const num = (k: string): number => (typeof o[k] === 'number' ? (o[k] as number) : 0)
+  return { count: num('count'), chars: num('chars'), pct: num('pct'), at: o.at }
 }
 
 function parseAnnexSummary(a: unknown): DossierAnnexSummary | undefined {
@@ -496,6 +521,10 @@ export interface DossierQuality {
   annexPending: number
   annexTransitions: number
   annexClues: number
+  /** coverage gaps（原文覆盖缺口）统计——只读数不告警（明细在 .gaps.json）。 */
+  gapCount: number
+  gapChars: number
+  gapPct: number
 }
 
 /**
@@ -591,6 +620,9 @@ export function assessDossier(d: StoryDossier, storyChars?: number): DossierQual
     annexPending: d.annex?.pending ?? 0,
     annexTransitions: d.annex?.transitions ?? 0,
     annexClues: d.annex?.clues ?? 0,
+    gapCount: d.coverageGaps?.count ?? 0,
+    gapChars: d.coverageGaps?.chars ?? 0,
+    gapPct: d.coverageGaps?.pct ?? 0,
   }
 }
 
