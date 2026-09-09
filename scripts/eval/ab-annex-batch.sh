@@ -16,10 +16,11 @@ if [ "$#" -gt 0 ]; then KEYS="$*"; else
   KEYS="-营一日的恐怖_20231103 古城秘史_20230330 奈落之蛹_20220810 巫_20220928_nocom 无知的幸福_20231101 早八要迟到了 模组集-古城诡秘_2011b 火焰交织的盛夏_220819_compressed 猫是我_20250723 重返黑色校园"
 fi
 OUTDIR="training/eval/reports"
+PREFIX="${OUT_PREFIX:-ab-recon-annex}"
 mkdir -p "$OUTDIR"
 port=3281
 for key in $KEYS; do
-  out="$OUTDIR/ab-recon-annex-$key.json"
+  out="$OUTDIR/$PREFIX-$key.json"
   log="$out.log"
   if [ -f "$log" ] && grep -q "== $key 平均" "$log"; then
     echo "[skip] $key 已完成（复用 $log）"
