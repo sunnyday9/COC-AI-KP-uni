@@ -218,8 +218,11 @@ async function main() {
     if (!probes.length) { console.log(`[skip] ${key}: no probes in ab-facts`); continue }
     const story = { key, storyName: probes[0]?.story ?? key, probes: [], startedAt: Date.now() }
     out.stories[key] = story
-    // 找剧本文件：probes[0].file 或 <key>.pdf
-    const file = path.join(STORY_DIR, probes[0].file ?? `${key}.pdf`)
+    // 找剧本文件：--story-file 显式指定 > probes[0].file > <key>.pdf
+    const fileOverride = arg('story-file', '')
+    const file = fileOverride
+      ? path.resolve(ROOT, fileOverride)
+      : path.join(STORY_DIR, probes[0].file ?? `${key}.pdf`)
     if (!fs.existsSync(file)) { console.log(`[skip-missing] ${key}: ${file}`); continue }
 
     // --skip-gen：复用已缓存的档案（cache/1/<sanitize(file)>.json），只跑探针
@@ -285,8 +288,9 @@ async function main() {
       chars: JSON.stringify(dossier).length,
     }
 
-    // 档案直答探针
+    // 档案直答探针（--probes=0：只生成/查 annex，冒烟用）
     for (const p of probes) {
+      if (arg('probes', '1') === '0') break
       const a = await answerFromDossier(dossier, p.q)
       const answer = typeof a.raw === 'object' && a.raw?.judgeError ? `(answer failed: ${a.raw.judgeError})` : String(a.raw ?? '')
       const judge = await judgeAnswer(story.storyName, p, answer)
