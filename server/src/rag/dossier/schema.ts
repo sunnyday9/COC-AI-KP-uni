@@ -27,6 +27,13 @@ export interface StoryDossier {
   transitions?: DossierTransition[]
   /** 图关系层 v2：剧本内事件时间线（数组顺序 = 剧情先后）。 */
   events?: DossierEvent[]
+  /**
+   * 真相层 v2.1：剧情幕后真相（剧透内容——运行时不得自动注入 KP 提示词；
+   * 只服务结局裁定/查证工具/评估重建）。原文仍保留在场景 sceneText，这里只是结构化。
+   */
+  truths?: DossierTruth[]
+  /** 结局层 v2.1：剧本明确写出的结局及达成条件（剧透内容，同上）。 */
+  endings?: DossierEnding[]
   meta?: DossierMeta
   /** Free-text search index: term → weight (lightweight lexical fallback). */
   search?: Record<string, number>
@@ -114,6 +121,32 @@ export interface DossierRelation {
   note?: string
 }
 
+/** 剧情真相（剧透层）：事件真正的幕后因果/秘密。引用线索/场景用 id 或名字。 */
+export interface DossierTruth {
+  id?: string
+  /** 短标题（如 "逐日工程引来星之彩"）。 */
+  title: string
+  /** 真相完整描述（2-4 句：幕后黑手/事件起因经过结果）。 */
+  detail: string
+  /** 支撑该真相的线索（玩家可凭它们拼出真相）。 */
+  relatedClues?: string[]
+  /** 玩家主要揭晓该真相的场景（id 或名字）。 */
+  revealScene?: string
+}
+
+/** 剧本结局（剧透层）：结局名 + 达成条件 + 结果。 */
+export interface DossierEnding {
+  id?: string
+  /** 结局名（好结局/坏结局/普通结局/团灭…）。 */
+  name: string
+  /** 达成条件（自然语言，可引用线索/行动/时间）。 */
+  condition: string
+  /** 结局发生后的事（玩家所见/世界变化，可省略）。 */
+  outcome?: string
+  /** 关联真相（id 或标题）。 */
+  relatedTruths?: string[]
+}
+
 /** File name safe-id mapping: mirror vectorStore's sanitize rule. */
 export function sanitizeScriptId(scriptId: string): string {
   return String(scriptId).replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_')
@@ -165,7 +198,21 @@ export function parseDossierJson(raw: string): StoryDossier | null {
       if (ev) events.push(ev)
     }
   }
-  if (scenes.length === 0 && clues.length === 0 && npcs.length === 0 && transitions.length === 0 && events.length === 0) return null
+  const truths: DossierTruth[] = []
+  if (Array.isArray(obj.truths)) {
+    for (const t of obj.truths) {
+      const tr = parseTruth(t)
+      if (tr) truths.push(tr)
+    }
+  }
+  const endings: DossierEnding[] = []
+  if (Array.isArray(obj.endings)) {
+    for (const e of obj.endings) {
+      const en = parseEnding(e)
+      if (en) endings.push(en)
+    }
+  }
+  if (scenes.length === 0 && clues.length === 0 && npcs.length === 0 && transitions.length === 0 && events.length === 0 && truths.length === 0 && endings.length === 0) return null
   const scriptId = typeof obj.scriptId === 'string' ? obj.scriptId : ''
   const storyName = typeof obj.storyName === 'string' ? obj.storyName : scriptId
   const meta = (obj.meta && typeof obj.meta === 'object') ? parseMeta(obj.meta) : undefined
@@ -179,6 +226,8 @@ export function parseDossierJson(raw: string): StoryDossier | null {
     npcs,
     transitions: transitions.length ? transitions : undefined,
     events: events.length ? events : undefined,
+    truths: truths.length ? truths : undefined,
+    endings: endings.length ? endings : undefined,
     meta,
     search: (obj.search && typeof obj.search === 'object') ? (obj.search as Record<string, number>) : undefined,
   }
@@ -294,6 +343,37 @@ function parseRelation(r: unknown): DossierRelation | null {
   }
 }
 
+function parseTruth(t: unknown): DossierTruth | null {
+  if (typeof t !== 'object' || t === null) return null
+  const o = t as Record<string, unknown>
+  const title = typeof o.title === 'string' && o.title ? o.title : ''
+  const detail = typeof o.detail === 'string' && o.detail ? o.detail : ''
+  if (!title || !detail) return null
+  return {
+    id: typeof o.id === 'string' && o.id ? o.id : undefined,
+    title,
+    detail,
+    relatedClues: strArray(o.relatedClues),
+    revealScene: typeof o.revealScene === 'string' && o.revealScene ? o.revealScene : undefined,
+  }
+}
+
+function parseEnding(e: unknown): DossierEnding | null {
+  if (typeof e !== 'object' || e === null) return null
+  const o = e as Record<string, unknown>
+  const name = typeof o.name === 'string' && o.name ? o.name : ''
+  const condition = typeof o.condition === 'string' && o.condition ? o.condition : ''
+  const outcome = typeof o.outcome === 'string' && o.outcome ? o.outcome : ''
+  if (!name || !condition) return null
+  return {
+    id: typeof o.id === 'string' && o.id ? o.id : undefined,
+    name,
+    condition,
+    outcome,
+    relatedTruths: strArray(o.relatedTruths),
+  }
+}
+
 function strArray(v: unknown): string[] | undefined {
   if (!Array.isArray(v)) return undefined
   const out = v.filter((x): x is string => typeof x === 'string' && !!x)
@@ -313,7 +393,9 @@ export function resolveRefs(d: StoryDossier): StoryDossier {
   const npcByName = new Map(d.npcs.map((n) => [n.name, n]))
   const clueById = new Map(d.clues.map((c) => [c.id, c]))
   const clueByName = new Map(d.clues.map((c) => [c.description, c]))
-  const pick = (ref: string, idMap: Map<string, { id: string }>, nameMap: Map<string, { id: string }>): string =>
+  const truthById = new Map((d.truths ?? []).map((t) => [String(t.id), t]))
+  const truthByTitle = new Map((d.truths ?? []).map((t) => [t.title, t]))
+  const pick = (ref: string, idMap: Map<string, { id?: string }>, nameMap: Map<string, { id?: string }>): string =>
     idMap.has(ref) ? ref : nameMap.get(ref)?.id ?? ref
   return {
     ...d,
@@ -337,6 +419,15 @@ export function resolveRefs(d: StoryDossier): StoryDossier {
       to: pick(t.to, sceneById, sceneByName),
       viaClues: t.viaClues?.map((r) => pick(r, clueById, clueByName)),
     })),
+    truths: d.truths?.map((t) => ({
+      ...t,
+      relatedClues: t.relatedClues?.map((r) => pick(r, clueById, clueByName)),
+      revealScene: t.revealScene ? pick(t.revealScene, sceneById, sceneByName) : undefined,
+    })),
+    endings: d.endings?.map((e) => ({
+      ...e,
+      relatedTruths: e.relatedTruths?.map((r) => pick(r, truthById, truthByTitle)),
+    })),
   }
 }
 
@@ -348,10 +439,14 @@ export interface DossierQuality {
   transitionCount: number
   eventCount: number
   relationCount: number
+  truthCount: number
+  endingCount: number
   /** 归一化后仍解析不到端点的切换边（from→to）。 */
   orphanTransitions: string[]
   orphanRelations: string[]
   orphanEventScenes: string[]
+  orphanTruthRefs: string[]
+  orphanEndingRefs: string[]
 }
 
 /**
@@ -392,6 +487,23 @@ export function assessDossier(d: StoryDossier, storyChars?: number): DossierQual
   }
   if (orphanEventScenes.length) warnings.push(`事件 ${orphanEventScenes.length} 条引用的场景未知：${orphanEventScenes.slice(0, 3).join('、')}`)
 
+  const clueKnown = (ref?: string) => !!ref && (new Set(d.clues.map((c) => c.id)).has(ref!) || new Set(d.clues.map((c) => c.description)).has(ref!))
+  const truthKnown = (ref?: string) => !!ref && (new Set((d.truths ?? []).map((t) => t.id)).has(ref!) || new Set((d.truths ?? []).map((t) => t.title)).has(ref!))
+  const orphanTruthRefs: string[] = []
+  const orphanEndingRefs: string[] = []
+  for (const t of d.truths ?? []) {
+    for (const c of t.relatedClues ?? []) if (!clueKnown(c)) orphanTruthRefs.push(`${t.title}→线索「${c}」`)
+    if (t.revealScene && !sceneKnown(t.revealScene)) orphanTruthRefs.push(`${t.title}→场景「${t.revealScene}」`)
+  }
+  if (orphanTruthRefs.length) warnings.push(`真相引用 ${orphanTruthRefs.length} 条指向未知实体：${orphanTruthRefs.slice(0, 3).join('、')}`)
+  for (const e of d.endings ?? []) {
+    for (const r of e.relatedTruths ?? []) if (!truthKnown(r)) orphanEndingRefs.push(`${e.name}→真相「${r}」`)
+  }
+  if (orphanEndingRefs.length) warnings.push(`结局引用 ${orphanEndingRefs.length} 条指向未知真相：${orphanEndingRefs.slice(0, 3).join('、')}`)
+  if (typeof storyChars === 'number' && storyChars > 10_000 && !(d.truths?.length) && !(d.endings?.length)) {
+    warnings.push('档案无真相/结局层（truths/endings 均为空）——结局/真相类问题将无法回答')
+  }
+
   const totalSceneText = d.scenes.reduce((s, sc) => s + String(sc.sceneText ?? '').length, 0)
   let coveragePct: number | undefined
   if (typeof storyChars === 'number' && storyChars > 0) {
@@ -417,9 +529,13 @@ export function assessDossier(d: StoryDossier, storyChars?: number): DossierQual
     transitionCount: d.transitions?.length ?? 0,
     eventCount: d.events?.length ?? 0,
     relationCount,
+    truthCount: d.truths?.length ?? 0,
+    endingCount: d.endings?.length ?? 0,
     orphanTransitions,
     orphanRelations,
     orphanEventScenes,
+    orphanTruthRefs,
+    orphanEndingRefs,
   }
 }
 

@@ -56,6 +56,8 @@ export interface GenerateResult {
   npcs?: number
   transitions?: number
   events?: number
+  truths?: number
+  endings?: number
   /** 结构质量告警（不阻断；见 assessDossier）。 */
   warnings?: string[]
   /** 档案 sceneText 覆盖剧本原文比例（%）。 */
@@ -174,7 +176,7 @@ export async function generateDossier(
         })
         parsed = parseDossierJson(stripCodeFence(res?.content || ''))
       }
-      if (parsed && parsed.scenes.length + parsed.clues.length + parsed.npcs.length + (parsed.transitions?.length ?? 0) + (parsed.events?.length ?? 0) > 0) {
+      if (parsed && parsed.scenes.length + parsed.clues.length + parsed.npcs.length + (parsed.transitions?.length ?? 0) + (parsed.events?.length ?? 0) + (parsed.truths?.length ?? 0) + (parsed.endings?.length ?? 0) > 0) {
         parsedParts.push({
           ...parsed,
           scriptId: parsed.scriptId || scriptId,
@@ -223,6 +225,8 @@ export async function generateDossier(
     npcs: dossier.npcs.length,
     transitions: dossier.transitions?.length ?? 0,
     events: dossier.events?.length ?? 0,
+    truths: dossier.truths?.length ?? 0,
+    endings: dossier.endings?.length ?? 0,
     warnings: warnings.length ? warnings : undefined,
     coveragePct: quality.coveragePct,
   }

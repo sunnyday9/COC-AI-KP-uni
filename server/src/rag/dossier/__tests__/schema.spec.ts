@@ -108,9 +108,60 @@ describe('dossier schema v2', () => {
       npcs: [{ id: 'n1', name: 'N' }],
       transitions: [{ from: 's0', to: 's1' }],
       events: [{ summary: 'e', scene: 's0' }],
+      truths: [{ title: 'T', detail: 'd' }],
+      endings: [{ name: '好结局', condition: 'c' }],
     }, 12_000)
     expect(q.warnings).toEqual([])
     expect(q.coveragePct).toBe(90)
+  })
+
+  it('parses the v2.1 truth/ending layer and resolves its refs', () => {
+    const d = parseDossierJson(JSON.stringify({
+      scenes: [{ id: 's1', name: '逐日工程工地', sceneText: 'x' }],
+      clues: [{ id: 'c1', description: '12 个巨大线圈' }],
+      truths: [
+        { id: 'truth_1', title: '逐日工程引来星之彩', detail: '9/23 幼虫经逐日工程潜入校园地下。', relatedClues: ['12 个巨大线圈'], revealScene: '逐日工程工地' },
+      ],
+      endings: [{ id: 'end_1', name: '好结局：星之彩被遣返', condition: '线圈通电', outcome: '星之彩飞回宇宙', relatedTruths: ['逐日工程引来星之彩'] }],
+    }))
+    expect(d).not.toBeNull()
+    expect(d!.truths).toHaveLength(1)
+    expect(d!.truths![0].relatedClues).toEqual(['12 个巨大线圈'])
+    expect(d!.endings).toHaveLength(1)
+    const r = resolveRefs(d!)
+    expect(r.truths![0]).toMatchObject({ relatedClues: ['c1'], revealScene: 's1' })
+    expect(r.endings![0].relatedTruths).toEqual(['truth_1'])
+  })
+
+  it('mergeDossierParts dedupes truths by title and endings by name', () => {
+    const a = parseDossierJson(JSON.stringify({ truths: [{ title: 'T1', detail: 'd1' }], endings: [{ name: '好结局', condition: 'c1' }] }))!
+    const b = parseDossierJson(JSON.stringify({ truths: [{ title: 'T1', detail: 'd1' }, { title: 'T2', detail: 'd2' }], endings: [{ name: '好结局', condition: 'c1' }, { name: '坏结局', condition: 'c2' }] }))!
+    const m = mergeDossierParts([a, b])
+    expect(m.truths).toHaveLength(2)
+    expect(m.endings).toHaveLength(2)
+  })
+
+  it('assessDossier flags orphan truth/ending refs and missing truth layer', () => {
+    const q = assessDossier({
+      scriptId: 's', storyName: 's', generatedAt: 0,
+      scenes: [{ id: 's1', name: 'A', sceneText: 'x'.repeat(800) }],
+      clues: [{ id: 'c1', description: 'C1' }],
+      npcs: [],
+      truths: [{ title: 'T', detail: 'd', relatedClues: ['不存在的线索'], revealScene: '不存在场景' }],
+      endings: [{ name: '好结局', condition: 'cond', relatedTruths: ['不存在的真相'] }],
+    }, 12_000)
+    expect(q.orphanTruthRefs.some((r) => r.includes('不存在的线索'))).toBe(true)
+    expect(q.orphanTruthRefs.some((r) => r.includes('不存在场景'))).toBe(true)
+    expect(q.orphanEndingRefs).toHaveLength(1)
+  })
+
+  it('assessDossier warns when a large story lacks the truth layer', () => {
+    const q = assessDossier({
+      scriptId: 's', storyName: 's', generatedAt: 0,
+      scenes: Array.from({ length: 10 }, (_, i) => ({ id: `s${i}`, name: `S${i}`, sceneText: '字'.repeat(1000) })),
+      clues: [], npcs: [],
+    }, 15_000)
+    expect(q.warnings.some((w) => w.includes('真相'))).toBe(true)
   })
 
   it('mergeDossierParts merges cross-batch npc relations and keeps edge order', () => {
