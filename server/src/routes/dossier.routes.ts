@@ -20,7 +20,9 @@ const router = Router()
 
 router.use(requireAuth)
 
-/** POST /api/dossier/:scriptId/generate — 生成剧本档案。body: { model? }。
+/** POST /api/dossier/:scriptId/generate — 生成剧本档案。body: { model?, annex? }。
+ *  annex=true 时生成后跑 map annex（P18：PDF 抽图→mimo-v2.5 视觉→铁律 2 筛选
+ *  →保守并入 transitions/clues + 落盘 .annex.json）。响应含 annex* 统计。
  *  scriptId 保留原始 story id（读 story 原文）；assertSafeId 只校验不净化，
  *  服务层 generateDossier 内部白名单 sanitize 后落盘。 */
 router.post('/:scriptId/generate', (req: AuthRequest, res) => {
@@ -32,9 +34,12 @@ router.post('/:scriptId/generate', (req: AuthRequest, res) => {
     sendError(res, err)
     return
   }
-  const body = (req.body ?? {}) as { model?: unknown }
+  const body = (req.body ?? {}) as { model?: unknown; annex?: unknown }
   void dossierService
-    .generateDossier(userId, scriptId, { model: typeof body.model === 'string' ? body.model : undefined })
+    .generateDossier(userId, scriptId, {
+      model: typeof body.model === 'string' ? body.model : undefined,
+      annex: typeof body.annex === 'boolean' ? body.annex : undefined,
+    })
     .then((result) => res.json(result))
     .catch((err) => sendError(res, err))
 })

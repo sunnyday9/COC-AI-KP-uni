@@ -125,6 +125,20 @@ async function pdfParse(dataBuffer: Buffer): Promise<{ text: string }> {
   return await parser.getText()
 }
 
+/**
+ * 读取 story 原始文件字节（dossier annex 抽图用）。txt/md 无内嵌图，调用方按
+ * ext 决定是否继续。路径安全与 readStory 同一套：DB 内部 file_path + 白名单
+ * sanitize + assertPathInDir 双保险（外部 id 不进入 fs 路径）。
+ */
+export async function readStoryFileBytes(userId: number, id: string): Promise<{ name: string; ext: string; buffer: Buffer }> {
+  assertId(id, 'story id')
+  const { filePath, name } = await resolveStoryFilePath(userId, id)
+  const safePath = assertPathInDir(storiesDir(userId), resolveFileInDir(storiesDir(userId), filePath, 'story file'), 'story file (sink)')
+  const ext = path.extname(safePath).toLowerCase()
+  const buffer = await readFileOr404(safePath, 'story')
+  return { name, ext, buffer }
+}
+
 /** file:listStories — DB 为主 + 存量文件系统兜底导入。 */
 export async function listStories(userId: number): Promise<StoryListItem[]> {
   // 存量文件系统数据（旧版）自动导入 DB，保证列表完整。

@@ -40,6 +40,7 @@ import {
   assessDossier,
   type StoryDossier,
 } from './schema.js'
+import { persistAnnex, deleteAnnex, runAnnex } from './annex.js'
 
 /** TTL for in-memory dossier cache (ms). */
 const CACHE_TTL_MS = 60_000
@@ -62,6 +63,13 @@ export interface GenerateResult {
   warnings?: string[]
   /** 档案 sceneText 覆盖剧本原文比例（%）。 */
   coveragePct?: number
+  /** annex（图信息通道）统计；annex 未跑时为 undefined（见 runAnnex）。 */
+  annexImages?: number
+  annexDrops?: number
+  annexFailed?: number
+  annexPending?: number
+  annexTransitions?: number
+  annexClues?: number
   error?: string
 }
 
@@ -119,9 +127,9 @@ export function splitStorySections(content: string, batchChars: number = DOSSIER
 export async function generateDossier(
   userId: number,
   scriptId: string,
-  options: { model?: string } = {},
+  options: { model?: string; annex?: boolean } = {},
 ): Promise<GenerateResult> {
-  const { model } = options
+  const { model, annex } = options
   if (!scriptId) return { ok: false, error: 'missing scriptId' }
 
   let raw: { name: string; content: string }
@@ -202,7 +210,7 @@ export async function generateDossier(
 
   const merged = mergeDossierParts(parsedParts)
   const resolved = resolveRefs(merged)
-  const dossier: StoryDossier = {
+  let dossier: StoryDossier = {
     ...resolved,
     scriptId,
     storyName: resolved.storyName || raw.name || scriptId,
@@ -210,14 +218,31 @@ export async function generateDossier(
     generatedByModel: resolved.generatedByModel || model,
   }
 
+  // map annex（P18）：抽图→视觉→铁律 2 筛选→保守合并。annex 失败不阻断档案
+  // 生成（warnings 记一笔）；模型守卫/协议守卫错误同样降级为告警。
+  let annexNote = ''
+  let annexRan = false
+  if (annex) {
+    try {
+      const annexResult = await runAnnex(userId, { scriptId, storyName: dossier.storyName, dossier, model })
+      dossier = annexResult.dossier
+      await persistAnnex(userId, annexResult.annex)
+      annexRan = true
+      annexNote = annexResult.annex.note ?? ''
+    } catch (e) {
+      annexNote = `annex 未运行：${e instanceof Error ? e.message : String(e)}`
+    }
+  }
+
   const quality = assessDossier(dossier, storyText.length)
   const warnings: string[] = [...quality.warnings]
+  if (annex && annexNote) warnings.push(annexNote)
   if (batchFailures > 0 && parsedParts.length < totalBatches) {
     warnings.push(`有 ${batchFailures} 个分节解析失败，档案只覆盖前 ${parsedParts.length}/${totalBatches} 节——内容不完整`)
   }
 
   await persist(userId, dossier)
-  return {
+  const result: GenerateResult = {
     ok: true,
     scriptId,
     scenes: dossier.scenes.length,
@@ -230,6 +255,15 @@ export async function generateDossier(
     warnings: warnings.length ? warnings : undefined,
     coveragePct: quality.coveragePct,
   }
+  if (annex && annexRan) {
+    result.annexImages = quality.annexImages
+    result.annexDrops = quality.annexDrops
+    result.annexFailed = quality.annexFailed
+    result.annexPending = quality.annexPending
+    result.annexTransitions = quality.annexTransitions
+    result.annexClues = quality.annexClues
+  }
+  return result
 }
 
 /** Strip ```json … ``` fences that some models add despite instructions. */
@@ -252,6 +286,7 @@ export async function persist(userId: number, dossier: StoryDossier): Promise<vo
 
 export async function deleteDossier(userId: number, scriptId: string): Promise<boolean> {
   memoryCache.delete(cacheKey(userId, scriptId))
+  await deleteAnnex(userId, scriptId)
   try {
     await fs.unlink(dossierFile(userId, scriptId))
     return true

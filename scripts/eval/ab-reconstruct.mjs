@@ -19,6 +19,8 @@
  * OPENCODE_SESSION=...；密钥只从环境变量读。
  * 用法：MOCK_AI=0 AB_AI_* OPENCODE_SESSION=x node scripts/eval/ab-reconstruct.mjs \
  *   --keys=早八要迟到了,巫_20220928_nocom --out=training/eval/reports/ab-reconstruct-<ts>.json
+ *   [--annex=1]  生成时跑 map annex（P18：抽图→视觉→保守并入；响应 annex* 计数
+ *                 + cache/1/<scriptId>.annex.json 明细一并记入报告 JSON）
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -163,8 +165,9 @@ async function main() {
   const keys = (arg('keys', '') || '').split(',').map((s) => s.trim()).filter(Boolean)
   if (!keys.length) { console.error('--keys=key1,key2 required'); process.exit(1) }
   if (!MOCK && (!REAL_CFG.baseUrl || !REAL_CFG.apiKey)) { console.error('real mode needs AB_AI_BASE_URL + AB_AI_API_KEY'); process.exit(1) }
+  const annex = arg('annex', '0') === '1'
   const outPath = arg('out', `training/eval/reports/ab-reconstruct-${Date.now()}.json`)
-  const out = { mode: MOCK ? 'mock' : 'real', model: REAL_CFG.model, startedAt: Date.now(), stories: {} }
+  const out = { mode: MOCK ? 'mock' : 'real', model: REAL_CFG.model, annex, startedAt: Date.now(), stories: {} }
 
   // 服务端：临时 DATA_DIR，档案落 CACHE_DIR（可复核）
   const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ab-recon-'))
@@ -232,16 +235,27 @@ async function main() {
       const up = await fetch(`${API_BASE}/api/stories/upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd, signal: AbortSignal.timeout(180_000) })
       const upData = await up.json()
       const scriptId = upData.id ?? upData.scriptId
-      console.log(`\n=== ${key} === scriptId=${scriptId} probes=${probes.length}`)
-      // 生成 v2 档案
+      console.log(`\n=== ${key} === scriptId=${scriptId} probes=${probes.length} annex=${annex ? '1' : '0'}`)
+      // 生成 v2/v2.1 档案（annex=1 时带 map annex）
       const genRes = await fetch(`${API_BASE}/api/dossier/${encodeURIComponent(scriptId)}/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: '{}',
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(annex ? { annex: true } : {}),
         signal: AbortSignal.timeout(7_200_000),
       })
       gen = await genRes.json()
       story.gen = { ...gen, ms: Date.now() - t0 }
       console.log(`  [gen] ${JSON.stringify(gen)} (${Math.round((Date.now() - t0) / 1000)}s)`)
       if (!gen?.ok) { story.error = gen?.error ?? 'gen failed'; console.log(`  [warn] ${key} dossier gen failed — 跳过问答`); continue }
+      // annex 明细（.annex.json：kept/dropReason/pending/merged 审计）随报告存档
+      if (annex) {
+        const annexPath = path.join(CACHE_DIR, String(userId ?? '1'), `${sanitize(scriptId)}.annex.json`)
+        try {
+          story.annexFile = JSON.parse(fs.readFileSync(annexPath, 'utf8'))
+        } catch {
+          story.annexFile = null
+          console.log('  [warn] annex file not found in cache')
+        }
+      }
       // 读落盘档案（v2 JSON 全量）
       const dossierPath = path.join(CACHE_DIR, String(userId ?? '1'), `${sanitize(scriptId)}.json`)
       for (let i = 0; i < 10 && !dossier; i++) {

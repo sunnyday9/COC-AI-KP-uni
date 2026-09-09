@@ -37,6 +37,31 @@ export interface StoryDossier {
   meta?: DossierMeta
   /** Free-text search index: term → weight (lightweight lexical fallback). */
   search?: Record<string, number>
+  /**
+   * 图信息 annex 摘要（map annex P18）：视觉通道并入的统计。明细（逐图
+   * kept/dropReason/pending/merged）落盘在同目录 .annex.json，此处只留计数，
+   * 供 generate 响应与质量门读取，不承载剧透/图像内容。
+   */
+  annex?: DossierAnnexSummary
+}
+
+/** annex 摘要：随档案落盘的计数（非剧透；逐图明细在 .annex.json）。 */
+export interface DossierAnnexSummary {
+  /** 处理过的图数（vision 成功解析且 kept 的候选）。 */
+  images: number
+  /** 被铁律 2 筛选丢弃的图数（封面/插画/无标签地图/过短转录）。 */
+  drops: number
+  /** vision 调用失败（重试后仍失败）的图数。 */
+  failed: number
+  /** pending 清单条数（unmatched-place / name-drift）。 */
+  pending: number
+  /** 并入 transitions 的边数（tr_map_*，条件='地图标注'）。 */
+  transitions: number
+  /** 追加进 clues 的线索卡数（clue_map_*）。 */
+  clues: number
+  /** 视觉调用的模型（mimo-v2.5）。 */
+  visionModel?: string
+  at: number
 }
 
 export interface DossierMeta {
@@ -230,6 +255,23 @@ export function parseDossierJson(raw: string): StoryDossier | null {
     endings: endings.length ? endings : undefined,
     meta,
     search: (obj.search && typeof obj.search === 'object') ? (obj.search as Record<string, number>) : undefined,
+    annex: (obj.annex && typeof obj.annex === 'object') ? parseAnnexSummary(obj.annex) : undefined,
+  }
+}
+
+function parseAnnexSummary(a: unknown): DossierAnnexSummary | undefined {
+  const o = a as Record<string, unknown>
+  const num = (k: string): number => (typeof o[k] === 'number' ? (o[k] as number) : 0)
+  if (typeof o.at !== 'number') return undefined
+  return {
+    images: num('images'),
+    drops: num('drops'),
+    failed: num('failed'),
+    pending: num('pending'),
+    transitions: num('transitions'),
+    clues: num('clues'),
+    visionModel: typeof o.visionModel === 'string' ? o.visionModel : undefined,
+    at: o.at,
   }
 }
 
@@ -447,6 +489,13 @@ export interface DossierQuality {
   orphanEventScenes: string[]
   orphanTruthRefs: string[]
   orphanEndingRefs: string[]
+  /** annex（图信息）统计——只读数不告警（annex 不阻断生成；warnings 不含 annex）。 */
+  annexImages: number
+  annexDrops: number
+  annexFailed: number
+  annexPending: number
+  annexTransitions: number
+  annexClues: number
 }
 
 /**
@@ -536,6 +585,12 @@ export function assessDossier(d: StoryDossier, storyChars?: number): DossierQual
     orphanEventScenes,
     orphanTruthRefs,
     orphanEndingRefs,
+    annexImages: d.annex?.images ?? 0,
+    annexDrops: d.annex?.drops ?? 0,
+    annexFailed: d.annex?.failed ?? 0,
+    annexPending: d.annex?.pending ?? 0,
+    annexTransitions: d.annex?.transitions ?? 0,
+    annexClues: d.annex?.clues ?? 0,
   }
 }
 
