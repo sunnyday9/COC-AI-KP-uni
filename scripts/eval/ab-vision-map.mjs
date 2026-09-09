@@ -156,6 +156,10 @@ async function main() {
   const files = (arg('files', '') || '').split(',').map((s) => s.trim()).filter(Boolean)
   const maxImages = Number(arg('max-images', '4'))
   if (!files.length) { console.error('--files=a.pdf,b.pdf required'); process.exit(1) }
+  // 铁律：视觉只用 mimo-v2.5（-pro 不支持 image input，上游 404）
+  if (!/^mimo-v2\.5$/.test(REAL.model)) {
+    console.error(`model 必须是 mimo-v2.5（当前 ${REAL.model}）——mimo-v2.5-pro 不支持视觉，禁用`); process.exit(1)
+  }
   if (arg('dry', '0') !== '1' && (!REAL.baseUrl || !REAL.apiKey)) { console.error('need AB_AI_BASE_URL + AB_AI_API_KEY'); process.exit(1) }
   const storiesDir = arg('stories-dir', path.join(ROOT, 'AI-COC-KP Story Document', 'stories'))
   const out = { model: REAL.model, startedAt: Date.now(), stories: {} }
@@ -208,7 +212,17 @@ async function main() {
         }
       }
       if (!parsed) { console.log(`  [fail] p${img.page} 两次调用失败`); storyOut.vision.push({ file: fname, error: 'after 2 attempts' }); continue }
-      storyOut.vision.push({ file: fname, page: img.page, parsed })
+      // 信息筛选：封面/插画/其他、无地点无连接的地图、过短转录 → 不入 annex 主体（仍记录供复核）
+      const kind = parsed.kind ?? '其他'
+      const places = parsed.places ?? []
+      const conns = parsed.connections ?? []
+      const transcript = String(parsed.transcript ?? '').trim()
+      let kept = true
+      let dropReason = ''
+      if (kind === '插画' || kind === '其他') { kept = false; dropReason = `kind=${kind}（封面/美术/无关图不入 dossier）` }
+      else if (kind === '地图' && places.length === 0 && conns.length === 0) { kept = false; dropReason = '无标签地图（places/connections 均空，不硬编）' }
+      else if (transcript && transcript.length < 12) { kept = false; dropReason = '转录过短' }
+      storyOut.vision.push({ file: fname, page: img.page, parsed, kept, dropReason: dropReason || undefined })
       const p = parsed.places ?? []
       const c = parsed.connections ?? []
       const tr = parsed.transcript ? `文字${parsed.transcript.length}字` : ''
