@@ -319,4 +319,19 @@ describe('originalLookup: verifyOriginal 端到端（注入 LLM）', () => {
     expect(res.content).toContain('眼状纹样')
     expect(res.meta.ok).toBe(true)
   })
+
+  it('LLM 返回被截断的 JSON（reasoning 吃光预算）→ 抠出 answer 字段，不把整段 JSON 当结论', async () => {
+    const { deps } = mkDeps(async () => '{"answer":"祭坛刻着三颗眼状纹样。","quote":"祭坛上刻着三颗眼状纹样，香炉里积着黑色的灰。","found":true')
+    const res = await verifyOriginal({ question: '祭坛上刻着什么纹样？', scene: '祭坛厅' }, deps)
+    expect(res.content).toContain('祭坛刻着三颗眼状纹样')
+    expect(res.content).not.toContain('"answer"')
+    expect(res.meta.ok).toBe(true)
+  })
+
+  it('LLM 只回 JSON 骨架（无 answer 字段）→ 按失败降级「未取得」（由外层重试）', async () => {
+    const { deps } = mkDeps(async () => '{"quote":"祭坛上刻着三颗眼状纹样"')
+    const res = await verifyOriginal({ question: '祭坛上刻着什么纹样？', scene: '祭坛厅' }, deps)
+    expect(res.content).toContain('未取得')
+    expect(res.meta.ok).toBe(false)
+  })
 })

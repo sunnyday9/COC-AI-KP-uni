@@ -49,7 +49,9 @@ const CACHE_TTL_MS = 10 * 60_000
 /** 单次查证的 LLM 尝试次数（短暂失败重试一次；仍失败则降级「未取得」）。 */
 const ASK_ATTEMPTS = 2
 const ASK_BACKOFF_MS = 500
-const ASK_MAX_TOKENS = 1_200
+/** 答案输出预算：推理模型（mimo-v2.5）reasoning 会吃 output budget——太小会截断
+ * JSON 或空响应（P25 首轮实测 1200 时 2/5 空响应、1/5 JSON 截断）。 */
+const ASK_MAX_TOKENS = 4_000
 
 export type WindowKind = 'anchor' | 'gap'
 export type LocateTier = 'scene' | 'global' | 'none'
@@ -351,6 +353,14 @@ const ASK_SYSTEM =
   '4. answer 用中文，≤200 字，直接给结论（NPC 名/地点/时间/数字要精确）。\n' +
   '只输出 JSON：{"answer":"…","quote":"…","found":true/false}'
 
+/** 从可能截断的 JSON 文本里抠一个字段（推理模型常在 max_tokens 处截断输出）。 */
+function extractJsonField(s: string, key: string): string {
+  const re = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"?`)
+  const m = s.match(re)
+  if (!m || !m[1]) return ''
+  return m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\\\/g, '\\').trim()
+}
+
 function parseAnswer(raw: string): { answer: string; quote: string; found: boolean } {
   const s = String(raw ?? '').trim()
   const start = s.indexOf('{')
@@ -363,8 +373,19 @@ function parseAnswer(raw: string): { answer: string; quote: string; found: boole
         return { answer, quote: typeof o.quote === 'string' ? o.quote.trim() : '', found: o.found !== false }
       }
     } catch {
-      /* 非 JSON：走散文兜底 */
+      /* JSON 被截断/畸形：走字段抠取，绝不把整段 JSON 当结论 */
     }
+  }
+  if (start >= 0) {
+    const answer = extractJsonField(s, 'answer')
+    if (answer) {
+      return { answer, quote: extractJsonField(s, 'quote'), found: !/"found"\s*:\s*false/.test(s) }
+    }
+    // 无 answer 字段：JSON 前若有大段散文（模型写在 JSON 之前）→ 用散文
+    const prose = s.slice(0, start).trim()
+    if (prose.length >= 30) return { answer: prose, quote: '', found: true }
+    // 只剩 JSON 骨架 → 视为未作答
+    return { answer: '', quote: '', found: false }
   }
   return { answer: s, quote: '', found: true }
 }
