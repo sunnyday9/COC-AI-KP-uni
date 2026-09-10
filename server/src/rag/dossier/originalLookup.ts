@@ -339,7 +339,7 @@ export interface VerifyOriginalDeps {
   model?: string
   /** 时钟（测试注入）。 */
   now?: () => number
-  /** 定位命中缓存跳过时的原文读取（测试/报告用）。 */
+  /** 定位窗口总预算（字符；缺省 DEFAULT_BUDGET，测试注入小值用）。 */
   budget?: number
 }
 
