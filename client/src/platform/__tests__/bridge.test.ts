@@ -339,10 +339,10 @@ describe('PlatformBridge', () => {
       expect(state.requests[0]).toMatchObject({ url: '/api/rag/index/s1', method: 'DELETE' })
     })
 
-    it('ragIndex posts chunks', async () => {
+    it('ragIndex posts scriptId only (server chunks the story)', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { ok: true, indexed: 2 } })
       const bridge = new PlatformBridge()
-      const params = { scriptId: 's1', chunks: [{ id: 'c1', content: 'x', type: 'text', metadata: {} }] }
+      const params = { scriptId: 's1', storyMeta: { name: 's1' } }
       await expect(bridge.ragIndex(params)).resolves.toEqual({ ok: true, indexed: 2 })
       expect(state.requests[0].data).toEqual(params)
     })

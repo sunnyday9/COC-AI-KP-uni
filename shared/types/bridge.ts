@@ -143,7 +143,7 @@ export interface Bridge {
     }[]
     error?: string
   }>
-  ragIndex: (params: RAGIndexParams) => Promise<{ ok: boolean; indexed: number }>
+  ragIndex: (params: RAGIndexParams) => Promise<{ ok: boolean; indexed: number; error?: string; warning?: string }>
   ragDelete: (scriptId: string) => Promise<{ ok: boolean; deleted: number }>
   ragQuery: (params: RAGQueryParams) => Promise<{ chunks: { content: string; metadata: Record<string, string>; distance: number }[] }>
   ragContext: (params: RAGContextParams) => Promise<{ context: string; graphSummary?: string; chunkCount?: number }>

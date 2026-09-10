@@ -19,8 +19,6 @@ import { logger } from '../utils/logging.js'
 export interface IndexOptions {
   /** 嵌入函数（缺省由调用方按设置提供；不传则索引只有词面统计）。 */
   getEmbedding?: (text: string) => Promise<number[]>
-  /** 故事展示名（缺省取自读取结果）。 */
-  storyMeta?: { name?: string }
 }
 
 export interface IndexResult {
@@ -33,7 +31,7 @@ export interface IndexResult {
 
 /**
  * 服务端索引编排：读原文 → 切块（带偏移）→ 嵌入 → 落盘；预取重排模型（非致命）。
- * 永不抛出：失败以 `{ok:false, error}` 返回。
+ * 永不抛出：失败以 `{ok:false, error}` 返回（含落盘 IO 失败）。
  */
 export async function indexStoryForRag(
   userId: number,
@@ -59,18 +57,25 @@ export async function indexStoryForRag(
   const inputs = chunks.map((c, i) => ({
     id: `${id}-chunk-${i}`,
     content: c.content,
+    // type：索引管道内统称 'rule'（旧索引的 scene/clue 分类随客户端切块器一并废弃）
     type: 'rule',
     // 字符偏移供查询期"场景归属"现算（块不写死场景）
     metadata: { storyId: id, chunkIndex: i, start: c.start },
   }))
 
-  const stored = await vectorStore.indexChunks(
-    userId,
-    id,
-    inputs,
-    { name: storyMeta?.name ?? raw.name },
-    options.getEmbedding ? { getEmbedding: options.getEmbedding } : undefined,
-  )
+  let stored: { ok: boolean; indexed: number }
+  try {
+    stored = await vectorStore.indexChunks(
+      userId,
+      id,
+      inputs,
+      { name: storyMeta?.name ?? raw.name },
+      options.getEmbedding ? { getEmbedding: options.getEmbedding } : undefined,
+    )
+  } catch (e) {
+    // 落盘为同步 IO（磁盘/权限失败会抛）——统一收成失败形态，不让异常穿透到路由
+    return { ok: false, error: `index persist failed: ${e instanceof Error ? e.message : String(e)}` }
+  }
 
   // 预取重排模型（非致命）：让首次检索不必等冷启；失败仅告警
   let warning: string | undefined

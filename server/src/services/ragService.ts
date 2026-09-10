@@ -250,7 +250,8 @@ export async function index(
   if (!scriptId) {
     return { ok: false, indexed: 0, error: 'scriptId required' }
   }
-  if (Array.isArray(chunks) && chunks.length > 0) {
+  if (chunks !== undefined) {
+    // 只认新契约：任何 chunks 形态（含空数组/非数组）都明确拒绝，不静默忽略
     return {
       ok: false,
       indexed: 0,

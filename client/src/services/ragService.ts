@@ -2,7 +2,6 @@
  * RAG Service — communicates with the backend vector store via the Platform
  * Bridge (replaces the Electron IPC `window.electronAPI.rag*` calls, Task 7).
  */
-import type { RAGChunk } from '../types/script'
 import { traceBus } from './tracing'
 import { getBridge } from '../platform'
 

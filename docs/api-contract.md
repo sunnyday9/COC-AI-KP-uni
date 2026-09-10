@@ -137,7 +137,7 @@ interface AppSettings {
 | GET | `/api/rag/health` | — | `{ status, service }` |
 | POST | `/api/rag/test-embedding` | — | `{ ok, vectorLength?, error? }` |
 | POST | `/api/rag/test-graphrag-extract` | `{ scriptId, maxChunks?, maxBatches? }` | `{ ok, scriptId?, extractionModelUsed?, totalBatches?, testedBatches?, results?, error? }` |
-| POST | `/api/rag/index` | `{ scriptId, chunks: {id,content,type,metadata}[], storyMeta? }` | `{ ok, indexed }` |
+| POST | `/api/rag/index` | `{ scriptId, storyMeta? }`（M1-T3：切块在服务端，不再收 chunks；带 chunks 明确 400 语义拒绝） | `{ ok, indexed, error?, warning? }` |
 | DELETE | `/api/rag/index/:scriptId` | — | `{ ok, deleted }` |
 | POST | `/api/rag/query` | `{ query, scriptId?, sceneId?, type?, topK? }` | `{ chunks: { content, metadata, distance }[] }` |
 | POST | `/api/rag/context` | `{ query, scriptId?, sceneId?, topK? }` | `{ context, graphSummary?, chunkCount? }` |
