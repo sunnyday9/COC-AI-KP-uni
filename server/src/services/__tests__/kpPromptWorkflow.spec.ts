@@ -3,7 +3,7 @@
  * verify_original 写成"事实问的默认动作"，同时保持 rag 分支逐字节不变。
  */
 import { describe, it, expect } from 'vitest'
-import { WORKFLOW_KNOWLEDGE_SOURCE, baseInstructionsFor, BASE_INSTRUCTIONS } from '../kpPromptService.js'
+import { WORKFLOW_KNOWLEDGE_SOURCE, baseInstructionsFor, BASE_INSTRUCTIONS, buildKnowledgeBlock } from '../kpPromptService.js'
 
 describe('kpPromptService: workflow 知识源说明', () => {
   it('dossier：列出全部查证工具，且要求"档案没写清的具体事实先查证原文"', () => {
@@ -48,5 +48,29 @@ describe('kpPromptService: workflow 知识源说明', () => {
     // 两分支只在知识源那一行不同
     const strip = (s: string) => s.split('\n').filter((l, i) => i !== 1).join('\n')
     expect(strip(baseInstructionsFor('rag'))).toBe(strip(baseInstructionsFor('dossier')))
+  })
+})
+
+describe('kpPromptService: 预取查证块（P27）', () => {
+  it('dossier：场景块之后追加「原文查证」小节；缺省/空串 → 逐字节保持原形态', () => {
+    const scene = '场景：旧图书馆\n现场描述：灰尘与霉味。'
+    const base = buildKnowledgeBlock('dossier', '', scene)
+    expect(base).toBe(`\n## 当前场景档案\n${scene}`)
+    expect(buildKnowledgeBlock('dossier', '', scene, '')).toBe(base)
+    expect(buildKnowledgeBlock('dossier', '', scene, '   ')).toBe(base)
+
+    const withVerify = buildKnowledgeBlock('dossier', '', scene, '【原文查证】海哥本名海华。')
+    expect(withVerify).toContain('## 当前场景档案')
+    expect(withVerify).toContain('## 原文查证（服务端已自动检索，供你对齐事实）')
+    expect(withVerify.indexOf('## 原文查证')).toBeGreaterThan(withVerify.indexOf('## 当前场景档案'))
+  })
+
+  it('无场景块时（回退故事情报）仍带查证小节；rag 分支不受影响（默认无块）', () => {
+    const dossierNoScene = buildKnowledgeBlock('dossier', '检索到的一些情报', '', '【原文查证】结论')
+    expect(dossierNoScene).toContain('## 故事情报')
+    expect(dossierNoScene).toContain('## 原文查证')
+    expect(buildKnowledgeBlock('rag', 'rag 情报', '', '【原文查证】结论')).toContain('## 原文查证')
+    // rag 缺省调用（老签名三参）逐字节不变
+    expect(buildKnowledgeBlock('rag', 'rag 情报', '')).toBe('\n## 故事情报\nrag 情报')
   })
 })

@@ -413,16 +413,20 @@ export class RoomService {
       const historyEnd = Math.max(0, this.messages.length - batch.length)
       // 知识注入按 workflow 分派：rag = 玩家消息当 query 检索；dossier = 静态场景块
       const [knowledge, storyName] = await Promise.all([
-        this.workflow === 'dossier' ? this.fetchKnowledge() : this.fetchRagContext(merged).then((ragContext) => ({ ragContext, sceneBlock: '' })),
+        this.workflow === 'dossier' ? this.fetchKnowledge() : this.fetchRagContext(merged).then((ragContext) => ({ ragContext, sceneBlock: '', sceneName: undefined })),
         this.fetchStoryName(),
       ])
       const ragContext = knowledge.ragContext
       const sceneBlock = knowledge.sceneBlock
+      // P27：服务端自动预取原文查证——玩家发言是事实问句且档案对不上措辞时，
+      // 服务端先跑一次查证并把结论并入本轮 system（对玩家不可见）。P26 已证
+      // 纯提示词无法让 KP 主动查证；此步不依赖 KP 自觉，失败/超时静默跳过。
+      const prefetched = await this.maybePrefetchVerification(merged, sceneBlock, knowledge.sceneName)
       const chatMessages = buildRoomTurnMessages(
         this.promptInput(storyName, this.messages.slice(0, historyEnd)),
         ragContext,
         merged,
-        { workflow: this.workflow, sceneBlock },
+        { workflow: this.workflow, sceneBlock, verifyBlock: prefetched },
       )
       await this.runKpTurnForRoom(
         this.ownerId,
@@ -586,6 +590,33 @@ export class RoomService {
     )
   }
 
+  /**
+   * P27 预取：事实问句 + 档案对不上措辞 → 服务端先查证，结论并入本轮 system。
+   * 仅在 dossier 房生效；任何失败/超时返回 ''（不回填、不阻断回合）。
+   */
+  private async maybePrefetchVerification(playerText: string, sceneBlock: string, sceneName?: string): Promise<string> {
+    if (this.workflow !== 'dossier' || !this.storyId) return ''
+    try {
+      const { runPrefetch } = await import('../rag/dossier/prefetch.js')
+      const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
+      const gaps = await loadGaps(this.ownerId, this.storyId)
+      const coverage = sceneName && gaps ? computeSceneCoverage(gaps, sceneName) : null
+      const res = await runPrefetch(
+        { playerText, sceneBlock, sceneName, coverage },
+        {
+          userId: this.ownerId,
+          scriptId: this.storyId,
+          onEvent: (e) => {
+            if (process.env.KP_LLM_DEBUG === '1') console.error(`[prefetch] room=${this.roomId} ${JSON.stringify(e)}`)
+          },
+        },
+      )
+      return res?.content ?? ''
+    } catch {
+      return ''
+    }
+  }
+
   /* ═══════════════ 上下文注入与记忆（ADR-0002，服务端收口） ═══════════════ */
 
   /** RAG 检索上下文（失败回退 ''——回合不因检索中断）。rag workflow 专用。 */
@@ -634,7 +665,6 @@ export class RoomService {
     }
     return { ragContext: await this.fetchRagContext(OPENING_RAG_QUERY), sceneBlock: '' }
   }
-
   /** 剧本名（rag 索引清单 / dossier 档案；失败回退 ''）。 */
   private async fetchStoryName(): Promise<string> {
     if (!this.storyId) return ''

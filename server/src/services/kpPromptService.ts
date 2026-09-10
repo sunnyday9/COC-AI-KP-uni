@@ -158,15 +158,19 @@ export function baseInstructionsFor(workflow: StoryWorkflow): string {
 }
 
 /** Rendered knowledge block: dossier → current-scene static block; rag → retrieved context. */
-export function buildKnowledgeBlock(workflow: StoryWorkflow, ragContext: string, sceneBlock: string): string {
+export function buildKnowledgeBlock(workflow: StoryWorkflow, ragContext: string, sceneBlock: string, verifyBlock = ''): string {
+  const verify = String(verifyBlock ?? '').trim()
+  const verifySection = verify
+    ? `\n## 原文查证（服务端已自动检索，供你对齐事实）\n${verify}\n`
+    : ''
   if (workflow === 'dossier') {
-    if (sceneBlock) return `\n## 当前场景档案\n${sceneBlock}`
+    if (sceneBlock) return `\n## 当前场景档案\n${sceneBlock}${verifySection}`
     // Dossier room without a matching scene yet (e.g. opening before any
     // transition): fall back to retrieved context so the KP still has a
     // factual anchor.
-    return ragContext ? `\n## 故事情报\n${ragContext}` : ''
+    return `${ragContext ? `\n## 故事情报\n${ragContext}` : ''}${verifySection}`
   }
-  return ragContext ? `\n## 故事情报\n${ragContext}` : ''
+  return `${ragContext ? `\n## 故事情报\n${ragContext}` : ''}${verifySection}`
 }
 
 /** 单张角色卡 → 调查员上下文块（与旧客户端 buildCharacterContext 的角色部分同语义）。 */
@@ -246,12 +250,12 @@ export interface RoomPromptInput {
 
 export type RoomChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
-function buildSystemBody(input: RoomPromptInput, ragContext: string, opts: { workflow?: StoryWorkflow; sceneBlock?: string } = {}): string {
+function buildSystemBody(input: RoomPromptInput, ragContext: string, opts: { workflow?: StoryWorkflow; sceneBlock?: string; verifyBlock?: string } = {}): string {
   const workflow: StoryWorkflow = opts.workflow ?? 'rag'
   const memoryBlock = buildMemoryBlock(input.kpMemory)
   const longTermBlock = input.longTermSummary ? `\n## 长期记忆（本局至今）\n${input.longTermSummary}\n` : ''
   const recentTurnsBlock = buildRecentTurnsBlock(input.messages)
-  const knowledgeBlock = buildKnowledgeBlock(workflow, ragContext, opts.sceneBlock ?? '')
+  const knowledgeBlock = buildKnowledgeBlock(workflow, ragContext, opts.sceneBlock ?? '', opts.verifyBlock ?? '')
   const stateParts: string[] = []
   if (input.storyName) stateParts.push(`## 故事: ${input.storyName}`)
   if (input.scene) stateParts.push(`当前场景: ${input.scene}`)
@@ -282,7 +286,7 @@ export function buildRoomTurnMessages(
   input: RoomPromptInput,
   ragContext: string,
   batchUserContent: string,
-  opts: { workflow?: StoryWorkflow; sceneBlock?: string } = {},
+  opts: { workflow?: StoryWorkflow; sceneBlock?: string; verifyBlock?: string } = {},
 ): RoomChatMessage[] {
   return [
     { role: 'system', content: buildSystemBody(input, ragContext, opts) },
@@ -295,7 +299,7 @@ export function buildRoomTurnMessages(
 export function buildRoomOpeningMessages(
   input: RoomPromptInput,
   ragContext: string,
-  opts: { workflow?: StoryWorkflow; sceneBlock?: string } = {},
+  opts: { workflow?: StoryWorkflow; sceneBlock?: string; verifyBlock?: string } = {},
 ): RoomChatMessage[] {
   const workflow: StoryWorkflow = opts.workflow ?? 'rag'
   const system: RoomChatMessage = {

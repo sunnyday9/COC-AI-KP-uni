@@ -36,6 +36,13 @@ vi.mock('../rag/dossier/storyDossierService.js', () => ({
   listScenes: vi.fn(() => [{ id: 'scene_1', name: '旧图书馆' }]),
 }))
 
+// P27：预取走缺省判定，但 verify 不出网——本 spec 只关心房间链路不被预取打断；
+// 判定与执行规则由 prefetch.spec 单测覆盖。
+vi.mock('../../rag/dossier/prefetch.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/prefetch.js')>()
+  return { ...actual, runPrefetch: vi.fn(async () => null) }
+})
+
 const suite = `drm_${Date.now()}`
 let seedSeq = 0
 
