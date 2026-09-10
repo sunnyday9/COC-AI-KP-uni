@@ -111,10 +111,12 @@ rag 房 vs dossier 房；服务端 KP_WIRE_SAMPLING=1 + KP_CHUNK_STREAM=1）。�
 | -营一日的恐怖 | dossier | 10 | 19.8 / 77.6s | **45.1 / 141.9s** | 4,923 | skill_check×1, grant_clue×3, scene_list×4, transition_scene×6, scene_dossier×4, san_check×1, adjust_san×1 |
 
 **注入侧**：rag 房每回合 7.5k token 检索上下文（10 回合 75.7k）；dossier 房按 harness 近似口径
-（场景名+简介+场景原文）**每回合 538 token、10 回合合计 4.4k ≈ rag 的 1/17**。服务端实际注入的是
-`buildSceneBlock`（多出在场 NPC/可推进行动/可获得线索），按 P24 缓存档案实测平均 **1.0k（火焰）
-/1.3k（-营）token**——两种口径都指向**约一个数量级的上下文缩减**。（本列在首跑恒 0 是 harness 路径
-bug：服务端落盘文件名经 `sanitizeScriptId`，此前只试原始 id；P25d 已修并复测。）
+（场景名+简介+场景原文）**每回合 538 token、10 回合合计 4.4k ≈ rag 的 1/17**（其中 3 回合记 0——
+该口径按房间 `scene` 字段精确匹配档案场景名，KP 转场到"贾司的别墅（书房/二楼）""走廊"这类
+非档案名时落空，属**近似口径的已知低估**）。服务端实际注入的是 `buildSceneBlock`（多出在场 NPC/
+可推进行动/可获得线索），按 P24 缓存档案实测平均 **1.0k（火焰）/1.3k（-营）token**——两种口径都
+指向**约一个数量级的上下文缩减**。（本列在首跑恒 0 是 harness 路径 bug：服务端落盘文件名经
+`sanitizeScriptId`，此前只试原始 id；P25d 已修并复测。）
 
 **延迟**：火焰篇 dossier 房整回合 p50 31.7s vs rag 74.3s（rag 每回合多注入 ~7k token 且更强推理）；
 -营 篇两房持平（45.1s vs 41.6s），但 dossier 房 p95 差（141.9s vs 94.2s，两回合走了长工具链）。
