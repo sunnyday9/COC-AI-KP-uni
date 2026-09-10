@@ -14,7 +14,7 @@
  *
  * 打分器可注入（`RerankScorer`）：单测用确定性假打分器，不触碰 279MB 模型。
  */
-import { MODELS_DIR } from '../config.js'
+import { MODELS_DIR, isMockAiMode } from '../config.js'
 
 /** 重排模型（q8 约 279MB；xlm-roberta 架构，transformers.js 原生支持）。 */
 export const RERANK_MODEL_ID = 'onnx-community/bge-reranker-base-ONNX'
@@ -40,11 +40,6 @@ export interface RerankOptions {
   topN?: number
 }
 
-export function isMockAiMode(): boolean {
-  const v = String(process.env.MOCK_AI ?? '').trim().toLowerCase()
-  return v === '1' || v === 'true'
-}
-
 /* ── 本地模型：单例 + 惰性加载（照 embedding.ts 的 MODELS_DIR/单例模式） ── */
 
 type RerankModelHandle = {
@@ -54,12 +49,12 @@ type RerankModelHandle = {
 
 let modelPromise: Promise<RerankModelHandle | null> | null = null
 
-/** 是否已加载（测试与诊断用）。 */
-export function isRerankerLoaded(): boolean {
-  return modelPromise !== null
-}
-
-/** 加载本地重排模型（单例；失败返回 null → 调用方降级）。 */
+/**
+ * 加载本地重排模型（惰性单例；失败返回 null → 调用方降级）。
+ *
+ * 失败**不永久化**（审查）：`loadRerankModel` 是唯一加载入口，索引期预取会调用它；
+ * 瞬时失败（网络/磁盘）后下次调用应当重试，而不是让该进程余生全部降级。
+ */
 export async function loadRerankModel(): Promise<RerankModelHandle | null> {
   if (isMockAiMode()) return null
   if (!modelPromise) {
@@ -78,8 +73,10 @@ export async function loadRerankModel(): Promise<RerankModelHandle | null> {
           AutoModelForSequenceClassification.from_pretrained(RERANK_MODEL_ID, { dtype: 'q8' }),
         ])
         return { tokenizer: tokenizer as RerankModelHandle['tokenizer'], model: model as RerankModelHandle['model'] }
-      } catch {
-        return null
+      } catch (e) {
+        // 失败不缓存：清掉 promise 让下次调用重试（瞬时故障可自愈）
+        modelPromise = null
+        throw e
       }
     })()
   }
@@ -92,12 +89,12 @@ export function _resetRerankModelForTests(): void {
 }
 
 /**
- * 本地模型打分：逐批 (query, passage) 取 logits → **sigmoid**（不是 softmax）。
- * 任何异常向上抛，由 rerank() 统一转为 ok:false。
+ * 本地模型打分：整批 (query, passage) 取 logits → **sigmoid**（不是 softmax）。
+ * 任何异常向上抛，由 rerank() 统一转为 ok:false（保留原始错误信息供排障）。
  */
 async function modelScorer(query: string, passages: string[]): Promise<number[]> {
   const handle = await loadRerankModel()
-  if (!handle) throw new Error('rerank model unavailable')
+  if (!handle) throw new Error('rerank model unavailable (not loaded)')
   const inputs = (await handle.tokenizer(new Array(passages.length).fill(query), {
     text_pair: passages,
     padding: true,
@@ -108,7 +105,10 @@ async function modelScorer(query: string, passages: string[]): Promise<number[]>
   if (!logits) throw new Error('rerank model returned no logits')
   // 单 logit 必须 sigmoid：pipeline('text-classification') 的 softmax 会恒返回 1.0
   const probs = typeof logits.sigmoid === 'function' ? logits.sigmoid() : logits
-  const rows = (typeof probs.tolist === 'function' ? probs.tolist() : []) as number[][]
+  if (typeof probs.tolist !== 'function') {
+    throw new Error('rerank output is not tensor-like (missing tolist)')
+  }
+  const rows = probs.tolist() as number[][]
   return rows.map((r) => (Array.isArray(r) && r.length > 0 ? Number(r[0]) : 0))
 }
 

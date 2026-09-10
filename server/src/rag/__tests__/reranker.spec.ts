@@ -82,15 +82,53 @@ describe('reranker: 降级与语义', () => {
   })
 
   it('无打分器注入且 MOCK_AI=1 → 不加载模型，直接降级', async () => {
-    const prev = process.env.MOCK_AI
-    process.env.MOCK_AI = '1'
+    vi.stubEnv('MOCK_AI', '1')
     try {
       const res = await rerank('q', ['甲', '乙'])
       expect(res.ok).toBe(false)
       expect(res.error).toContain('mock')
     } finally {
-      if (prev === undefined) delete process.env.MOCK_AI
-      else process.env.MOCK_AI = prev
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('模型缺失路径（loadRerankModel 返回 null）→ 降级且错误信息可诊断', async () => {
+    // 直接测 modelScorer 的真实失败路径：把动态 import 的模块替换为缺 AutoTokenizer 的桩，
+    // 使 loadRerankModel 抛错（而不是走 MOCK_AI 早退）。
+    vi.resetModules()
+    vi.doMock('@huggingface/transformers', () => ({ env: {} }))
+    try {
+      const fresh = await import('../reranker.js')
+      fresh._resetRerankModelForTests()
+      const res = await fresh.rerank('q', ['甲', '乙'])
+      expect(res.ok).toBe(false)
+      // 保留原始错误信息（不再是笼统的 "unavailable"）
+      expect(String(res.error).length).toBeGreaterThan(0)
+    } finally {
+      vi.doUnmock('@huggingface/transformers')
+      vi.resetModules()
+    }
+  })
+
+  it('加载失败不永久化：下次调用会重试（不是一次失败终生降级）', async () => {
+    vi.resetModules()
+    let attempts = 0
+    vi.doMock('@huggingface/transformers', () => ({
+      env: {},
+      get AutoTokenizer() {
+        attempts++
+        throw new Error('transient failure')
+      },
+    }))
+    try {
+      const fresh = await import('../reranker.js')
+      fresh._resetRerankModelForTests()
+      await fresh.rerank('q', ['甲'])
+      await fresh.rerank('q', ['甲'])
+      expect(attempts).toBeGreaterThanOrEqual(2)
+    } finally {
+      vi.doUnmock('@huggingface/transformers')
+      vi.resetModules()
     }
   })
 })
@@ -138,6 +176,11 @@ describe('reranker: 真实模型冒烟', () => {
       expect(new Set(scores).size).toBeGreaterThan(1)
       expect(Math.max(...scores)).toBeGreaterThan(0.5)
       expect(Math.min(...scores)).toBeLessThan(0.5)
+      // sigmoid 值域钉住：若误用原始 logits（或 pipeline softmax 全 1.0），分数会跑出 [0,1]
+      for (const s of scores) {
+        expect(s).toBeGreaterThanOrEqual(0)
+        expect(s).toBeLessThanOrEqual(1)
+      }
     },
     180_000,
   )
