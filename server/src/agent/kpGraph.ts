@@ -327,10 +327,11 @@ export function shouldTriggerInsanity(state: SanState | null): boolean {
  * does NOT reset the counter, so "searching with checks but never receiving a
  * clue" escalates exactly as REPORT.md recommends (force grant_clue after 2
  * such turns, force transition_scene after 4).
- * Dossier story-lookup tools (scene_list / scene_dossier / lexical_search) are
- * also progress: the KP actively verifying story facts is not stalling.
+ * Dossier story-lookup tools (scene_list / scene_dossier / lexical_search /
+ * verify_original) are also progress: the KP actively verifying story facts
+ * is not stalling.
  */
-const STALL_PROGRESS_TOOLS = ['grant_clue', 'transition_scene', 'scene_list', 'scene_dossier', 'lexical_search']
+const STALL_PROGRESS_TOOLS = ['grant_clue', 'transition_scene', 'scene_list', 'scene_dossier', 'lexical_search', 'verify_original']
 
 export function computeStallLevelFromHistory(messages: KpMessage[]): number {
   let stall = 0

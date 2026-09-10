@@ -141,6 +141,8 @@ export const WORKFLOW_KNOWLEDGE_SOURCE: Record<StoryWorkflow, string> = {
   dossier:
     '你的故事知识来自 system 中的「当前场景档案」（当前所在场景的权威描述、在场 NPC、可获得的线索）。' +
     '叙述当前场景时必须严格依据这份档案。当需要确认其他场景、NPC 或线索的细节时，用 scene_list / scene_dossier / lexical_search 工具查证后再叙事；' +
+    '档案里没有、说不清、或你需要原文级精确细节（原文措辞、数字、NPC 原名/原话）时，用 verify_original 工具在剧本原文中查证（返回「未取得」= 原文也没有，必须如实叙事、不要编造）。' +
+    'verify_original 的结果若带「剧透层·仅限 KP 内部裁定」，只能用于你决定现在能否给线索/如何引导，禁止向玩家复述其内容。' +
     '若查证不到，不要编造场景或 NPC。',
 }
 

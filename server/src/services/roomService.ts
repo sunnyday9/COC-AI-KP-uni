@@ -499,6 +499,22 @@ export class RoomService {
         if (hits.length === 0) return { content: `剧本档案中未找到与「${query}」相关的内容。` }
         return { content: hits.map((h) => `[${h.kind}] ${h.name}${h.text ? `：${h.text.slice(0, 200)}` : ''}`).join('\n') }
       }
+      if (toolName === 'verify_original') {
+        // P25 运行时原文查证：场景锚点窗口 → 全新上下文子阅读器（剧透层标注随内容）。
+        // 缺省场景 = 房间当前场景；内部失败一律降级为「未取得」文本（不阻断回合）。
+        const question = String(args.question ?? '').trim()
+        if (!question) return { content: 'error: question required' }
+        const sceneArg = String(args.scene ?? '').trim() || this.scene || undefined
+        const { verifyOriginal } = await import('../rag/dossier/originalLookup.js')
+        const res = await verifyOriginal(
+          { question, scene: sceneArg },
+          { userId: this.ownerId, scriptId: this.storyId as string },
+        )
+        if (process.env.KP_LLM_DEBUG === '1') {
+          console.error(`[verify-original] room=${this.roomId} scene=${sceneArg ?? ''} tier=${res.meta.tier} chars=${res.meta.chars} ok=${res.meta.ok} ${res.meta.durationMs}ms`)
+        }
+        return { content: res.content }
+      }
       return { content: `error: unknown tool "${toolName}"` }
     }
   }
