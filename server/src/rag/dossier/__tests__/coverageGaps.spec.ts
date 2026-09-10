@@ -16,6 +16,7 @@ const {
   normalizeText,
   splitStoryBlocks,
   computeCoverageGaps,
+  computeSceneCoverage,
   persistGaps,
   loadGaps,
   deleteGaps,
@@ -120,6 +121,74 @@ describe('coverageGaps: 覆盖判定 + span 合并', () => {
     const g = computeCoverageGaps(story, [] as never)
     expect(g.gapCount).toBeGreaterThan(0)
     expect(g.gapPct).toBe(100)
+  })
+
+  it('缺口后紧跟被覆盖段：span 不吞掉被覆盖的段（P26 修——此前 closeGap(b.end) 把覆盖段算进缺口）', () => {
+    const uncovered = `未被收录的一段${'缺'.repeat(280)}`
+    const covered = `已被场景誊抄的一段${'收'.repeat(280)}`
+    const st = `${uncovered}\n\n${covered}`
+    const g = computeCoverageGaps(st, [{ id: 's', name: '场景', sceneText: covered }] as never)
+    expect(g.gapCount).toBe(1)
+    expect(g.spans[0]?.chars).toBe(uncovered.length)
+    expect(st.slice(g.spans[0]?.start ?? 0, g.spans[0]?.end ?? 0)).toBe(uncovered)
+    // gapPct 不再把覆盖段算作缺失
+    expect(g.gapPct).toBe(Math.round((uncovered.length / st.length) * 1000) / 10)
+  })
+})
+
+/* ═════════ 场景级覆盖度（P26：场景块覆盖提示的数据源） ═════════ */
+
+describe('coverageGaps: 场景级覆盖度（P26）', () => {
+  const filler = (label: string, n: number) => `${label}${'景'.repeat(n)}`
+  const P_OUT1 = filler('开篇综述', 3_000) // 远在场景甲区域之前 → 不计入场景甲的账
+  const C_TEXT = `场景丙原文${'文'.repeat(1_200)}`
+  const A_TEXT = `场景甲原文${'甲'.repeat(295)}`
+  const P_IN = `漏掉的背景${'漏'.repeat(995)}` // 落在场景甲区域内 → 计入
+  // 末尾再放一段场景丙的照抄（被覆盖）→ 场景甲的区域不会被原文末尾截断
+  const story = [P_OUT1, C_TEXT, A_TEXT, P_IN, C_TEXT].join('\n\n')
+  const scenes = [
+    { id: 'scene_c', name: '场景丙', sceneText: C_TEXT },
+    { id: 'scene_a', name: '场景甲', sceneText: A_TEXT },
+  ] as never
+
+  it('只把场景区域内的 gap 计入：区域外的缺口不算这个场景的账', () => {
+    const gaps = computeCoverageGaps(story, scenes)
+    const cov = computeSceneCoverage(gaps, 'scene_a')
+    expect(cov).not.toBeNull()
+    expect(cov?.sceneId).toBe('scene_a')
+    expect(cov?.sceneName).toBe('场景甲')
+    // 区域内唯一缺口 = P_IN（开篇综述在区域起点之前，不计）
+    expect(cov?.gapSpans).toBe(1)
+    expect(cov?.gapChars).toBe(P_IN.length)
+    // 区域 = 首锚点前 300 + 末锚点后 2500（场景甲两个锚点相距 ≈2）
+    expect(cov?.regionChars).toBeGreaterThan(2_700)
+    expect(cov?.regionChars).toBeLessThan(2_900)
+    expect(cov?.pct).toBeGreaterThan(60)
+    expect(cov?.pct).toBeLessThan(70)
+  })
+
+  it('按名字查同样命中；区域外的 gap 确实没被算进来（gapChars < 总 gapChars）', () => {
+    const gaps = computeCoverageGaps(story, scenes)
+    const byName = computeSceneCoverage(gaps, '场景丙')
+    expect(byName?.sceneId).toBe('scene_c')
+    const covA = computeSceneCoverage(gaps, 'scene_a')
+    const totalGap = gaps.spans.reduce((s, x) => s + x.chars, 0)
+    expect(covA?.gapChars ?? 0).toBeLessThan(totalGap)
+  })
+
+  it('场景无锚点（纯摘要、matched=false）/ 未知场景 / 无 gaps → null', () => {
+    const gaps = computeCoverageGaps(story, scenes)
+    expect(computeSceneCoverage(gaps, '不存在的场景')).toBeNull()
+    expect(computeSceneCoverage(null, 'scene_a')).toBeNull()
+    const summaryGaps = computeCoverageGaps(story, [{ id: 'sx', name: '纯摘要', sceneText: '这段文字在原文里完全没有逐字对应，属于模型改写的摘要内容。' }] as never)
+    expect(computeSceneCoverage(summaryGaps, 'sx')).toBeNull()
+  })
+
+  it('区域内无缺口 → pct 100 / 0 段（提示行据此保持安静）', () => {
+    const clean = computeCoverageGaps(C_TEXT, [{ id: 'scene_c', name: '场景丙', sceneText: C_TEXT }] as never)
+    const cov = computeSceneCoverage(clean, 'scene_c')
+    expect(cov?.gapSpans).toBe(0)
+    expect(cov?.pct).toBe(100)
   })
 })
 

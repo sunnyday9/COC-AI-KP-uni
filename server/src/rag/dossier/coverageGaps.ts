@@ -51,6 +51,11 @@ export interface SceneAnchor {
   starts?: number[]
 }
 
+/** 场景原文区域：首锚点前的衔接语余量（与运行时查证工具同口径）。 */
+export const SCENE_REGION_LEAD = 300
+/** 场景原文区域：末锚点后的余量（覆盖"场景正文比誊抄出的锚点更长"的部分）。 */
+export const SCENE_REGION_SPAN = 2_500
+
 export interface CoverageGaps {
   storyChars: number
   sceneTextChars: number
@@ -198,7 +203,9 @@ export function computeCoverageGaps(storyText: string, scenes: DossierScene[]): 
   const blocks = splitStoryBlocks(text)
   for (const b of blocks) {
     if (blockCovered(b, normScenes)) {
-      closeGap(b.end)
+      // 缺口在最后一个未覆盖块处收口（P26 修：此前传 b.end 会把紧随其后的
+      // 被覆盖块一并算进缺口，gapChars/gapPct 系统性偏高）
+      closeGap(open ? open.end : b.end)
     } else if (open) {
       // 相邻未覆盖块合并（间距 ≤30 字符视作连续——残留空白噪声）
       if (b.start - open.end <= 30) {
@@ -227,6 +234,54 @@ export function computeCoverageGaps(storyText: string, scenes: DossierScene[]): 
     spans,
     sceneAnchors,
   }
+}
+
+/* ═══════════════════ 场景级覆盖度（P26） ═══════════════════ */
+
+export interface SceneCoverage {
+  sceneId: string
+  sceneName: string
+  /** 该场景原文区域（首锚点-LEAD .. 末锚点+SPAN）的字符数。 */
+  regionChars: number
+  /** 区域内未被任何 sceneText 收录的字符数。 */
+  gapChars: number
+  /** 区域内已收录比例 %（0–100，一位小数）。 */
+  pct: number
+  /** 落在该区域内的缺口段数（相邻缺口已合并）。 */
+  gapSpans: number
+}
+
+/**
+ * 场景级覆盖度（纯函数，无 IO）：把 story 级 gap spans 按场景锚点区域归属。
+ * 用途是给运行时一个"这份场景块不全"的信号（P25 观测：KP 以档案块为完整真源，
+ * 从不主动查原文）——pct/gapSpans 进场景块提示行，不含任何剧情信息。
+ *
+ * 无 gaps / 未知场景 / 场景无锚点（纯摘要，matched=false）→ null（调用方保持安静）。
+ */
+export function computeSceneCoverage(gaps: CoverageGaps | null, sceneIdOrName: string): SceneCoverage | null {
+  if (!gaps) return null
+  const target = String(sceneIdOrName ?? '').trim()
+  if (!target) return null
+  const anchor = (gaps.sceneAnchors ?? []).find((a) => a.id === target || a.name === target)
+  if (!anchor || !anchor.matched) return null
+  const starts = (anchor.starts ?? []).filter((s) => Number.isFinite(s)).sort((a, b) => a - b)
+  if (starts.length === 0) return null
+  const storyChars = Number.isFinite(gaps.storyChars) ? gaps.storyChars : Number.MAX_SAFE_INTEGER
+  const regionStart = Math.max(0, (starts[0] as number) - SCENE_REGION_LEAD)
+  const regionEnd = Math.min(storyChars, (starts[starts.length - 1] as number) + SCENE_REGION_SPAN)
+  const regionChars = regionEnd - regionStart
+  if (regionChars <= 0) return null
+  let gapChars = 0
+  let gapSpans = 0
+  for (const sp of gaps.spans ?? []) {
+    const overlap = Math.min(sp.end, regionEnd) - Math.max(sp.start, regionStart)
+    if (overlap > 0) {
+      gapChars += overlap
+      gapSpans++
+    }
+  }
+  const pct = Math.round((1 - gapChars / regionChars) * 1000) / 10
+  return { sceneId: anchor.id, sceneName: anchor.name, regionChars, gapChars, pct, gapSpans }
 }
 
 /* ═══════════════════ 落盘 / 读取（白名单 + resolve 双保险，同 dossier/annex） ═══════════════════ */
