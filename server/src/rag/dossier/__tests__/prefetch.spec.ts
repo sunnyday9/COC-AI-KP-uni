@@ -128,10 +128,35 @@ describe('prefetch: 执行（注入 verifyOriginal）', () => {
     expect(await runPrefetch(input(), { userId: 1, scriptId: 's1', verify })).toBeNull()
   })
 
-  it('查证超时 → 返回 null，不阻断回合', async () => {
-    const verify = vi.fn(() => new Promise<VerifyOriginalResult>(() => { /* 永不 resolve */ }))
-    const res = await runPrefetch(input(), { userId: 1, scriptId: 's1', verify, timeoutMs: 40 })
+  it('查证超时 → 返回 null，不阻断回合；底层调用未被取消（继续跑完预热缓存）', async () => {
+    let settled = false
+    const verify = vi.fn(
+      () =>
+        new Promise<VerifyOriginalResult>((resolve) => {
+          setTimeout(() => {
+            settled = true
+            resolve(hitResult)
+          }, 60)
+        }),
+    )
+    const res = await runPrefetch(input(), { userId: 1, scriptId: 's1', verify, timeoutMs: 20 })
     expect(res).toBeNull()
+    expect(settled).toBe(false)
+    // 内联等待结束后底层仍会跑完（这里等到它 settle，确认没有 unhandledRejection 且缓存可预热）
+    await new Promise((r) => setTimeout(r, 80))
+    expect(settled).toBe(true)
+  })
+
+  it('超时后底层 reject 不产生 unhandledRejection（返回 null）', async () => {
+    const verify = vi.fn(
+      () =>
+        new Promise<VerifyOriginalResult>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('late upstream 503')), 40)
+        }),
+    )
+    const res = await runPrefetch(input(), { userId: 1, scriptId: 's1', verify, timeoutMs: 10 })
+    expect(res).toBeNull()
+    await new Promise((r) => setTimeout(r, 60))
   })
 
   it('查证抛错 → 返回 null，不抛出', async () => {

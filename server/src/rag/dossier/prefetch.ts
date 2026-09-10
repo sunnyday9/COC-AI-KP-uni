@@ -40,9 +40,15 @@ export const OVERLAP_RATIO = 0.5
 export const MIN_BIGRAMS = 3
 /** 场景覆盖率 ≥ 此值（且已知）时不再预取：档案基本完整，问题多半不在剧本里。 */
 export const COVERAGE_SUFFICIENT = 85
-/** 预取默认超时（毫秒）：超时按"未取得"处理，不回填、不阻断回合。
- *  这是回合首字延迟的最坏增量（预取在 system 组装前内联执行），取 60s：
- *  verify_original 实测中位 22–33s。 */
+/**
+ * 内联等待上限（毫秒）——预取在 system 组装前同步等待，**这是回合首字延迟的直接增量**。
+ * P27 首跑实测：90s 上限时问句回合（"情报确认：…哪些…"）总耗时越过 harness 的 240s
+ * 等待被判失败。因此内联只等一小段（verify_original 实测中位 22–33s，命中率换延迟）；
+ * 超时后**不取消**底层调用——它继续跑完并写入 verify_original 的 TTL 缓存，
+ * 后续回合（KP 自己调用或同一问题再次触发）即命中，等效于异步预热。
+ */
+export const INLINE_TIMEOUT_MS = 15_000
+/** 兜底总超时（毫秒）：内联等待之上的硬上限（保留给测试注入与未来的后台模式）。 */
 export const PREFETCH_TIMEOUT_MS = 60_000
 
 export interface PrefetchInput {
@@ -108,7 +114,11 @@ export interface PrefetchDeps {
 }
 
 /**
- * 判定 + 预取。返回 null = 不注入（未触发 / 查证未取得 / 超时 / 出错）。
+ * 判定 + 预取。返回 null = 不注入（未触发 / 查证未取得 / 内联等待超时 / 出错）。
+ *
+ * 超时后底层 verify 调用**不被取消**：它继续跑完并把结果写进 verify_original 的
+ * 进程内 TTL 缓存（同问同场景 10 分钟），后续回合命中即免调用——内联超时只损失
+ * "本回合注入"，不损失这次查证的价值（异步预热）。
  * 返回结果里的 content 已含剧透层标注（verify_original 自身口径）。
  */
 export async function runPrefetch(input: PrefetchInput, deps: PrefetchDeps): Promise<VerifyOriginalResult | null> {
@@ -124,18 +134,23 @@ export async function runPrefetch(input: PrefetchInput, deps: PrefetchDeps): Pro
 
   if (!decision.trigger || !decision.question) return null
   const verify = deps.verify ?? verifyOriginal
-  const timeoutMs = deps.timeoutMs ?? PREFETCH_TIMEOUT_MS
+  const timeoutMs = deps.timeoutMs ?? INLINE_TIMEOUT_MS
   const started = Date.now()
+  const pending = verify({ question: decision.question, scene: input.sceneName }, { userId: deps.userId, scriptId: deps.scriptId })
+  // 后台完成也要有归宿：超时分支返回后，这个 promise 继续跑（预热缓存）——
+  // 但它可能在超时之后再 reject，必须挂一个吞错的处理器避免 unhandledRejection。
+  pending.catch(() => undefined)
   try {
     const result = await Promise.race([
-      verify({ question: decision.question, scene: input.sceneName }, { userId: deps.userId, scriptId: deps.scriptId }),
+      pending,
       new Promise<null>((resolve) => {
         const t = setTimeout(() => resolve(null), timeoutMs)
         t.unref?.()
       }),
     ])
     if (!result || !result.meta.ok) {
-      emit({ type: 'prefetch-result', ok: false, reason: result?.meta.reason ?? 'timeout', ms: Date.now() - started })
+      const reason = result?.meta.reason ?? 'inline-timeout'
+      emit({ type: 'prefetch-result', ok: false, reason, ms: Date.now() - started })
       return null
     }
     emit({ type: 'prefetch-result', ok: true, tier: result.meta.tier, spoiler: result.meta.spoiler, chars: result.meta.chars, ms: Date.now() - started })
