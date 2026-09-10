@@ -41,7 +41,7 @@ import {
   type StoryDossier,
 } from './schema.js'
 import { persistAnnex, deleteAnnex, runAnnex } from './annex.js'
-import { computeCoverageGaps, persistGaps, deleteGaps } from './coverageGaps.js'
+import { computeCoverageGaps, persistGaps, deleteGaps, type SceneCoverage } from './coverageGaps.js'
 
 /** TTL for in-memory dossier cache (ms). */
 const CACHE_TTL_MS = 60_000
@@ -374,8 +374,15 @@ export function listScenes(dossier: StoryDossier): { id: string; name: string; d
   return (dossier.scenes || []).map((s) => ({ id: s.id, name: s.name, description: s.description }))
 }
 
-/** Render a scene's static dossier block (used by buildDossierContext). */
-export function buildSceneBlock(dossier: StoryDossier, sceneNameOrId: string): string {
+/** 覆盖提示行（P26）：仅在"确有缺口"时出声——覆盖完整的场景不打扰 KP。 */
+export function coverageHintLine(coverage: SceneCoverage | null | undefined): string {
+  if (!coverage || coverage.gapSpans <= 0) return ''
+  return `原文收录：约 ${coverage.pct}%（另有 ${coverage.gapSpans} 段未收录）——需要原文级细节时用 verify_original 查证，不要凭印象补全。`
+}
+
+/** Render a scene's static dossier block (used by buildDossierContext).
+ *  传入 coverage 时附一行覆盖提示（P26：让 KP 知道块内可能缺东西）。 */
+export function buildSceneBlock(dossier: StoryDossier, sceneNameOrId: string, coverage?: SceneCoverage | null): string {
   const scene = findScene(dossier, sceneNameOrId)
   if (!scene) return ''
   const lines: string[] = []
@@ -395,7 +402,20 @@ export function buildSceneBlock(dossier: StoryDossier, sceneNameOrId: string): s
       .filter((c): c is StoryDossier['clues'][number] => !!c)
     if (clues.length) lines.push(`本场景可获得线索：${clues.map((c) => c.description).join('；')}`)
   }
+  const hint = coverageHintLine(coverage)
+  if (hint) lines.push(hint)
   return lines.join('\n')
+}
+
+/* 查档案落空时的回包文案（P26）：把"档案没有"显式导向原文查证工具——
+ * P25 观测到 KP 以档案为完整真源，落空时会直接放弃或凭印象作答。 */
+
+export function renderSceneNotFound(sceneName: string, sceneNames: string[]): string {
+  return `剧本中没有「${sceneName}」。可前往的场景：${sceneNames.join('、') || '（无）'}。档案可能不全——可用 verify_original 在剧本原文中查证。`
+}
+
+export function renderLexicalMiss(query: string): string {
+  return `剧本档案中未找到与「${query}」相关的内容。档案可能不全——可用 verify_original 在剧本原文中查证。`
 }
 
 /** Case-insensitive scene lookup by id/name/exact/contains (longest match wins). */

@@ -141,14 +141,20 @@ export const WORKFLOW_KNOWLEDGE_SOURCE: Record<StoryWorkflow, string> = {
   dossier:
     '你的故事知识来自 system 中的「当前场景档案」（当前所在场景的权威描述、在场 NPC、可获得的线索）。' +
     '叙述当前场景时必须严格依据这份档案。当需要确认其他场景、NPC 或线索的细节时，用 scene_list / scene_dossier / lexical_search 工具查证后再叙事；' +
-    '档案里没有、说不清、或你需要原文级精确细节（原文措辞、数字、NPC 原名/原话）时，用 verify_original 工具在剧本原文中查证（返回「未取得」= 原文也没有，必须如实叙事、不要编造）。' +
+    '档案块标注「原文收录：约 X%」时表示该场景原文有部分未入档。' +
+    '调查员问及具体事实（人名、地点、时间、数字、原文措辞）而档案没有明确写出、或你不敢肯定时，必须先调用 verify_original 在剧本原文中查证再叙事，禁止凭印象作答；' +
+    'verify_original 返回「未取得」= 原文也没有该信息，此时按调查员行动无法得知来处理，不要编造。' +
     'verify_original 的结果若带「剧透层·仅限 KP 内部裁定」，只能用于你决定现在能否给线索/如何引导，禁止向玩家复述其内容。' +
     '若查证不到，不要编造场景或 NPC。',
 }
 
-/** Replace the knowledge-source line in BASE_INSTRUCTIONS with the workflow variant. */
+/** Replace the knowledge-source line in BASE_INSTRUCTIONS with the workflow variant.
+ *  P26 修：rag 分支此前直接返回 BASE_INSTRUCTIONS，字面占位符
+ *  `{KNOWLEDGE_SOURCE_INSTRUCTION}` 会原样进 system prompt（P3 引入的回归——
+ *  该分支所有 A/B 的 rag 房都带着这行坏文本）。WORKFLOW_KNOWLEDGE_SOURCE.rag
+ *  与 main 的历史措辞逐字节一致，替换后 rag 即恢复到 main 的形态。 */
 export function baseInstructionsFor(workflow: StoryWorkflow): string {
-  return workflow === 'rag' ? BASE_INSTRUCTIONS : BASE_INSTRUCTIONS.replace('{KNOWLEDGE_SOURCE_INSTRUCTION}', WORKFLOW_KNOWLEDGE_SOURCE.dossier)
+  return BASE_INSTRUCTIONS.replace('{KNOWLEDGE_SOURCE_INSTRUCTION}', WORKFLOW_KNOWLEDGE_SOURCE[workflow] ?? WORKFLOW_KNOWLEDGE_SOURCE.rag)
 }
 
 /** Rendered knowledge block: dossier → current-scene static block; rag → retrieved context. */

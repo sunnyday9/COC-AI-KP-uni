@@ -474,7 +474,8 @@ export class RoomService {
   private buildStoryLookup(): ((toolName: string, args: Record<string, unknown>) => Promise<{ content: string }>) | undefined {
     if (this.workflow !== 'dossier' || !this.storyId) return undefined
     return async (toolName, args) => {
-      const { loadDossier, listScenes, buildSceneBlock, findScene, lexicalSearch } = await import('../rag/dossier/storyDossierService.js')
+      const { loadDossier, listScenes, buildSceneBlock, findScene, lexicalSearch, renderSceneNotFound, renderLexicalMiss } = await import('../rag/dossier/storyDossierService.js')
+      const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
       const dossier = await loadDossier(this.ownerId, this.storyId as string)
       if (!dossier) return { content: 'error: 剧本档案不存在' }
       if (toolName === 'scene_list') {
@@ -487,16 +488,18 @@ export class RoomService {
         if (!name) return { content: 'error: sceneName required' }
         const scene = findScene(dossier, name)
         if (!scene) {
-          const names = listScenes(dossier).map((s) => s.name).join('、')
-          return { content: `剧本中没有「${name}」。可前往的场景：${names || '（无）'}` }
+          return { content: renderSceneNotFound(name, listScenes(dossier).map((s) => s.name)) }
         }
-        return { content: buildSceneBlock(dossier, scene.id) }
+        // P26：附场景覆盖提示（缺口归属按 .gaps.json；缺失时静默降级）
+        const gaps = await loadGaps(this.ownerId, this.storyId as string).catch(() => null)
+        const coverage = gaps ? computeSceneCoverage(gaps, scene.id) : null
+        return { content: buildSceneBlock(dossier, scene.id, coverage) }
       }
       if (toolName === 'lexical_search') {
         const query = String(args.query ?? '').trim()
         if (!query) return { content: 'error: query required' }
         const hits = lexicalSearch(dossier, query, 5)
-        if (hits.length === 0) return { content: `剧本档案中未找到与「${query}」相关的内容。` }
+        if (hits.length === 0) return { content: renderLexicalMiss(query) }
         return { content: hits.map((h) => `[${h.kind}] ${h.name}${h.text ? `：${h.text.slice(0, 200)}` : ''}`).join('\n') }
       }
       if (toolName === 'verify_original') {
@@ -604,13 +607,18 @@ export class RoomService {
     if (!this.storyId) return { block: '' }
     try {
       const { loadDossier, buildSceneBlock, listScenes } = await import('../rag/dossier/storyDossierService.js')
+      const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
       const dossier = await loadDossier(this.ownerId, this.storyId)
       if (!dossier) return { block: '' }
       const scenes = listScenes(dossier)
       // 当前场景名（房间 scene 字段可能未设/未匹配档案）→ 档案场景 id
       const currentSceneId = scenes.find((s) => s.name === this.scene)?.id ?? (scenes[0]?.id ?? undefined)
       const sceneName = scenes.find((s) => s.id === currentSceneId)?.name ?? this.scene ?? undefined
-      const block = buildSceneBlock(dossier, currentSceneId || '')
+      // P26：场景块附覆盖提示（该场景原文有多少未入档）——P25 观测到 KP 缺少
+      // "档案可能不全"的信号，从不主动查原文。
+      const gaps = await loadGaps(this.ownerId, this.storyId).catch(() => null)
+      const coverage = currentSceneId ? computeSceneCoverage(gaps, currentSceneId) : null
+      const block = buildSceneBlock(dossier, currentSceneId || '', coverage)
       return { block, currentSceneId: sceneName }
     } catch {
       return { block: '' }

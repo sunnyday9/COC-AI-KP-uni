@@ -21,7 +21,7 @@ vi.stubEnv('DOSSIER_DATA_DIR', tmpDossier)
 // files so the env above takes effect.
 vi.resetModules()
 
-const { generateDossier, loadDossier, listDossiers, deleteDossier, buildSceneBlock, findScene, lexicalSearch, splitStorySections, stripCodeFence } = await import('../storyDossierService.js')
+const { generateDossier, loadDossier, listDossiers, deleteDossier, buildSceneBlock, coverageHintLine, renderSceneNotFound, renderLexicalMiss, findScene, lexicalSearch, splitStorySections, stripCodeFence } = await import('../storyDossierService.js')
 const { importStory, readStory } = await import('../../../services/storyService.js')
 
 // chatForRag mock: return a small deterministic dossier per batch.
@@ -131,6 +131,35 @@ describe('storyDossierService', () => {
     expect(block).toContain('阿洛伊斯')
     expect(block).toContain('青瓷花瓶是空心的')
     expect(buildSceneBlock(dossier as never, '不存在')).toBe('')
+  })
+
+  it('buildSceneBlock 带覆盖提示（P26）：覆盖不足时提示可用 verify_original 查原文', async () => {
+    const dossier = {
+      scriptId: 's', storyName: 's', generatedAt: 0,
+      scenes: [{ id: 'scene_1', name: '旧图书馆', sceneText: '灰尘与霉味。', description: '' }],
+      clues: [], npcs: [],
+    }
+    const cov = { sceneId: 'scene_1', sceneName: '旧图书馆', regionChars: 3_000, gapChars: 1_100, pct: 63.3, gapSpans: 3 }
+    const block = buildSceneBlock(dossier as never, '旧图书馆', cov)
+    expect(block).toContain('63.3')
+    expect(block).toContain('3')
+    expect(block).toContain('verify_original')
+    // 不传覆盖度 / 覆盖完整 → 不出现提示行（保持既有块形态）
+    expect(buildSceneBlock(dossier as never, '旧图书馆')).not.toContain('verify_original')
+    expect(buildSceneBlock(dossier as never, '旧图书馆', { ...cov, gapSpans: 0, pct: 100 })).not.toContain('verify_original')
+    expect(coverageHintLine(null)).toBe('')
+    expect(coverageHintLine({ ...cov, gapSpans: 0, pct: 100 })).toBe('')
+    expect(coverageHintLine(cov)).toContain('verify_original')
+  })
+
+  it('档案查空时的提示（P26）：场景未命中 / 关键词零命中都指向 verify_original', async () => {
+    const missScene = renderSceneNotFound('不存在的地方', ['旧图书馆', '钟楼'])
+    expect(missScene).toContain('不存在的地方')
+    expect(missScene).toContain('旧图书馆')
+    expect(missScene).toContain('verify_original')
+    const missLex = renderLexicalMiss('关键词')
+    expect(missLex).toContain('关键词')
+    expect(missLex).toContain('verify_original')
   })
 
   it('lexicalSearch finds scenes/clues/npcs by term overlap', async () => {
