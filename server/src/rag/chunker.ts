@@ -183,30 +183,34 @@ function applyOverlap(spans: Span[], text: string, opts: Required<ChunkOptions>)
   return out
 }
 
-/** 去掉过短片段（把它们并入前一块，没前一块就并入后一块）。 */
-function dropTinySpans(spans: Span[], opts: Required<ChunkOptions>): Span[] {
+/**
+ * 合并过短片段：**按原文区间**取内容（不是拼接片段），保证不丢字符、偏移仍可还原。
+ * 过短块并入前一块的区间末尾；首块过短则并入后一块的区间开头。
+ */
+function mergeTinySpans(text: string, spans: Span[], opts: Required<ChunkOptions>): Span[] {
   if (spans.length <= 1) return spans
-  const out: Span[] = []
+  const merged: Span[] = []
   for (const s of spans) {
-    if (s.content.trim().length >= opts.minChunkChars) {
-      out.push(s)
+    const tiny = s.content.trim().length < opts.minChunkChars
+    if (!tiny) {
+      merged.push(s)
       continue
     }
-    const prev = out[out.length - 1]
-    if (prev) {
-      prev.content = `${prev.content}\n${s.content}`
-    } else {
-      // 首块就太短：与下一块合并（延迟处理）
-      out.push(s)
+    const prev = merged[merged.length - 1]
+    if (!prev) {
+      merged.push(s) // 首块偏短：留给收尾合并
+      continue
     }
+    // 并入前一块：区间向后延伸（原文区间包含两者及其中间空白）
+    prev.content = text.slice(prev.start, s.start + s.content.length)
   }
-  // 若首块仍偏短且存在第二块，合并
-  if (out.length >= 2 && (out[0] as Span).content.trim().length < opts.minChunkChars) {
-    const first = out.shift() as Span
-    const second = out[0] as Span
-    out[0] = { start: first.start, content: `${first.content}\n${second.content}` }
+  // 首块仍偏短且有后继 → 与后继合并（区间从首块起点开始）
+  if (merged.length >= 2 && (merged[0] as Span).content.trim().length < opts.minChunkChars) {
+    const first = merged[0] as Span
+    const second = merged[1] as Span
+    merged.splice(0, 2, { start: first.start, content: text.slice(first.start, second.start + second.content.length) })
   }
-  return out
+  return merged
 }
 
 /**
@@ -224,8 +228,8 @@ export function chunkStoryText(text: string, options: ChunkOptions = {}): StoryC
   const root: Span = { start: 0, content: raw }
   const leaves = recurse(root, opts)
   const packed = packSpans(leaves, opts)
-  const dropped = dropTinySpans(packed, opts)
-  const withOverlap = applyOverlap(dropped, raw, opts)
+  const mergedTiny = mergeTinySpans(raw, packed, opts)
+  const withOverlap = applyOverlap(mergedTiny, raw, opts)
   // 契约兜底：偏移必须能还原内容（重叠可能把起点挪进上一块，拼接后就地重取）
   return withOverlap.map((c) => {
     const exact = raw.slice(c.start, c.start + c.content.length)

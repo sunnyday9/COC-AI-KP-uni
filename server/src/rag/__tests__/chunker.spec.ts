@@ -110,6 +110,57 @@ describe('chunker: 递归层级', () => {
 })
 
 describe('chunker: 边界与健壮性', () => {
+  it('末块过短 → 内容不丢（并入前块，按原文区间取）', () => {
+    // 回归：曾把过短尾块拼进前一块时丢字符（799甲 + "短" → 输出不含"短"）
+    const cases = [
+      `${'甲'.repeat(799)}\n\n短`,
+      `${'甲'.repeat(799)}\n\n${'中'.repeat(10)}`,
+      `${'甲'.repeat(780)}\n\n${'乙'.repeat(10)}\n\n${'丙'.repeat(780)}`,
+    ]
+    for (const text of cases) {
+      const chunks = chunkStoryText(text)
+      const all = chunks.map((c) => c.content).join('')
+      // 每个非空白字符都必须出现在某块里
+      const nonWs = text.replace(/\s/g, '')
+      for (const ch of new Set(nonWs)) expect(all).toContain(ch)
+      assertOffsets(text, chunks)
+    }
+  })
+
+  it('首块过短 → 并入后块（不丢内容、偏移仍指向原文）', () => {
+    const text = `短\n\n${'丙'.repeat(900)}`
+    const chunks = chunkStoryText(text, { minChunkChars: 40 })
+    expect(chunks.length).toBeGreaterThanOrEqual(1)
+    expect(chunks.map((c) => c.content).join('')).toContain('短')
+    assertOffsets(text, chunks)
+  })
+
+  it('全文往返：块序列覆盖原文全部非空白字符（顺序一致）', () => {
+    const text = ['# 第一章', '甲'.repeat(500), '## 场景：图书馆', '乙'.repeat(700), '尾段短句。'].join('\n\n')
+    const chunks = chunkStoryText(text)
+    const joined = chunks.map((c) => c.content).join('')
+    const compact = (s: string) => s.replace(/\s/g, '')
+    // 顺序覆盖：去掉空白后，原文每个字符按序出现（允许块间重叠导致的重复 → 用子序列判定）
+    const needle = compact(text)
+    const hay = compact(joined)
+    let i = 0
+    for (const ch of hay) if (i < needle.length && ch === needle[i]) i++
+    expect(i).toBe(needle.length)
+  })
+
+  it('重叠语义钉住：相邻块在原文上有 ≈overlap 字符交叠（不是 0）', () => {
+    const text = Array.from({ length: 10 }, (_, i) => `第${i + 1}段：${'字'.repeat(200)}。`).join('\n\n')
+    const chunks = chunkStoryText(text, { chunkChars: 500, overlap: 60 })
+    expect(chunks.length).toBeGreaterThan(1)
+    for (let i = 1; i < chunks.length; i++) {
+      const prev = chunks[i - 1] as { content: string; start: number }
+      const cur = chunks[i] as { content: string; start: number }
+      const overlapChars = prev.start + prev.content.length - cur.start
+      expect(overlapChars).toBeGreaterThan(0)
+      expect(overlapChars).toBeLessThanOrEqual(60)
+    }
+  })
+
   it('超短片段（<minChunkChars）不单独成块', () => {
     const text = `${'甲'.repeat(700)}\n\n短\n\n${'乙'.repeat(700)}`
     const chunks = chunkStoryText(text, { chunkChars: 800, minChunkChars: 40 })
