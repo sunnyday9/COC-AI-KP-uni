@@ -390,6 +390,16 @@ async function driveRoom(token, roomId, ws, turns, dbPath, roomLabel) {
         .flatMap((r) => r.wireMessages ?? [])
         .filter((m) => m?.role === 'tool' && typeof m.content === 'string' && m.content.includes('【原文查证'))
         .map((m) => String(m.content).slice(0, 700))
+      // P27：服务端预取的查证块进 system（对玩家不可见）——从 wire 的 system 消息里
+      // 抠出该小节，供报告统计预取触发率与内容。
+      rec.prefetched = added
+        .flatMap((r) => r.wireMessages ?? [])
+        .filter((m) => m?.role === 'system' && typeof m.content === 'string' && m.content.includes('## 原文查证（服务端已自动检索'))
+        .map((m) => {
+          const s = String(m.content)
+          const i = s.indexOf('## 原文查证（服务端已自动检索')
+          return s.slice(i, i + 600)
+        })
       wireRows = rows
     } catch { /* wire 采样缺失不阻塞 */ }
 
