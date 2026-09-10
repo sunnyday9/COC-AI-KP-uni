@@ -12,13 +12,13 @@
 
 | 项 | 结果 |
 |---|---|
-| 工具 | `verify_original{question, scene?}`，第五个 dossier 查证工具（只读、异步、不阻断回合） |
+| 工具 | `verify_original{question, scene?}`，第 4 个 dossier 查证工具（只读、异步、不阻断回合） |
 | 定位 | 当前场景锚点窗口（start−300..start+2500）+ 相交 gap spans 优先，全篇词面命中补足预算（≤12k 字符） |
 | 质量（离线直答，同 judge） | scene 定向 **avg 3.40**（n=10，fab 1）｜全局兜底 avg 3.20（n=10，fab 0）——与 P24 档案直答（3.6/3.0）同级，逼近 P21/P23 离线回退（3.4–4.0）而窗口只有其一半 |
 | 回合级 A/B（火焰交织的盛夏） | dossier 房整回合 p50 **31.7s** vs rag 房 **74.3s**（rag 每回合注入 68.9k token，dossier 0） |
 | 工具调用 | 10 回合内 dossier 房调 `verify_original` 1 次（另有 scene_list 4 / scene_dossier 2）——KP 用得克制 |
 | 对局内事实问（P10 口径） | 两房全 1 分、大量 fab——**再次确认该口径无区分度**，只作次要记录 |
-| 单测/回归 | 工具 25 项单测；server 546 绿（1 例 PDF 用例偶发超时，单跑通过）；tsc 净 |
+| 单测/回归 | 工具 26 项单测；server 550 绿；tsc 净 |
 
 ## 1. 工具设计与实现
 
@@ -55,16 +55,16 @@ kpTurnService 对工具结果做摘要 + **600 字符截断**，工具内容设�
 **同步面**：`kpGraph.STALL_PROGRESS_TOOLS` 计入 `verify_original`（主动查证不算停滞）；
 `STORY_LOOKUP_TOOL_NAMES` 自动放行（kpTurnService 特判执行，不进 rule-engine）。
 
-## 2. 单测（25 项）
+## 2. 单测（26 项）
 
 `server/src/rag/dossier/__tests__/originalLookup.spec.ts`：定位（锚点开窗/相交 gap/无锚与缺 gaps
 安全返回/全局候选切块）、评分与预算（二元组评分排序/重叠不重复/≤预算/补足）、分层（scene→global→none）、
 剧透 gate（问句敏感 / revealScene 锚点相交 / 普通问句）、渲染上限、端到端（一次 LLM 调用 +
 messages 携带原文窗口与问题 / 缓存命中与 TTL 过期 / LLM 抛错、原文缺失、定位不到三类降级不抛出 /
-截断 JSON 字段抠取 / JSON 骨架按失败 / 散文兜底）。
+截断 JSON 字段抠取 / JSON 骨架按失败 / 散文兜底 / -pro 模型守卫不发起调用）。
 
-server 全量 `npx vitest run`：**546 通过**（含本工具 25），1 例 `storyParsers` PDF 用例在并行下偶发
-超时（单独复跑 390ms 通过）；`npx tsc --noEmit` 净。
+server 全量 `npx vitest run`：**550 通过**（含本工具 26）；`npx tsc --noEmit` 净。
+（首轮全量曾出现 1 例 `storyParsers` PDF 用例并行超时，单独复跑 390ms 通过；后续两次全量均全绿。）
 
 ## 3. 离线工具直答（口径 (b)：全新上下文的事实核对）
 
