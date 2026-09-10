@@ -71,7 +71,13 @@ export interface CoverageGapsFile extends CoverageGaps {
   scriptId: string
   storyName: string
   generatedAt: number
+  /** 算法版本（GAPS_VERSION）：落盘结构/语义变更时递增。旧文件缺该字段 =
+   *  版本 1（P26a 之前，gap span 会把紧随的被覆盖块算进缺口 → gapPct 偏高）。 */
+  gapsVersion?: number
 }
+
+/** 当前 gaps 算法版本。1 = P22 初版；2 = P26a（closeGap 在被覆盖块前收口）。 */
+export const GAPS_VERSION = 2
 
 /** 去空白（含换行/全角空格）——誊抄匹配对排版不敏感。 */
 export function normalizeText(s: string): string {
@@ -203,9 +209,9 @@ export function computeCoverageGaps(storyText: string, scenes: DossierScene[]): 
   const blocks = splitStoryBlocks(text)
   for (const b of blocks) {
     if (blockCovered(b, normScenes)) {
-      // 缺口在最后一个未覆盖块处收口（P26 修：此前传 b.end 会把紧随其后的
-      // 被覆盖块一并算进缺口，gapChars/gapPct 系统性偏高）
-      closeGap(open ? open.end : b.end)
+      // 缺口在前一个未覆盖块处收口，不用 b.end——P26 修：b.end 会把紧随其后的
+      // 被覆盖块一并算进缺口，gapChars/gapPct 系统性偏高
+      if (open) closeGap(open.end)
     } else if (open) {
       // 相邻未覆盖块合并（间距 ≤30 字符视作连续——残留空白噪声）
       if (b.start - open.end <= 30) {
@@ -245,16 +251,16 @@ export interface SceneCoverage {
   regionChars: number
   /** 区域内未被任何 sceneText 收录的字符数。 */
   gapChars: number
-  /** 区域内已收录比例 %（0–100，一位小数）。 */
-  pct: number
+  /** 区域内已收录比例 %（0–100，一位小数；与 schema 的 coveragePct 同向）。 */
+  coveragePct: number
   /** 落在该区域内的缺口段数（相邻缺口已合并）。 */
-  gapSpans: number
+  gapCount: number
 }
 
 /**
  * 场景级覆盖度（纯函数，无 IO）：把 story 级 gap spans 按场景锚点区域归属。
  * 用途是给运行时一个"这份场景块不全"的信号（P25 观测：KP 以档案块为完整真源，
- * 从不主动查原文）——pct/gapSpans 进场景块提示行，不含任何剧情信息。
+ * 从不主动查原文）——coveragePct/gapCount 进场景块提示行，不含任何剧情信息。
  *
  * 无 gaps / 未知场景 / 场景无锚点（纯摘要，matched=false）→ null（调用方保持安静）。
  */
@@ -272,16 +278,16 @@ export function computeSceneCoverage(gaps: CoverageGaps | null, sceneIdOrName: s
   const regionChars = regionEnd - regionStart
   if (regionChars <= 0) return null
   let gapChars = 0
-  let gapSpans = 0
+  let gapCount = 0
   for (const sp of gaps.spans ?? []) {
     const overlap = Math.min(sp.end, regionEnd) - Math.max(sp.start, regionStart)
     if (overlap > 0) {
       gapChars += overlap
-      gapSpans++
+      gapCount++
     }
   }
-  const pct = Math.round((1 - gapChars / regionChars) * 1000) / 10
-  return { sceneId: anchor.id, sceneName: anchor.name, regionChars, gapChars, pct, gapSpans }
+  const coveragePct = Math.round((1 - gapChars / regionChars) * 1000) / 10
+  return { sceneId: anchor.id, sceneName: anchor.name, regionChars, gapChars, coveragePct, gapCount }
 }
 
 /* ═══════════════════ 落盘 / 读取（白名单 + resolve 双保险，同 dossier/annex） ═══════════════════ */
@@ -293,7 +299,8 @@ function gapsFile(userId: number, scriptId: string): string {
 
 export async function persistGaps(userId: number, gaps: CoverageGapsFile): Promise<void> {
   await fs.mkdir(path.join(DOSSIER_DATA_DIR, String(userId)), { recursive: true })
-  await fs.writeFile(gapsFile(userId, gaps.scriptId), JSON.stringify(gaps, null, 2), 'utf-8')
+  const stamped: CoverageGapsFile = { ...gaps, gapsVersion: gaps.gapsVersion ?? GAPS_VERSION }
+  await fs.writeFile(gapsFile(userId, gaps.scriptId), JSON.stringify(stamped, null, 2), 'utf-8')
 }
 
 export async function loadGaps(userId: number, scriptId: string): Promise<CoverageGapsFile | null> {
@@ -304,6 +311,14 @@ export async function loadGaps(userId: number, scriptId: string): Promise<Covera
   } catch {
     return null
   }
+}
+
+/**
+ * 该 gaps 文件是否由当前算法版本算出（缺字段 = 版本 1）。
+ * 消费方（覆盖提示）对旧版本文件自行取舍：数值偏高但方向正确，仍可用。
+ */
+export function isCurrentGapsVersion(gaps: CoverageGapsFile | null): boolean {
+  return (gaps?.gapsVersion ?? 1) >= GAPS_VERSION
 }
 
 export async function deleteGaps(userId: number, scriptId: string): Promise<boolean> {

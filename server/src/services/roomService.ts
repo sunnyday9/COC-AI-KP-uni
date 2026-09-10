@@ -490,8 +490,8 @@ export class RoomService {
         if (!scene) {
           return { content: renderSceneNotFound(name, listScenes(dossier).map((s) => s.name)) }
         }
-        // P26：附场景覆盖提示（缺口归属按 .gaps.json；缺失时静默降级）
-        const gaps = await loadGaps(this.ownerId, this.storyId as string).catch(() => null)
+        // P26：附场景覆盖提示（缺口归属按 .gaps.json；loadGaps 内部已吞错返回 null）
+        const gaps = await loadGaps(this.ownerId, this.storyId as string)
         const coverage = gaps ? computeSceneCoverage(gaps, scene.id) : null
         return { content: buildSceneBlock(dossier, scene.id, coverage) }
       }
@@ -615,8 +615,8 @@ export class RoomService {
       const currentSceneId = scenes.find((s) => s.name === this.scene)?.id ?? (scenes[0]?.id ?? undefined)
       const sceneName = scenes.find((s) => s.id === currentSceneId)?.name ?? this.scene ?? undefined
       // P26：场景块附覆盖提示（该场景原文有多少未入档）——P25 观测到 KP 缺少
-      // "档案可能不全"的信号，从不主动查原文。
-      const gaps = await loadGaps(this.ownerId, this.storyId).catch(() => null)
+      // "档案可能不全"的信号，从不主动查原文。loadGaps 内部已吞错返回 null。
+      const gaps = await loadGaps(this.ownerId, this.storyId)
       const coverage = currentSceneId ? computeSceneCoverage(gaps, currentSceneId) : null
       const block = buildSceneBlock(dossier, currentSceneId || '', coverage)
       return { block, currentSceneId: sceneName }

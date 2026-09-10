@@ -24,16 +24,17 @@
  */
 import { chatForRag } from '../../services/aiService.js'
 import { readStoryForRag } from '../../services/storyService.js'
-import { loadGaps, type CoverageGaps } from './coverageGaps.js'
+import { loadGaps, SCENE_REGION_LEAD, SCENE_REGION_SPAN, type CoverageGaps } from './coverageGaps.js'
 import { loadDossier, findScene } from './storyDossierService.js'
 import { BadRequestError } from '../../utils/errors.js'
 import type { ChatMessage } from '../../services/llm/types.js'
 import type { StoryDossier } from './schema.js'
 
-/** 场景锚点前的衔接语余量（与 ab-fallback 的 ANCHOR_LEAD 同口径）。 */
-export const ANCHOR_LEAD = 300
-/** 场景锚点后的取文长度（与 ab-fallback 的 ANCHOR_WINDOW 同口径）。 */
-export const ANCHOR_SPAN = 2_500
+/** 场景锚点前的衔接语余量 / 锚点后的取文长度：与 coverageGaps 的场景区域
+ *  （SCENE_REGION_LEAD/SPAN）共享同一对常量——查证的取文窗口与覆盖提示算的是
+ *  同一个"场景原文区域"，两处各写一份会静默漂移（P26 审查）。 */
+export const ANCHOR_LEAD = SCENE_REGION_LEAD
+export const ANCHOR_SPAN = SCENE_REGION_SPAN
 /** 单次查证的原文窗口总预算（字符）。 */
 export const DEFAULT_BUDGET = 12_000
 /** 回填给 KP 的内容上限（kpTurnService 截断线 600 之内）。 */

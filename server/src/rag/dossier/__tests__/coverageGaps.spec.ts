@@ -20,6 +20,8 @@ const {
   persistGaps,
   loadGaps,
   deleteGaps,
+  isCurrentGapsVersion,
+  GAPS_VERSION,
 } = await import('../coverageGaps.js')
 
 describe('coverageGaps: 分块', () => {
@@ -158,13 +160,13 @@ describe('coverageGaps: 场景级覆盖度（P26）', () => {
     expect(cov?.sceneId).toBe('scene_a')
     expect(cov?.sceneName).toBe('场景甲')
     // 区域内唯一缺口 = P_IN（开篇综述在区域起点之前，不计）
-    expect(cov?.gapSpans).toBe(1)
+    expect(cov?.gapCount).toBe(1)
     expect(cov?.gapChars).toBe(P_IN.length)
     // 区域 = 首锚点前 300 + 末锚点后 2500（场景甲两个锚点相距 ≈2）
     expect(cov?.regionChars).toBeGreaterThan(2_700)
     expect(cov?.regionChars).toBeLessThan(2_900)
-    expect(cov?.pct).toBeGreaterThan(60)
-    expect(cov?.pct).toBeLessThan(70)
+    expect(cov?.coveragePct).toBeGreaterThan(60)
+    expect(cov?.coveragePct).toBeLessThan(70)
   })
 
   it('按名字查同样命中；区域外的 gap 确实没被算进来（gapChars < 总 gapChars）', () => {
@@ -184,11 +186,11 @@ describe('coverageGaps: 场景级覆盖度（P26）', () => {
     expect(computeSceneCoverage(summaryGaps, 'sx')).toBeNull()
   })
 
-  it('区域内无缺口 → pct 100 / 0 段（提示行据此保持安静）', () => {
+  it('区域内无缺口 → coveragePct 100 / 0 段（提示行据此保持安静）', () => {
     const clean = computeCoverageGaps(C_TEXT, [{ id: 'scene_c', name: '场景丙', sceneText: C_TEXT }] as never)
     const cov = computeSceneCoverage(clean, 'scene_c')
-    expect(cov?.gapSpans).toBe(0)
-    expect(cov?.pct).toBe(100)
+    expect(cov?.gapCount).toBe(0)
+    expect(cov?.coveragePct).toBe(100)
   })
 })
 
@@ -210,6 +212,10 @@ describe('coverageGaps: 落盘往返 + 删除', () => {
     const loaded = await loadGaps(1, 'demo.txt')
     expect(loaded?.gapPct).toBe(90)
     expect(loaded?.spans[0]?.preview).toContain('未被覆盖')
+    // P26：落盘自动打算法版本戳；缺失字段的旧文件按版本 1 判定
+    expect(loaded?.gapsVersion).toBe(GAPS_VERSION)
+    expect(isCurrentGapsVersion(loaded)).toBe(true)
+    expect(isCurrentGapsVersion({ ...file, scriptId: 'x', generatedAt: 1 } as never)).toBe(false)
     await deleteGaps(1, 'demo.txt')
     expect(await loadGaps(1, 'demo.txt')).toBeNull()
   })
