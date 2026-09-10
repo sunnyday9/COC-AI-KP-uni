@@ -336,6 +336,8 @@ export interface VerifyOriginalDeps {
   loadDossier?: () => Promise<StoryDossier | null>
   /** 一次性全新上下文 LLM 调用（缺省 chatForRag）。 */
   ask?: (messages: ChatMessage[], maxTokens: number) => Promise<string>
+  /** 可选模型覆盖（铁律 1：-pro 变体拒绝——见 assertNonProModel）。缺省 = settings。 */
+  model?: string
   /** 时钟（测试注入）。 */
   now?: () => number
   /** 定位命中缓存跳过时的原文读取（测试/报告用）。 */
@@ -419,6 +421,14 @@ export async function verifyOriginal(
   const now = deps.now ?? (() => Date.now())
   const question = String(input?.question ?? '').trim()
   const scene = String(input?.scene ?? '').trim()
+  try {
+    assertNonProModel(deps.model)
+  } catch (e) {
+    return {
+      content: renderUnavailable(`模型配置不受支持（${clip(e instanceof Error ? e.message : String(e), 80).text}）`),
+      meta: { ok: false, tier: 'none', spoiler: 'normal', cached: false, chars: 0, reason: 'bad-model', durationMs: 0 },
+    }
+  }
   if (!question) {
     return {
       content: renderUnavailable('问题为空'),
@@ -465,7 +475,7 @@ export async function verifyOriginal(
     { role: 'system', content: ASK_SYSTEM },
     { role: 'user', content: `【剧本原文片段】\n${loc.text}\n\n【问题】${question}` },
   ]
-  const ask = deps.ask ?? ((msgs: ChatMessage[], maxTokens: number) => chatForRag(deps.userId, { messages: msgs, temperature: 0, maxTokens }).then((r) => r.content))
+  const ask = deps.ask ?? ((msgs: ChatMessage[], maxTokens: number) => chatForRag(deps.userId, { messages: msgs, temperature: 0, maxTokens, model: deps.model }).then((r) => r.content))
 
   let answer = ''
   let quote = ''

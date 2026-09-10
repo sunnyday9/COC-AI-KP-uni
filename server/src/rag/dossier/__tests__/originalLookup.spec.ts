@@ -347,4 +347,12 @@ describe('originalLookup: verifyOriginal 端到端（注入 LLM）', () => {
     expect(res.content).toContain('未取得')
     expect(res.meta.ok).toBe(false)
   })
+
+  it('deps.model 传 -pro（铁律 1 守卫）→ 直接降级，不发起 LLM 调用', async () => {
+    const { ask, deps } = mkDeps()
+    const res = await verifyOriginal({ question: '祭坛上刻着什么纹样？', scene: '祭坛厅' }, { ...deps, model: 'mimo-v2.5-pro' })
+    expect(res.meta.ok).toBe(false)
+    expect(res.meta.reason).toBe('bad-model')
+    expect(ask).not.toHaveBeenCalled()
+  })
 })
