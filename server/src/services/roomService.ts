@@ -11,7 +11,8 @@
  * 单人模式 = 单成员房间（同一代码路径，FR-M9）。
  */
 import crypto from 'node:crypto'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 import * as roomStorage from './roomStorage.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
 import { isKpChunkStreamEnabled } from '../config.js'
@@ -614,6 +615,7 @@ export class RoomService {
           const trace = process.env.PREFETCH_TRACE
           if (trace) {
             try {
+              mkdirSync(dirname(trace), { recursive: true })
               appendFileSync(trace, JSON.stringify({ at: Date.now(), roomId: this.roomId, storyId: this.storyId, ...e }) + '\n')
             } catch {
               /* 追踪失败不影响回合 */
