@@ -46,8 +46,12 @@ export const COVERAGE_SUFFICIENT = 85
  * 等待被判失败。因此内联只等一小段（verify_original 实测中位 22–33s，命中率换延迟）；
  * 超时后**不取消**底层调用——它继续跑完并写入 verify_original 的 TTL 缓存，
  * 后续回合（KP 自己调用或同一问题再次触发）即命中，等效于异步预热。
+ * `PREFETCH_INLINE_MS` 环境变量可覆盖（实验调参用，限 1s–60s）。
  */
-export const INLINE_TIMEOUT_MS = 15_000
+export const INLINE_TIMEOUT_MS = (() => {
+  const n = Number(process.env.PREFETCH_INLINE_MS)
+  return Number.isFinite(n) && n >= 1_000 && n <= 60_000 ? n : 15_000
+})()
 /** 兜底总超时（毫秒）：内联等待之上的硬上限（保留给测试注入与未来的后台模式）。 */
 export const PREFETCH_TIMEOUT_MS = 60_000
 

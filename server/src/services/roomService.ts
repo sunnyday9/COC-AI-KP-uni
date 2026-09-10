@@ -11,6 +11,7 @@
  * 单人模式 = 单成员房间（同一代码路径，FR-M9）。
  */
 import crypto from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import * as roomStorage from './roomStorage.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
 import { isKpChunkStreamEnabled } from '../config.js'
@@ -609,6 +610,15 @@ export class RoomService {
         scriptId: this.storyId,
         onEvent: (e) => {
           if (process.env.KP_LLM_DEBUG === '1') console.error(`[prefetch] room=${this.roomId} ${JSON.stringify(e)}`)
+          // 实验追踪（PREFETCH_TRACE=<path>，默认关）：逐行 JSONL，供报告统计触发/命中。
+          const trace = process.env.PREFETCH_TRACE
+          if (trace) {
+            try {
+              appendFileSync(trace, JSON.stringify({ at: Date.now(), roomId: this.roomId, storyId: this.storyId, ...e }) + '\n')
+            } catch {
+              /* 追踪失败不影响回合 */
+            }
+          }
         },
       },
     )
