@@ -268,7 +268,6 @@ export interface VerifyRenderInput {
   quote?: string
   sceneName?: string
   spoiler: SpoilerLevel
-  tier?: LocateTier
 }
 
 function clip(s: string, max: number): { text: string; clipped: boolean } {
@@ -507,7 +506,7 @@ export async function verifyOriginal(
     }
   }
 
-  const content = renderVerifyContent({ answer, quote, sceneName: loc.sceneName, spoiler: spoiler.level, tier: loc.tier })
+  const content = renderVerifyContent({ answer, quote, sceneName: loc.sceneName, spoiler: spoiler.level })
   const meta: VerifyMeta = {
     ok: true, tier: loc.tier, spoiler: spoiler.level, sceneId: loc.sceneId, sceneName: loc.sceneName,
     cached: false, chars: loc.chars, spoilerReason: spoiler.reason, durationMs: Date.now() - started,
