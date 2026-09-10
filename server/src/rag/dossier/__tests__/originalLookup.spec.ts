@@ -26,10 +26,13 @@ import type { CoverageGaps } from '../coverageGaps.js'
 import type { StoryDossier } from '../schema.js'
 
 /* ── 测试夹具：原文 20k 字符，场景 A 锚在 2_000/12_000，场景 B 在 9_000 ── */
+/** 序章里一段"问题会命中、但不在任何场景窗口内"的原文（验证预算补足）。 */
+const APPENDIX = '附录中的纹样记述：纹样共三枚，刻在祭坛边缘的石座上。'
+
 function makeStory(): string {
   const filler = (label: string, n: number) => `${label}${'甲'.repeat(n)}`
   return [
-    filler('序章', 1_900), // 0..1897
+    `序章${APPENDIX}${'甲'.repeat(1_860)}`, // 0..~1897（附录在场景窗口之外）
     '场景A的第一段原文：祭坛上刻着三颗眼状纹样，香炉里积着黑色的灰。', // 锚点 1
     filler('过渡', 4_000),
     '场景B的原文：钟楼地下室的门被木板钉死，墙上有六道抓痕。', // 锚点 2（场景B）
@@ -44,6 +47,7 @@ function gapsFixture(): CoverageGaps {
   const a1 = text.indexOf('场景A的第一段原文')
   const b1 = text.indexOf('场景B的原文')
   const a2 = text.indexOf('场景A的第二段原文')
+  const ap = text.indexOf(APPENDIX)
   return {
     storyChars: text.length,
     sceneTextChars: 100,
@@ -53,8 +57,8 @@ function gapsFixture(): CoverageGaps {
     spans: [
       // 场景 A 范围内（锚 1 与锚 3 之间）的缺口：密室的补充说明
       { start: a2 + 300, end: a2 + 900, chars: 600, preview: '密室砖缝里的符文' },
-      // 全篇无关位置的缺口
-      { start: 200, end: 400, chars: 200, preview: '序章附录' },
+      // 全篇另一处的缺口（序章附录；不在场景 A 窗口内）
+      { start: ap, end: ap + APPENDIX.length, chars: APPENDIX.length, preview: '附录' },
     ],
     sceneAnchors: [
       { id: 'scene_a', name: '祭坛厅', matched: true, starts: [a1, a2] },
@@ -143,13 +147,22 @@ describe('originalLookup: 词面评分与预算拼装', () => {
 })
 
 describe('originalLookup: 定位分层（场景级优先 → 全局词面兜底）', () => {
-  it('问题命中当前场景窗口 → tier=scene，只取该场景窗口', () => {
+  it('问题命中当前场景窗口 → tier=scene，只取该场景窗口（无命中窗口不掺入）', () => {
     const text = makeStory()
     const loc = locateForQuestion(text, gapsFixture(), dossierFixture(), '祭坛厅', '祭坛上刻着什么纹样？')
     expect(loc.tier).toBe('scene')
     expect(loc.sceneId).toBe('scene_a')
     expect(loc.text).toContain('三颗眼状纹样')
     expect(loc.text).not.toContain('钟楼地下室')
+  })
+
+  it('场景窗口吃不满预算 → 用全篇词面命中的窗口补足（tier 仍为 scene）', () => {
+    const text = makeStory()
+    const loc = locateForQuestion(text, gapsFixture(), dossierFixture(), '祭坛厅', '祭坛上刻着什么纹样？')
+    // 序章附录（gap span，场景窗口之外）同样命中"祭坛/纹样" → 补进预算
+    expect(loc.text).toContain('附录中的纹样记述')
+    expect(loc.chars).toBeLessThanOrEqual(DEFAULT_BUDGET)
+    expect(loc.tier).toBe('scene')
   })
 
   it('当前场景窗口无一命中 → 退全局词面定位（tier=global）', () => {

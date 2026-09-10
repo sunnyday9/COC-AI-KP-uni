@@ -384,6 +384,12 @@ async function driveRoom(token, roomId, ws, turns, dbPath, roomLabel) {
       rec.injectionChars = added.reduce((s, r) => s + r.ragContextChars, 0)
       rec.injectionTokens = added.reduce((s, r) => s + r.ragContextTokens, 0)
       rec.toolCalls = added.flatMap((r) => r.toolCalls)
+      // P25：查证工具（verify_original）的**回填内容**逐字留在 wire 里（≤600 字符
+      // 截断线内即工具原文），取出来供报告核对命中率与直答质量；其余工具不落内容。
+      rec.verifyResults = added
+        .flatMap((r) => r.wireMessages ?? [])
+        .filter((m) => m?.role === 'tool' && typeof m.content === 'string' && m.content.includes('【原文查证'))
+        .map((m) => String(m.content).slice(0, 700))
       wireRows = rows
     } catch { /* wire 采样缺失不阻塞 */ }
 

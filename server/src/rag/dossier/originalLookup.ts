@@ -189,7 +189,9 @@ export function selectWindows(
 
 /**
  * 定位分层：场景级优先（当前场景锚点窗口 + 相交 gap），无命中才退全篇词面兜底。
- * tier='none' 表示既无场景窗口也无词面命中——调用方据此降级「未取得」。
+ * 场景窗口吃不满预算时，用全篇词面命中的窗口补足（P21/P23 证据：跨场景的补充
+ * 原文能显著抬升回答质量，预算空着才是浪费）。tier='none' 表示既无场景窗口也无
+ * 词面命中——调用方据此降级「未取得」。
  */
 export function locateForQuestion(
   storyText: string,
@@ -205,14 +207,16 @@ export function locateForQuestion(
   const sceneWins = buildSceneWindows(text, gaps, sceneTarget)
   const scoredScene = scoreWindows(text, sceneWins, question)
   const sceneHits = scoredScene.filter((w) => (w.score ?? 0) > 0)
+  const globalHits = scoreWindows(text, buildGlobalWindows(text, gaps), question).filter((w) => (w.score ?? 0) > 0)
 
   if (sceneWins.length > 0 && sceneHits.length > 0) {
-    const picked = selectWindows(text, scoredScene, budget)
+    // 场景窗口优先；全篇命中窗口（去重）按分数序补足预算
+    const seen = new Set(scoredScene.map((w) => `${w.start}:${w.end}`))
+    const pool = [...scoredScene, ...globalHits.filter((w) => !seen.has(`${w.start}:${w.end}`))]
+    const picked = selectWindows(text, pool, budget)
     return { ...picked, tier: 'scene', sceneId: scene?.id, sceneName: scene?.name }
   }
 
-  const globalWins = scoreWindows(text, buildGlobalWindows(text, gaps), question)
-  const globalHits = globalWins.filter((w) => (w.score ?? 0) > 0)
   if (globalHits.length > 0) {
     const picked = selectWindows(text, globalHits, budget)
     return { ...picked, tier: 'global', sceneId: scene?.id, sceneName: scene?.name }
