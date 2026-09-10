@@ -47,22 +47,33 @@ for (const [key, s] of Object.entries(j.stories ?? {})) {
   }
 }
 
-console.log('\n## 2) verify_original 调用明细（dossier 房）\n')
+console.log('\n## 2) verify_original 调用明细（dossier 房；内容取自 wire 回填）\n')
+let allCalls = 0
+let allHit = 0
+let allMiss = 0
+let allGated = 0
 for (const [key, s] of Object.entries(j.stories ?? {})) {
   const w = s.workflows?.dossier
   if (!w || w.error) continue
-  const calls = toolResults(w).filter((c) => c.name === 'verify_original')
-  const others = toolResults(w).filter((c) => c.name !== 'verify_original')
-  console.log(`- **${key}**：查证调用 ${calls.length} 次（其余工具 ${others.length} 次）`)
-  // wire 回填内容里区分命中/未取得/剧透层
-  const texts = []
-  for (const t of w.turns ?? []) {
-    for (const tc of t.toolCalls ?? []) {
-      if (tc.name !== 'verify_original') continue
-      texts.push({ turn: t.input })
-    }
+  const calls = (w.turns ?? []).flatMap((t) => (t.toolCalls ?? []).filter((c) => c.name === 'verify_original').map((c) => ({ turn: t.input, content: (t.verifyResults ?? []) })))
+  const contents = (w.turns ?? []).flatMap((t) => t.verifyResults ?? [])
+  const miss = contents.filter((c) => c.includes('未取得')).length
+  const gated = contents.filter((c) => c.includes('剧透层')).length
+  const hit = contents.length - miss
+  allCalls += calls.length
+  allHit += hit
+  allMiss += miss
+  allGated += gated
+  console.log(`- **${key}**：工具调用 ${calls.length} 次（其余工具 ${(w.turns ?? []).flatMap((t) => t.toolCalls ?? []).length - calls.length} 次）｜回填内容 ${contents.length} 条：命中 ${hit}、未取得 ${miss}、剧透层标注 ${gated}`)
+  for (const [i, c] of contents.entries()) {
+    console.log(`  ${i + 1}. ${c.replace(/\s+/g, ' ').slice(0, 150)}`)
   }
-  if (!calls.length) console.log('  （本局 KP 未调用查证工具）')
+}
+if (allCalls) {
+  const rate = ((allHit / Math.max(1, allHit + allMiss)) * 100).toFixed(0)
+  console.log(`\n合计：调用 ${allCalls} 次｜命中率 ${rate}%（命中 ${allHit} / 未取得 ${allMiss}）｜剧透层标注 ${allGated}`)
+} else {
+  console.log('\n本局 KP 未调用查证工具（工具分布见第 1 节）。')
 }
 
 console.log('\n## 3) 对局内事实回合（P10 口径，次要度量）\n')

@@ -550,8 +550,11 @@ async function runStory(user, tmpRoot, filePath, opts) {
   let dossier = null
   try {
     const dossierDir = path.join(tmpRoot, 'dossiers', String(user.userId))
-    const dp = path.join(dossierDir, `${up.id}.json`)
-    if (fs.existsSync(dp)) dossier = JSON.parse(fs.readFileSync(dp, 'utf-8'))
+    // 服务端落盘用 sanitizeScriptId（非 [A-Za-z0-9_-一-鿿] → '_'，'.'→'_'）；两种
+    // 文件名都试（P25 修：此前只试原 id → 找不到文件，dossier 注入 token 恒 0）
+    const candidates = [`${up.id}.json`, `${String(up.id).replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_')}.json`]
+    const dp = candidates.map((f) => path.join(dossierDir, f)).find((p) => fs.existsSync(p))
+    if (dp) dossier = JSON.parse(fs.readFileSync(dp, 'utf-8'))
     out.setup.dossierScenes = dossier?.scenes?.length ?? 0
   } catch { /* ignore */ }
 
