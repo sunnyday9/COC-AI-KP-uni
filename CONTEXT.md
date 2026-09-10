@@ -82,6 +82,18 @@ KP 回合管线上的唯一新增缝（T1，spec #36 / ADR-0006）：每个真�
 ### 蒸馏数据管线（distill pipeline）
 T4（spec #36 / 票 #40 / ADR-0006 决策 4）落点 `training/src/distill/`：教师（DeepSeek V4 Flash）对 context 骨架重放理想回复生成 SFT 语料。关键约定——多步工具链的工具结果由离线规则引擎真实执行（真骰子、真结算，教师不得自拟）；变量块瘦身旁数据侧（对话窗 18→8、记忆 30→12、RAG 取前 4 节、序列 cap ~6k）；validate 过滤与 #42 gate 同源 kpValidation；样本出处标注 `meta.source`（seed=真实骨架重放 / synthetic=rollout 合成 / anchor=金样本裁定锚 / human=人工示范）与 caveat（`rag_lexical_approximation_offline`=离线词面检索近似、`rag_context_unavailable_offline`=重建行无故事情报）。
 
+### 档案（dossier）
+剧本的结构化预生成摘要：场景（含原文誊抄的 sceneText）/线索/NPC/切换边/事件/真相/结局，生成期由 LLM 从剧本原文抽取落盘，运行时**按当前场景整块注入**取代逐回合检索。事实的**权威来源**——与检索补充层冲突时以档案为准。落点 `server/src/rag/dossier/`；双轨分工见 ADR-0007。
+
+### 原文查证（verify_original）
+档案说不清时的**事实层深挖**：按当前场景锚点窗口取剧本原文片段（≤12k 字符），交一次全新上下文的子阅读器作答，返回结论 + 逐字引用；真相/结局类问句、或命中 `truths[].revealScene` 锚点的结果，标注「仅限 KP 内部裁定」。降级为「未取得」，永不阻断回合。落点 `server/src/rag/dossier/originalLookup.ts`；服务端可自动触发（预取）。
+
+### 检索补充层（retrieval supplement）
+RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、具体数字），不承担事实权威。每回合固定检索（递归切块 → 本地嵌入 → top10 → 本地 cross-encoder rerank → top3），以独立小节 `## 原文片段（检索补充·仅作描写素材）` 注入；跨场景块至多 1 条并标注，与 `revealScene` 锚点相交者丢弃。落点 `server/src/rag/`（标准管线，无图）；见 ADR-0007。
+
+### 场景归属（scene attribution）
+检索块"属于哪个场景"的判定：块只落盘**字符偏移**，查询期用 `coverageGaps` 的场景锚点现算——索引与档案生成的先后解耦，档案重生成后归属自动跟随。用于补充层的场景内优先排序与跨场景/剧透门控。
+
 ## 不重议的决策
 
 - ADR-0001：房间 schema 只归 RoomService（经 roomStorage）所有，REST/ws 不接触。
@@ -90,3 +102,4 @@ T4（spec #36 / 票 #40 / ADR-0006 决策 4）落点 `training/src/distill/`：�
 - D7/D-10：单进程内存注册表 + 节流快照 + TTL 回收；Redis 是触发条件不是默认。
 - 服务端权威单轨：客户端无规则、无工具循环（ARCHITECTURE-MULTIPLAYER §四）。
 - ADR-0003：LLM 接入协议一等公民（协议模型 / 适配器 / 本地端点不豁免 / Responses 流式策略）。
+- ADR-0007：知识供给双轨——档案为权威框架，标准 RAG 只作纹理补充；放弃 GraphRAG；分块搬服务端；本地 cross-encoder rerank（禁用 pipeline text-classification 取分）。
