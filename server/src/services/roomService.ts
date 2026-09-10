@@ -16,6 +16,7 @@ import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.
 import { isKpChunkStreamEnabled } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, OPENING_RAG_QUERY, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 import { listStories as listIndexedStories } from './ragService.js'
+import type { SceneCoverage } from '../rag/dossier/coverageGaps.js'
 import type {
   RoomEventPayloadMap,
   RoomEventType,
@@ -421,7 +422,7 @@ export class RoomService {
       // P27：服务端自动预取原文查证——玩家发言是事实问句且档案对不上措辞时，
       // 服务端先跑一次查证并把结论并入本轮 system（对玩家不可见）。P26 已证
       // 纯提示词无法让 KP 主动查证；此步不依赖 KP 自觉，失败/超时静默跳过。
-      const prefetched = await this.maybePrefetchVerification(merged, sceneBlock, knowledge.sceneName)
+      const prefetched = await this.prefetchVerification(merged, knowledge)
       const chatMessages = buildRoomTurnMessages(
         this.promptInput(storyName, this.messages.slice(0, historyEnd)),
         ragContext,
@@ -593,28 +594,25 @@ export class RoomService {
   /**
    * P27 预取：事实问句 + 档案对不上措辞 → 服务端先查证，结论并入本轮 system。
    * 仅在 dossier 房生效；任何失败/超时返回 ''（不回填、不阻断回合）。
+   * 复用 fetchDossierContext 已算好的覆盖度（同一回合不重复读 gaps）。
    */
-  private async maybePrefetchVerification(playerText: string, sceneBlock: string, sceneName?: string): Promise<string> {
+  private async prefetchVerification(
+    playerText: string,
+    knowledge: { sceneBlock: string; sceneName?: string; coverage?: SceneCoverage | null },
+  ): Promise<string> {
     if (this.workflow !== 'dossier' || !this.storyId) return ''
-    try {
-      const { runPrefetch } = await import('../rag/dossier/prefetch.js')
-      const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
-      const gaps = await loadGaps(this.ownerId, this.storyId)
-      const coverage = sceneName && gaps ? computeSceneCoverage(gaps, sceneName) : null
-      const res = await runPrefetch(
-        { playerText, sceneBlock, sceneName, coverage },
-        {
-          userId: this.ownerId,
-          scriptId: this.storyId,
-          onEvent: (e) => {
-            if (process.env.KP_LLM_DEBUG === '1') console.error(`[prefetch] room=${this.roomId} ${JSON.stringify(e)}`)
-          },
+    const { runPrefetch } = await import('../rag/dossier/prefetch.js')
+    const res = await runPrefetch(
+      { playerText, sceneBlock: knowledge.sceneBlock, sceneName: knowledge.sceneName, coverage: knowledge.coverage ?? null },
+      {
+        userId: this.ownerId,
+        scriptId: this.storyId,
+        onEvent: (e) => {
+          if (process.env.KP_LLM_DEBUG === '1') console.error(`[prefetch] room=${this.roomId} ${JSON.stringify(e)}`)
         },
-      )
-      return res?.content ?? ''
-    } catch {
-      return ''
-    }
+      },
+    )
+    return res?.content ?? ''
   }
 
   /* ═══════════════ 上下文注入与记忆（ADR-0002，服务端收口） ═══════════════ */
@@ -633,8 +631,8 @@ export class RoomService {
     }
   }
 
-  /** dossier workflow：按当前场景取档案静态块 + 场景清单（sceneId/当前场景名回填）。 */
-  private async fetchDossierContext(): Promise<{ block: string; currentSceneId?: string }> {
+  /** dossier workflow：按当前场景取档案静态块 + 场景清单（sceneId/当前场景名回填 + 覆盖度）。 */
+  private async fetchDossierContext(): Promise<{ block: string; currentSceneId?: string; sceneName?: string; coverage?: SceneCoverage | null }> {
     if (!this.storyId) return { block: '' }
     try {
       const { loadDossier, buildSceneBlock, listScenes } = await import('../rag/dossier/storyDossierService.js')
@@ -650,18 +648,19 @@ export class RoomService {
       const gaps = await loadGaps(this.ownerId, this.storyId)
       const coverage = currentSceneId ? computeSceneCoverage(gaps, currentSceneId) : null
       const block = buildSceneBlock(dossier, currentSceneId || '', coverage)
-      return { block, currentSceneId: sceneName }
+      return { block, currentSceneId: sceneName, sceneName, coverage }
     } catch {
       return { block: '' }
     }
   }
 
-  /** 房间知识注入（workflow 分派）：rag → 检索上下文；dossier → 静态场景块 + 场景 id。 */
-  private async fetchKnowledge(): Promise<{ ragContext: string; sceneBlock: string; sceneName?: string }> {
+  /** 房间知识注入（workflow 分派）：rag → 检索上下文；dossier → 静态场景块 + 场景 id。
+   *  覆盖度随块一并回传（P27 预取判定复用，同一回合不重复读 gaps）。 */
+  private async fetchKnowledge(): Promise<{ ragContext: string; sceneBlock: string; sceneName?: string; coverage?: SceneCoverage | null }> {
     if (!this.storyId) return { ragContext: '', sceneBlock: '' }
     if (this.workflow === 'dossier') {
       const d = await this.fetchDossierContext()
-      return { ragContext: '', sceneBlock: d.block, sceneName: d.currentSceneId }
+      return { ragContext: '', sceneBlock: d.block, sceneName: d.sceneName ?? d.currentSceneId, coverage: d.coverage }
     }
     return { ragContext: await this.fetchRagContext(OPENING_RAG_QUERY), sceneBlock: '' }
   }

@@ -157,9 +157,11 @@ export function baseInstructionsFor(workflow: StoryWorkflow): string {
   return BASE_INSTRUCTIONS.replace('{KNOWLEDGE_SOURCE_INSTRUCTION}', WORKFLOW_KNOWLEDGE_SOURCE[workflow] ?? WORKFLOW_KNOWLEDGE_SOURCE.rag)
 }
 
-/** Rendered knowledge block: dossier → current-scene static block; rag → retrieved context. */
+/** Rendered knowledge block: dossier → current-scene static block; rag → retrieved context.
+ *  verifyBlock（P27 预取结论）只对 dossier 生效——rag 房没有预取通路（调用方已 gate），
+ *  这里再 gate 一次，避免误传把查证内容带进 rag 提示词。 */
 export function buildKnowledgeBlock(workflow: StoryWorkflow, ragContext: string, sceneBlock: string, verifyBlock = ''): string {
-  const verify = String(verifyBlock ?? '').trim()
+  const verify = workflow === 'dossier' ? String(verifyBlock ?? '').trim() : ''
   const verifySection = verify
     ? `\n## 原文查证（服务端已自动检索，供你对齐事实）\n${verify}\n`
     : ''
@@ -170,7 +172,7 @@ export function buildKnowledgeBlock(workflow: StoryWorkflow, ragContext: string,
     // factual anchor.
     return `${ragContext ? `\n## 故事情报\n${ragContext}` : ''}${verifySection}`
   }
-  return `${ragContext ? `\n## 故事情报\n${ragContext}` : ''}${verifySection}`
+  return ragContext ? `\n## 故事情报\n${ragContext}` : ''
 }
 
 /** 单张角色卡 → 调查员上下文块（与旧客户端 buildCharacterContext 的角色部分同语义）。 */

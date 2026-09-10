@@ -65,12 +65,13 @@ describe('kpPromptService: 预取查证块（P27）', () => {
     expect(withVerify.indexOf('## 原文查证')).toBeGreaterThan(withVerify.indexOf('## 当前场景档案'))
   })
 
-  it('无场景块时（回退故事情报）仍带查证小节；rag 分支不受影响（默认无块）', () => {
+  it('无场景块时（回退故事情报）仍带查证小节；rag 分支不带（预取只走 dossier）', () => {
     const dossierNoScene = buildKnowledgeBlock('dossier', '检索到的一些情报', '', '【原文查证】结论')
     expect(dossierNoScene).toContain('## 故事情报')
     expect(dossierNoScene).toContain('## 原文查证')
-    expect(buildKnowledgeBlock('rag', 'rag 情报', '', '【原文查证】结论')).toContain('## 原文查证')
-    // rag 缺省调用（老签名三参）逐字节不变
-    expect(buildKnowledgeBlock('rag', 'rag 情报', '')).toBe('\n## 故事情报\nrag 情报')
+    // rag 房没有预取通路：即便误传 verifyBlock 也不进提示词
+    const rag = buildKnowledgeBlock('rag', 'rag 情报', '', '【原文查证】结论')
+    expect(rag).not.toContain('原文查证')
+    expect(rag).toBe('\n## 故事情报\nrag 情报')
   })
 })

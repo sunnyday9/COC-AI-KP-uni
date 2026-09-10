@@ -132,11 +132,17 @@ export function buildGlobalWindows(storyText: string, gaps: CoverageGaps | null)
   return windows
 }
 
+/** 中文问句/文本 → CJK 二元组集合（词面重合度口径的唯一实现：查证定位与预取判定共用）。 */
+export function cjkBigrams(text: string): Set<string> {
+  const cjk = String(text ?? '').replace(/[^\u4e00-\u9fff]/g, '')
+  const out = new Set<string>()
+  for (let i = 0; i + 1 < cjk.length; i++) out.add(cjk.slice(i, i + 2))
+  return out
+}
+
 /** 问题词面评分：CJK 二元组命中数（与 ab-fallback locateRelevant 同口径）。 */
 export function questionScore(slice: string, question: string): number {
-  const grams = new Set<string>()
-  const cjk = String(question).replace(/[^\u4e00-\u9fff]/g, '')
-  for (let i = 0; i + 1 < cjk.length; i++) grams.add(cjk.slice(i, i + 2))
+  const grams = cjkBigrams(question)
   if (grams.size === 0) return 0
   const body = String(slice).replace(/[^\u4e00-\u9fff]/g, '')
   let score = 0

@@ -19,24 +19,31 @@
  *
  * 缓存：verify_original 自带同问同场景的进程内 TTL 缓存，重复问题不再花调用。
  */
-import { verifyOriginal, type VerifyOriginalResult, type VerifyOriginalDeps } from './originalLookup.js'
+import { verifyOriginal, cjkBigrams, type VerifyOriginalResult, type VerifyOriginalDeps } from './originalLookup.js'
 import type { SceneCoverage } from './coverageGaps.js'
 
-/** 事实问句信号：问号或疑问词（与 kpGraph 的意图词表面向一致）。 */
-export const PRE_FACT_QUESTION = /[？?]|什么|谁|哪里|哪儿|哪一?个|哪些|何时|什么时候|多久|几点|多少|为什么|为何|怎么|如何|是否|吗|呢/
-/** 以陈述句收尾标点结尾 → 视为行动叙述而非问句（玩家不写标点时要靠它兜底：
- *  「打听这里到底发生了什么。」是叙述，「海哥本名是什么」是提问）。 */
-const PRE_DECLARATIVE_END = /[。！!…]\.?$/
+/**
+ * 事实问句信号（P27b 收紧）：问号，或疑问词出现在**问句位置**。
+ * 两个必须收紧的点（每个误判 = 一次 20–40s 的真实 LLM 调用）：
+ *  - "吗/呢"只在句读边界才算信号（"吗啡""呢绒"是词内出现）；
+ *  - 有问号才是真提问；无问号时要求句子**不以陈述语气收尾**——中文玩家常省略
+ *    问号，但"我看看里面有什么""我想知道发生过什么"是叙述/自述，不是提问。
+ */
+export const FACT_QUESTION = /[？?]|什么|谁|哪里|哪儿|哪一?个|哪些|何时|多久|几点|多少|为什么|为何|怎么|如何|是否|(?:吗|呢)[？?。！!，,、\s]*$/
+/** 无问号时的排除项：叙述框架（我/让我们…看/想/知道/打听 + …什么/谁/为什么）。 */
+const NARRATIVE_FRAME = /^(?:我|我们|让|尝试|试着|想|准备|打算|开始)|(?:看看|瞧瞧|检查|打听|询问|了解|想知道)/
 /** 低于该长度不判问句（"谁？"这类碎片不触发）。 */
-export const PRE_MIN_TEXT_CHARS = 6
+export const MIN_QUESTION_CHARS = 6
 /** 问题二元组在档案块中的命中率低于此值视为"档案对不上问题"。 */
-export const PRE_OVERLAP_RATIO = 0.5
+export const OVERLAP_RATIO = 0.5
 /** 问题二元组少于该数量视为信息量不足，不触发。 */
-export const PRE_MIN_BIGRAMS = 3
+export const MIN_BIGRAMS = 3
 /** 场景覆盖率 ≥ 此值（且已知）时不再预取：档案基本完整，问题多半不在剧本里。 */
-export const PRE_COVERAGE_SUFFICIENT = 85
-/** 预取默认超时（毫秒）：超时按"未取得"处理，不回填、不阻断回合。 */
-export const PRE_TIMEOUT_MS = 90_000
+export const COVERAGE_SUFFICIENT = 85
+/** 预取默认超时（毫秒）：超时按"未取得"处理，不回填、不阻断回合。
+ *  这是回合首字延迟的最坏增量（预取在 system 组装前内联执行），取 60s：
+ *  verify_original 实测中位 22–33s。 */
+export const PREFETCH_TIMEOUT_MS = 60_000
 
 export interface PrefetchInput {
   /** 本轮玩家发言（多人局 = 已合并的批次文本）。 */
@@ -58,14 +65,6 @@ export interface PrefetchDecision {
   overlap?: number
 }
 
-/** CJK 二元组集合（与 originalLookup.questionScore 同口径）。 */
-function cjkBigrams(text: string): Set<string> {
-  const cjk = String(text ?? '').replace(/[^\u4e00-\u9fff]/g, '')
-  const out = new Set<string>()
-  for (let i = 0; i + 1 < cjk.length; i++) out.add(cjk.slice(i, i + 2))
-  return out
-}
-
 /** 问题措辞在档案块中的命中率（0–1）；档案为空 → 0。 */
 export function questionOverlap(question: string, sceneBlock: string): number {
   const grams = cjkBigrams(question)
@@ -79,20 +78,20 @@ export function questionOverlap(question: string, sceneBlock: string): number {
 /** 触发判定（纯函数，无 IO）。 */
 export function decidePrefetch(input: PrefetchInput): PrefetchDecision {
   const text = String(input.playerText ?? '').trim()
-  if (text.length < PRE_MIN_TEXT_CHARS) return { trigger: false, reason: 'too-short' }
-  // 陈述句收尾（。！…）且不是问号收尾 → 行动叙述，不是提问
-  if (PRE_DECLARATIVE_END.test(text) && !/[？?]\s*$/.test(text)) return { trigger: false, reason: 'not-a-question' }
-  if (!PRE_FACT_QUESTION.test(text)) return { trigger: false, reason: 'not-a-question' }
-  if (cjkBigrams(text).size < PRE_MIN_BIGRAMS) return { trigger: false, reason: 'low-signal' }
+  if (text.length < MIN_QUESTION_CHARS) return { trigger: false, reason: 'too-short' }
+  if (!FACT_QUESTION.test(text)) return { trigger: false, reason: 'not-a-question' }
+  // 无问号 + 叙述框架（"我想知道…""我看看…有什么"）→ 行动叙述，不是提问
+  if (!/[？?]/.test(text) && NARRATIVE_FRAME.test(text)) return { trigger: false, reason: 'not-a-question' }
+  if (cjkBigrams(text).size < MIN_BIGRAMS) return { trigger: false, reason: 'low-signal' }
 
   const sceneBlock = String(input.sceneBlock ?? '').trim()
   if (!sceneBlock) return { trigger: true, reason: 'no-scene-block', question: text }
 
   const overlap = questionOverlap(text, sceneBlock)
-  if (overlap >= PRE_OVERLAP_RATIO) return { trigger: false, reason: 'dossier-covers', overlap }
+  if (overlap >= OVERLAP_RATIO) return { trigger: false, reason: 'dossier-covers', overlap }
 
   const cov = input.coverage
-  if (cov && cov.gapCount > 0 && cov.coveragePct >= PRE_COVERAGE_SUFFICIENT) {
+  if (cov && cov.gapCount > 0 && cov.coveragePct >= COVERAGE_SUFFICIENT) {
     return { trigger: false, reason: 'coverage-sufficient', overlap }
   }
   return { trigger: true, reason: 'dossier-miss', question: text, overlap }
@@ -125,7 +124,7 @@ export async function runPrefetch(input: PrefetchInput, deps: PrefetchDeps): Pro
 
   if (!decision.trigger || !decision.question) return null
   const verify = deps.verify ?? verifyOriginal
-  const timeoutMs = deps.timeoutMs ?? PRE_TIMEOUT_MS
+  const timeoutMs = deps.timeoutMs ?? PREFETCH_TIMEOUT_MS
   const started = Date.now()
   try {
     const result = await Promise.race([

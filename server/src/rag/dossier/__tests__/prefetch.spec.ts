@@ -12,8 +12,8 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   decidePrefetch,
   runPrefetch,
-  PRE_FACT_QUESTION,
-  PRE_OVERLAP_RATIO,
+  FACT_QUESTION,
+  OVERLAP_RATIO,
   type PrefetchInput,
 } from '../prefetch.js'
 import type { VerifyOriginalResult } from '../originalLookup.js'
@@ -44,7 +44,7 @@ describe('prefetch: 触发判定（纯函数）', () => {
     expect(d.trigger).toBe(false)
     expect(d.reason).toBe('dossier-covers')
     // 命中率可诊断（同口径暴露给调用方）：刚好达到阈值即视为覆盖
-    expect(d.overlap).toBeGreaterThanOrEqual(PRE_OVERLAP_RATIO)
+    expect(d.overlap).toBeGreaterThanOrEqual(OVERLAP_RATIO)
   })
 
   it('问句 + 档案对不上问题措辞 → 触发，并把原问题作为查证问题', () => {
@@ -79,17 +79,22 @@ describe('prefetch: 触发判定（纯函数）', () => {
     expect(decidePrefetch(input({ playerText: '我推开门走进去。', coverage: cov })).trigger).toBe(false)
   })
 
-  it('过短文本（<最短问句长度）→ 不触发', () => {
-    expect(decidePrefetch(input({ playerText: '谁？' })).trigger).toBe(false)
+  it('问句识别（P27b 收紧）：行动叙述不误判，含疑问词的陈述也不误判', () => {
+    // 「吗/呢」只在句读边界才算问句信号——"吗啡"这类词内出现不算
+    expect(decidePrefetch(input({ playerText: '我打开吗啡瓶看看里面有什么' })).reason).toBe('not-a-question')
+    expect(decidePrefetch(input({ playerText: '我拿起呢绒外套穿上' })).reason).toBe('not-a-question')
+    // 含疑问词但以陈述句收尾（"打听…发生了什么。"）→ 行动叙述
+    expect(decidePrefetch(input({ playerText: '我试着和在场的人交谈，打听这里到底发生了什么。' })).reason).toBe('not-a-question')
+    expect(decidePrefetch(input({ playerText: '我想知道这里曾经出过什么事。' })).reason).toBe('not-a-question')
+    // 真问句（问号 / 句末疑问语气）照常识别
+    expect(FACT_QUESTION.test('他是谁')).toBe(true)
+    expect(FACT_QUESTION.test('这里曾经发生过什么？')).toBe(true)
+    expect(FACT_QUESTION.test('你确定是这样吗')).toBe(true)
+    expect(FACT_QUESTION.test('海哥呢')).toBe(true)
   })
 
-  it('问句信号词表可单测（PRE_FACT_QUESTION 命中）', () => {
-    for (const q of ['这是什么东西？', '他是谁', '你要去哪里', '什么时候发生', '有多少人', '为什么这样', '他是吗']) {
-      expect(PRE_FACT_QUESTION.test(q)).toBe(true)
-    }
-    for (const a of ['我走进房间', '我举起手电筒照向前方', '我开枪射击']) {
-      expect(PRE_FACT_QUESTION.test(a)).toBe(false)
-    }
+  it('过短文本（<最短问句长度）→ 不触发', () => {
+    expect(decidePrefetch(input({ playerText: '谁？' })).trigger).toBe(false)
   })
 })
 
