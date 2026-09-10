@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { fileToChunks } from '../services/storyService'
 import { indexStory } from '../services/ragService'
 import { getBridge } from '../platform'
 
@@ -57,15 +56,11 @@ export const useStoryStore = defineStore('story', () => {
    */
   async function indexStoryForRag(storyId: string): Promise<{ ok: boolean; error?: string; indexed?: number }> {
     try {
-      const content = await getBridge().readStoryForRag(storyId)
       const filename = storyId.split(/[/\\]/).pop() || 'story.txt'
       const displayName = filename.replace(/\.[^./\\]+$/i, '')
-      const isMarkdown = /\.(md|markdown)$/i.test(filename)
-      const chunks = fileToChunks(content, storyId, filename, {
-        useStructuredMarkdown: isMarkdown,
-      })
-      const result = await indexStory(storyId, chunks, { name: displayName })
-      return result.ok ? { ok: true, indexed: result.indexed } : { ok: false, error: 'Index failed' }
+      // M1-T3：切块搬到服务端——只报 storyId，服务端自读原文、自切块（递归语义 + 字符偏移）。
+      const result = await indexStory(storyId, { name: displayName })
+      return result.ok ? { ok: true, indexed: result.indexed } : { ok: false, error: result.error ?? 'Index failed' }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }

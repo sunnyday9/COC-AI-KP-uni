@@ -29,22 +29,13 @@ export async function checkRagHealth(): Promise<boolean> {
   }
 }
 
-/** Index story chunks for RAG */
+/** Index a story for RAG.
+ *  M1-T3（issue #48）：切块搬到服务端——客户端只报 storyId，服务端自读原文、自切块、自嵌入。 */
 export async function indexStory(
   storyId: string,
-  chunks: RAGChunk[],
   storyMeta?: { name?: string },
-): Promise<{ ok: boolean; indexed: number }> {
-  return getBridge().ragIndex({
-    scriptId: storyId,
-    chunks: chunks.map((c) => ({
-      id: c.id,
-      content: c.content,
-      type: c.type,
-      metadata: c.metadata,
-    })),
-    storyMeta,
-  })
+): Promise<{ ok: boolean; indexed: number; error?: string; warning?: string }> {
+  return getBridge().ragIndex({ scriptId: storyId, storyMeta })
 }
 
 /** Delete story index */

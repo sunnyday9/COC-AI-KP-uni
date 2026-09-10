@@ -229,32 +229,8 @@ async function configureRealAi(token) {
   console.log(`  [real] AI 配置: ${REAL_CFG.model} @ ${REAL_CFG.baseUrl}（rag 用内置 text2vec 本地嵌入；OPENCODE_SESSION=${process.env.OPENCODE_SESSION ? 'set' : 'UNSET'}`)
 }
 
-/* ═══════════════ story text → rag chunks (mirrors client fileToChunks) ═══════════════ */
-
-function makeChunks(text, maxChars = 1400, overlap = 120) {
-  const blocks = String(text ?? '')
-    .split(/\n\s*\n/)
-    .map((s) => s.trim())
-    .filter((s) => s.length >= 40)
-  const chunks = []
-  let buf = ''
-  for (const b of blocks) {
-    if (b.length > maxChars) {
-      if (buf) { chunks.push(buf); buf = '' }
-      for (let i = 0; i < b.length; i += maxChars - overlap) chunks.push(b.slice(i, i + maxChars))
-      continue
-    }
-    if (buf.length + b.length + 2 > maxChars) {
-      chunks.push(buf)
-      buf = b
-    } else {
-      buf = buf ? `${buf}\n${b}` : b
-    }
-  }
-  if (buf) chunks.push(buf)
-  // rag index 契约：chunks 需 { id, content } 对象（无 id 会落空 id → 检索后取不回原文）
-  return chunks.map((content, i) => ({ id: `c${i}`, content }))
-}
+/* ═══════════════ story text → RAG index（M1-T3：切块在服务端） ═══════════════ */
+/* 旧的客户端切块（makeChunks）已随 M1-T3 删除：索引只发 scriptId，服务端自读自切。 */
 
 /* ═══════════════ websocket room drive + measurement ═══════════════ */
 
@@ -541,14 +517,15 @@ async function runStory(user, tmpRoot, filePath, opts) {
   console.log(`  [text] ${storyText.length} chars (fetch ${out.setup.textFetchMs}ms)`)
 
   t0 = Date.now()
-  const chunks = makeChunks(storyText)
-  const idx = await api('POST', '/api/rag/index', { scriptId: up.id, chunks, storyMeta: { name: up.name } }, user.token, 600_000)
+  // M1-T3：切块搬到服务端——只报 scriptId，服务端自读原文、自切块、自嵌入。
+  const idx = await api('POST', '/api/rag/index', { scriptId: up.id, storyMeta: { name: up.name } }, user.token, 600_000)
   if (!idx.data?.ok) {
     out.setup.ragIndex = { ok: false, error: JSON.stringify(idx.data).slice(0, 200) }
     console.warn(`  [warn] rag index failed: ${JSON.stringify(idx.data).slice(0, 160)}`)
   } else {
-    out.setup.ragIndex = { ok: true, chunkCount: chunks.length, ms: Date.now() - t0 }
-    console.log(`  [rag index] ok, ${chunks.length} chunks (${Date.now() - t0}ms)`)
+    out.setup.ragIndex = { ok: true, chunkCount: idx.data.indexed ?? 0, ms: Date.now() - t0 }
+    console.log(`  [rag index] ok, ${idx.data.indexed ?? 0} chunks（服务端切块）(${Date.now() - t0}ms)`)
+    if (idx.data.warning) console.log(`  [rag index warn] ${idx.data.warning}`)
   }
 
   t0 = Date.now()

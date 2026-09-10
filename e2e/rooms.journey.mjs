@@ -286,13 +286,9 @@ async function indexDemoStory(token) {
   const up = await uploadRes.json().catch(() => ({}))
   assert(uploadRes.status === 200 && up.ok !== false, `script upload failed: ${uploadRes.status} ${JSON.stringify(up)}`)
   const id = up.id ?? up.scriptId ?? 'demo-story.txt'
-  const ragRes = await api('GET', `/api/stories/${encodeURIComponent(id)}/rag`, undefined, token)
-  assert(ragRes.status === 200, `rag read failed: ${ragRes.status} ${JSON.stringify(ragRes.data)}`)
-  // 索引键 = 含扩展名的文件名 id；整篇作单 chunk（mock 检索只按需取回，够用）。
-  const content = typeof ragRes.data.content === 'string' ? ragRes.data.content : JSON.stringify(ragRes.data)
+  // M1-T3：切块在服务端——只报 scriptId（索引键 = 含扩展名的文件名 id）。
   const idx = await api('POST', '/api/rag/index', {
     scriptId: id,
-    chunks: [{ id: 'chunk-0', content }],
     storyMeta: { name: 'demo-story' },
   }, token)
   assert(idx.status === 200 && idx.data.ok, `rag index failed: ${idx.status} ${JSON.stringify(idx.data)}`)

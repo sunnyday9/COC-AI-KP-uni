@@ -19,9 +19,9 @@ export interface AuthResult {
   user: BridgeUser
 }
 
+/** 索引一个故事：切块在服务端完成，客户端只报 storyId（M1-T3 / issue #48）。 */
 export interface RAGIndexParams {
   scriptId: string
-  chunks: { id: string; content: string; type: string; metadata: Record<string, unknown> }[]
   storyMeta?: { name?: string }
 }
 

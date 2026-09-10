@@ -219,9 +219,8 @@ async function main() {
     })
 
     await step('rag 房对照：索引 demo-story 仍可用（rag workflow 未破坏）', async () => {
-      const rag = await api('GET', `/api/stories/${encodeURIComponent(scriptId)}/rag`, undefined, user.token)
-      const content = typeof rag.data.content === 'string' ? rag.data.content : JSON.stringify(rag.data)
-      const idx = await api('POST', '/api/rag/index', { scriptId, chunks: [{ id: 'c0', content }], storyMeta: { name: 'demo-story' } }, user.token)
+      // M1-T3：切块在服务端——只报 scriptId（服务端自读原文、自切块）。
+      const idx = await api('POST', '/api/rag/index', { scriptId, storyMeta: { name: 'demo-story' } }, user.token)
       assert(idx.data.ok === true, `rag index failed: ${JSON.stringify(idx.data)}`)
       const stories = await api('GET', '/api/rag/stories', undefined, user.token)
       assert(stories.data.some((s) => s.storyId === scriptId), 'rag story list missing demo-story')

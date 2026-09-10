@@ -235,34 +235,34 @@ export async function testGraphRagExtract(
   }
 }
 
-/** POST /api/rag/index — rag:index (vectors + optional GraphRAG build). */
+/**
+ * POST /api/rag/index — rag:index（M1-T3 / issue #48：只报 scriptId，服务端自读自切自嵌）。
+ *
+ * 断代（ADR-0007 决策 4）：请求体不再收 chunks；服务端切块（递归语义切块 + 字符偏移）+
+ * 嵌入 + 落盘，索引期顺带预取重排模型（非致命）。图链路随后续票删除——本票起不再建图。
+ * 旧调用方（带 chunks）会得到明确错误，而不是静默降级。
+ */
 export async function index(
   userId: number,
   params: { scriptId?: string; chunks?: unknown; storyMeta?: { name?: string } } | undefined,
-): Promise<{ ok: boolean; indexed: number }> {
+): Promise<{ ok: boolean; indexed: number; error?: string; warning?: string }> {
   const { scriptId, chunks, storyMeta } = params || {}
-  if (!scriptId || !Array.isArray(chunks)) {
-    return { ok: false, indexed: 0 }
+  if (!scriptId) {
+    return { ok: false, indexed: 0, error: 'scriptId required' }
+  }
+  if (Array.isArray(chunks) && chunks.length > 0) {
+    return {
+      ok: false,
+      indexed: 0,
+      error: 'chunks are no longer accepted: the server chunks the story itself (M1-T3). Send {scriptId} only.',
+    }
   }
   const getEmbedding = await buildGetEmbedding(userId)
-  const options = getEmbedding ? { getEmbedding } : {}
-  const vectorResult = await vectorStore.indexChunks(
-    userId,
-    scriptId,
-    chunks as vectorStore.RAGChunkInput[],
-    storyMeta,
-    options,
-  )
-  const settings = getSettings(userId)
-  const ragSettings = (settings?.rag || {}) as NonNullable<AppSettings["rag"]>
-  const invokeChat = buildInvokeChat(userId)
-  if (ragSettings.useGraphRAG !== false && typeof invokeChat === 'function') {
-    await graphStore.indexGraph(userId, scriptId, chunks as graphStore.IndexGraphChunk[], storyMeta, {
-      invokeChat,
-      extractionModel: ragSettings.extractionModel || settings?.ai?.model || undefined,
-    })
-  }
-  return vectorResult
+  // 动态导入：索引编排链（切块/故事读取/重排器）只在真正索引时才载入，
+  // 不给服务启动与房间回合的模块图增加负担（冷启动 +1.1s 实测）。
+  const { indexStoryForRag } = await import('./indexOrchestration.js')
+  const result = await indexStoryForRag(userId, String(scriptId), storyMeta, getEmbedding ? { getEmbedding } : {})
+  return { ok: result.ok, indexed: result.indexed ?? 0, error: result.error, warning: result.warning }
 }
 
 /** GET /api/rag/stories — rag:listStories. */

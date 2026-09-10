@@ -123,12 +123,9 @@ async function uploadScript(token) {
 
 /** 索引剧本（A 房主 token + scriptId）→ 返回可给 /start 的 storyId。 */
 async function indexStory(token, scriptId) {
-  const rag = await api('GET', `/api/stories/${encodeURIComponent(scriptId)}/rag`, undefined, token)
-  assert(rag.status === 200, `rag read failed: ${rag.status}`)
-  const content = typeof rag.data.content === 'string' ? rag.data.content : JSON.stringify(rag.data)
+  // M1-T3：切块在服务端——只报 scriptId（服务端自读原文、自切块、自嵌入）。
   const idx = await api('POST', '/api/rag/index', {
     scriptId,
-    chunks: [{ id: 'c0', content }],
     storyMeta: { name: 'demo-story' },
   }, token)
   assert(idx.status === 200 && idx.data.ok, `rag index failed: ${idx.status} ${JSON.stringify(idx.data)}`)
