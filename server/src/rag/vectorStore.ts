@@ -562,8 +562,8 @@ export function checkHealth(userId: number): { status: string; service: string; 
 
 /**
  * Read the raw persisted index file for a user+script (or null).
- * Mirrors the direct fs reads in the original ragHandlers.cjs
- * (rag:testGraphRagExtract / rag:getIndex); used by ragService.
+ * Mirrors the direct fs reads in the original ragHandlers.cjs (rag:getIndex);
+ * used by ragService.
  */
 export function loadIndexFile(userId: number, scriptId: string): StoredIndex | null {
   return loadIndex(userId, scriptId)

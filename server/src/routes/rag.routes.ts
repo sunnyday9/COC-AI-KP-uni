@@ -30,14 +30,6 @@ router.post('/test-embedding', (req: AuthRequest, res) => {
     .catch((err) => sendError(res, err))
 })
 
-/** POST /api/rag/test-graphrag-extract — rag:testGraphRagExtract. */
-router.post('/test-graphrag-extract', (req: AuthRequest, res) => {
-  void ragService
-    .testGraphRagExtract(req.userId as number, req.body)
-    .then((result) => res.json(result))
-    .catch((err) => sendError(res, err))
-})
-
 /** POST /api/rag/index — rag:index. */
 router.post('/index', (req: AuthRequest, res) => {
   void ragService
@@ -98,16 +90,7 @@ router.get('/index/:scriptId', (req: AuthRequest, res) => {
   }
 })
 
-/** GET /api/rag/graph/:scriptId — rag:getGraph. */
-router.get('/graph/:scriptId', (req: AuthRequest, res) => {
-  try {
-    res.json(ragService.getGraph(req.userId as number, req.params.scriptId as string))
-  } catch (err) {
-    sendError(res, err)
-  }
-})
-
-/** POST /api/rag/user-graph/event — rag:userGraphAdd. */
+/** POST /api/rag/user-graph/event — rag:userGraphAdd（A3 延后特性，非 GraphRAG）。 */
 router.post('/user-graph/event', (req: AuthRequest, res) => {
   try {
     ragService.userGraphAdd(req.userId as number, req.body)

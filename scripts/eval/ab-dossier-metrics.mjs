@@ -106,7 +106,7 @@ async function main() {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
         ai: { provider: 'openai_compatible', baseUrl: REAL_CFG.baseUrl, apiKey: REAL_CFG.apiKey, model: REAL_CFG.model, temperature: 0.7, maxTokens: 2048 },
-        rag: { useEmbeddings: true, provider: 'builtin', model: 'text-embedding-3-small', useGraphRAG: false, extractionModel: '' },
+        rag: { useEmbeddings: true, provider: 'builtin', model: 'text-embedding-3-small' },
       }),
     })
     if (res.status !== 200) throw new Error(`settings: ${res.status}`)

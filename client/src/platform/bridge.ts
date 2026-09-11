@@ -71,9 +71,7 @@ function extractError(data: unknown, fallback: string): string {
 }
 
 // Return types derived from the Bridge contract (avoids drift with shared/).
-type RagTestGraphRagExtractResult = Awaited<ReturnType<Bridge['ragTestGraphRagExtract']>>
 type RagGetIndexResult = Awaited<ReturnType<Bridge['ragGetIndex']>>
-type RagGetGraphResult = Awaited<ReturnType<Bridge['ragGetGraph']>>
 
 /** Generic JSON request with bearer-token attachment and 401 handling. */
 function request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
@@ -406,10 +404,6 @@ export class PlatformBridge implements Bridge {
     return request('POST', '/api/rag/test-embedding')
   }
 
-  ragTestGraphRagExtract(params: { scriptId: string; maxChunks?: number; maxBatches?: number }): Promise<RagTestGraphRagExtractResult> {
-    return request<RagTestGraphRagExtractResult>('POST', '/api/rag/test-graphrag-extract', params)
-  }
-
   ragIndex(params: RAGIndexParams): Promise<{ ok: boolean; indexed: number }> {
     return request('POST', '/api/rag/index', params)
   }
@@ -422,7 +416,7 @@ export class PlatformBridge implements Bridge {
     return request('POST', '/api/rag/query', params)
   }
 
-  ragContext(params: RAGContextParams): Promise<{ context: string; graphSummary?: string; chunkCount?: number }> {
+  ragContext(params: RAGContextParams): Promise<{ context: string; chunkCount?: number }> {
     return request('POST', '/api/rag/context', params)
   }
 
@@ -436,10 +430,6 @@ export class PlatformBridge implements Bridge {
 
   ragGetIndex(params: { scriptId: string }): Promise<RagGetIndexResult> {
     return request<RagGetIndexResult>('GET', `/api/rag/index/${encodeURIComponent(params.scriptId)}`)
-  }
-
-  ragGetGraph(params: { scriptId: string }): Promise<RagGetGraphResult> {
-    return request<RagGetGraphResult>('GET', `/api/rag/graph/${encodeURIComponent(params.scriptId)}`)
   }
 
   ragUserGraphAdd(params: {

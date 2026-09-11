@@ -213,7 +213,7 @@ export async function chatForAgent(
 /* ═══════════════════ Model listing ═══════════════════ */
 
 /**
- * RAG-path chat (Task 4 GraphRAG extraction / community summaries): like
+ * RAG-path chat (RAG 子调用（档案生成 / 原文查证 / query 改写）): like
  * `chatForAgent` but non-streaming only and with a `model` override that
  * takes precedence over settings.ai.model (mirrors the original invokeChat
  * used by ragHandlers.cjs: `model: model || ai.model`). Every outbound

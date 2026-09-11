@@ -43,8 +43,6 @@ interface RAGSettings {
   useEmbeddings: boolean
   provider: 'builtin' | 'api'
   model: string             // 默认 'text-embedding-3-small'
-  useGraphRAG?: boolean
-  extractionModel?: string
   supplement?: boolean      // 检索补充层总开关（ADR-0007 决策 5/6）；默认 true
 }
 interface AppSettings {
@@ -137,15 +135,13 @@ interface AppSettings {
 |---|---|---|---|
 | GET | `/api/rag/health` | — | `{ status, service }` |
 | POST | `/api/rag/test-embedding` | — | `{ ok, vectorLength?, error? }` |
-| POST | `/api/rag/test-graphrag-extract` | `{ scriptId, maxChunks?, maxBatches? }` | `{ ok, scriptId?, extractionModelUsed?, totalBatches?, testedBatches?, results?, error? }` |
 | POST | `/api/rag/index` | `{ scriptId, storyMeta? }`（M1-T3：切块在服务端，不再收 chunks；带 chunks 明确 400 语义拒绝） | `{ ok, indexed, error?, warning? }` |
 | DELETE | `/api/rag/index/:scriptId` | — | `{ ok, deleted }` |
 | POST | `/api/rag/query` | `{ query, scriptId?, sceneId?, type?, topK? }` | `{ chunks: { content, metadata, distance }[] }` |
-| POST | `/api/rag/context` | `{ query, scriptId?, sceneId?, topK? }` | `{ context, graphSummary?, chunkCount? }` |
+| POST | `/api/rag/context` | `{ query, scriptId?, sceneId?, topK? }` | `{ context, chunkCount? }`（标准管线，无图扩展） |
 | GET | `/api/rag/stories` | — | `{ storyId, name, chunkCount, indexedAt }[]` |
 | POST | `/api/rag/story-overview` | `{ storyId, topK? }` | `{ overview, storyName }` |
 | GET | `/api/rag/index/:scriptId` | — | `{ scriptId, storyName, chunkCount, chunks: {id,content,type,metadata,hasVector}[] }` |
-| GET | `/api/rag/graph/:scriptId` | — | `{ scriptId, storyName, indexedAt, nodeCount, edgeCount, nodes, edges, communitySummaries } \| null` |
 | POST | `/api/rag/user-graph/event` | `{ storyId, sessionId, event: {type,name,description?} }` | `{ ok }` |
 | POST | `/api/rag/user-graph/sync` | `{ storyId, sessionId, state: {cluesObtained, currentScene} }` | `{ ok }` |
 | POST | `/api/rag/user-graph/summary` | `{ storyId, sessionId }` | `{ summary }` |
@@ -165,7 +161,7 @@ interface AppSettings {
 | kpInvoke | POST `/api/kp/invoke` |
 | kpInvokeStream / onKpStream | WebSocket `kp:invoke` + 消息分发 |
 | listSaves / readSave / writeSave | `/api/saves*` |
-| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragStoryOverview / ragGetIndex / ragGetGraph / ragUserGraphAdd / ragUserGraphSync / ragUserGraphSummary / ragTestEmbedding / ragTestGraphRagExtract | `/api/rag*` |
+| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragStoryOverview / ragGetIndex / ragUserGraphAdd / ragUserGraphSync / ragUserGraphSummary / ragTestEmbedding | `/api/rag*` |
 | login / register / logout / me（新增） | `/api/auth*` |
 | platform | `'h5' \| 'mp-weixin' \| 'app'` |
 

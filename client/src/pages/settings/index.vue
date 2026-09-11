@@ -614,10 +614,10 @@ async function confirmLogout() {
               </view>
               <view class="kbd-hint">快捷键：在游戏房间按 Ctrl+Shift+D 打开/关闭 Debug Panel（H5）</view>
               <!-- #ifdef H5 -->
-              <view class="kbd-hint">RAG Inspector：H5 端访问 /#/pages/rag-inspector/index（检查 RAG 索引与 GraphRAG 结果；小程序不包含此页）</view>
+              <view class="kbd-hint">RAG Inspector：H5 端访问 /#/pages/rag-inspector/index（检查 RAG 索引与搜索质量；小程序不包含此页）</view>
               <!-- #endif -->
               <!-- #ifndef H5 -->
-              <view class="kbd-hint">图谱检查工具仅 H5 端可用（小程序不包含此页）</view>
+              <view class="kbd-hint">RAG Inspector 仅 H5 端可用（小程序不包含此页）</view>
               <!-- #endif -->
               <button class="gothic-btn" hover-class="gothic-btn-press" @click="handleSave">保存</button>
             </view>

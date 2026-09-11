@@ -45,7 +45,7 @@ client (uni-app: H5 / mp-weixin / App)
 server (Express + TypeScript)
   ├─ KP Agent    LangGraph 状态机（analyzeInput → routeByIntent → PlanTools
   │              → Generate → Validate → forceTools）
-  ├─ RAG         TF-IDF + 稠密向量 + GraphRAG（实体图谱 2 跳扩展）
+  ├─ RAG         服务端递归切块 → 本地嵌入 → 向量召回 → cross-encoder 重排（无图）
   ├─ 房间        状态机 + 快照（solo = 单成员房间；multi = 治理状态机）
   ├─ SQLite      node:sqlite（WAL），零原生依赖
   └─ WS          帧协议：消息 / 骰子 / 工具 / 档案 / 回合（全序 seq + 增量同步）

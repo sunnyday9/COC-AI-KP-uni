@@ -27,8 +27,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     useEmbeddings: true,
     provider: 'builtin',
     model: 'text-embedding-3-small',
-    useGraphRAG: true,
-    extractionModel: '',
     // 检索补充层（ADR-0007 决策 5/6）：默认开——每回合固定检索注入原文纹理
     supplement: true,
   },
@@ -109,7 +107,7 @@ export function validatePatch(patch: unknown): void {
 
   const rag = patch.rag === undefined ? {} : patch.rag
   if (!isRecord(rag)) throw new BadRequestError('settings.rag must be an object')
-  const { useEmbeddings, provider: ragProvider, model: ragModel, useGraphRAG, extractionModel, supplement } = rag
+  const { useEmbeddings, provider: ragProvider, model: ragModel, supplement } = rag
   if (useEmbeddings !== undefined && typeof useEmbeddings !== 'boolean') {
     throw new BadRequestError('settings.rag.useEmbeddings must be a boolean')
   }
@@ -118,12 +116,6 @@ export function validatePatch(patch: unknown): void {
   }
   if (ragModel !== undefined && typeof ragModel !== 'string') {
     throw new BadRequestError('settings.rag.model must be a string')
-  }
-  if (useGraphRAG !== undefined && typeof useGraphRAG !== 'boolean') {
-    throw new BadRequestError('settings.rag.useGraphRAG must be a boolean')
-  }
-  if (extractionModel !== undefined && typeof extractionModel !== 'string') {
-    throw new BadRequestError('settings.rag.extractionModel must be a string')
   }
   if (supplement !== undefined && typeof supplement !== 'boolean') {
     throw new BadRequestError('settings.rag.supplement must be a boolean')
@@ -224,9 +216,7 @@ function mergeDefaults(patch: Record<string, unknown>): StoredSettings {
       useEmbeddings: typeof ragIn.useEmbeddings === 'boolean' ? ragIn.useEmbeddings : DEFAULT_SETTINGS.rag!.useEmbeddings,
       provider: ragIn.provider === 'builtin' || ragIn.provider === 'api' ? ragIn.provider : DEFAULT_SETTINGS.rag!.provider,
       model: typeof ragIn.model === 'string' ? ragIn.model : DEFAULT_SETTINGS.rag!.model,
-      useGraphRAG: typeof ragIn.useGraphRAG === 'boolean' ? ragIn.useGraphRAG : DEFAULT_SETTINGS.rag!.useGraphRAG,
-      extractionModel:
-        typeof ragIn.extractionModel === 'string' ? ragIn.extractionModel : DEFAULT_SETTINGS.rag!.extractionModel,
+      // 旧配置里的 useGraphRAG / extractionModel 直接忽略（M1-T7 干净断代，不做兼容层）
       supplement: typeof ragIn.supplement === 'boolean' ? ragIn.supplement : DEFAULT_SETTINGS.rag!.supplement,
     },
     ...(typeof patch.syncServerUrl === 'string' ? { syncServerUrl: patch.syncServerUrl } : {}),

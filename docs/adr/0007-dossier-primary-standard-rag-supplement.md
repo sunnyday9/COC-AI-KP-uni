@@ -60,3 +60,12 @@ GraphRAG 索引期烧 LLM 建图、查询期 2 跳扩展无数量上限。
   延迟硬约束 = 不得超过 rag 房（P25 教训：注入膨胀会吃掉 TTFT 优势）。
 - 验收口径：事实问答沿用 5 问 judge（保连续性）+ 新增**纹理 rubric**（描写是否引用了原文
   可考的细节）+ 延迟对比；2–3 篇剧本 A/B。
+- **落地状态（M1，2026-09-11）**：T1 切块器 / T2 本地重排器 / T3 索引编排与 API 断代 /
+  T4 场景归属与 query 构造 / T5 检索编排与注入装配 / T6 提示词与开关接线 / T7 图链删除
+  均已落地。T7 的删除范围 = 3 个图模块（graphStore/graphRag/graphExtractLLM）+ 4 个图提示词 + 图端点与 `useGraphRAG`/
+  `extractionModel` 设置项 + 客户端脚本页图面板与 GraphBrowser 组件；
+  `rag.supplement`（默认开）为唯一新增开关。**注意**：`userGraphStore`（本局线索/到访
+  场景的会话级记录）**不在删除范围**——它是 ADR-0002 决策 4 的 A3 延后特性，与 GraphRAG
+  不是一回事（当前无回合路径消费方，保留待 A3）。
+- **rag 房基线代际**：rag 房从 `topK 8 + 图 2 跳扩展` 改为标准管线（top10 召回 →
+  rerank top3 + 1.6k 预算），**P10–P27 的 rag 注入量基线不再可比**；T8 验收需重新标注基线。

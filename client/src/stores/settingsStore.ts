@@ -15,10 +15,6 @@ export interface RAGSettings {
   /** 'builtin' = preloaded local model (no API); 'api' = use AI Base URL + API Key + model */
   provider: RAGEmbeddingProvider
   model: string
-  /** Use local GraphRAG (Microsoft GraphRAG-style, COC-specialized) */
-  useGraphRAG?: boolean
-  /** Model for local GraphRAG extraction when MS GraphRAG unavailable */
-  extractionModel?: string
   /** 检索补充层总开关（ADR-0007；默认开）。**必须逐字段透传**：load() 重建 rag
    *  对象时漏掉它，每次保存都会把用户关掉的开关静默改回默认开。 */
   supplement?: boolean
@@ -34,12 +30,10 @@ export interface AppSettings {
 const ALL_PROTOCOLS = new Set<string>(PROTOCOL_DEFS.map((p) => p.id))
 
 const defaultRAG: RAGSettings = {
-  // 默认启用语义检索（嵌入向量），在 Electron 内自动使用本地向量检索 + GraphRAG
+  // 默认启用语义检索（嵌入向量）——本地 builtin 嵌入；M1-T7 起无图
   useEmbeddings: true,
   provider: 'builtin',
   model: 'text-embedding-3-small',
-  useGraphRAG: true,
-  extractionModel: '',
   supplement: true,
 }
 
@@ -93,8 +87,6 @@ export const useSettingsStore = defineStore('settings', () => {
         useEmbeddings: typeof rawRag.useEmbeddings === 'boolean' ? Boolean(rawRag.useEmbeddings) : defaultRAG.useEmbeddings,
         provider: rawRag.provider === 'api' ? 'api' : 'builtin',
         model: typeof rawRag.model === 'string' ? rawRag.model : defaultRAG.model,
-        useGraphRAG: rawRag.useGraphRAG === false ? false : true,
-        extractionModel: typeof rawRag.extractionModel === 'string' ? rawRag.extractionModel : '',
         // 漏掉这行 = 每次 save() 把用户的关闭状态改回默认开（服务端 mergeDefaults 回填 true）
         supplement: rawRag.supplement === false ? false : true,
       }

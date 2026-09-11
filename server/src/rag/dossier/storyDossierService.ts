@@ -125,10 +125,9 @@ export function splitStorySections(content: string, batchChars: number = DOSSIER
 }
 
 /**
- * Generate a dossier for a user's story. `model` overrides settings (mirrors
- * graphStore.indexGraph's extractionModel param). Reads the story text via
- * readStoryForRag (PDF → parsePdfWithOcr). Batches long stories; feeds
- * previously-seen names back for cross-batch consistency.
+ * Generate a dossier for a user's story. `model` overrides settings. Reads the
+ * story text via readStoryForRag (PDF → parsePdfWithOcr). Batches long stories;
+ * feeds previously-seen names back for cross-batch consistency.
  */
 export async function generateDossier(
   userId: number,

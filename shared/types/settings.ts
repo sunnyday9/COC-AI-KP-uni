@@ -21,8 +21,6 @@ export interface RAGSettings {
   provider: 'builtin' | 'api'
   /** 默认 'text-embedding-3-small' */
   model: string
-  useGraphRAG?: boolean
-  extractionModel?: string
   /** 检索补充层总开关（ADR-0007 决策 5/6；默认开）。关闭 = 每回合不检索、
    *  提示词不出现《原文片段》小节。M1 只留这一个总开关，参数硬编默认。 */
   supplement?: boolean

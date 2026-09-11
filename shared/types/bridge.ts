@@ -123,30 +123,10 @@ export interface Bridge {
   // ── RAG（与 ragHandlers.cjs 一致）─────────────────────────────
   ragHealth: () => Promise<{ status: string; service: string }>
   ragTestEmbedding: () => Promise<{ ok: boolean; vectorLength?: number; error?: string }>
-  ragTestGraphRagExtract: (params: { scriptId: string; maxChunks?: number; maxBatches?: number }) => Promise<{
-    ok: boolean
-    scriptId?: string
-    extractionModelUsed?: string | null
-    totalBatches?: number
-    testedBatches?: number
-    results?: {
-      batchIndex: number
-      chunkIds: string[]
-      extractionModelUsed?: string | null
-      rawOutputPreview?: string
-      hasTupleDelimiter?: boolean
-      entitiesCount?: number
-      relationsCount?: number
-      entitiesSample?: { name: string; type: string }[]
-      relationsSample?: { source: string; target: string; type: string }[]
-      error?: string
-    }[]
-    error?: string
-  }>
   ragIndex: (params: RAGIndexParams) => Promise<{ ok: boolean; indexed: number; error?: string; warning?: string }>
   ragDelete: (scriptId: string) => Promise<{ ok: boolean; deleted: number }>
   ragQuery: (params: RAGQueryParams) => Promise<{ chunks: { content: string; metadata: Record<string, string>; distance: number }[] }>
-  ragContext: (params: RAGContextParams) => Promise<{ context: string; graphSummary?: string; chunkCount?: number }>
+  ragContext: (params: RAGContextParams) => Promise<{ context: string; chunkCount?: number }>
   ragListStories: () => Promise<IndexedStory[]>
   ragStoryOverview: (params: { storyId: string; topK?: number }) => Promise<{ overview: string; storyName: string }>
   ragGetIndex: (params: { scriptId: string }) => Promise<{
@@ -155,17 +135,6 @@ export interface Bridge {
     chunkCount: number
     chunks: { id: string; content: string; type: string; metadata: Record<string, unknown>; hasVector: boolean }[]
   }>
-  ragGetGraph: (params: { scriptId: string }) => Promise<{
-    scriptId: string
-    storyName: string
-    indexedAt: number
-    nodeCount: number
-    edgeCount: number
-    nodes: { id: string; type: string; name: string; content: string; communityId: string | null; chunkIds: string[] }[]
-    edges: { source: string; target: string; type: string; label: string }[]
-    communitySummaries: Record<string, string>
-  } | null>
-
   // ── RAG 用户行动图谱（Task 3+ 填充）──────────────────────────
   ragUserGraphAdd: (params: {
     storyId: string

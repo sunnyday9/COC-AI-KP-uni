@@ -3,10 +3,9 @@
  * RAG route tests (api-contract §8): supertest against the real app.
  *
  * Hermeticity: @huggingface/transformers is mocked (the builtin embedder
- * returns deterministic vectors — NO real model download); the graph
- * extraction LLM path is exercised only via the user's settings (default:
- * no model configured → chatForRag raises before any network). No real
- * outbound requests happen in this file.
+ * returns deterministic vectors, and the reranker model is unavailable — so
+ * retrieval degrades to cosine — NO real model download). No LLM is reachable
+ * from these endpoints, so no real outbound requests happen in this file.
  */
 import { describe, expect, it, vi } from 'vitest'
 import request from 'supertest'

@@ -10,29 +10,24 @@
  *    BadRequestError (400) instead of silently falling back to the builtin
  *    model (the original fell back on "API 配置不完整或失败"; a security-gate
  *    rejection must stay loud — consistent with the AI chat path).
- *  - `rag:testGraphRagExtract` pushes per-batch `rag:progress` frames to the
- *    requesting user's live WS connections (decision 4/8; the original had no
- *    progress events, so only long tasks push — readStoryForRag arrives with
- *    Task 5).
  *  - Errors are classified (BadRequestError / UpstreamError) instead of bare
- *    IPC rejections; `rag:userGraph*` handlers return `{ ok }` per contract.
+ *    IPC rejections.
+ *
+ * M1-T7（ADR-0007 决策 3）：图链路（graphStore / graphRag / graphExtractLLM / 图抽取与
+ * 社区摘要提示词）**整体删除**——索引期 LLM 建图与查询期无上限的 2 跳扩展都已是负资产
+ * （档案取代了"关系情报块"的角色，A/B 无收益）。REST 的图端点与
+ * `useGraphRAG`/`extractionModel` 设置项同批移除，不留死开关。
+ * ⚠️ `userGraphStore`（文件末尾）**不在删除范围**：它是 ADR-0002 决策 4 的 A3 延后特性
+ * （本局已获线索/到访场景的会话级记录），与 GraphRAG 不是一回事。
  */
-import { chatForRag } from './aiService.js'
 import { getSettings, getAiConfig } from './settingsService.js'
 import { isMockAiMode } from '../config.js'
 import type { AppSettings } from '../../../shared/types/settings.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError } from '../utils/errors.js'
 import * as vectorStore from '../rag/vectorStore.js'
-import * as graphStore from '../rag/graphStore.js'
-import * as graphRag from '../rag/graphRag.js'
 import * as userGraphStore from '../rag/userGraphStore.js'
 import { createEmbedder, createBuiltinEmbedder, type Embedder } from '../rag/embedding.js'
-import { buildExtractGraphPrompt, parseExtractOutput, COC_ENTITY_TYPES } from '../rag/prompts/cocExtractGraph.js'
-import { pushRagProgress } from '../ws/progress.js'
-
-const MAX_CHARS_PER_CALL = 2500
-const BATCH_SIZE = 3
 
 /* ═══════════════════ Embedding provider resolution ═══════════════════ */
 
@@ -83,17 +78,6 @@ async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
   return await createBuiltinEmbedder()
 }
 
-/** The graph extraction LLM closure for a user (model override from settings). */
-function buildInvokeChat(userId: number): (params: {
-  messages: { role: string; content: string }[]
-  stream?: boolean
-  temperature?: number
-  maxTokens?: number
-  model?: string
-}) => Promise<{ content?: string }> {
-  return (params) => chatForRag(userId, params)
-}
-
 /* ═══════════════════ Per-endpoint operations ═══════════════════ */
 
 /** GET /api/rag/health — rag:health. */
@@ -131,122 +115,11 @@ export async function testEmbedding(
   }
 }
 
-/** POST /api/rag/test-graphrag-extract — rag:testGraphRagExtract (+ progress). */
-export async function testGraphRagExtract(
-  userId: number,
-  params: { scriptId?: string; maxChunks?: number; maxBatches?: number } | undefined,
-): Promise<Record<string, unknown>> {
-  const { scriptId, maxChunks = 6, maxBatches = 3 } = params || {}
-  if (!scriptId) return { ok: false, error: 'Missing scriptId' }
-
-  const settings = getSettings(userId)
-  const ragSettings = (settings?.rag || {}) as NonNullable<AppSettings["rag"]>
-  const extractionModel = ragSettings.extractionModel || settings?.ai?.model || undefined
-
-  const idxFile = vectorStore.loadIndexFile(userId, scriptId)
-  if (!idxFile) {
-    return { ok: false, error: 'rag_index not found for this scriptId' }
-  }
-
-  const docs = idxFile?.docs || []
-
-  const sliceN = Math.max(0, Number.isFinite(Number(maxChunks)) ? Number(maxChunks) : 6)
-  const limited = docs.slice(0, sliceN)
-
-  if (!limited.length) {
-    return { ok: true, scriptId, extractionModelUsed: extractionModel || settings?.ai?.model, totalBatches: 0, results: [] }
-  }
-
-  const invokeChat = buildInvokeChat(userId)
-
-  const batches: { id: string; content: string; type?: string; metadata?: Record<string, unknown> }[][] = []
-  let acc: { id: string; content: string; type?: string; metadata?: Record<string, unknown> }[] = []
-  let accLen = 0
-  for (const c of limited) {
-    const text = (c?.content || '').trim()
-    if (!text) continue
-    if (accLen + text.length > MAX_CHARS_PER_CALL && acc.length > 0) {
-      batches.push(acc)
-      acc = []
-      accLen = 0
-    }
-    acc.push({ id: c.id, content: c.content, type: c.type, metadata: c.metadata })
-    accLen += text.length
-    if (acc.length >= BATCH_SIZE) {
-      batches.push(acc)
-      acc = []
-      accLen = 0
-    }
-  }
-  if (acc.length) batches.push(acc)
-
-  const tested = Math.min(batches.length, Math.max(0, Number(maxBatches) || 0))
-  const results: Record<string, unknown>[] = []
-
-  for (let bi = 0; bi < tested; bi++) {
-    const batch = batches[bi] as { id: string; content: string }[]
-    const chunkIds = batch.map((c) => c.id)
-    const combined = batch.map((c) => c.content).join('\n\n---\n\n')
-
-    // rag:progress — per-batch extraction progress (decision 4/8)
-    pushRagProgress(userId, {
-      stage: 'graph_extract',
-      scriptId,
-      percent: Math.round(((bi + 1) / tested) * 100),
-      message: `测试抽取 batch ${bi + 1}/${tested}`,
-    })
-
-    const prompt = buildExtractGraphPrompt({ inputText: combined, entityTypes: COC_ENTITY_TYPES })
-    try {
-      const res = await invokeChat({
-        messages: [
-          { role: 'system', content: 'Output only the extracted entities and relationships. No other text.' },
-          { role: 'user', content: prompt },
-        ],
-        stream: false,
-        temperature: 0,
-        maxTokens: 2048,
-        model: extractionModel || undefined,
-      })
-
-      const rawOutput = (res?.content || '').trim()
-      const parsed = parseExtractOutput(rawOutput)
-      results.push({
-        batchIndex: bi,
-        chunkIds,
-        extractionModelUsed: extractionModel || settings?.ai?.model || null,
-        rawOutputPreview: rawOutput.slice(0, 900),
-        hasTupleDelimiter: rawOutput.includes(' | '),
-        entitiesCount: parsed.entities?.length ?? 0,
-        relationsCount: parsed.relations?.length ?? 0,
-        entitiesSample: (parsed.entities || []).slice(0, 10).map((e) => ({ name: e.name, type: e.type })),
-        relationsSample: (parsed.relations || []).slice(0, 10).map((r) => ({ source: r.source, target: r.target, type: r.type })),
-      })
-    } catch (e) {
-      results.push({
-        batchIndex: bi,
-        chunkIds,
-        extractionModelUsed: extractionModel || settings?.ai?.model || null,
-        error: e instanceof Error ? e.message : String(e),
-      })
-    }
-  }
-
-  return {
-    ok: true,
-    scriptId,
-    extractionModelUsed: extractionModel || settings?.ai?.model || null,
-    totalBatches: batches.length,
-    testedBatches: tested,
-    results,
-  }
-}
-
 /**
  * POST /api/rag/index — rag:index（M1-T3 / issue #48：只报 scriptId，服务端自读自切自嵌）。
  *
  * 断代（ADR-0007 决策 4）：请求体不再收 chunks；服务端切块（递归语义切块 + 字符偏移）+
- * 嵌入 + 落盘，索引期顺带预取重排模型（非致命）。图链路随后续票删除——本票起不再建图。
+ * 嵌入 + 落盘，索引期顺带预取重排模型（非致命）。图链路已在 M1-T7 删除——全程不建图。
  * 旧调用方（带 chunks）会得到明确错误，而不是静默降级。
  */
 export async function index(
@@ -293,15 +166,9 @@ export function storyOverview(
   return vectorStore.getStoryOverview(userId, storyId, topK ?? 15)
 }
 
-/** DELETE /api/rag/index/:scriptId — rag:delete (vectors + graph). */
+/** DELETE /api/rag/index/:scriptId — rag:delete (vectors only；M1-T7 起无图)。 */
 export function deleteIndex(userId: number, scriptId: string): { ok: boolean; deleted: number } {
-  const vectorResult = vectorStore.deleteChunks(userId, scriptId)
-  try {
-    graphStore.deleteGraph(userId, scriptId)
-  } catch {
-    // graph deletion is best-effort (mirrors the original try/catch)
-  }
-  return vectorResult
+  return vectorStore.deleteChunks(userId, scriptId)
 }
 
 /** POST /api/rag/query — rag:query. */
@@ -322,24 +189,33 @@ export async function query(
   })
 }
 
-/** POST /api/rag/context — rag:context (vector + graph expansion). */
+/**
+ * POST /api/rag/context — rag:context（**标准管线，无图扩展**，M1-T7 / ADR-0007 决策 3）。
+ * 图 2 跳扩展已删除：无数量上限的扩展会把无关块灌进上下文，且档案已取代它的角色。
+ * 本端点保留给客户端 RAG 调试页，形态 = 标准检索 + 装配渲染（与回合路径同一套零件）。
+ */
 export async function context(
   userId: number,
   params: { query?: string; scriptId?: string; sceneId?: string; topK?: number } | undefined,
-): Promise<{ context: string; graphSummary?: string; chunkCount?: number }> {
+): Promise<{ context: string; chunkCount?: number }> {
   const { query: q, scriptId, sceneId, topK } = params || {}
-  const settings = getSettings(userId)
-  const useGraphRAG = settings?.rag?.useGraphRAG !== false
+  const { buildSupplement } = await import('../rag/supplementService.js')
+  const { renderBlock } = await import('../rag/supplementAssembly.js')
   const getEmbedding = await buildGetEmbedding(userId)
-  return graphRag.buildContextWithGraph({
-    userId,
-    query: q ?? '',
-    scriptId,
-    sceneId,
-    topK: topK ?? 5,
-    getEmbedding: getEmbedding || undefined,
-    useGraphRAG,
-  })
+  const res = await buildSupplement(
+    {
+      userId,
+      scriptId: scriptId ?? '',
+      rawQuery: q ?? '',
+      sceneName: sceneId,
+      mode: 'plain',
+      enabled: true,
+      ...(topK && topK > 0 ? { rerankTopN: topK } : {}),
+    },
+    { getEmbedding: getEmbedding || undefined },
+  )
+  // 单块渲染走 renderBlock（跨场景前缀只在渲染层加，裸取 block.text 会丢标注）
+  return { context: res.blocks.map(renderBlock).join('\n\n'), chunkCount: res.blocks.length }
 }
 
 /** GET /api/rag/index/:scriptId — rag:getIndex. */
@@ -371,49 +247,10 @@ export function getIndex(
   }
 }
 
-/** GET /api/rag/graph/:scriptId — rag:getGraph. */
-export function getGraph(
-  userId: number,
-  scriptId: string,
-): {
-  scriptId: string
-  storyName: string
-  indexedAt: number
-  nodeCount: number
-  edgeCount: number
-  nodes: { id: string; type: string; name: string; content: string; communityId: string | null; chunkIds: string[] }[]
-  edges: { source: string; target: string; type: string; label: string }[]
-  communitySummaries: Record<string, string>
-} | null {
-  try {
-    const graph = graphStore.getGraph(userId, scriptId)
-    if (!graph) return null
-    return {
-      scriptId: graph.scriptId,
-      storyName: graph.storyName,
-      indexedAt: graph.indexedAt,
-      nodeCount: graph.nodeCount || (graph.nodes || []).length,
-      edgeCount: graph.edgeCount || (graph.edges || []).length,
-      nodes: (graph.nodes || []).map((n) => ({
-        id: n.id,
-        type: n.type,
-        name: n.name,
-        content: n.content || '',
-        communityId: n.communityId || null,
-        chunkIds: n.chunkIds || [],
-      })),
-      edges: (graph.edges || []).map((e) => ({
-        source: e.source,
-        target: e.target,
-        type: e.type,
-        label: e.label || '',
-      })),
-      communitySummaries: graph.communitySummaries || {},
-    }
-  } catch {
-    return null
-  }
-}
+/* ═══════════════════ 用户图（A3 延后特性；**非 GraphRAG**，M1-T7 刻意保留） ═══════════════════
+ * ADR-0002 决策 4 把 userGraph 注入延后到 A3——它是「本局已获线索/到访场景」的会话级记录，
+ * 与 ADR-0007 决策 3 删除的 GraphRAG（索引期建图 + 查询期 2 跳扩展）不是一回事。
+ * 目前无回合路径消费方（死代码），保留以备 A3；删除与否由用户拍板。 */
 
 /** POST /api/rag/user-graph/event — rag:userGraphAdd. */
 export function userGraphAdd(

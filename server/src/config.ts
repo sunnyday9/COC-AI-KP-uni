@@ -19,7 +19,7 @@ export const DATA_DIR = process.env.DATA_DIR
 
 /**
  * RAG persistence root (Task 4): per-user RAG data lives under
- * `RAG_DATA_DIR/<userId>/` (rag_index / graph_index / ...), mirroring the
+ * `RAG_DATA_DIR/<userId>/` (rag_index / ...), mirroring the
  * original `userData/rag_index` + `userData/graph_index` layout with the
  * user dimension added (task-4-brief decision 1). `RAG_DATA_DIR` env
  * overrides the default (tests isolate per-worker into a temp dir).

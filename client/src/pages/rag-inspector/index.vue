@@ -4,12 +4,10 @@ import { ref, watch, onMounted } from 'vue'
 import {
   listIndexedStories,
   getStoryIndex,
-  getStoryGraph,
   checkRagHealth,
   type IndexedStory,
 } from '../../services/ragService'
 import ChunkBrowser from '../../components/rag/ChunkBrowser.vue'
-import GraphBrowser from '../../components/rag/GraphBrowser.vue'
 import SearchTester from '../../components/rag/SearchTester.vue'
 import AppLayout from '../../components/layout/AppLayout.vue'
 
@@ -20,7 +18,7 @@ import AppLayout from '../../components/layout/AppLayout.vue'
  * 页内保留 DEV ONLY 徽记（数据来自 ragService → platform bridge，无 DOM 依赖）。
  */
 
-type Tab = 'chunks' | 'graph' | 'search'
+type Tab = 'chunks' | 'search'
 
 const tab = ref<Tab>('chunks')
 const stories = ref<IndexedStory[]>([])
@@ -33,14 +31,6 @@ const pageBg = '/static/bg/bg_archives.webp'
 const indexData = ref<{
   scriptId: string; storyName: string; chunkCount: number
   chunks: { id: string; content: string; type: string; metadata: Record<string, unknown>; hasVector: boolean }[]
-} | null>(null)
-
-const graphData = ref<{
-  scriptId: string; storyName: string; indexedAt: number
-  nodeCount: number; edgeCount: number
-  nodes: { id: string; type: string; name: string; content: string; communityId: string | null; chunkIds: string[] }[]
-  edges: { source: string; target: string; type: string; label: string }[]
-  communitySummaries: Record<string, string>
 } | null>(null)
 
 onMounted(async () => {
@@ -56,12 +46,11 @@ onMounted(async () => {
 })
 
 watch(selectedStoryId, async (id) => {
-  if (!id) { indexData.value = null; graphData.value = null; return }
+  if (!id) { indexData.value = null; return }
   loading.value = true
   try {
-    const [idx, graph] = await Promise.all([getStoryIndex(id), getStoryGraph(id)])
+    const idx = await getStoryIndex(id)
     indexData.value = idx
-    graphData.value = graph
   } catch (e) {
     console.error('[RagInspector] load failed', e)
   }
@@ -77,7 +66,7 @@ watch(selectedStoryId, async (id) => {
       <view class="insp-head">
         <view>
           <text class="insp-title">RAG Inspector</text>
-          <text class="insp-sub">开发工具 — 检查 RAG 索引 / GraphRAG 提取结果 / 搜索质量</text>
+          <text class="insp-sub">开发工具 — 检查 RAG 索引 / 搜索质量</text>
         </view>
         <view class="insp-dev-badge">DEV ONLY</view>
       </view>
@@ -97,19 +86,18 @@ watch(selectedStoryId, async (id) => {
         </select>
         <text v-if="indexData" class="insp-stats">
           {{ indexData.chunkCount }} chunks
-          <template v-if="graphData"> · {{ graphData.nodeCount }} nodes · {{ graphData.edgeCount }} edges</template>
         </text>
       </view>
 
       <!-- Tabs -->
       <view class="insp-tabs">
         <button
-          v-for="t in (['chunks', 'graph', 'search'] as Tab[])"
+          v-for="t in (['chunks', 'search'] as Tab[])"
           :key="t"
           :class="['insp-tab', tab === t ? 'insp-tab-on' : 'insp-tab-off']"
           @click="tab = t"
         >
-          {{ t === 'chunks' ? 'Chunk 浏览器' : t === 'graph' ? 'Graph 浏览器' : '搜索测试' }}
+          {{ t === 'chunks' ? 'Chunk 浏览器' : '搜索测试' }}
         </button>
       </view>
 
@@ -117,11 +105,6 @@ watch(selectedStoryId, async (id) => {
       <chunk-browser
         v-if="tab === 'chunks'"
         :chunks="indexData?.chunks ?? []"
-        :loading="loading"
-      />
-      <graph-browser
-        v-if="tab === 'graph'"
-        :graph="graphData ?? null"
         :loading="loading"
       />
       <search-tester

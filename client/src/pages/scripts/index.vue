@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStoryStore } from '../../stores/storyStore'
-import { listIndexedStories, deleteStoryIndex, getStoryGraph, type IndexedStory } from '../../services/ragService'
+import { listIndexedStories, deleteStoryIndex, type IndexedStory } from '../../services/ragService'
 import { useToast } from '../../composables/useToast'
 import { onUnauthorized } from '../../platform/token'
 import AppLayout from '../../components/layout/AppLayout.vue'
@@ -13,17 +13,9 @@ import EmptyState from '../../components/ui/EmptyState.vue'
 const toast = useToast()
 const storyStore = useStoryStore()
 const { storyFiles, isLoading: storiesLoading } = storeToRefs(storyStore)
-const isDev = import.meta.env.DEV
 
 const indexedStories = ref<IndexedStory[]>([])
 const indexStatus = ref<Record<string, 'idle' | 'loading' | 'ok' | 'error'>>({})
-const expandedGraph = ref<Record<string, boolean>>({})
-const graphCache = ref<Record<string, Awaited<ReturnType<typeof getStoryGraph>> | undefined>>({})
-const graphLoading = ref<Record<string, boolean>>({})
-
-const graphRagTestStatus = ref<Record<string, 'idle' | 'loading' | 'ok' | 'error'>>({})
-const graphRagTestError = ref<Record<string, string>>({})
-const graphRagTestPreviewText = ref<Record<string, string>>({})
 
 async function refreshIndexed() {
   try { indexedStories.value = await listIndexedStories() } catch { indexedStories.value = [] }
@@ -157,40 +149,6 @@ function formatDate(ts: number): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
-
-async function toggleGraphPanel(storyId: string) {
-  expandedGraph.value[storyId] = !expandedGraph.value[storyId]
-  if (!expandedGraph.value[storyId]) return
-  if (graphCache.value[storyId] !== undefined) return
-
-  graphLoading.value[storyId] = true
-  try {
-    graphCache.value[storyId] = await getStoryGraph(storyId)
-  } catch (e) {
-    toast.error(`加载 GraphRAG 失败：${e instanceof Error ? e.message : String(e)}`)
-    graphCache.value[storyId] = null
-  } finally {
-    graphLoading.value[storyId] = false
-  }
-}
-
-async function handleTestGraphRagExtract(storyId: string) {
-  graphRagTestStatus.value[storyId] = 'loading'
-  graphRagTestError.value[storyId] = ''
-  graphRagTestPreviewText.value[storyId] = ''
-
-  try {
-    const bridge = (await import('../../platform')).getBridge()
-    const result = await bridge.ragTestGraphRagExtract({ scriptId: storyId, maxChunks: 6, maxBatches: 3 })
-    if (!result?.ok) throw new Error(result?.error || 'GraphRAG extract test failed')
-
-    graphRagTestStatus.value[storyId] = 'ok'
-    graphRagTestPreviewText.value[storyId] = JSON.stringify(result, null, 2).slice(0, 8000)
-  } catch (e) {
-    graphRagTestStatus.value[storyId] = 'error'
-    graphRagTestError.value[storyId] = e instanceof Error ? e.message : String(e)
-  }
-}
 </script>
 
 <template>
@@ -298,41 +256,7 @@ async function handleTestGraphRagExtract(storyId: string) {
                 </view>
 
                 <view class="file-actions">
-                  <button v-if="isDev" class="mini-btn graph-btn" @click="toggleGraphPanel(idx.storyId)">
-                    {{ expandedGraph[idx.storyId] ? '收起 GraphRAG' : '查看 GraphRAG' }}
-                  </button>
                   <button class="mini-btn delete-btn" @click="askDeleteIndex(idx.storyId, idx.name)">删除索引</button>
-                </view>
-              </view>
-
-              <!-- GraphRAG 面板（dev only；图谱浏览器组件由 Task 9 提供） -->
-              <view v-if="isDev && expandedGraph[idx.storyId]" class="graph-panel">
-                <view class="graph-tools">
-                  <button
-                    class="gothic-btn-secondary graph-test-btn"
-                    :class="{ 'is-disabled': graphRagTestStatus[idx.storyId] === 'loading' }"
-                    @click="handleTestGraphRagExtract(idx.storyId)"
-                  >
-                    {{ graphRagTestStatus[idx.storyId] === 'loading' ? '测试中...' : '测试 GraphRAG 抽取（前6chunks）' }}
-                  </button>
-                  <text v-if="graphRagTestStatus[idx.storyId] === 'ok'" class="ok-text">✓ 测试完成</text>
-                  <text v-if="graphRagTestStatus[idx.storyId] === 'error'" class="err-text">✕ {{ graphRagTestError[idx.storyId] }}</text>
-                </view>
-
-                <text v-if="graphRagTestPreviewText[idx.storyId]" class="preview-text">{{ graphRagTestPreviewText[idx.storyId] }}</text>
-
-                <view class="graph-placeholder">
-                  <text v-if="graphLoading[idx.storyId]" class="placeholder-text">加载图数据中...</text>
-                  <!-- #ifdef H5 -->
-                  <text v-else class="placeholder-text">
-                    图谱浏览请使用 RAG Inspector（设置页开发调试区入口）
-                  </text>
-                  <!-- #endif -->
-                  <!-- #ifndef H5 -->
-                  <text v-else class="placeholder-text">
-                    图谱浏览工具仅 H5 端可用
-                  </text>
-                  <!-- #endif -->
                 </view>
               </view>
             </view>
@@ -553,11 +477,6 @@ async function handleTestGraphRagExtract(storyId: string) {
   border: 1px solid color-mix(in srgb, var(--c-blood-700) 30%, transparent);
   color: var(--c-blood-200);
 }
-.graph-btn {
-  background: color-mix(in srgb, var(--c-obsidian) 50%, transparent);
-  border: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
-  color: var(--c-paper-600);
-}
 
 .empty-card {
   padding: 32px;
@@ -594,54 +513,4 @@ async function handleTestGraphRagExtract(storyId: string) {
   color: var(--c-ash);
 }
 
-/* GraphRAG 面板 */
-.graph-panel {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid color-mix(in srgb, var(--c-slate) 50%, transparent);
-}
-.graph-tools {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
-.graph-test-btn {
-  font-size: 12px;
-}
-.ok-text {
-  font-size: 12px;
-  color: var(--c-eld-200);
-}
-.err-text {
-  font-size: 12px;
-  color: var(--c-blood-200);
-}
-.preview-text {
-  display: block;
-  font-family: $font-mono;
-  font-size: 12px;
-  border-radius: 4px;
-  padding: 8px;
-  max-height: 224px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: var(--c-paper-600);
-  background: color-mix(in srgb, var(--c-void) 50%, transparent);
-  border: 1px solid var(--c-slate);
-}
-.graph-placeholder {
-  margin-top: 12px;
-  padding: 24px;
-  border: 1px dashed color-mix(in srgb, var(--c-slate) 60%, transparent);
-  border-radius: 8px;
-  text-align: center;
-}
-.placeholder-text {
-  font-size: 12px;
-  color: var(--c-ash);
-  font-family: $font-serif;
-}
 </style>

@@ -48,9 +48,7 @@ const DEFAULT_RAG = {
   useEmbeddings: true,
   provider: 'builtin',
   model: 'text-embedding-3-small',
-  useGraphRAG: true,
-  extractionModel: '',
-  // M1-T6：检索补充层总开关（ADR-0007）默认开
+  // M1-T6：检索补充层总开关（ADR-0007）默认开；M1-T7 已删除 useGraphRAG/extractionModel
   supplement: true,
 }
 
@@ -102,13 +100,24 @@ describe('settings routes', () => {
       useEmbeddings: false,
       provider: 'api',
       model: 'text-embedding-3-large',
-      useGraphRAG: true,
-      extractionModel: '',
       // 未在 patch 里给出 → 保持默认开（M1-T6）
       supplement: true,
     })
     expect(got.body.syncServerUrl).toBe('https://sync.example.com')
     expect(got.body.debugMode).toBe(true)
+  })
+
+  it('旧配置带已删除的 useGraphRAG/extractionModel → 不报错，读回时已被忽略（M1-T7）', async () => {
+    const token = await registerToken('s_legacy_rag')
+    // 旧客户端的 PUT：字段已不存在，服务端须静默忽略而非 400
+    const put = await putSettings(token, { rag: { useGraphRAG: false, extractionModel: 'x-model' } })
+    expect(put.status).toBe(200)
+
+    const got = await getSettings(token)
+    expect(got.status).toBe(200)
+    expect(got.body.rag).not.toHaveProperty('useGraphRAG')
+    expect(got.body.rag).not.toHaveProperty('extractionModel')
+    expect(got.body.rag.supplement).toBe(true)
   })
 
   it('apiKey is stored as AES-256-GCM ciphertext and round-trips via decryptSecret', async () => {

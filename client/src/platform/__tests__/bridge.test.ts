@@ -347,12 +347,6 @@ describe('PlatformBridge', () => {
       expect(state.requests[0].data).toEqual(params)
     })
 
-    it('ragGetGraph accepts a null result', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: null })
-      await expect(new PlatformBridge().ragGetGraph({ scriptId: 's1' })).resolves.toBeNull()
-      expect(state.requests[0].url).toBe('/api/rag/graph/s1')
-    })
-
     it('ragUserGraphAdd posts the event', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
       const bridge = new PlatformBridge()

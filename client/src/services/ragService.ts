@@ -69,13 +69,13 @@ export async function queryChunks(params: {
   })
 }
 
-/** Get formatted context for LLM prompt. With GraphRAG, context includes relationship structure. */
+/** Get formatted context for LLM prompt（M1-T7 起标准管线，无图扩展）。 */
 export async function getContext(params: {
   query: string
   scriptId?: string
   sceneId?: string
   topK?: number
-}): Promise<{ context: string; graphSummary?: string; chunkCount?: number }> {
+}): Promise<{ context: string; chunkCount?: number }> {
   traceBus.emit('rag_retrieval', 'rag_query_sent', {
     query: params.query,
     scriptId: params.scriptId,
@@ -87,11 +87,12 @@ export async function getContext(params: {
     sceneId: params.sceneId,
     topK: params.topK ?? 5,
   })
-  // hasUserGraph 字段在原 TraceEventMap 中为必填但原代码未传（原类型缺口，运行时不变）
+  // hasUserGraph 字段在原 TraceEventMap 中为必填但原代码未传（原类型缺口，运行时不变）；
+  // M1-T7 起无图，hasGraphSummary 恒 false（字段保留以免动 trace 契约）
   traceBus.emit('rag_retrieval', 'rag_context_received', {
     chunkCount: result?.chunkCount ?? 0,
     contextLength: result?.context?.length ?? 0,
-    hasGraphSummary: !!(result?.graphSummary),
+    hasGraphSummary: false,
   } as unknown as Parameters<typeof traceBus.emit<'rag_context_received'>>[2])
   return result
 }
@@ -117,11 +118,6 @@ export async function syncUserGraphFromState(params: {
 /** Get full chunk index for a story (dev/inspector use). */
 export async function getStoryIndex(scriptId: string) {
   return getBridge().ragGetIndex({ scriptId })
-}
-
-/** Get full graph data for a story (dev/inspector use). */
-export async function getStoryGraph(scriptId: string) {
-  return getBridge().ragGetGraph({ scriptId })
 }
 
 /**

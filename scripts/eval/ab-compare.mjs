@@ -223,7 +223,7 @@ async function configureRealAi(token) {
       temperature: 0.7,
       maxTokens: 2048,
     },
-    rag: { useEmbeddings: true, provider: 'builtin', model: 'text-embedding-3-small', useGraphRAG: false, extractionModel: '' },
+    rag: { useEmbeddings: true, provider: 'builtin', model: 'text-embedding-3-small' },
   }, token)
   assert(res.status === 200, `settings PUT failed: ${res.status} ${JSON.stringify(res.data)}`)
   console.log(`  [real] AI 配置: ${REAL_CFG.model} @ ${REAL_CFG.baseUrl}（rag 用内置 text2vec 本地嵌入；OPENCODE_SESSION=${process.env.OPENCODE_SESSION ? 'set' : 'UNSET'}`)
