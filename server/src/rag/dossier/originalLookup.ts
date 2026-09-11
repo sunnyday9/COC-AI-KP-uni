@@ -26,6 +26,7 @@ import { chatForRag } from '../../services/aiService.js'
 import { readStoryForRag } from '../../services/storyService.js'
 import { loadGaps, SCENE_REGION_LEAD, SCENE_REGION_SPAN, type CoverageGaps } from './coverageGaps.js'
 import { loadDossier, findScene } from './storyDossierService.js'
+import { assertNonProModel } from '../modelGuard.js'
 import { BadRequestError } from '../../utils/errors.js'
 import type { ChatMessage } from '../../services/llm/types.js'
 import type { StoryDossier } from './schema.js'
@@ -526,12 +527,6 @@ export async function verifyOriginal(
 /**
  * 模型守卫（铁律 1）：本工具不接受 model 参数（走 settings），但脚本/调用方若
  * 传入模型名，一律拒绝 -pro 变体（mimo-v2.5-pro 无视觉/上游 404 已知）。
+ * 实现单源在 `../modelGuard.js`（轻模块——本文件的重依赖不该被守卫拖进查询期模块图）。
  */
-export function assertNonProModel(model: string | undefined): string | undefined {
-  const m = String(model ?? '').trim()
-  if (!m) return undefined
-  if (/-pro\b|-pro$/i.test(m)) {
-    throw new BadRequestError(`原文查证不接受 -pro 模型（mimo-v2.5-pro 不受支持）——当前 model=${m}`)
-  }
-  return m
-}
+export { assertNonProModel }
