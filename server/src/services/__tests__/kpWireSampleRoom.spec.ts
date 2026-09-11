@@ -24,15 +24,60 @@ vi.mock('../kpAgentService.js', async (importOriginal) => {
 })
 vi.mock('../settingsService.js', () => ({
   getAiConfig: vi.fn(() => ({ protocol: 'openai_chat' })),
+  getSettings: vi.fn(() => ({ rag: { supplement: true } })),
 }))
 vi.mock('../roomMemory.js', () => ({
   extractMemoryPoints: vi.fn(async () => []),
   summarizeLongTerm: vi.fn(async () => ''),
 }))
 vi.mock('../ragService.js', () => ({
-  context: vi.fn(async () => ({ context: '【RAG 检索】场景：旧图书馆——地下室的门后有刮擦声。' })),
+  buildGetEmbeddingForUser: vi.fn(async () => null),
   listStories: vi.fn(() => []),
 }))
+/** 桩检索补充层（M1-T6）：rag 房情报块出自标准管线（graphRag 路径已退役）。 */
+vi.mock('../../rag/supplementService.js', () => ({
+  buildSupplement: vi.fn(async () => ({
+    section: '## 原文片段（检索补充·仅作描写素材）\n场景：旧图书馆——地下室的门后有刮擦声。',
+    blocks: [
+      {
+        id: 'c1',
+        text: '【RAG 检索】场景：旧图书馆——地下室的门后有刮擦声。',
+        score: 0.9,
+        attribution: 'none',
+        scenes: [],
+        crossScene: false,
+      },
+    ],
+    chars: 60,
+    droppedSpoiler: 0,
+    droppedOverlap: 0,
+    query: '桩',
+    degraded: false,
+    revealRegions: 0,
+    durationMs: 1,
+  })),
+  defaultRewrite: () => undefined,
+}))
+
+/** 桩档案服务（dossier 房：场景块走档案，补充小节走检索）。
+ *  coverageGaps 桩需保留 `regions.js` 的常量再导出（supplementAssembly 的
+ *  场景区域/归一化走那条轻链）。 */
+vi.mock('../../rag/dossier/storyDossierService.js', () => ({
+  loadDossier: vi.fn(async () => ({ storyName: '雾中镇', scenes: [{ id: 's1', name: '门厅', sceneText: '门厅的铜灯。' }], npcs: [], clues: [], transitions: [], events: [], truths: [], endings: [] })),
+  buildSceneBlock: vi.fn(() => '场景：门厅\n简介：进门处。'),
+  listScenes: vi.fn(() => [{ id: 's1', name: '门厅' }]),
+  findScene: vi.fn(() => ({ id: 's1', name: '门厅' })),
+}))
+vi.mock('../../rag/dossier/coverageGaps.js', async () => {
+  const regions = await vi.importActual<typeof import('../../rag/dossier/regions.js')>('../../rag/dossier/regions.js')
+  return {
+    loadGaps: vi.fn(async () => null),
+    computeSceneCoverage: vi.fn(() => null),
+    SCENE_REGION_LEAD: regions.SCENE_REGION_LEAD,
+    SCENE_REGION_SPAN: regions.SCENE_REGION_SPAN,
+    normalizeText: regions.normalizeText,
+  }
+})
 
 import { invokeKPAgent } from '../../agent/kpGraph.js'
 import * as roomStorage from '../roomStorage.js'
@@ -153,6 +198,60 @@ describe('wire 采样房间链路（T1）', () => {
       expect(room.getMessages().some((m) => m.role === 'kp' && m.content === '最终叙事回复。')).toBe(true)
       expect(listWireSamplesForRoom('room_off')).toHaveLength(0)
     } finally {
+      room.dispose()
+    }
+  })
+
+  it('M1-T6：dossier 房注入列 = 场景档案块 + 检索补充小节，且两者都进 wire system', async () => {
+    roomStorage.insertRoom('room_dos', 7, 'INV-DOS-1', null)
+    const room = new RoomService({ roomId: 'room_dos', ownerId: 7, ownerName: 'alice', turnWindowMs: 0, workflow: 'dossier' })
+    try {
+      room.startGame('story_dos1')
+      room.bufferPlayerChat('alice', '我看看门厅。', null, 7)
+      await waitFor(() => room.getMessages().some((m) => m.role === 'kp'))
+
+      const row = listWireSamplesForRoom('room_dos')[0]!
+      // 注入列语义扩展：场景块在前、补充小节在后
+      expect(row.rag_context).toContain('场景：门厅')
+      expect(row.rag_context).toContain('## 原文片段（检索补充·仅作描写素材）')
+      expect(row.rag_context.indexOf('场景：门厅')).toBeLessThan(row.rag_context.indexOf('## 原文片段'))
+
+      // 提示词里小节位于档案块之后，且带双轨口径说明
+      const wire = JSON.parse(row.wire_messages) as { role: string; content?: string }[]
+      const sys = String(wire[0]!.content)
+      expect(sys).toContain('## 当前场景档案')
+      expect(sys.indexOf('## 当前场景档案')).toBeLessThan(sys.indexOf('## 原文片段（检索补充·仅作描写素材）'))
+      expect(sys).toContain('以档案为准')
+    } finally {
+      room.dispose()
+    }
+  })
+
+  it('M1-T6：rag.supplement=false → 小节完全消失、检索不发生', async () => {
+    const { getSettings } = await import('../settingsService.js')
+    const { buildSupplement } = await import('../../rag/supplementService.js')
+    const { buildGetEmbeddingForUser } = await import('../ragService.js')
+    vi.mocked(getSettings).mockReturnValue({ rag: { supplement: false } } as never)
+    vi.mocked(buildSupplement).mockClear()
+    vi.mocked(buildGetEmbeddingForUser).mockClear()
+    roomStorage.insertRoom('room_off2', 7, 'INV-OFF-2', null)
+    const room = new RoomService({ roomId: 'room_off2', ownerId: 7, ownerName: 'alice', turnWindowMs: 0, workflow: 'dossier' })
+    try {
+      room.startGame('story_dos2')
+      room.bufferPlayerChat('alice', '我看看门厅。', null, 7)
+      await waitFor(() => room.getMessages().some((m) => m.role === 'kp'))
+
+      // 检索**完全没有发生**（不是发生了再丢弃）
+      expect(buildSupplement).not.toHaveBeenCalled()
+      // 连嵌入器都没构建（关开关 = 零模型成本，不只是零注入）
+      expect(buildGetEmbeddingForUser).not.toHaveBeenCalled()
+      const row = listWireSamplesForRoom('room_off2')[0]!
+      expect(row.rag_context).not.toContain('## 原文片段')
+      const wire = JSON.parse(row.wire_messages) as { role: string; content?: string }[]
+      expect(String(wire[0]!.content)).not.toContain('## 原文片段（检索补充·仅作描写素材）')
+      expect(String(wire[0]!.content)).toContain('## 当前场景档案')
+    } finally {
+      vi.mocked(getSettings).mockReturnValue({ rag: { supplement: true } } as never)
       room.dispose()
     }
   })

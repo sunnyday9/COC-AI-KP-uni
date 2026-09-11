@@ -136,12 +136,17 @@ export const BASE_INSTRUCTIONS = [
  * story knowledge lives in the static 当前场景档案 block + the on-demand
  * lookup tools (scene_list / scene_dossier / lexical_search).
  */
+export const SUPPLEMENT_SOURCE_NOTE =
+  '「原文片段（检索补充·仅作描写素材）」只提供环境描写、原文措辞与具体数字，是描写素材而非事实来源；' +
+  '事实（人名、地点、时间、线索、真相）一律以档案为准，两者冲突时以档案为准。'
+
 export const WORKFLOW_KNOWLEDGE_SOURCE: Record<StoryWorkflow, string> = {
   rag: '你的所有故事知识来源于「故事情报」中检索到的原文片段。请严格基于这些片段进行叙事，不要凭空编造场景或 NPC。',
   dossier:
     '你的故事知识来自 system 中的「当前场景档案」（当前所在场景的权威描述、在场 NPC、可获得的线索）。' +
     '叙述当前场景时必须严格依据这份档案。当需要确认其他场景、NPC 或线索的细节时，用 scene_list / scene_dossier / lexical_search 工具查证后再叙事；' +
     '档案块标注「原文收录：约 X%」时表示该场景原文有部分未入档。' +
+    SUPPLEMENT_SOURCE_NOTE +
     '调查员问及具体事实（人名、地点、时间、数字、原文措辞）而档案没有明确写出、或你不敢肯定时，必须先调用 verify_original 在剧本原文中查证再叙事，禁止凭印象作答；' +
     'verify_original 返回「未取得」= 原文也没有该信息，此时按调查员行动无法得知来处理，不要编造。' +
     'verify_original 的结果若带「剧透层·仅限 KP 内部裁定」，只能用于你决定现在能否给线索/如何引导，禁止向玩家复述其内容。' +
@@ -159,18 +164,31 @@ export function baseInstructionsFor(workflow: StoryWorkflow): string {
 
 /** Rendered knowledge block: dossier → current-scene static block; rag → retrieved context.
  *  verifyBlock（P27 预取结论）只对 dossier 生效——rag 房没有预取通路（调用方已 gate），
- *  这里再 gate 一次，避免误传把查证内容带进 rag 提示词。 */
-export function buildKnowledgeBlock(workflow: StoryWorkflow, ragContext: string, sceneBlock: string, verifyBlock = ''): string {
+ *  这里再 gate 一次，避免误传把查证内容带进 rag 提示词。
+ *  supplement（M1-T6）：检索补充小节，**追加在场景档案块之后**；空串 = 不出现
+ *  （总开关关闭 / 本轮无命中），输出与接线前逐字节相同。 */
+export function buildKnowledgeBlock(
+  workflow: StoryWorkflow,
+  ragContext: string,
+  sceneBlock: string,
+  verifyBlock = '',
+  supplement = '',
+): string {
   const verify = workflow === 'dossier' ? String(verifyBlock ?? '').trim() : ''
   const verifySection = verify
     ? `\n## 原文查证（服务端已自动检索，供你对齐事实）\n${verify}\n`
     : ''
+  // 补充小节：只对 dossier 生效（rag 房没有档案块，其情报块本身就是检索产物）
+  const supplementSection =
+    workflow === 'dossier' && String(supplement ?? '').trim()
+      ? `\n${String(supplement).trim()}\n`
+      : ''
   if (workflow === 'dossier') {
-    if (sceneBlock) return `\n## 当前场景档案\n${sceneBlock}${verifySection}`
+    if (sceneBlock) return `\n## 当前场景档案\n${sceneBlock}${verifySection}${supplementSection}`
     // Dossier room without a matching scene yet (e.g. opening before any
     // transition): fall back to retrieved context so the KP still has a
     // factual anchor.
-    return `${ragContext ? `\n## 故事情报\n${ragContext}` : ''}${verifySection}`
+    return `${ragContext ? `\n## 故事情报\n${ragContext}` : ''}${verifySection}${supplementSection}`
   }
   return ragContext ? `\n## 故事情报\n${ragContext}` : ''
 }
@@ -252,12 +270,21 @@ export interface RoomPromptInput {
 
 export type RoomChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
-function buildSystemBody(input: RoomPromptInput, ragContext: string, opts: { workflow?: StoryWorkflow; sceneBlock?: string; verifyBlock?: string } = {}): string {
+/** 提示词构造选项：workflow 分支 + 各知识块（缺省 = rag 现状逐字节不变）。
+ *  supplement = 检索补充小节（M1-T6，**已渲染文本**；空串 = 不出现）。 */
+export interface RoomPromptOpts {
+  workflow?: StoryWorkflow
+  sceneBlock?: string
+  verifyBlock?: string
+  supplement?: string
+}
+
+function buildSystemBody(input: RoomPromptInput, ragContext: string, opts: RoomPromptOpts = {}): string {
   const workflow: StoryWorkflow = opts.workflow ?? 'rag'
   const memoryBlock = buildMemoryBlock(input.kpMemory)
   const longTermBlock = input.longTermSummary ? `\n## 长期记忆（本局至今）\n${input.longTermSummary}\n` : ''
   const recentTurnsBlock = buildRecentTurnsBlock(input.messages)
-  const knowledgeBlock = buildKnowledgeBlock(workflow, ragContext, opts.sceneBlock ?? '', opts.verifyBlock ?? '')
+  const knowledgeBlock = buildKnowledgeBlock(workflow, ragContext, opts.sceneBlock ?? '', opts.verifyBlock ?? '', opts.supplement ?? '')
   const stateParts: string[] = []
   if (input.storyName) stateParts.push(`## 故事: ${input.storyName}`)
   if (input.scene) stateParts.push(`当前场景: ${input.scene}`)
@@ -288,7 +315,7 @@ export function buildRoomTurnMessages(
   input: RoomPromptInput,
   ragContext: string,
   batchUserContent: string,
-  opts: { workflow?: StoryWorkflow; sceneBlock?: string; verifyBlock?: string } = {},
+  opts: RoomPromptOpts = {},
 ): RoomChatMessage[] {
   return [
     { role: 'system', content: buildSystemBody(input, ragContext, opts) },
@@ -301,7 +328,7 @@ export function buildRoomTurnMessages(
 export function buildRoomOpeningMessages(
   input: RoomPromptInput,
   ragContext: string,
-  opts: { workflow?: StoryWorkflow; sceneBlock?: string; verifyBlock?: string } = {},
+  opts: RoomPromptOpts = {},
 ): RoomChatMessage[] {
   const workflow: StoryWorkflow = opts.workflow ?? 'rag'
   const system: RoomChatMessage = {

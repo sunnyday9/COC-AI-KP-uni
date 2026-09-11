@@ -41,7 +41,14 @@ const BATCH_SIZE = 3
  * when possible; prefers the user API, otherwise falls back to the builtin
  * model (mirrors original buildGetEmbedding). An unsafe API baseUrl raises
  * BadRequestError (see module header).
+ *
+ * 导出（M1-T6）：检索补充层需要同一个嵌入器（同一份 provider 解析与内置模型单例，
+ * 两处各写一份会各建一个模型实例）。
  */
+export async function buildGetEmbeddingForUser(userId: number): Promise<Embedder | null> {
+  return buildGetEmbedding(userId)
+}
+
 async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
   if (isMockAiMode()) {
     // MOCK_AI (Task 11): skip the local model download entirely — TF-IDF

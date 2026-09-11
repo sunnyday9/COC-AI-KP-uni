@@ -16,8 +16,10 @@ import {
   assembleSupplement,
   retrieveSupplement,
   revealRegions,
+  renderBlock,
   DEFAULT_RECALL_TOP_K,
   DEFAULT_RERANK_TOP_N,
+  type AssembleMode,
   type AssembleResult,
   type RerankFn,
   type RetrieveFn,
@@ -66,8 +68,16 @@ export interface BuildSupplementInput {
   sceneName?: string
   /** 总开关（缺省开）。关闭 → 不检索、返回空。 */
   enabled?: boolean
+  /** 装配模式（缺省 supplement = 档案房纹理补充；plain = rag 房标准情报块）。 */
+  mode?: AssembleMode
   recallTopK?: number
   rerankTopN?: number
+  /**
+   * 直接指定检索 query（**跳过**场景名拼接与规则清洗）。
+   * rag 房的 query 本就是"玩家发言/开场词"这类完整检索意图，套 cleanPlayerText
+   * 会剥掉行动壳并截到 180 字（审查发现），故该房用这条直通口。
+   */
+  rawQuery?: string
 }
 
 export interface SupplementResult extends AssembleResult {
@@ -160,8 +170,11 @@ export async function buildSupplement(
   const scene = dossier && input?.sceneName ? findScene(dossier, input.sceneName) : null
   const sceneName = scene?.name ?? String(input?.sceneName ?? '').trim()
 
-  // query 构造（T4）：场景名 + 清洗后的玩家发言
-  const { text: query, usedPlayerText } = buildSceneQuery({ sceneName, playerText: input?.playerText })
+  // query 构造（T4）：场景名 + 清洗后的玩家发言；rawQuery 直通则原样使用
+  const rawQuery = String(input?.rawQuery ?? '').trim()
+  const built = buildSceneQuery({ sceneName, playerText: input?.playerText })
+  const query = rawQuery || built.text
+  const usedPlayerText = rawQuery ? true : built.usedPlayerText
   if (!query) return EMPTY('', 0)
 
   const vectorQuery = deps.queryVectors ?? defaultVectorQuery
@@ -203,7 +216,9 @@ export async function buildSupplement(
     candidates: reranked.candidates,
     gaps,
     dossier,
-    currentScene: scene?.id ?? sceneName,
+    // plain 模式（rag 房）不做场景归属排序/收窄：其场景名常与档案锚点不匹配
+    currentScene: input?.mode === 'plain' ? '' : (scene?.id ?? sceneName),
+    mode: input?.mode ?? 'supplement',
     enabled: true,
   })
 
@@ -244,3 +259,6 @@ export async function buildSupplement(
 export function defaultRewrite(userId: number, model?: string): RewriteFn {
   return (query, sceneName) => rewriteQuery(query, sceneName, { userId, model })
 }
+
+/** 单块渲染再导出（消费方一律用它，别裸取 block.text——跨场景前缀只在渲染层加）。 */
+export { renderBlock }

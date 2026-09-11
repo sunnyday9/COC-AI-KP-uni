@@ -19,6 +19,9 @@ export interface RAGSettings {
   useGraphRAG?: boolean
   /** Model for local GraphRAG extraction when MS GraphRAG unavailable */
   extractionModel?: string
+  /** 检索补充层总开关（ADR-0007；默认开）。**必须逐字段透传**：load() 重建 rag
+   *  对象时漏掉它，每次保存都会把用户关掉的开关静默改回默认开。 */
+  supplement?: boolean
 }
 
 export interface AppSettings {
@@ -37,6 +40,7 @@ const defaultRAG: RAGSettings = {
   model: 'text-embedding-3-small',
   useGraphRAG: true,
   extractionModel: '',
+  supplement: true,
 }
 
 const defaultSettings: AppSettings = {
@@ -91,6 +95,8 @@ export const useSettingsStore = defineStore('settings', () => {
         model: typeof rawRag.model === 'string' ? rawRag.model : defaultRAG.model,
         useGraphRAG: rawRag.useGraphRAG === false ? false : true,
         extractionModel: typeof rawRag.extractionModel === 'string' ? rawRag.extractionModel : '',
+        // 漏掉这行 = 每次 save() 把用户的关闭状态改回默认开（服务端 mergeDefaults 回填 true）
+        supplement: rawRag.supplement === false ? false : true,
       }
       const debugMode = typeof saved.debugMode === 'boolean' ? saved.debugMode : false
       settings.value = { ai, rag, syncServerUrl, debugMode }

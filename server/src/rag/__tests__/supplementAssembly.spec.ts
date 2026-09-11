@@ -553,6 +553,66 @@ describe('supplementAssembly: 检索编排（注入缝，不触网）', () => {
   })
 })
 
+describe('supplementAssembly: plain 模式（rag 房标准情报块，审查发现）', () => {
+  it('plain 不做档案重叠剔除——与档案重合的块是 rag 房唯一的知识来源', () => {
+    const d = dossier()
+    const res = assembleSupplement({
+      candidates: [cand('dup', d.scenes[0].sceneText, 300, 0.9)],
+      gaps: gaps(),
+      dossier: d,
+      currentScene: 's1',
+      mode: 'plain',
+    })
+    expect(res.blocks.map((b) => b.id)).toEqual(['dup'])
+    expect(res.droppedOverlap).toBe(0)
+  })
+
+  it('plain 不做场景归属：场景名与档案锚点不匹配也不会塌成 1 条', () => {
+    // 三块分属不同场景区域，当前场景名匹配不上任何档案场景（rag 房常态）
+    const res = assembleSupplement({
+      candidates: [
+        cand('a', '门厅的铜灯。', 400, 0.9),
+        cand('b', '书房的账簿。', 5300, 0.8),
+        cand('c', '地窖的台阶。', 12000, 0.7),
+      ],
+      gaps: gaps(),
+      dossier: dossier(),
+      currentScene: 'KP 自己起的一个场景名',
+      mode: 'plain',
+    })
+    expect(res.blocks).toHaveLength(3)
+    expect(res.blocks.every((b) => b.crossScene === false)).toBe(true)
+    expect(res.section).not.toContain(CROSS_SCENE_PREFIX)
+  })
+
+  it('plain 仍保留剧透硬闸（安全项不因模式让步）', () => {
+    const res = assembleSupplement({
+      candidates: [cand('spoiler', '真相在书房揭晓。', 5300, 0.99)],
+      gaps: gaps(),
+      dossier: dossier([{ revealScene: 's2' }]),
+      currentScene: '门厅',
+      mode: 'plain',
+    })
+    expect(res.blocks).toEqual([])
+    expect(res.droppedSpoiler).toBe(1)
+  })
+
+  it('plain 仍受条数/预算约束', () => {
+    const many = Array.from({ length: 8 }, (_, i) => cand(`c${i}`, `短句${i}。`, 400 + i, 0.9 - i * 0.01))
+    const res = assembleSupplement({ candidates: many, gaps: gaps(), dossier: dossier(), currentScene: '门厅', mode: 'plain' })
+    expect(res.blocks).toHaveLength(MAX_SUPPLEMENT_CHUNKS)
+  })
+
+  it('renderBlock 导出：跨场景块带前缀（消费方不得裸取 block.text）', async () => {
+    const { renderBlock } = await import('../supplementAssembly.js')
+    const plainBlock = { id: 'a', text: '原文。', score: 1, attribution: 'none' as const, scenes: [], crossScene: false }
+    const crossBlock = { ...plainBlock, id: 'b', crossScene: true }
+    expect(renderBlock(plainBlock)).toBe('原文。')
+    expect(renderBlock(crossBlock)).toContain(CROSS_SCENE_PREFIX)
+    expect(renderBlock(crossBlock)).toContain('原文。')
+  })
+})
+
 describe('supplementService: 端到端编排（注入缝，不触网不加载模型）', () => {
   const GAPS: CoverageGaps = {
     storyChars: 20000,

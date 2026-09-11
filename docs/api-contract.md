@@ -45,6 +45,7 @@ interface RAGSettings {
   model: string             // 默认 'text-embedding-3-small'
   useGraphRAG?: boolean
   extractionModel?: string
+  supplement?: boolean      // 检索补充层总开关（ADR-0007 决策 5/6）；默认 true
 }
 interface AppSettings {
   ai: AIProviderConfig

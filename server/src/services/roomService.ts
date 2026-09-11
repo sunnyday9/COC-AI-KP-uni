@@ -421,15 +421,19 @@ export class RoomService {
       ])
       const ragContext = knowledge.ragContext
       const sceneBlock = knowledge.sceneBlock
-      // P27：服务端自动预取原文查证——玩家发言是事实问句且档案对不上措辞时，
-      // 服务端先跑一次查证并把结论并入本轮 system（对玩家不可见）。P26 已证
-      // 纯提示词无法让 KP 主动查证；此步不依赖 KP 自觉，失败/超时静默跳过。
-      const prefetched = await this.prefetchVerification(merged, knowledge)
+      // P27（预取）+ M1-T6（检索补充）并行：预取是事实层深挖（玩家发言是事实问句且
+      // 档案对不上措辞时先跑一次查证，结论并入本轮 system，对玩家不可见——P26 已证
+      // 纯提示词无法让 KP 主动查证）；补充层是纹理（ADR-0007）。两者互不依赖，失败
+      // 一律静默降级为空。**补充层关闭开关时不读档案、不检索、不加载模型。**
+      const [prefetched, supplement] = await Promise.all([
+        this.prefetchVerification(merged, knowledge),
+        this.fetchTurnSupplement(merged, knowledge),
+      ])
       const chatMessages = buildRoomTurnMessages(
         this.promptInput(storyName, this.messages.slice(0, historyEnd)),
         ragContext,
         merged,
-        { workflow: this.workflow, sceneBlock, verifyBlock: prefetched },
+        { workflow: this.workflow, sceneBlock, verifyBlock: prefetched, supplement },
       )
       await this.runKpTurnForRoom(
         this.ownerId,
@@ -441,7 +445,10 @@ export class RoomService {
           if (isKpChunkStreamEnabled() && chunk) this.emit({ type: 'kp_chunk', payload: { content: chunk } })
         },
         allowedCharacterIds,
-        ragContext,
+        // wire 采样（M1-T6 语义扩展）：注入列 = 场景档案块 + 检索补充小节
+        // （此前只有 rag 房的 ragContext）。采样落库的注入文本即"KP 本轮实际看到的
+        // 知识块"，供 A/B 报告统计注入量与还原现场。
+        [sceneBlock, supplement].filter((s) => !!s && s.trim().length > 0).join('\n\n') || ragContext,
       )
     } finally {
       this.turnFlushing = false
@@ -596,16 +603,21 @@ export class RoomService {
   /**
    * P27 预取：事实问句 + 档案对不上措辞 → 服务端先查证，结论并入本轮 system。
    * 仅在 dossier 房生效；任何失败/超时返回 ''（不回填、不阻断回合）。
-   * 复用 fetchDossierContext 已算好的覆盖度（同一回合不重复读 gaps）。
+   * 覆盖度复用 fetchDossierContext 算好的那份（不再单独读 gaps）；查证本身若触发，
+   * `verifyOriginal` 会自行读一次 gaps/原文（各有 TTL 缓存）——口径一致，非重复劳动。
+   *
+   * 动态 import 也包在 try 里（审查）：模块加载失败会让 `Promise.all` 拒绝，
+   * 而 flushTurn 没有外层 catch → 整个回合静默丢失。
    */
   private async prefetchVerification(
     playerText: string,
     knowledge: { sceneBlock: string; sceneName?: string; coverage?: SceneCoverage | null },
   ): Promise<string> {
     if (this.workflow !== 'dossier' || !this.storyId) return ''
-    const { runPrefetch } = await import('../rag/dossier/prefetch.js')
-    const res = await runPrefetch(
-      { playerText, sceneBlock: knowledge.sceneBlock, sceneName: knowledge.sceneName, coverage: knowledge.coverage ?? null },
+    try {
+      const { runPrefetch } = await import('../rag/dossier/prefetch.js')
+      const res = await runPrefetch(
+        { playerText, sceneBlock: knowledge.sceneBlock, sceneName: knowledge.sceneName, coverage: knowledge.coverage ?? null },
       {
         userId: this.ownerId,
         scriptId: this.storyId,
@@ -624,19 +636,107 @@ export class RoomService {
         },
       },
     )
-    return res?.content ?? ''
+      return res?.content ?? ''
+    } catch {
+      // 预取链路失败（含动态 import 失败）→ 静默降级为空（回合照常）
+      return ''
+    }
   }
 
   /* ═══════════════ 上下文注入与记忆（ADR-0002，服务端收口） ═══════════════ */
 
-  /** RAG 检索上下文（失败回退 ''——回合不因检索中断）。rag workflow 专用。 */
+  /**
+   * 检索补充小节（M1-T6 / spec #44 / ADR-0007 决策 5/6）：档案房每回合固定检索一次，
+   * 注入 ≤3 块 / ≤1.6k 字符的原文纹理。返回**已渲染小节**（空串 = 不注入）。
+   *
+   * 只在 dossier workflow 生效；rag 房的情报块本身就是检索产物（标准管线，见 fetchRagContext）。
+   * 总开关 `rag.supplement`（默认开）关闭时直接返回 ''——不读档案、不检索、不加载模型。
+   * 永不抛出：任何失败都降级为空小节（回合不因纹理补充中断）。
+   */
+  private async fetchTurnSupplement(
+    playerText: string,
+    knowledge: { sceneName?: string } = {},
+  ): Promise<string> {
+    if (this.workflow !== 'dossier' || !this.storyId) return ''
+    try {
+      const { getSettings } = await import('./settingsService.js')
+      if (getSettings(this.ownerId)?.rag?.supplement === false) return ''
+      const { buildSupplement, defaultRewrite } = await import('../rag/supplementService.js')
+      const { buildGetEmbeddingForUser } = await import('./ragService.js')
+      const res = await buildSupplement(
+        {
+          userId: this.ownerId,
+          scriptId: this.storyId,
+          playerText,
+          sceneName: knowledge.sceneName ?? this.scene ?? undefined,
+          enabled: true,
+        },
+        {
+          getEmbedding: (await buildGetEmbeddingForUser(this.ownerId)) ?? undefined,
+          // 低分改写（ADR-0007 决策 6）：仅在检索最高分低于阈值时触发一次
+          rewrite: defaultRewrite(this.ownerId),
+          onEvent: (e) => {
+            if (process.env.KP_LLM_DEBUG === '1') console.error(`[supplement] room=${this.roomId} ${JSON.stringify(e)}`)
+            const trace = process.env.SUPPLEMENT_TRACE
+            if (trace) {
+              try {
+                mkdirSync(dirname(trace), { recursive: true })
+                appendFileSync(trace, JSON.stringify({ at: Date.now(), roomId: this.roomId, storyId: this.storyId, ...e }) + '\n')
+              } catch {
+                /* 追踪失败不影响回合 */
+              }
+            }
+          },
+        },
+      )
+      return res.section
+    } catch (err) {
+      if (process.env.KP_LLM_DEBUG === '1') console.error(`[supplement-fail] room=${this.roomId} err=${err instanceof Error ? err.message : String(err)}`)
+      return ''
+    }
+  }
+
+  /**
+   * RAG 房情报块（M1-T6）：**标准管线，无图路径**（ADR-0007 决策 2/3）。
+   * query → 嵌入 → 向量召回 → 本地 cross-encoder rerank → 渲染块文本。
+   *
+   * 与档案房的差别（同一套检索，两种装配语义）：
+   *  - `mode: 'plain'`——rag 房没有档案块，所以**不做**档案重叠剔除与场景归属排序
+   *    （审查发现：两者都会把 rag 房自己的知识来源删掉/塌成 1 条）；
+   *  - `rawQuery`——玩家发言就是检索意图，不套场景名拼接与规则清洗；
+   *  - 渲染块文本用 `renderBlock`（跨场景前缀必须保留），不另起小节标题
+   *    （那属于档案房的双轨标注）。
+   * 剧透硬闸两房共有。失败回退 ''——回合不因检索中断。
+   */
   private async fetchRagContext(query: string): Promise<string> {
     if (!this.storyId) return ''
     try {
-      const { context } = await import('./ragService.js')
-      const res = await context(this.ownerId, { query, scriptId: this.storyId, sceneId: this.scene ?? undefined, topK: 8 })
-      if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch] room=${this.roomId} chars=${(res?.context ?? '').length}`)
-      return res?.context || ''
+      const { buildSupplement, defaultRewrite } = await import('../rag/supplementService.js')
+      // renderBlock 取自装配模块本体（纯函数）——不经服务层 re-export，
+      // 这样测试桩 supplementService（IO 层）时渲染口径仍是真的。
+      const { renderBlock } = await import('../rag/supplementAssembly.js')
+      const { buildGetEmbeddingForUser } = await import('./ragService.js')
+      const res = await buildSupplement(
+        {
+          userId: this.ownerId,
+          scriptId: this.storyId,
+          rawQuery: query,
+          sceneName: this.scene ?? undefined,
+          mode: 'plain',
+          enabled: true,
+        },
+        {
+          getEmbedding: (await buildGetEmbeddingForUser(this.ownerId)) ?? undefined,
+          // 标准管线的低分改写对两房一致启用（否则 A/B 对照臂被削——审查发现）
+          rewrite: defaultRewrite(this.ownerId),
+          onEvent: (e) => {
+            if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch] room=${this.roomId} ${JSON.stringify(e)}`)
+          },
+        },
+      )
+      const text = res.blocks.map(renderBlock).join('\n\n')
+      if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch] room=${this.roomId} chars=${text.length} degraded=${res.degraded}`)
+      return text
     } catch (err) {
       if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch-fail] room=${this.roomId} err=${err instanceof Error ? err.message : String(err)}`)
       return ''
@@ -758,13 +858,18 @@ export class RoomService {
   private async runOpeningTurn(): Promise<void> {
     try {
       const [knowledge, storyName] = await Promise.all([
-        this.workflow === 'dossier' ? this.fetchKnowledge() : this.fetchRagContext(OPENING_RAG_QUERY).then((ragContext) => ({ ragContext, sceneBlock: '' })),
+        this.workflow === 'dossier'
+          ? this.fetchKnowledge()
+          : this.fetchRagContext(OPENING_RAG_QUERY).then((ragContext) => ({ ragContext, sceneBlock: '', sceneName: undefined })),
         this.fetchStoryName(),
       ])
       const ragContext = knowledge.ragContext
+      // opening 也走补充层（M1-T6）：无玩家文本 → query 退化为纯场景名（T4 契约）
+      const openingSupplement = await this.fetchTurnSupplement('', knowledge)
       const chatMessages = buildRoomOpeningMessages(this.promptInput(storyName, this.messages), ragContext, {
         workflow: this.workflow,
         sceneBlock: knowledge.sceneBlock,
+        supplement: openingSupplement,
       })
       const firstCharacterId = [...this.characters.keys()][0] ?? null
       await this.enqueue(() =>
@@ -778,7 +883,8 @@ export class RoomService {
             if (isKpChunkStreamEnabled() && chunk) this.emit({ type: 'kp_chunk', payload: { content: chunk } })
           },
           undefined,
-          ragContext,
+          // wire 采样注入列：与 flushTurn 同口径（场景块 + 补充小节；rag 房回退情报块）
+          [knowledge.sceneBlock, openingSupplement].filter((s) => !!s && s.trim().length > 0).join('\n\n') || ragContext,
         ),
       )
     } catch (err) {

@@ -53,6 +53,18 @@ export interface SupplementCandidate {
 
 export type AttributionKind = 'single' | 'cross' | 'none'
 
+/**
+ * 装配模式（两个消费方语义不同，共用检索但闸门不同）：
+ *  - `supplement`（缺省）= **档案房的纹理补充**：档案块已在上下文里，所以要走
+ *    "与档案重叠剔除""场景内优先""跨场景 ≤1 条 + 前缀"这套档案感知的闸门；
+ *  - `plain` = **rag 房的标准情报块**：没有档案块，档案感知的闸门会**删掉它唯一的知识来源**
+ *    （档案 sceneText 本就是原文誊抄，与检索块天然高重合 → 全被当重复剔除），
+ *    且其场景名来自 KP 自由命名、与档案锚点常不匹配（全判"场景外"→ 塌成 1 条）。
+ *    因此 plain 只做"相关性排序 + 条数/预算截断 + 剧透硬闸"，不做归属相关处理。
+ *    剧透硬闸（revealScene 相交即丢）两模式都保留——安全项不因模式让步。
+ */
+export type AssembleMode = 'supplement' | 'plain'
+
 export interface SupplementBlock {
   id: string
   text: string
@@ -61,7 +73,8 @@ export interface SupplementBlock {
   attribution: AttributionKind
   /** 归属场景（single 时 1 个；cross 时 ≥2 个；none 为空）。 */
   scenes: { id: string; name: string }[]
-  /** 是否"当前场景之外"的块（跨区域，或归属别的场景）——受跨场景限额与前缀约束。 */
+  /** 是否"当前场景之外"的块（跨区域，或归属别的场景）——受跨场景限额与前缀约束。
+   *  `plain` 模式恒为 false（该模式不做归属判断）。 */
   crossScene: boolean
 }
 
@@ -73,6 +86,8 @@ export interface AssembleInput {
   currentScene?: string
   /** 总开关（缺省开）。关闭 → 空小节。 */
   enabled?: boolean
+  /** 装配模式（缺省 supplement = 档案房纹理补充；plain = rag 房标准情报块）。 */
+  mode?: AssembleMode
   budgetChars?: number
   maxChunks?: number
   maxCross?: number
@@ -224,6 +239,7 @@ export function assembleSupplement(input: AssembleInput): AssembleResult {
   const gaps = input?.gaps ?? null
   const dossier = input?.dossier ?? null
   const current = String(input?.currentScene ?? '').trim()
+  const plain = input?.mode === 'plain'
   const budget = Number.isFinite(input?.budgetChars) && (input?.budgetChars as number) > 0
     ? (input?.budgetChars as number)
     : SUPPLEMENT_BUDGET_CHARS
@@ -277,17 +293,23 @@ export function assembleSupplement(input: AssembleInput): AssembleResult {
       droppedSpoiler++
       continue
     }
-    // ② 档案重叠：与该块所属场景的 sceneText 高度重合 → 档案已有，剔除
-    const dup = att.scenes.some((s) => {
-      const scene = scenes.find((x) => x.id === s.id)
-      return scene ? archiveOverlapRatio(c.content, scene.sceneText ?? '') >= OVERLAP_DROP_RATIO : false
-    })
-    if (dup) {
-      droppedOverlap++
-      continue
+    // ② 档案重叠：与该块所属场景的 sceneText 高度重合 → 档案已有，剔除。
+    //    **仅 supplement 模式**：plain 模式（rag 房）没有档案块，这些块就是它全部的
+    //    知识来源，按"档案已有"剔除会把 rag 房的内容清空（审查发现）。
+    if (!plain) {
+      const dup = att.scenes.some((s) => {
+        const scene = scenes.find((x) => x.id === s.id)
+        return scene ? archiveOverlapRatio(c.content, scene.sceneText ?? '') >= OVERLAP_DROP_RATIO : false
+      })
+      if (dup) {
+        droppedOverlap++
+        continue
+      }
     }
 
-    const slot = slotOf(att, c.start, currentId, gaps)
+    // plain 模式不做归属相关处理（无档案可依，场景名常与锚点不匹配）：全部按
+    // "无归属"参与纯相关性排序，不占跨场景名额、不带前缀
+    const slot: Slot = plain ? 'none' : slotOf(att, c.start, currentId, gaps)
     const block: SupplementBlock = {
       id: c.id,
       text: c.content,
@@ -341,13 +363,24 @@ export function assembleSupplement(input: AssembleInput): AssembleResult {
 }
 
 /**
+ * 渲染单块（纯函数）：跨场景块前置「未来场景片段」前缀，其余原样。
+ * **消费方一律用这个**而不是裸取 `block.text`——前缀只在这里加，绕过它就等于
+ * 把未来场景原文不带标注地喂给 KP（审查发现：rag 房曾直接 map(b => b.text)）。
+ */
+export function renderBlock(block: SupplementBlock): string {
+  const text = String(block?.text ?? '').trim()
+  if (!text) return ''
+  return block.crossScene ? `${CROSS_SCENE_PREFIX}\n${text}` : text
+}
+
+/**
  * 渲染注入小节（纯函数）：标题 + 每条一段；跨场景条目前置前缀。
  * 无块 → 空串（调用方据此完全不注入）。
  */
 export function renderSupplement(blocks: SupplementBlock[]): string {
   const list = Array.isArray(blocks) ? blocks.filter((b) => String(b?.text ?? '').trim().length > 0) : []
   if (!list.length) return ''
-  return [SUPPLEMENT_HEADING, ...list.map((b) => (b.crossScene ? `${CROSS_SCENE_PREFIX}\n${b.text}` : b.text))].join('\n')
+  return [SUPPLEMENT_HEADING, ...list.map(renderBlock)].join('\n')
 }
 
 /* ═══════════════════ 带 IO：检索编排（注入缝，可测） ═══════════════════ */

@@ -50,6 +50,8 @@ const DEFAULT_RAG = {
   model: 'text-embedding-3-small',
   useGraphRAG: true,
   extractionModel: '',
+  // M1-T6：检索补充层总开关（ADR-0007）默认开
+  supplement: true,
 }
 
 describe('settings routes', () => {
@@ -102,6 +104,8 @@ describe('settings routes', () => {
       model: 'text-embedding-3-large',
       useGraphRAG: true,
       extractionModel: '',
+      // 未在 patch 里给出 → 保持默认开（M1-T6）
+      supplement: true,
     })
     expect(got.body.syncServerUrl).toBe('https://sync.example.com')
     expect(got.body.debugMode).toBe(true)

@@ -29,6 +29,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     model: 'text-embedding-3-small',
     useGraphRAG: true,
     extractionModel: '',
+    // 检索补充层（ADR-0007 决策 5/6）：默认开——每回合固定检索注入原文纹理
+    supplement: true,
   },
   syncServerUrl: 'http://localhost:3000',
 }
@@ -107,7 +109,7 @@ export function validatePatch(patch: unknown): void {
 
   const rag = patch.rag === undefined ? {} : patch.rag
   if (!isRecord(rag)) throw new BadRequestError('settings.rag must be an object')
-  const { useEmbeddings, provider: ragProvider, model: ragModel, useGraphRAG, extractionModel } = rag
+  const { useEmbeddings, provider: ragProvider, model: ragModel, useGraphRAG, extractionModel, supplement } = rag
   if (useEmbeddings !== undefined && typeof useEmbeddings !== 'boolean') {
     throw new BadRequestError('settings.rag.useEmbeddings must be a boolean')
   }
@@ -122,6 +124,9 @@ export function validatePatch(patch: unknown): void {
   }
   if (extractionModel !== undefined && typeof extractionModel !== 'string') {
     throw new BadRequestError('settings.rag.extractionModel must be a string')
+  }
+  if (supplement !== undefined && typeof supplement !== 'boolean') {
+    throw new BadRequestError('settings.rag.supplement must be a boolean')
   }
 
   if (patch.syncServerUrl !== undefined && typeof patch.syncServerUrl !== 'string') {
@@ -222,6 +227,7 @@ function mergeDefaults(patch: Record<string, unknown>): StoredSettings {
       useGraphRAG: typeof ragIn.useGraphRAG === 'boolean' ? ragIn.useGraphRAG : DEFAULT_SETTINGS.rag!.useGraphRAG,
       extractionModel:
         typeof ragIn.extractionModel === 'string' ? ragIn.extractionModel : DEFAULT_SETTINGS.rag!.extractionModel,
+      supplement: typeof ragIn.supplement === 'boolean' ? ragIn.supplement : DEFAULT_SETTINGS.rag!.supplement,
     },
     ...(typeof patch.syncServerUrl === 'string' ? { syncServerUrl: patch.syncServerUrl } : {}),
     ...(typeof patch.debugMode === 'boolean' ? { debugMode: patch.debugMode } : {}),

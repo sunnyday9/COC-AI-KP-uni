@@ -29,10 +29,27 @@ vi.mock('../roomMemory.js', () => ({
   summarizeLongTerm: vi.fn(async (_userId: number, payload: { currentSummary: string }) => `${payload.currentSummary}+摘要v2`),
 }))
 
-/** 桩 ragService：RAG 检索与剧本名确定性（避免真拉 vectorStore/transformers）。 */
+/** 桩 ragService：剧本名 + 嵌入器确定性（避免真拉 vectorStore/transformers）。 */
 vi.mock('../ragService.js', () => ({
-  context: vi.fn(async () => ({ context: 'RAG 检索上下文（桩）' })),
+  buildGetEmbeddingForUser: vi.fn(async () => null),
   listStories: vi.fn(() => [{ storyId: 'story_x', name: '雾中镇', chunkCount: 1, indexedAt: 0 }]),
+}))
+
+/** 桩检索补充层（M1-T6）：两房知识块都出自标准管线（ADR-0007 决策 2/3）。
+ *  此前桩的是 `ragService.context`（graphRag 路径），T6 起已退役。 */
+vi.mock('../../rag/supplementService.js', () => ({
+  buildSupplement: vi.fn(async () => ({
+    section: '## 原文片段（检索补充·仅作描写素材）\nRAG 检索上下文（桩）',
+    blocks: [{ id: 'c1', text: 'RAG 检索上下文（桩）', score: 0.9, attribution: 'none', scenes: [], crossScene: false }],
+    chars: 40,
+    droppedSpoiler: 0,
+    droppedOverlap: 0,
+    query: '桩',
+    degraded: false,
+    revealRegions: 0,
+    durationMs: 1,
+  })),
+  defaultRewrite: () => undefined,
 }))
 
 import { runKpTurn } from '../kpTurnService.js'
