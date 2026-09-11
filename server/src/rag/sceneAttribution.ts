@@ -12,8 +12,8 @@
 import {
   SCENE_REGION_LEAD,
   SCENE_REGION_SPAN,
-  type CoverageGaps,
-} from './dossier/coverageGaps.js'
+} from './dossier/regions.js'
+import type { CoverageGaps } from './dossier/coverageGaps.js'
 
 export { SCENE_REGION_LEAD, SCENE_REGION_SPAN }
 

@@ -24,6 +24,7 @@ import path from 'node:path'
 import { DOSSIER_DATA_DIR } from '../../config.js'
 import { resolveFileInDir } from '../../utils/pathSafety.js'
 import { sanitizeScriptId, type DossierScene } from './schema.js'
+import { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
 
 /** 太短的段落不计缺口（目录页/占位符等噪声）。 */
 const MIN_BLOCK_CHARS = 20
@@ -51,10 +52,9 @@ export interface SceneAnchor {
   starts?: number[]
 }
 
-/** 场景原文区域：首锚点前的衔接语余量（与运行时查证工具同口径）。 */
-export const SCENE_REGION_LEAD = 300
-/** 场景原文区域：末锚点后的余量（覆盖"场景正文比誊抄出的锚点更长"的部分）。 */
-export const SCENE_REGION_SPAN = 2_500
+/** 场景原文区域常量 + 文本归一化：单源在 `./regions.js`（极轻模块——查询期模块
+ *  不该为了这两个常量被拖进本文件的重依赖链）。此处 re-export 保持既有调用方。 */
+export { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
 
 export interface CoverageGaps {
   storyChars: number
@@ -78,11 +78,6 @@ export interface CoverageGapsFile extends CoverageGaps {
 
 /** 当前 gaps 算法版本。1 = P22 初版；2 = P26a（closeGap 在被覆盖块前收口）。 */
 export const GAPS_VERSION = 2
-
-/** 去空白（含换行/全角空格）——誊抄匹配对排版不敏感。 */
-export function normalizeText(s: string): string {
-  return String(s ?? '').replace(/\s+/g, '')
-}
 
 interface Block {
   start: number

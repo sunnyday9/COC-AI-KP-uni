@@ -40,6 +40,7 @@ import {
   assessDossier,
   type StoryDossier,
 } from './schema.js'
+import { findScene as findSceneImpl } from './sceneLookup.js'
 import { persistAnnex, deleteAnnex, runAnnex } from './annex.js'
 import { computeCoverageGaps, persistGaps, deleteGaps, type SceneCoverage } from './coverageGaps.js'
 
@@ -421,24 +422,13 @@ export function renderLexicalMiss(query: string): string {
   return `剧本档案中未找到与「${query}」相关的内容。档案可能不全——${VERIFY_ORIGINAL_HINT}。`
 }
 
-/** Case-insensitive scene lookup by id/name/exact/contains (longest match wins). */
+/**
+ * Case-insensitive scene lookup by id/name/exact/contains (longest match wins).
+ * 实现单源在 `./sceneLookup.js`（纯函数轻模块）——查询期模块只为这一个查找
+ * 不该被本文件的重依赖链牵连。下方 re-export 保持既有调用方的导入路径不变。
+ */
 export function findScene(dossier: StoryDossier, nameOrId: string): StoryDossier['scenes'][number] | null {
-  const target = String(nameOrId || '').trim().toLowerCase()
-  if (!target) return null
-  const scenes = dossier.scenes || []
-  for (const s of scenes) {
-    if (s.id.toLowerCase() === target || s.name.toLowerCase() === target) return s
-  }
-  let best: StoryDossier['scenes'][number] | null = null
-  let bestLen = 0
-  for (const s of scenes) {
-    const name = s.name.toLowerCase()
-    if (name && target.includes(name) && name.length > bestLen) {
-      best = s
-      bestLen = name.length
-    }
-  }
-  return best
+  return findSceneImpl(dossier, nameOrId)
 }
 
 /** Lightweight lexical search over scenes/clues/npcs (shared tool primitive). */

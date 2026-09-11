@@ -198,10 +198,11 @@ export async function rewriteQuery(
 
 /* ═══════════════════ 检索 + 至多一次改写重检 ═══════════════════ */
 
-export interface RetrieveWithRewriteInput {
+export interface RetrieveWithRewriteInput<T extends ScoredChunk = ScoredChunk> {
   query: string
-  /** 检索（已绑定 scriptId/topK：传 query 返回候选，**相关性分越大越相关**）。 */
-  retrieve: (query: string) => Promise<ScoredChunk[]>
+  /** 检索（已绑定 scriptId/topK：传 query 返回候选，**相关性分越大越相关**）。
+   *  泛型保留调用方的候选附加字段（如块偏移 `start`——装配层做场景归属要用）。 */
+  retrieve: (query: string) => Promise<T[]>
   /** 改写器；缺省 = 不改写（M1 开关关闭 / 无 LLM 时的降级形态）。 */
   rewrite?: RewriteFn
   threshold?: number
@@ -213,10 +214,10 @@ export interface RetrieveWithRewriteInput {
   now?: () => number
 }
 
-export interface RetrievalResult {
+export interface RetrievalResult<T extends ScoredChunk = ScoredChunk> {
   /** 最终采用的 query（改写被采纳时为改写后的文本）。 */
   query: string
-  chunks: ScoredChunk[]
+  chunks: T[]
   topScore: number
   /** 是否采纳了改写结果。 */
   rewritten: boolean
@@ -226,10 +227,10 @@ export interface RetrievalResult {
 }
 
 /** 一次检索：失败降级为空候选（回合不因检索中断）。 */
-async function safeRetrieve(
-  retrieve: RetrieveWithRewriteInput['retrieve'],
+async function safeRetrieve<T extends ScoredChunk>(
+  retrieve: (query: string) => Promise<T[]>,
   query: string,
-): Promise<{ chunks: ScoredChunk[]; error?: string }> {
+): Promise<{ chunks: T[]; error?: string }> {
   try {
     const chunks = await retrieve(query)
     return { chunks: Array.isArray(chunks) ? chunks : [] }
@@ -245,12 +246,14 @@ async function safeRetrieve(
  * 视为改写无害）；否则回退原 query 的结果——低分改写不该让检索变差。
  * 永不抛出。
  */
-export async function retrieveWithRewrite(input: RetrieveWithRewriteInput): Promise<RetrievalResult> {
+export async function retrieveWithRewrite<T extends ScoredChunk = ScoredChunk>(
+  input: RetrieveWithRewriteInput<T>,
+): Promise<RetrievalResult<T>> {
   const now = input?.now ?? (() => Date.now())
   const started = now()
   const query = String(input?.query ?? '').trim()
   const threshold = Number.isFinite(input?.threshold) ? (input.threshold as number) : DEFAULT_REWRITE_THRESHOLD
-  const done = (r: Omit<RetrievalResult, 'durationMs'>): RetrievalResult => ({ ...r, durationMs: now() - started })
+  const done = (r: Omit<RetrievalResult<T>, 'durationMs'>): RetrievalResult<T> => ({ ...r, durationMs: now() - started })
 
   if (!query || typeof input?.retrieve !== 'function') {
     return done({ query, chunks: [], topScore: 0, rewritten: false })
