@@ -61,6 +61,21 @@ const ROOT = path.resolve(__dirname, '..', '..')
 const API_BASE = `http://127.0.0.1:${process.env.E2E_PORT ?? 3100}`
 const WS_URL = API_BASE.replace(/^http/, 'ws').replace('localhost', '127.0.0.1')
 const FIXTURE = path.join(ROOT, 'e2e', 'fixtures', 'demo-story.txt')
+
+/**
+ * 已知的**模组集**语料（M1-T8 发现）：一个文档里平列多个模组，不满足本产品的
+ * "一个文档 = 一个 story" 前提。拿它们跑 A/B 会得到误导性结论——档案生成按单篇
+ * 分节处理，跨模组的场景锚点/场景数失控，`fetchDossierContext` 的场景回落还会跨模组命中；
+ * 且事实问会问到未被覆盖的模组上，看起来像"档案房退化"。
+ *
+ * 判定手法（可复核）：正文里出现 `在《模组名》中，…` 这样的逐模组介绍句，且数量 > 1。
+ * 古城秘史 8 个模组（血水/火焰交织的盛夏/穿越时空的旅行者/重返黑色校园/奈落之蛹/
+ * 早八要迟到了…）；巫 2 个模组（巫女、献给她的爱）。
+ *
+ * 选语料时若传入这些文件，脚本会**显式警告**（不静默跳过——万一将来产品支持合集，
+ * 这行警告就是失效标记）。
+ */
+const KNOWN_COLLECTIONS = new Set(['古城秘史_20230330', '巫_20220928_nocom'])
 const DEFAULT_FACTS_DIR = path.join(ROOT, 'scripts', 'eval', 'ab-facts')
 /** 纹理 rubric 抽样回合数（双方都成功的游玩回合逐对评；有界成本）。 */
 const TEXTURE_SAMPLE_TURNS = 3
@@ -760,6 +775,17 @@ function collectStories(opt) {
     else console.warn(`story file not found: ${abs}`)
   }
   if (list.length === 0) list.push(FIXTURE)
+  // 模组集语料守卫（M1-T8）：警告但不阻断——保留跑得通的能力，只保证不会"忘了它不是单篇"
+  for (const f of list) {
+    const key = path.basename(f).replace(/\.[^.]+$/, '')
+    if (KNOWN_COLLECTIONS.has(key)) {
+      console.warn(
+        `\n⚠️  [corpus] ${key} 是**模组集**（一个文档多个模组），不满足"一个文档 = 一个 story"前提。\n` +
+        `    拿它跑 A/B 的结论不可作为验收依据（档案会按单篇分节处理，事实问可能落到未覆盖的模组上）。\n` +
+        `    详见 docs/experiments/m1-supplement-ab-2026-09-11.md 的「语料修正」一节。\n`,
+      )
+    }
+  }
   return list
 }
 
