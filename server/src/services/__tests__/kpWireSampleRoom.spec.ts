@@ -67,6 +67,10 @@ vi.mock('../../rag/dossier/storyDossierService.js', () => ({
   buildSceneBlock: vi.fn(() => '场景：门厅\n简介：进门处。'),
   listScenes: vi.fn(() => [{ id: 's1', name: '门厅' }]),
   findScene: vi.fn(() => ({ id: 's1', name: '门厅' })),
+  // #53：房间场景与档案对不上时的提示（本 spec 的场景恒为命中，故不会被调用；
+  // 但 mock 必须导出它——vitest 对缺失导出**抛错**，会被 fetchDossierContext 的
+  // catch 吞成空块，症状是"档案块凭空消失"）
+  renderSceneUncovered: vi.fn((name: string, names: string[]) => `【场景归属提示】档案未覆盖当前场景「${name}」。档案中的场景：${names.join('、')}。`),
 }))
 vi.mock('../../rag/dossier/coverageGaps.js', async () => {
   const regions = await vi.importActual<typeof import('../../rag/dossier/regions.js')>('../../rag/dossier/regions.js')

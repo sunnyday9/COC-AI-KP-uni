@@ -21,7 +21,7 @@ vi.stubEnv('DOSSIER_DATA_DIR', tmpDossier)
 // files so the env above takes effect.
 vi.resetModules()
 
-const { generateDossier, loadDossier, listDossiers, deleteDossier, buildSceneBlock, coverageHintLine, VERIFY_ORIGINAL_HINT, renderSceneNotFound, renderLexicalMiss, findScene, lexicalSearch, splitStorySections, stripCodeFence } = await import('../storyDossierService.js')
+const { generateDossier, loadDossier, listDossiers, deleteDossier, buildSceneBlock, coverageHintLine, VERIFY_ORIGINAL_HINT, renderSceneNotFound, renderSceneUncovered, renderLexicalMiss, findScene, lexicalSearch, splitStorySections, stripCodeFence } = await import('../storyDossierService.js')
 const { importStory, readStory } = await import('../../../services/storyService.js')
 
 // chatForRag mock: return a small deterministic dossier per batch.
@@ -164,6 +164,25 @@ describe('storyDossierService', () => {
     // 单源：两条文案共用同一句引导（改一处即同步）
     expect(missScene.indexOf(VERIFY_ORIGINAL_HINT)).toBeGreaterThan(0)
     expect(missLex.indexOf(VERIFY_ORIGINAL_HINT)).toBeGreaterThan(0)
+  })
+
+  it('#53：房间场景有值但档案没有 → renderSceneUncovered 指引改造场景，不冒充别的场景', async () => {
+    const uncovered = renderSceneUncovered('废弃的地窖', ['旧图书馆', '钟楼'])
+    // 点出房间声称的场景名（KP 要能意识到"对不上"），并列出档案里的场景清单
+    expect(uncovered).toContain('废弃的地窖')
+    expect(uncovered).toContain('旧图书馆')
+    expect(uncovered).toContain('scene_list')
+    // 首行标记：这段文本会落在 `## 当前场景档案` 标题下，必须自带"这不是当前场景档案"
+    expect(uncovered.startsWith('【场景归属提示】')).toBe(true)
+    // 出口：把场景名纠正到档案口径（transition_scene）+ 原文查证
+    expect(uncovered).toContain('transition_scene')
+    expect(uncovered).toContain(VERIFY_ORIGINAL_HINT)
+    // 且**不含**任何别的场景的档案内容
+    expect(uncovered).not.toContain('现场描述')
+    // 空场景名 → 空串（调用方据此不注入）
+    expect(renderSceneUncovered('', ['旧图书馆'])).toBe('')
+    // 档案一个场景都没有 → 兜底文案不崩
+    expect(renderSceneUncovered('地窖', [])).toContain('（无）')
   })
 
   it('lexicalSearch finds scenes/clues/npcs by term overlap', async () => {

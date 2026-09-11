@@ -23,18 +23,24 @@ const roomStorage = await import('../roomStorage.js')
 const { getDb } = await import('../../db/index.js')
 
 // Mock the dossier store so flushTurn resolves a deterministic dossier block.
-vi.mock('../rag/dossier/storyDossierService.js', () => ({
-  loadDossier: vi.fn(async () => ({
-    scriptId: 'demo.txt',
-    storyName: '旧图书馆的铜钥匙',
-    generatedAt: 1,
-    scenes: [{ id: 'scene_1', name: '旧图书馆', sceneText: '灰尘与霉味。', description: '', npcIds: [], clueIds: [], requiredClues: [], hooks: [] }],
-    clues: [],
-    npcs: [],
-  })),
-  buildSceneBlock: vi.fn(() => '场景：旧图书馆\n现场描述：灰尘与霉味。'),
-  listScenes: vi.fn(() => [{ id: 'scene_1', name: '旧图书馆' }]),
-}))
+vi.mock('../rag/dossier/storyDossierService.js', async () => {
+  const { findScene } = await vi.importActual<typeof import('../../rag/dossier/sceneLookup.js')>('../../rag/dossier/sceneLookup.js')
+  return {
+    findScene,
+    loadDossier: vi.fn(async () => ({
+      scriptId: 'demo.txt',
+      storyName: '旧图书馆的铜钥匙',
+      generatedAt: 1,
+      scenes: [{ id: 'scene_1', name: '旧图书馆', sceneText: '灰尘与霉味。', description: '', npcIds: [], clueIds: [], requiredClues: [], hooks: [] }],
+      clues: [],
+      npcs: [],
+    })),
+    buildSceneBlock: vi.fn(() => '场景：旧图书馆\n现场描述：灰尘与霉味。'),
+    listScenes: vi.fn(() => [{ id: 'scene_1', name: '旧图书馆' }]),
+    // #53：mock 必须导出它（vitest 对缺失导出抛错 → 被 fetchDossierContext 的 catch 吞成空块）
+    renderSceneUncovered: vi.fn((name: string, names: string[]) => `【场景归属提示】档案未覆盖当前场景「${name}」。档案中的场景：${names.join('、')}。`),
+  }
+})
 
 // P27：预取走缺省判定，但 verify 不出网——本 spec 只关心房间链路不被预取打断；
 // 判定与执行规则由 prefetch.spec 单测覆盖。

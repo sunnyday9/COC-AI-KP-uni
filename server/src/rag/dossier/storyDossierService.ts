@@ -421,6 +421,25 @@ export function renderLexicalMiss(query: string): string {
   return `剧本档案中未找到与「${query}」相关的内容。档案可能不全——${VERIFY_ORIGINAL_HINT}。`
 }
 
+/* 房间所报场景与档案对不上时的回包文案（#53）：**不**拿别的场景块顶上。
+ * 与 renderSceneNotFound 的区别在"谁报错了"——那条是工具查询的名字没命中，
+ * 这条是房间场景（KP transition_scene 自由命名）与档案不一致；诊断指向也不同：
+ * 先让 KP 用 transition_scene 把场景名纠正到档案口径，再留查证出口。
+ * 两条共用同一句引导。
+ * ⚠️ 首行的 `【场景归属提示】` 标记是**必需的**：该文本被塞进 `## 当前场景档案`
+ * 标题下，而提示词又说那里是"当前所在场景的权威描述"（kpPromptService）——
+ * 没有醒目标记时，"未覆盖"会被读成"这就是当前场景的档案"。 */
+
+export function renderSceneUncovered(sceneName: string, sceneNames: string[]): string {
+  const name = String(sceneName ?? '').trim()
+  if (!name) return ''
+  return (
+    `【场景归属提示】档案未覆盖当前场景「${name}」。档案中的场景：${sceneNames.join('、') || '（无）'}。` +
+    `不要按别的场景推测当前状况——若确认当前实际位于档案中的某场景，用 transition_scene 以档案里的写法更正场景名；` +
+    `也可用 scene_list 查看场景清单。需要原文级细节时${VERIFY_ORIGINAL_HINT}。`
+  )
+}
+
 /**
  * Case-insensitive scene lookup by id/name/exact/contains (longest match wins).
  * 实现单源在 `./sceneLookup.js`（纯函数轻模块）——查询期模块只为这一个查找

@@ -743,25 +743,47 @@ export class RoomService {
     }
   }
 
-  /** dossier workflow：按当前场景取档案静态块 + 场景清单（sceneId/当前场景名回填 + 覆盖度）。 */
-  private async fetchDossierContext(): Promise<{ block: string; currentSceneId?: string; sceneName?: string; coverage?: SceneCoverage | null }> {
+  /** dossier workflow：按当前场景取档案静态块 + 场景清单（场景名归一 + 覆盖度）。 */
+  private async fetchDossierContext(): Promise<{ block: string; sceneName?: string; coverage?: SceneCoverage | null }> {
     if (!this.storyId) return { block: '' }
     try {
-      const { loadDossier, buildSceneBlock, listScenes } = await import('../rag/dossier/storyDossierService.js')
+      const { loadDossier, buildSceneBlock, listScenes, findScene, renderSceneUncovered } = await import('../rag/dossier/storyDossierService.js')
       const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
       const dossier = await loadDossier(this.ownerId, this.storyId)
       if (!dossier) return { block: '' }
       const scenes = listScenes(dossier)
-      // 当前场景名（房间 scene 字段可能未设/未匹配档案）→ 档案场景 id
-      const currentSceneId = scenes.find((s) => s.name === this.scene)?.id ?? (scenes[0]?.id ?? undefined)
-      const sceneName = scenes.find((s) => s.id === currentSceneId)?.name ?? this.scene ?? undefined
+      // 场景归属（#53）：房间 scene 为空（新局，还没切过场景）→ 回落档案首场景；
+      // **有值但对不上任何档案场景 → 绝不安到别的场景上**（错喂 B 场景的块/在场 NPC/
+      // 覆盖率，KP 会照着讲述眼前并不存在的东西）。名字先过 findScene 归一
+      // （大小写/包含），与检索补充层、原文查证共用同一套匹配口径。
+      const wanted = String(this.scene ?? '').trim()
+      const matched = wanted ? findScene(dossier, wanted) : null
+      // 回落只在"房间还没有场景"时发生；id 与 name 取自**同一个**已解析场景，
+      // 否则空场景会退化成"有块没名字"——补充层的 query 锚与预取的定位窗口全丢。
+      const resolved = matched ?? (!wanted ? scenes[0] : undefined)
+      const unmatched = !!wanted && !matched
+      if (unmatched && process.env.KP_LLM_DEBUG === '1') {
+        console.error(
+          `[dossier-scene] room=${this.roomId} story=${this.storyId} 房间场景「${wanted}」未匹配到档案场景` +
+            `（档案 ${scenes.length} 个：${scenes.slice(0, 8).map((s) => s.name).join('、')}${scenes.length > 8 ? '…' : ''}）→ 不注入场景块`,
+        )
+      }
+      const sceneName = unmatched ? wanted : resolved?.name
       // P26：场景块附覆盖提示（该场景原文有多少未入档）——P25 观测到 KP 缺少
       // "档案可能不全"的信号，从不主动查原文。loadGaps 内部已吞错返回 null。
-      const gaps = await loadGaps(this.ownerId, this.storyId)
-      const coverage = currentSceneId ? computeSceneCoverage(gaps, currentSceneId) : null
-      const block = buildSceneBlock(dossier, currentSceneId || '', coverage)
-      return { block, currentSceneId: sceneName, sceneName, coverage }
-    } catch {
+      // 未覆盖时不取覆盖率：那是别的场景的数据，报出来就是冒充。
+      const gaps = unmatched ? null : await loadGaps(this.ownerId, this.storyId)
+      const coverage = resolved?.id ? computeSceneCoverage(gaps, resolved.id) : null
+      const block = unmatched
+        ? renderSceneUncovered(wanted, scenes.map((s) => s.name))
+        : buildSceneBlock(dossier, resolved?.id ?? '', coverage)
+      return { block, sceneName, coverage }
+    } catch (err) {
+      // 静默降级为空块（既有约定：注入失败不阻断回合），但留可见诊断——
+      // 否则"档案块凭空消失"（含 mock 缺导出这类编程错误）线上无从发现。
+      if (process.env.KP_LLM_DEBUG === '1') {
+        console.error(`[dossier-scene] room=${this.roomId} story=${this.storyId} 场景块解析失败：${err instanceof Error ? err.message : String(err)}`)
+      }
       return { block: '' }
     }
   }
@@ -772,7 +794,7 @@ export class RoomService {
     if (!this.storyId) return { ragContext: '', sceneBlock: '' }
     if (this.workflow === 'dossier') {
       const d = await this.fetchDossierContext()
-      return { ragContext: '', sceneBlock: d.block, sceneName: d.sceneName ?? d.currentSceneId, coverage: d.coverage }
+      return { ragContext: '', sceneBlock: d.block, sceneName: d.sceneName, coverage: d.coverage }
     }
     return { ragContext: await this.fetchRagContext(OPENING_RAG_QUERY), sceneBlock: '' }
   }
