@@ -156,6 +156,8 @@ export class RoomService {
   /* ═══════════════ 查询（只读，无需入队） ═══════════════ */
 
   getPhase(): RoomPhase { return this.phase }
+  /** 结束态（终态，#54）。方法形态：调用点能拿到"此刻"的值，不受 TS 属性收窄影响。 */
+  isEnded(): boolean { return this.phase === 'ended' }
   getSeq(): number { return this.seq }
   getStoryId(): string | null { return this.storyId }
   getWorkflow(): StoryWorkflow { return this.workflow }
@@ -264,6 +266,7 @@ export class RoomService {
   setEnding(ending: unknown): void {
     this.ending = ending
     this.phase = 'ended'
+    this.persistPhase('ended')
     this.emit({ type: 'state_patch', payload: { path: 'ending', value: ending } })
     this.emit({ type: 'room_meta', payload: { phase: 'ended', turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
   }
@@ -271,7 +274,19 @@ export class RoomService {
   /** 设置房间阶段（room_meta）。 */
   setPhase(phase: RoomPhase): void {
     this.phase = phase
+    this.persistPhase(phase)
     this.emit({ type: 'room_meta', payload: { phase, turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
+  }
+
+  /** 阶段落库（#54）：`rooms.phase` 列是详情 / 继续游戏列表 / restore 的真源，
+   *  内存变更必须写列——否则结束的局仍挂在首页入口，重启后还会被复活成进行中。
+   *  写失败只记日志：阶段广播已经发生，回合/游玩流程不该因一次写失败中断。 */
+  private persistPhase(phase: RoomPhase): void {
+    try {
+      roomStorage.updateRoomPhase(this.roomId, phase)
+    } catch (err) {
+      console.error(`[room-phase] room=${this.roomId} 落库 ${phase} 失败：${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /** 广播成员列表（room_meta）——成员加入/离开/绑定角色/就绪后调用（Phase C2 / ADR-0005）。 */
@@ -395,6 +410,14 @@ export class RoomService {
   /** 合并缓冲内玩家消息 → 一次 KP 回合（窗口超时/严格排队时调用）。 */
   async flushTurn(): Promise<void> {
     if (this.turnFlushing) return
+    // 结束态是终态（#54）：end_game 之后不再消费任何缓冲消息。
+    // 覆盖两条入口——本函数自身，以及回合进行中投递的消息（见下方 finally 的补触发）。
+    // 只拦 'ended'（不拦 lobby）：阶段门闩在 `submitPlayerChat`（生产唯一入口），
+    // 本方法是**无门闩的机制**——等待室闲聊本就不经它（D4/B6 既有分工）。
+    if (this.isEnded()) {
+      this.turnBuffer = []
+      return
+    }
     const batch = this.turnBuffer
     this.turnBuffer = []
     if (this.turnTimer) {
@@ -452,8 +475,14 @@ export class RoomService {
       )
     } finally {
       this.turnFlushing = false
-      // 审查修复：flush 期间到达的新消息补触发（否则挂起到下一条消息）
-      if (this.turnBuffer.length > 0) {
+      // 本回合内 KP 可能调了 end_game（setEnding 改 phase）——此时缓冲里的消息
+      // **不再**补触发新回合（#54：已完结的局不该继续跑 KP）；直接丢弃。
+      // 用 isEnded() 而不是裸 `this.phase === 'ended'`：函数顶部那条同形守卫会把
+      // `this.phase` 收窄成非 ended，TS 在 finally 里看不到回合中的变更（TS2367）。
+      if (this.isEnded()) {
+        this.turnBuffer = []
+      } else if (this.turnBuffer.length > 0) {
+        // 审查修复：flush 期间到达的新消息补触发（否则挂起到下一条消息）
         if (this.turnWindowMs <= 0) {
           void this.flushTurn()
         } else {
@@ -963,6 +992,13 @@ export function getOrCreateRoom(
       // 列是权威：覆盖快照中的过期值
       if (typeof r?.story_id === 'string') restore.storyId = r.story_id
       if (r?.phase === 'lobby' || r?.phase === 'playing' || r?.phase === 'ended') restore.phase = r.phase
+      // 旧数据自愈（#54）：修复前 end_game 只改内存不写列，库里留下的坏行是
+      // 「列=playing + 快照 ending!=null」。ending 只有 setEnding 写、没有取消路径，
+      // 故它非空即可反推 ended——否则这些房间重启后仍被复活成进行中。
+      if (restore.ending != null && restore.phase === 'playing') {
+        restore.phase = 'ended'
+        try { roomStorage.updateRoomPhase(roomId, 'ended') } catch { /* 自愈失败不阻断物化 */ }
+      }
     } else if (r) {
       restore = {
         seq: 0,
@@ -1197,6 +1233,9 @@ export async function startRoom(
   const g = governanceGate(userId, roomId)
   if (!g.ok) return g
   if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
+  // 门闩 0（#54）：结束是终态——已结束的房间不得被 start 复活成 playing
+  // （否则 updateRoomStart 会把 phase 列写回 playing，继续游戏入口重新列出该局）。
+  if (g.room.phase === 'ended') return { ok: false, reason: 'conflict', message: '对局已结束，无法重新开始' }
   // 门闩 1：已选剧本（storyId 必填——房间创建时允许为空，开局前必须选定）
   if (!storyId) return { ok: false, reason: 'conflict', message: '请先在等待室选定剧本' }
   // 门闩 2：剧本可用（按 workflow：rag=已索引 / dossier=已生成档案）

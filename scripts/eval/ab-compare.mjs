@@ -338,6 +338,7 @@ async function driveRoom(token, roomId, ws, turns, dbPath, roomLabel) {
   const perTurn = []
   let wireRows = []
   let roomEnded = false
+  let endsWarned = false
   try { wireRows = readWireSamples(dbPath, roomId) } catch { /* opening 无采样行（mock） */ }
   for (let i = 0; i < turns.length; i++) {
     const content = turns[i]
@@ -353,6 +354,17 @@ async function driveRoom(token, roomId, ws, turns, dbPath, roomLabel) {
     if (phase === 'ended' || roomEnded) {
       roomEnded = true
       perTurn.push({ input: content, skipped: 'room ended', sceneBefore })
+      // 游玩段内就结束 = 后续（含事实追问）无回合可跑。显式告警，因为按 §3 口径
+      // 该篇事实分将整体不可用——不能静默少跑几回合还照常出数（M2 收尾踩过：
+      // phase 列当时不落库，这里的检测读不到 ended，于是一路空等到 240s 超时）。
+      if (!endsWarned) {
+        endsWarned = true
+        console.warn(
+          `\n⚠️  [room] ${roomLabel}：回合 ${i + 1} 前房间已 ended（KP 在本篇游玩段内 end_game）` +
+          `——剩余 ${turns.length - i} 个回合（含事实追问）跳过，本篇事实分不可用。\n` +
+          `    要拿到有效数据：用更长的 play script 或 --turns 调小，让 end_game 落在游玩段之后。\n`,
+        )
+      }
       continue
     }
 
@@ -689,23 +701,58 @@ async function runStory(user, tmpRoot, filePath, opts) {
   }
 
   // ── facts: judge（真实模式 + 两房都有回答时）──
+  //
+  // ⚠️ 度量前提守卫（M2 收尾发现）：事实回合的"空回复"必须被显式标记，不能静默当低分。
+  // 游玩脚本最后一回合是"让这件事有一个了结"，KP 可能真的 end_game —— 房间进入
+  // phase='ended' 后，事实追问全部拿到空回复，judge 会把"没作答"判成 1 分并标 fabrication，
+  // 读起来就像"档案房退化"（实测：无知的幸福×档案房 5/5 空回复，疑似 1.00 分）。
+  // 一条臂只要有空回复，该臂的该篇事实分**不可用**，此处显式告警并打 invalid 标记。
   const ragWf = out.workflows.rag
   const dosWf = out.workflows.dossier
   out.facts = []
   if (!MOCK && facts.length && ragWf && dosWf && !ragWf.error && !dosWf.error) {
-    for (let i = 0; i < facts.length; i++) {
-      const ragReply = ragWf.factTurns?.[i]?.reply ?? ''
-      const dosReply = dosWf.factTurns?.[i]?.reply ?? ''
-      let judge = null
-      try { judge = await judgeOneFact(up.name ?? key, facts[i], ragReply, dosReply) } catch (e) { judge = { judgeError: e.message } }
-      out.facts.push({
-        q: facts[i].q,
-        ref: facts[i].ref,
-        ragReply: ragReply.slice(0, 700),
-        dosReply: dosReply.slice(0, 700),
-        judge,
-      })
-      console.log(`  [fact ${i + 1}] rag=${judge.rag_score ?? judge.ragScore ?? '-'} dos=${judge.dossier_score ?? judge.dossierScore ?? '-'} fab(rag/dos)=${judge.rag_fabrication ?? '-'}/${judge.dossier_fabrication ?? '-'}`)
+    for (const [arm, wf] of [['rag', ragWf], ['dossier', dosWf]]) {
+      const empty = (wf.factTurns ?? []).filter((t) => String(t.reply ?? '').trim().length === 0).length
+      wf.factRound = { turns: (wf.factTurns ?? []).length, emptyReplies: empty, valid: empty === 0 }
+      if (empty > 0) {
+        console.warn(
+          `\n⚠️  [facts] ${key}/${arm}：${empty}/${(wf.factTurns ?? []).length} 个事实回合**空回复**` +
+          `（多半是游玩回合里 end_game 使房间已结束）→ 该臂事实分不可用，本次结果 invalid。\n` +
+          `    要拿到有效数据：换更长的 play script 或 --turns 调小（让 end_game 不落在游玩段内）后重跑该篇。\n`,
+        )
+      }
+    }
+    // 逐条判分；**每条臂按自己的有效性计分**（审查发现）：一臂 invalid 不该连带
+    // 抹掉另一臂的数据。judgeOneFact 是同一题的成对裁决，故只在两臂都有效时调用；
+    // 只有一臂有效时用其单独判分路径（judgeOneFact 允许另一侧传空串，见下）判定，
+    // 并在报告里保留 `arms` 标记供汇总层剔除。
+    const ragValid = ragWf.factRound.valid
+    const dosValid = dosWf.factRound.valid
+    if (ragValid || dosValid) {
+      for (let i = 0; i < facts.length; i++) {
+        const ragReply = ragWf.factTurns?.[i]?.reply ?? ''
+        const dosReply = dosWf.factTurns?.[i]?.reply ?? ''
+        let judge = null
+        try { judge = await judgeOneFact(up.name ?? key, facts[i], ragReply, dosReply) } catch (e) { judge = { judgeError: e.message } }
+        out.facts.push({
+          q: facts[i].q,
+          ref: facts[i].ref,
+          ragReply: ragReply.slice(0, 700),
+          dosReply: dosReply.slice(0, 700),
+          // 空回复臂的分数不可信（"没作答"被判成 1 分）——在该臂的字段上标出，
+          // 由报告/汇总层剔除；不标的话读起来就像一次真实退化。
+          ragValid,
+          dosValid,
+          judge,
+        })
+        if (ragValid && dosValid) {
+          console.log(`  [fact ${i + 1}] rag=${judge.rag_score ?? judge.ragScore ?? '-'} dos=${judge.dossier_score ?? judge.dossierScore ?? '-'} fab(rag/dos)=${judge.rag_fabrication ?? '-'}/${judge.dossier_fabrication ?? '-'}`)
+        } else {
+          const bad = ragValid ? 'dossier' : 'rag'
+          const good = ragValid ? 'dossier' : 'rag'
+          console.log(`  [fact ${i + 1}] ${good}=${ragValid ? judge.dossier_score ?? judge.dossierScore ?? '-' : judge.rag_score ?? judge.ragScore ?? '-'}（${bad} 臂空回复，该臂分数已标 invalid 不计入均分）`)
+        }
+      }
     }
   }
 

@@ -82,7 +82,21 @@ console.log('|---|---|---|---|---|---|')
 for (const [key, s] of Object.entries(j.stories ?? {})) {
   for (const [i, f] of (s.facts ?? []).entries()) {
     const jd = f.judge ?? {}
-    console.log(`| ${key} | ${i + 1} | ${String(f.q).slice(0, 30)}… | ${jd.rag_score ?? jd.ragScore ?? '—'} | ${jd.dossier_score ?? jd.dossierScore ?? '—'} | ${jd.rag_fabrication ?? '—'}/${jd.dossier_fabrication ?? '—'} |`)
+    // 按臂标 invalid（`f.ragValid === false`）：空回复臂的分数不可信，显式打叉
+    const rMark = f.ragValid === false ? '⛔invalid' : '—'
+    const dMark = f.dosValid === false ? '⛔invalid' : '—'
+    const r = f.ragValid === false ? rMark : (jd.rag_score ?? jd.ragScore ?? '—')
+    const d = f.dosValid === false ? dMark : (jd.dossier_score ?? jd.dossierScore ?? '—')
+    console.log(`| ${key} | ${i + 1} | ${String(f.q).slice(0, 30)}… | ${r} | ${d} | ${jd.rag_fabrication ?? '—'}/${jd.dossier_fabrication ?? '—'} |`)
+  }
+}
+// 事实回合有效性守卫（M2 收尾）：空回复（房间已 end_game）的臂分不可用——
+// 打 invalid 标记并从 §5 均分里**按臂**剔除，不把"没作答"平均成低分、也不连带
+// 抹掉另一臂的有效数据（审查发现）。
+for (const [key, s] of Object.entries(j.stories ?? {})) {
+  const bad = ['rag', 'dossier'].filter((wf) => s.workflows?.[wf]?.factRound?.valid === false)
+  if (bad.length) {
+    console.log(`\n⚠️ **${key}**：${bad.map((wf) => `${wf} 臂 ${s.workflows[wf].factRound.emptyReplies}/${s.workflows[wf].factRound.turns} 个事实回合空回复（多为游玩段内 end_game 使房间已结束）`).join('；')}——该臂已从 §5 均分中剔除（另一臂不受影响）。`)
   }
 }
 
@@ -134,7 +148,12 @@ for (const [key, s] of Object.entries(j.stories ?? {})) {
 }
 
 const scoreOf = (s, wf) => {
-  const arr = (s.facts ?? []).map((f) => (wf === 'rag' ? f.judge?.rag_score ?? f.judge?.ragScore : f.judge?.dossier_score ?? f.judge?.dossierScore)).filter((x) => x != null)
+  // 逐条按**该臂自己**的有效性取样（审查发现：一臂 invalid 不该连带抹掉另一臂数据）。
+  // 同篇两臂都有效时两侧等价；只有一臂有效时另一臂的故事级值仍可算。
+  const arr = (s.facts ?? [])
+    .filter((f) => (wf === 'rag' ? f.ragValid !== false : f.dosValid !== false))
+    .map((f) => (wf === 'rag' ? f.judge?.rag_score ?? f.judge?.ragScore : f.judge?.dossier_score ?? f.judge?.dossierScore))
+    .filter((x) => x != null)
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null
 }
 const sc = Object.entries(j.stories ?? {})

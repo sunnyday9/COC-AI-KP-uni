@@ -8,6 +8,7 @@
  * 外部 id 只作为 DB 键进入查询（D-09 DB 映射：不落 fs 路径）。
  */
 import { getDb } from '../db/index.js'
+import type { RoomPhase } from '../../../shared/types/room.js'
 
 export interface RoomRow {
   room_id: string
@@ -112,6 +113,13 @@ export function updateRoomStart(roomId: string, storyId: string): void {
   getDb()
     .prepare(`UPDATE rooms SET story_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`)
     .run(storyId, Date.now(), roomId)
+}
+
+/** 房间阶段落库（#54）：`rooms.phase` 列是「房间详情 / 继续游戏列表 / restore」的
+ *  唯一真源，内存态变更必须同步写列——否则结束的局仍挂在首页入口，重启后还会被
+ *  列优先的 restore 复活成进行中。 */
+export function updateRoomPhase(roomId: string, phase: RoomPhase): void {
+  getDb().prepare(`UPDATE rooms SET phase = ?, updated_at = ? WHERE room_id = ?`).run(phase, Date.now(), roomId)
 }
 
 /** 节流快照落库（RoomService.persistSnapshot）：bump version。 */
