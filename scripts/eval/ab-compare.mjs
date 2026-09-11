@@ -62,6 +62,8 @@ const API_BASE = `http://127.0.0.1:${process.env.E2E_PORT ?? 3100}`
 const WS_URL = API_BASE.replace(/^http/, 'ws').replace('localhost', '127.0.0.1')
 const FIXTURE = path.join(ROOT, 'e2e', 'fixtures', 'demo-story.txt')
 const DEFAULT_FACTS_DIR = path.join(ROOT, 'scripts', 'eval', 'ab-facts')
+/** 纹理 rubric 抽样回合数（双方都成功的游玩回合逐对评；有界成本）。 */
+const TEXTURE_SAMPLE_TURNS = 3
 const MOCK = process.env.MOCK_AI !== '0'
 const REAL_CFG = {
   baseUrl: process.env.AB_AI_BASE_URL ?? '',
@@ -211,9 +213,11 @@ async function uploadStory(token, filePath) {
   return { id: data.id ?? data.scriptId, name: data.name ?? path.basename(filePath) }
 }
 
-/** Real mode: configure AI settings from env (mimo) + rag 内置 text2vec 本地嵌入. */
+/** Real mode: configure AI settings from env (mimo) + rag 内置 text2vec 本地嵌入.
+ *  `AB_SUPPLEMENT=0` → 关闭 `rag.supplement`（M1-T8 隔离实验：档案房 ± 检索补充自比）。 */
 async function configureRealAi(token) {
   assert(REAL_CFG.baseUrl && REAL_CFG.apiKey, 'real mode needs AB_AI_BASE_URL + AB_AI_API_KEY env')
+  const supplement = process.env.AB_SUPPLEMENT !== '0'
   const res = await api('PUT', '/api/settings', {
     ai: {
       provider: 'openai_compatible',
@@ -223,10 +227,10 @@ async function configureRealAi(token) {
       temperature: 0.7,
       maxTokens: 2048,
     },
-    rag: { useEmbeddings: true, provider: 'builtin', model: 'text-embedding-3-small' },
+    rag: { useEmbeddings: true, provider: 'builtin', model: 'text-embedding-3-small', supplement },
   }, token)
   assert(res.status === 200, `settings PUT failed: ${res.status} ${JSON.stringify(res.data)}`)
-  console.log(`  [real] AI 配置: ${REAL_CFG.model} @ ${REAL_CFG.baseUrl}（rag 用内置 text2vec 本地嵌入；OPENCODE_SESSION=${process.env.OPENCODE_SESSION ? 'set' : 'UNSET'}`)
+  console.log(`  [real] AI 配置: ${REAL_CFG.model} @ ${REAL_CFG.baseUrl}（rag 用内置 text2vec 本地嵌入；rag.supplement=${supplement ? 'on' : 'OFF'}；OPENCODE_SESSION=${process.env.OPENCODE_SESSION ? 'set' : 'UNSET'}`)
 }
 
 /* ═══════════════ story text → RAG index（M1-T3：切块在服务端） ═══════════════ */
@@ -267,16 +271,24 @@ const FAIL_MSG = '回合失败'
  * kp/system + kp_chunk) until the stream goes quiet (quietMs). A turn may
  * append mid-turn tool displays (system) around the kp narrative, so the
  * terminal is "no new frame for quietMs", not the first frame.
+ *
+ * ⚠️ 终结条件必须等**本回合的 kp 叙事或失败系统消息**（M1-T8 实测修复）：
+ * 此前只要求"有任意 appended 且静默"，而回合中途的工具展示消息（骰子/线索/
+ * 场景切换）本身就是 appended——它出现后 LLM 还要跑几十秒才出叙述，静默窗口
+ * 一旦先到，wait 就带着**只有展示消息**的批次返回，本回合的真实叙事被算进
+ * **下一回合**的批次：所有 reply 系统性后移一格（事实问的 judge 因此全 1 分，
+ * 与 P27 基线对比时看起来像"档案房严重退化"，实为度量错误）。
  */
 async function waitTurnBatch(ws, wmark, quietMs, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs
   const hit = () => ws.frames.filter((f) => (isKpMsg(f) || isSysMsg(f) || isChunk(f)) && (f.seq ?? 0) > wmark)
-  let last = hit()
+  const isTerminal = (f) =>
+    isKpMsg(f) || (isSysMsg(f) && String(f.payload?.message?.content ?? '').includes(FAIL_MSG))
   while (Date.now() < deadline) {
     const cur = hit()
     if (cur.length > 0) {
       const newest = cur[cur.length - 1]._t
-      if (cur.some((f) => isKpMsg(f) || isSysMsg(f)) && Date.now() - newest > quietMs) return cur
+      if (cur.some(isTerminal) && Date.now() - newest > quietMs) return cur
     }
     await sleep(200)
   }
@@ -294,7 +306,12 @@ async function driveRoom(token, roomId, ws, turns, dbPath, roomLabel) {
   const quietMs = MOCK ? 350 : 1500
   const opening = {}
   try {
-    const first = await ws.waitFor((f) => isKpMsg(f) || isSysMsg(f), MOCK ? 30_000 : 240_000, `${roomLabel} opening kp`)
+    // 同 waitTurnBatch 的口径：开场也要等**kp 叙事或失败消息**，别被中途的工具展示抢先
+    const first = await ws.waitFor(
+      (f) => isKpMsg(f) || (isSysMsg(f) && String(f.payload?.message?.content ?? '').includes(FAIL_MSG)),
+      MOCK ? 30_000 : 240_000,
+      `${roomLabel} opening kp`,
+    )
     opening.totalMs = Date.now() - tJoin
     opening.failed = first.payload.message.role === 'system'
     const firstChunk = ws.frames.filter(isChunk)[0]
@@ -376,6 +393,17 @@ async function driveRoom(token, roomId, ws, turns, dbPath, roomLabel) {
           const i = s.indexOf('## 原文查证（服务端已自动检索')
           return s.slice(i, i + 600)
         })
+      // M1-T8：检索补充小节（ADR-0007）——当轮注入的补充块原文逐字留在 wire 的 system 里，
+      // 抠出来供报告统计注入量、场景归属与"KP 是否真引用了原文细节"的抽样核对。
+      rec.supplementBlocks = added
+        .flatMap((r) => r.wireMessages ?? [])
+        .filter((m) => m?.role === 'system' && typeof m.content === 'string' && m.content.includes('## 原文片段（检索补充'))
+        .map((m) => {
+          const s = String(m.content)
+          const i = s.indexOf('## 原文片段（检索补充')
+          return s.slice(i, i + 2000)
+        })
+      rec.supplementChars = rec.supplementBlocks.reduce((s, b) => s + b.length, 0)
       wireRows = rows
     } catch { /* wire 采样缺失不阻塞 */ }
 
@@ -464,6 +492,45 @@ async function judgeOneFact(storyTitle, fact, ragReply, dosReply) {
       lastErr = e.message || String(e)
     }
     if (attempt === 0) await sleep(3000) // 退避后重试一次
+  }
+  return { judgeError: lastErr }
+}
+
+/* ═══════════════ 纹理 rubric judge（M1-T8，ADR-0007 验收口径） ═══════════════ */
+
+/**
+ * 纹理 rubric：评"叙事是否引用了原文可考的细节质地"1–5。
+ *
+ * 与事实 judge 的区别（ADR-0007 决策 1 的双轨分工）：事实 judge 看**忠于剧本**，
+ * 纹理 judge 看**描写质感**——环境、光线、气味、材质、具体数字与原文措辞。两边
+ * 分开评，才不会让"档案房事实更准"掩盖"它的描写是否更有质感"。
+ *
+ * 打分锚点刻意写死（而非给个模糊的"好/不好"），否则 LLM judge 的分数会漂。
+ */
+async function judgeTexture(storyTitle, ragReply, dosReply) {
+  const ask =
+    `你是叙事质感评审。剧本《${storyTitle}》的一场跑团对局中，两个 AI 守密人对同一个玩家行动给出了叙事。` +
+    `请只评**描写的质感**（不要去判断剧情事实对错——那是另一项评分）。\n\n` +
+    `【RAG 房回答】\n${(ragReply || '（无回答）').slice(0, 900)}\n\n` +
+    `【DOSSIER 房回答】\n${(dosReply || '（无回答）').slice(0, 900)}\n\n` +
+    `按 1-5 分评"这段描写有多具体、多有感官质地"：\n` +
+    `5 = 有明确的感官细节（光/声/气味/温度/材质）、具体的数字或专有名词、原文措辞的质感；\n` +
+    `4 = 多数句子有具体细节，个别处笼统；\n` +
+    `3 = 有画面但偏概括，细节换任何场景都成立；\n` +
+    `2 = 大量套话（"阴森恐怖""令人不安"），几乎没有可指认的具体物；\n` +
+    `1 = 只有动作与对话转述，没有环境描写。\n` +
+    `不要输出推理过程。只输出 JSON：{"rag_texture":1-5,"dossier_texture":1-5,"note":"≤60字，说明两边主要差别"}`
+  let lastErr = ''
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const raw = await callRealLLM([{ role: 'user', content: ask }], { maxTokens: 2000, temperature: 0 })
+      const j = parseJudgeJson(raw)
+      if (j && j.rag_texture != null) return j
+      lastErr = raw ? `unparseable texture judge output: ${raw.slice(0, 120)}` : 'empty texture judge output'
+    } catch (e) {
+      lastErr = e.message || String(e)
+    }
+    if (attempt === 0) await sleep(3000)
   }
   return { judgeError: lastErr }
 }
@@ -568,9 +635,11 @@ async function runStory(user, tmpRoot, filePath, opts) {
     const factT = drv.perTurn.slice(playTurns.length)
     const execT = playT.filter((t) => !t.skipped) // 房间结束后的回合不计入指标
     const wf = { roomId, driveMs: Date.now() - roomStart, opening: drv.opening, turns: playT, factTurns: factT }
-    // per-turn 知识注入 tokens：rag = wire 采样 rag_context 实测；dossier = 当前场景档案块近似（档案 JSON sceneText）
+    // per-turn 知识注入 tokens（M1-T6 起口径统一）：注入列 = 场景档案块 + 检索补充小节，
+    // **直接取 wire 采样实测**（含补充块）。仅当该回合没有采样行（如 MOCK 模式）才退回
+    // "当前场景档案块近似"（档案 JSON sceneText）——旧逻辑无条件覆盖，会把补充层漏掉。
     for (const t of execT) {
-      if (workflow !== 'rag' && dossier) {
+      if (!(t.injectionTokens > 0) && workflow !== 'rag' && dossier) {
         t.injectionTokens = dossierSceneTokens(dossier, t.sceneBefore)
       }
     }
@@ -622,6 +691,27 @@ async function runStory(user, tmpRoot, filePath, opts) {
         judge,
       })
       console.log(`  [fact ${i + 1}] rag=${judge.rag_score ?? judge.ragScore ?? '-'} dos=${judge.dossier_score ?? judge.dossierScore ?? '-'} fab(rag/dos)=${judge.rag_fabrication ?? '-'}/${judge.dossier_fabrication ?? '-'}`)
+    }
+  }
+
+  // ── 纹理 rubric（M1-T8）：抽 3 个双方都成功的游玩回合逐对评（有界成本）──
+  out.texture = []
+  if (!MOCK && ragWf && dosWf && !ragWf.error && !dosWf.error) {
+    const ragTurns = (ragWf.turns ?? []).filter((t) => !t.failed && !t.skipped && (t.reply ?? '').trim().length > 80)
+    const dosTurns = (dosWf.turns ?? []).filter((t) => !t.failed && !t.skipped && (t.reply ?? '').trim().length > 80)
+    const pairs = Math.min(TEXTURE_SAMPLE_TURNS, ragTurns.length, dosTurns.length)
+    for (let i = 0; i < pairs; i++) {
+      const ragReply = ragTurns[i].reply
+      const dosReply = dosTurns[i].reply
+      let judge = null
+      try { judge = await judgeTexture(up.name ?? key, ragReply, dosReply) } catch (e) { judge = { judgeError: e.message } }
+      out.texture.push({
+        turn: i + 1,
+        ragReply: String(ragReply).slice(0, 700),
+        dosReply: String(dosReply).slice(0, 700),
+        judge,
+      })
+      console.log(`  [texture ${i + 1}] rag=${judge.rag_texture ?? '-'} dos=${judge.dossier_texture ?? '-'} ${judge.note ? '· ' + String(judge.note).slice(0, 60) : ''}`)
     }
   }
 

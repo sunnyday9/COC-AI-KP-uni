@@ -86,6 +86,53 @@ for (const [key, s] of Object.entries(j.stories ?? {})) {
   }
 }
 
+/* ── M1-T8 新增：纹理 rubric 与检索补充注入统计 ── */
+
+const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null)
+
+console.log('\n## 4) 纹理 rubric（M1-T8，ADR-0007：叙事是否引用了原文可考的细节质地 1–5）\n')
+console.log('| 剧本 | 回合 | rag | dossier | note |')
+console.log('|---|---|---|---|---|')
+const texRag = []
+const texDos = []
+for (const [key, s] of Object.entries(j.stories ?? {})) {
+  for (const [i, t] of (s.texture ?? []).entries()) {
+    const jt = t.judge ?? {}
+    const r = jt.rag_texture
+    const d = jt.dossier_texture
+    if (r != null) texRag.push(Number(r))
+    if (d != null) texDos.push(Number(d))
+    console.log(`| ${key} | ${t.turn ?? i + 1} | ${r ?? '—'} | ${d ?? '—'} | ${String(jt.note ?? jt.judgeError ?? '').replace(/\|/g, '/').slice(0, 60)} |`)
+  }
+}
+if (texRag.length || texDos.length) {
+  const mr = mean(texRag)
+  const md = mean(texDos)
+  const gap = mr != null && md != null ? md - mr : null
+  console.log(`\n纹理均分：rag ${f2(mr)}（n=${texRag.length}）｜dossier ${f2(md)}（n=${texDos.length}）｜差 ${gap == null ? '—' : (gap >= 0 ? '+' : '') + gap.toFixed(2)}`)
+}
+
+console.log('\n## 5) 检索补充注入统计（M1-T8，wire 采样）\n')
+console.log('| 剧本 | workflow | 有补充的回合 | 补充字符均量 |')
+console.log('|---|---|---|---|')
+for (const [key, s] of Object.entries(j.stories ?? {})) {
+  for (const wf of ['rag', 'dossier']) {
+    const w = s.workflows?.[wf]
+    if (!w || w.error) continue
+    const turns = (w.turns ?? []).filter((t) => !t.skipped)
+    // 从 supplementBlocks（小节原文）算，不看 supplementChars 派生字段——
+    // 后者在修复前的那次运行里是 0（字段名取错），旧数据仍可由此重算
+    const withSup = turns.filter((t) => (t.supplementBlocks ?? []).length > 0 || (t.supplementChars ?? 0) > 0)
+    const total = turns.reduce((a, t) => a + (t.supplementChars ?? 0) || 0, 0)
+    const totalFromBlocks = turns.reduce(
+      (a, t) => a + (t.supplementBlocks ?? []).reduce((x, b) => x + String(b).length, 0),
+      0,
+    )
+    const denom = Math.max(total, totalFromBlocks)
+    console.log(`| ${key} | ${wf} | ${withSup.length}/${turns.length} | ${withSup.length ? Math.round(denom / withSup.length) : '—'} |`)
+  }
+}
+
 const scoreOf = (s, wf) => {
   const arr = (s.facts ?? []).map((f) => (wf === 'rag' ? f.judge?.rag_score ?? f.judge?.ragScore : f.judge?.dossier_score ?? f.judge?.dossierScore)).filter((x) => x != null)
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null
