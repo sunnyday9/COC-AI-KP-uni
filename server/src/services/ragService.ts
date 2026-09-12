@@ -17,8 +17,8 @@
  * 社区摘要提示词）**整体删除**——索引期 LLM 建图与查询期无上限的 2 跳扩展都已是负资产
  * （档案取代了"关系情报块"的角色，A/B 无收益）。REST 的图端点与
  * `useGraphRAG`/`extractionModel` 设置项同批移除，不留死开关。
- * ⚠️ `userGraphStore`（文件末尾）**不在删除范围**：它是 ADR-0002 决策 4 的 A3 延后特性
- * （本局已获线索/到访场景的会话级记录），与 GraphRAG 不是一回事。
+ * userGraphStore（A3 延后特性，与 GraphRAG 不是一回事）2026-09-12 经用户拍板**退役**：
+ * 零回合路径消费方，需要时从 git 历史取回。
  */
 import { getSettings, getAiConfig } from './settingsService.js'
 import { isMockAiMode } from '../config.js'
@@ -26,7 +26,6 @@ import type { AppSettings } from '../../../shared/types/settings.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError } from '../utils/errors.js'
 import * as vectorStore from '../rag/vectorStore.js'
-import * as userGraphStore from '../rag/userGraphStore.js'
 import { createEmbedder, createBuiltinEmbedder, type Embedder } from '../rag/embedding.js'
 
 /* ═══════════════════ Embedding provider resolution ═══════════════════ */
@@ -247,34 +246,3 @@ export function getIndex(
   }
 }
 
-/* ═══════════════════ 用户图（A3 延后特性；**非 GraphRAG**，M1-T7 刻意保留） ═══════════════════
- * ADR-0002 决策 4 把 userGraph 注入延后到 A3——它是「本局已获线索/到访场景」的会话级记录，
- * 与 ADR-0007 决策 3 删除的 GraphRAG（索引期建图 + 查询期 2 跳扩展）不是一回事。
- * 目前无回合路径消费方（死代码），保留以备 A3；删除与否由用户拍板。 */
-
-/** POST /api/rag/user-graph/event — rag:userGraphAdd. */
-export function userGraphAdd(
-  userId: number,
-  params: { storyId?: string; sessionId?: string; event?: userGraphStore.UserGraphEvent } | undefined,
-): void {
-  const { storyId, sessionId, event } = params || {}
-  if (!storyId || !sessionId || !event) return
-  userGraphStore.addEvent(userId, storyId, sessionId, event)
-}
-
-/** POST /api/rag/user-graph/sync — rag:userGraphSync. */
-export function userGraphSync(
-  userId: number,
-  params: { storyId?: string; sessionId?: string; state?: { cluesObtained?: unknown[]; currentScene?: string } } | undefined,
-): void {
-  const { storyId, sessionId, state } = params || {}
-  if (!storyId || !sessionId) return
-  userGraphStore.syncFromState(userId, storyId, sessionId, state)
-}
-
-/** POST /api/rag/user-graph/summary — rag:userGraphSummary. */
-export function userGraphSummary(userId: number, params: { storyId?: string; sessionId?: string } | undefined): string {
-  const { storyId, sessionId } = params || {}
-  if (!storyId || !sessionId) return ''
-  return userGraphStore.getSummary(userId, storyId, sessionId)
-}

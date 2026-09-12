@@ -213,43 +213,4 @@ describe('rag routes', () => {
     const idxB = await request(createApp()).get(`/api/rag/index/${encodeURIComponent(scriptId)}`).set(auth(tokenB))
     expect(idxB.body.chunkCount).toBe(0)
   })
-
-  it('user-graph add → sync → summary closed loop', async () => {
-    const token = await registerToken('rag_ugraph')
-    const add = await request(createApp())
-      .post('/api/rag/user-graph/event')
-      .set(auth(token))
-      .send({ storyId: 'ug-1', sessionId: 'sess-1', event: { type: 'clue', name: '密信' } })
-    expect(add.status).toBe(200)
-    expect(add.body).toEqual({ ok: true })
-
-    const add2 = await request(createApp())
-      .post('/api/rag/user-graph/event')
-      .set(auth(token))
-      .send({ storyId: 'ug-1', sessionId: 'sess-1', event: { type: 'scene', name: '图书馆' } })
-    expect(add2.body).toEqual({ ok: true })
-
-    const sync = await request(createApp())
-      .post('/api/rag/user-graph/sync')
-      .set(auth(token))
-      .send({ storyId: 'ug-1', sessionId: 'sess-1', state: { cluesObtained: ['密信', '钥匙'], currentScene: '医院' } })
-    expect(sync.status).toBe(200)
-    expect(sync.body).toEqual({ ok: true })
-
-    const summary = await request(createApp())
-      .post('/api/rag/user-graph/summary')
-      .set(auth(token))
-      .send({ storyId: 'ug-1', sessionId: 'sess-1' })
-    expect(summary.status).toBe(200)
-    expect(summary.body.summary).toContain('已获线索：密信、钥匙')
-    expect(summary.body.summary).toContain('到访场景：图书馆、医院')
-
-    // another user sees nothing
-    const tokenB = await registerToken('rag_ugraph_b')
-    const other = await request(createApp())
-      .post('/api/rag/user-graph/summary')
-      .set(auth(tokenB))
-      .send({ storyId: 'ug-1', sessionId: 'sess-1' })
-    expect(other.body.summary).toBe('')
-  })
 })

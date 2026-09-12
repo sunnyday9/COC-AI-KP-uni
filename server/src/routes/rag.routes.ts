@@ -90,33 +90,5 @@ router.get('/index/:scriptId', (req: AuthRequest, res) => {
   }
 })
 
-/** POST /api/rag/user-graph/event — rag:userGraphAdd（A3 延后特性，非 GraphRAG）。 */
-router.post('/user-graph/event', (req: AuthRequest, res) => {
-  try {
-    ragService.userGraphAdd(req.userId as number, req.body)
-    res.json({ ok: true })
-  } catch (err) {
-    sendError(res, err)
-  }
-})
-
-/** POST /api/rag/user-graph/sync — rag:userGraphSync. */
-router.post('/user-graph/sync', (req: AuthRequest, res) => {
-  try {
-    ragService.userGraphSync(req.userId as number, req.body)
-    res.json({ ok: true })
-  } catch (err) {
-    sendError(res, err)
-  }
-})
-
-/** POST /api/rag/user-graph/summary — rag:userGraphSummary. */
-router.post('/user-graph/summary', (req: AuthRequest, res) => {
-  try {
-    res.json({ summary: ragService.userGraphSummary(req.userId as number, req.body) })
-  } catch (err) {
-    sendError(res, err)
-  }
-})
 
 export default router
