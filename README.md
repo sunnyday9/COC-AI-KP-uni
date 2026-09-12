@@ -62,7 +62,8 @@ AI-COC-KP/
 ├── server/        # Express + TS 后端（JWT、SQLite、LangGraph KP、RAG、WS 帧协议）
 ├── client/        # uni-app 前端（H5 / 微信小程序 / App）
 ├── shared/        # 共享 TS 源码包（COC 规则定义、类型、provider 清单）
-├── e2e/           # 端到端旅程（h5 单人 14 步 / rooms 多人 UI 14 步 / multiroom WS 14 步，MOCK_AI）
+├── training/      # KP 自训工作区（distill 数据管线 + eval 评测，ADR-0006）
+├── e2e/           # 端到端旅程（h5 单人 14 步 / rooms 多人 UI 14 步 / multiroom WS 14 步 / dossier 档案 7 步，MOCK_AI）
 ├── test-agent/    # Agent 工作流真实 LLM 测试套件（不改项目代码）
 ├── tools/         # 微信小程序自动化测试（miniprogram-automator）
 ├── docs/          # ADR、架构、部署、API 契约、依赖审计报告
@@ -109,10 +110,11 @@ npm run dev:h5                 # 前端 :5175 → 打开 http://localhost:5175
 ## 测试与质量
 
 ```bash
-npm run test:all      # server 804+1skip 用例 + client 107 用例 + training 50 用例（vitest，全绿基线）
+npm run test:all      # server 829+1skip 用例 + client 107 用例 + training 50 用例（vitest，全绿基线）
 npm run test:e2e:h5   # H5 单人全旅程 14 步（真实浏览器，MOCK_AI 自启后端）
 node e2e/rooms.journey.mjs      # 多人房间 UI 全链 14 步（双浏览器）
 node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端）
+node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 ```
 
 - **E2E 旅程**覆盖：注册登录 → 导入/索引 → 建卡（选职业/投骰/兴趣）→ 开局 → 侦查（skill_check → grant_clue）/ 战斗（roll_dice → adjust_hp，HP 精确断言）→ 读档恢复；多人全链（建房 → 等待室绑卡/就绪 → 门闩 409 → 开局 → 队友档案切换 → 聊天）；
@@ -133,7 +135,7 @@ node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端�
 
 ## 项目状态
 
-- **MVP 完成**：单人 + 多人全功能闭环落地 main；回归全绿（server 804+1skip / client 107 / training 50 / E2E 14×3）；
+- **MVP 完成**：单人 + 多人全功能闭环落地 main；回归全绿（server 829+1skip / client 107 / training 50 / E2E 14×3）；
 - 主要里程碑：Electron → 服务端重构（ADR-0002）→ LLM 协议化（ADR-0003）→ UI 全面重设计（ADR-0004）→ 多人房间（ADR-0005）→ BYOK / 依赖安全收口；
 - 路线图候选（未立项）：saves 迁移、流式输出、observer 观战、多人结局、故事共享。
 

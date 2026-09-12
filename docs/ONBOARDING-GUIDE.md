@@ -127,7 +127,7 @@ AI-COC-KP/
 │       │   └── scriptContext.ts # 剧本结构化加载 + 线索门控（见 §6）
 │       ├── rule-engine/       # ★ COC 工具服务端执行：orchestrator + 6 handlers + toolContextFactory + characterMutators
 │       ├── routes/            # auth / settings / ai / stories / scripts / saves / rag / dossier / rooms / roomSettings / characters（11 组）
-│       ├── services/          # roomService（房间领域）/ roomStorage / roomStateCodec / startGate / kpTurnService（图内工具循环）/ kpAgentService / kpPromptService / turnKnowledge / roomMemory / wireSampleService / aiService + llm/（4 协议适配器）/ settings / save / story / script / mockAi
+│       ├── services/          # roomService（房间领域）/ roomStorage / roomStateCodec / startGate / kpTurnService（图内工具循环）/ kpAgentService（getSharedGraph/normalizeMessages 由 kpTurnService 生产复用；invokeKp/invokeKpStream 单发入口 = 零生产调用方的测试 harness，DEVELOPMENT-LOG D-35 T4）/ kpPromptService / turnKnowledge / roomMemory / wireSampleService / aiService + llm/（4 协议适配器）/ settings / save / story / script / mockAi
 │       ├── rag/               # chunker / embedding / reranker / supplementService / supplementAssembly / sceneAttribution / queryBuild / storyParsers / dossier/（档案域：dossierCore / dossierGenerate / originalLookup / dossierLookupTools / prefetch …）
 │       ├── ws/                # index（鉴权 + 帧分派）/ rooms（JSON 编解码 adapter）/ roomLedger（订阅簿 + 帧规划）/ progress（rag:progress）
 │       └── utils/             # errors / logging / crypto / outboundUrl(SSRF) / pathSafety / fileNames / fsSafe
@@ -139,7 +139,7 @@ AI-COC-KP/
 │       ├── platform/          # bridge(三端抽象 + 房间帧收发) / ws(单连接 + 房间帧路由) / config / token
 │       └── composables/       # useToast
 ├── shared/                    # 纯 TS 源码包（无构建），两端相对路径引用
-│   ├── coc/                   # 规则纯函数：coc7Rules / diceService / insanityTables / coc7Character / healingRules 等（客户端旧 logic/、data/ 已上收至此）
+│   ├── coc/                   # 规则纯函数：coc7Rules / diceService / insanityTables / coc7Character / coc7（职业与技能数据）等（客户端旧 logic/、data/ 已上收至此）
 │   ├── types/                 # bridge / room / storyContext / ending / game / character / script / settings
 │   ├── tools/cocTools.ts      # 24 个 COC 工具 schema ★单一来源 + kpValidation（校验规则单源）/ storyLookupTools（4 个档案查证工具定义）
 │   └── constants/providers.ts # LLM 协议清单（4 协议一等公民，ADR-0003）
@@ -493,12 +493,12 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ```
 ① 单元测试（vitest）
-   server 804+1skip 用例：路由（auth/ai/settings/stories/saves/scripts/rag/dossier/rooms/roomSettings/characters + 上传限额）、
+   server 829+1skip 用例：路由（auth/ai/settings/stories/saves/scripts/rag/dossier/rooms/roomSettings/characters + 上传限额）、
    kpGraph 状态机（含 fixes）、scriptContext 门控、rule-engine（coc/ 与 rule-engine/ 用例）、kpTurnService、
    mockAi、aiService 超时、ws 房间帧、RAG / 档案 各件
    client：roomStore / settingsStore spec、ChatMessage / classifySystemMessage / parseActionOptions、
    bridge/ws 平台层（规则纯函数用例随 shared/coc 上收，由 server/test/coc 承载）
-   training：distill / eval 工具链用例（独立工作区）
+   training：distill / exporter 工具链用例（独立工作区）；eval 另有 node:test 自测 23 条（tsx 直跑），不在 test:all 内
    → npm run test:server / test:client / test:training / test:all
 
 ② 端到端旅程（playwright-core + MOCK_AI，无需真实 LLM、不下载浏览器）
@@ -578,7 +578,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 15. **test-agent/REPORT.md** —— 真实 LLM 下系统如何表现、修过什么。
 
 **动手建议**：
-- 改后端前先跑 `npm run test:server` 建立基线（804+1skip 用例）；
+- 改后端前先跑 `npm run test:server` 建立基线（829+1skip 用例）；
 - 改前端逻辑前跑 `npm run test:client` + `npx tsc --noEmit`（零错误基线）；
 - 本地体验全流程：`MOCK_AI=1 npm run dev:server` + `npm run dev:h5`（零配置，无需 API Key）；
 - 需要真实 LLM 验证时：`cd test-agent && node run-all.mjs`（需配置 AW_* 环境变量）；
