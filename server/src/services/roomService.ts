@@ -83,6 +83,25 @@ const MAX_EVENT_LOG = 200
 const LONG_TERM_SUMMARY_EVERY_TURNS = 10
 
 /**
+ * 房间侧故事上下文（#73）：runKpTurnForRoom 的 storyContext 通道。房间路径唯一
+ * 构造点 = flushTurn / runOpeningTurn 的三键字面量（未绑定剧本传 null）。KP 图
+ * （kpGraph）按 scriptId/sceneId 做脚本门控（loadScriptContext）；workflow 目前
+ * 仅透传（图内未读，留作知识分派的显式通道）。图内还消费宽键集（sanity/openClues/
+ * act/activeNPCs/forceTransitionScene——shared StoryContext 的 Electron 遗产形状），
+ * 房间路径不构造它们（上下文服务端收口 ADR-0002 后客户端不再发送）。以 type alias
+ * 而非 interface 声明：下游 runKpTurn 的 body.storyContext 仍是
+ * `Record<string, unknown> | null`，interface 无隐式索引签名会断型。
+ */
+export type RoomStoryContext = {
+  /** 当前剧本 id（KP 图脚本门控 loadScriptContext 的入参）。 */
+  scriptId: string
+  /** 房间当前场景名（未切过场景以 undefined 传递；门控据此定位当前场景）。 */
+  sceneId?: string
+  /** 房间知识 workflow（rag/dossier；图内暂未读，透传保留）。 */
+  workflow: StoryWorkflow
+}
+
+/**
  * 房间实例。所有状态变更必须经 enqueue（串行），事件按 seq 全序广播。
  */
 export class RoomService {
@@ -505,11 +524,13 @@ export class RoomService {
    * - KP 回复追加消息流（message_appended）
    * - 角色卡变更 → state_patch 广播（所有成员实时可见）
    * - mutators 按 characterId 分派（D5）：工具 args.characterId → 对应角色卡
+   * - 生产调用方仅 flushTurn / runOpeningTurn 两条回合入口；公开性保留给测试直调
+   *   （roomTurnWindow D5 用例），收 private 会断测试可达性（#73 评估）。
    */
   async runKpTurnForRoom(
     ownerUserId: number,
     messages: unknown[],
-    storyContext: Record<string, unknown> | null,
+    storyContext: RoomStoryContext | null,
     activeCharacterId: string | null,
     onChunk: (chunk: string) => void,
     allowedCharacterIds?: Set<string>,
