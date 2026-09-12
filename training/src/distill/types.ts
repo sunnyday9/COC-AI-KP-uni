@@ -19,8 +19,8 @@ export const SLIM_CONVERSATION_WINDOW = 8
 export const SLIM_MEMORY_ENTRIES = 12
 /** 序列上限（粗估 token ≈ chars / 1.6，中文为主）。 */
 export const SLIM_SEQ_TOKEN_CAP = 6000
-/** 工具循环上限（与线上 kpTurnService.MAX_TOOL_ITERATIONS 同值；replay/filter 共用）。 */
-export const TOOL_LOOP_MAX = 8
+/** 工具循环上限（直引线上单源 kpTurnWireShape.MAX_TOOL_ITERATIONS，票 #75；replay/filter 共用）。 */
+export { MAX_TOOL_ITERATIONS as TOOL_LOOP_MAX } from '../../../server/src/services/kpTurnWireShape.js'
 
 /** 工具执行的世界增量（与 kpTurnService onEnd.worldDeltas 同形的最小集）。 */
 export interface WorldDeltas {

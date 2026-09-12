@@ -9,8 +9,7 @@
  *  - 工具执行 = rule-engine processToolCalls + buildToolContext + characterMutators
  *    （真骰子真结算，角色卡跨轮原地变更、按 characterId 分派）；
  *  - 结果回填 = 【结果摘要】头 + 截断 JSON（wireToolMessages = summarize+truncate，
- *    即 LLM 实际看到的 wire——这两个函数在 kpTurnService 内私有且其模块拖 agent/db
- *    运行时栈不可离线 import，按 request.ts「最小复制 + 来源锚定」先例逐字复制）；
+ *    即 LLM 实际看到的 wire——单源直引线上 kpTurnWireShape，票 #75）；
  *  - 多角色（D5）：args.characterId 归属校验 + 缺省回退行动者。
  */
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
@@ -20,6 +19,7 @@ import {
   buildRoomTurnMessages,
   injectCharacterRoster,
 } from '../../../server/src/services/kpPromptService.js'
+import { summarizeToolResult, truncateToolResult } from '../../../server/src/services/kpTurnWireShape.js'
 import { processToolCalls } from '../../../server/src/rule-engine/orchestrator.js'
 import { buildToolContext } from '../../../server/src/rule-engine/toolContextFactory.js'
 import { createCharacterMutatorFactory } from '../../../server/src/rule-engine/characterMutators.js'
@@ -34,38 +34,6 @@ import {
   type WorldDeltas,
 } from './types.js'
 import { toOpenAiToolCall } from './sample.js'
-
-const MAX_TOOL_RESULT_CHARS = 600
-const MAX_TOOL_RESULT_SUMMARY_CHARS = 120
-
-/* ── 结果回填形态（自 kpTurnService 逐字复制；单源在产品侧，此处仅离线只读复用）───── */
-
-function truncateToolResult(content: string): string {
-  if (content.length <= MAX_TOOL_RESULT_CHARS) return content
-  return `${content.slice(0, MAX_TOOL_RESULT_CHARS)}\n…(truncated)`
-}
-
-function summarizeToolResult(content: string): string {
-  try {
-    const data = JSON.parse(content) as Record<string, unknown>
-    if (data === null || typeof data !== 'object') return ''
-    const pairs: string[] = []
-    for (const [k, v] of Object.entries(data)) {
-      if (v === undefined || v === null || v === '') continue
-      const s = typeof v === 'object' ? JSON.stringify(v) : String(v)
-      pairs.push(`${k}: ${s.slice(0, 40)}`)
-      if (pairs.length >= 6) break
-    }
-    if (pairs.length === 0) return ''
-    let head = `【结果摘要】${pairs.join('；')}`
-    if (head.length > MAX_TOOL_RESULT_SUMMARY_CHARS) {
-      head = `${head.slice(0, MAX_TOOL_RESULT_SUMMARY_CHARS)}…`
-    }
-    return head + '\n'
-  } catch {
-    return ''
-  }
-}
 
 /* ── 组装与循环 ─────────────────────────────────────────────── */
 

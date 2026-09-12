@@ -26,47 +26,11 @@ import { logger } from '../utils/logging.js'
 import { errorMessage } from '../utils/errors.js'
 import { recordKpWireSample, toOpenAiToolCall, type KpWireSampleIteration, type KpWireSamplingMeta } from './wireSampleService.js'
 import { injectCharacterRoster } from './kpPromptService.js'
-
-const MAX_TOOL_ITERATIONS = 8
-
-/** Cap the tool-result payload echoed back into the conversation (long-chain
- * degradation guard): the trace bus already keeps the full result, so the
- * LLM only needs the head of the JSON. */
-const MAX_TOOL_RESULT_CHARS = 600
-/** Head of a tool result: first-level key/value pairs, for the LLM to see the
- * outcome at a glance without the full JSON (long tool chains echo history). */
-const MAX_TOOL_RESULT_SUMMARY_CHARS = 120
-
-function truncateToolResult(content: string): string {
-  if (content.length <= MAX_TOOL_RESULT_CHARS) return content
-  return `${content.slice(0, MAX_TOOL_RESULT_CHARS)}\n…(truncated)`
-}
+// 工具循环上限 + 结果回填形态（【结果摘要】头 + 截断 JSON）单源：离线 distill replay 直引同一实现（票 #75）
+import { MAX_TOOL_ITERATIONS, summarizeToolResult, truncateToolResult } from './kpTurnWireShape.js'
 
 /** 把角色花名册注入 messages 的 system 消息（B5）——实现随花名册块迁入 kpPromptService，此处再导出保持原导入面。 */
 export { buildCharacterRosterPrompt, injectCharacterRoster } from './kpPromptService.js'
-
-/** Build a compact `{success, skillName, roll, …}` summary head for tool results. */
-function summarizeToolResult(content: string): string {
-  try {
-    const data = JSON.parse(content) as Record<string, unknown>
-    if (data === null || typeof data !== 'object') return ''
-    const pairs: string[] = []
-    for (const [k, v] of Object.entries(data)) {
-      if (v === undefined || v === null || v === '') continue
-      const s = typeof v === 'object' ? JSON.stringify(v) : String(v)
-      pairs.push(`${k}: ${s.slice(0, 40)}`)
-      if (pairs.length >= 6) break
-    }
-    if (pairs.length === 0) return ''
-    let head = `【结果摘要】${pairs.join('；')}`
-    if (head.length > MAX_TOOL_RESULT_SUMMARY_CHARS) {
-      head = `${head.slice(0, MAX_TOOL_RESULT_SUMMARY_CHARS)}…`
-    }
-    return head + '\n'
-  } catch {
-    return ''
-  }
-}
 
 /** 服务端执行工具回调：角色卡更新通过 mutators 应用到 session 持有的快照。 */
 export interface TurnCharacterMutators {
