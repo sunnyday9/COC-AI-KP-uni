@@ -15,7 +15,10 @@ import * as roomStorage from './roomStorage.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
 import { isKpChunkStreamEnabled } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
-import { listStories as listIndexedStories } from './ragService.js'
+// 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
+// 共用 checkStartGate，差异用 gateFor 表达。startGate 是零静态运行时依赖的叶子
+// （dossierCore/ragService 知识层走其内部动态 import），静态引入不加重量。
+import { checkStartGate, sanitizeWorkflow } from './startGate.js'
 import type {
   RoomEventPayloadMap,
   RoomEventType,
@@ -28,11 +31,6 @@ import type { Message } from '../../../shared/types/game.js'
 
 /** 房间阶段（shared 单一来源别名——评审候选 3）。 */
 export type RoomPhase = SharedRoomPhase
-
-/** 解析 workflow 入参：仅接受 'dossier'，其余（含 undefined/非法）一律 rag（现状默认）。 */
-export function sanitizeWorkflow(value: unknown): StoryWorkflow {
-  return value === 'dossier' ? 'dossier' : 'rag'
-}
 
 /** 房间成员角色（shared 单一来源别名）。 */
 export type MemberRole = RoomMemberRole
@@ -816,52 +814,6 @@ function memberRowToInfo(m: roomStorage.RoomMemberRow): RoomMember {
   }
 }
 
-/** 房主已索引的剧本 id 集（开局门闩用；防 KP 无原文静默空跑，ADR-0005）。
- * rag workflow 门闩：已有 embedding 索引即可。 */
-function listIndexedStoriesForOwner(ownerId: number): string[] {
-  try {
-    return listIndexedStories(ownerId).map((s) => s.storyId)
-  } catch {
-    return []
-  }
-}
-
-/** 房主已生成 dossiers 的剧本 id 集（dossier workflow 门闩）。 */
-async function listDossiersForOwner(ownerId: number): Promise<string[]> {
-  try {
-    const { listDossiers } = await import('../rag/dossier/dossierCore.js')
-    return (await listDossiers(ownerId)).map((d) => d.scriptId)
-  } catch {
-    return []
-  }
-}
-
-/**
- * #55 产物期门闩判定：该剧本的降质开局提示（null = 放行）。
- * 判定走档案清单（readdir 磁盘扫描，文件名非请求输入）+ 纯函数
- * `dossierGateNotice`——REST 可达链上不引入"以请求 id 为键"的 fs 读；
- * 清单缺失/服务异常一律放行（不阻断开局，与既有 rag 分支容错风格一致）。
- */
-async function dossierGateNoticeForOwner(ownerId: number, storyId: string): Promise<string | null> {
-  try {
-    const { listDossiers, dossierGateNotice } = await import('../rag/dossier/dossierCore.js')
-    return dossierGateNotice(await listDossiers(ownerId), storyId)
-  } catch {
-    return null
-  }
-}
-
-/** 房间行内 workflow（lobby 期由 createRoom 写入 state；列无 workflow 列，走 state JSON）。 */
-function roomWorkflowFromRow(room: { state?: string | null }): StoryWorkflow {
-  if (!room.state) return 'rag'
-  try {
-    const s = JSON.parse(room.state) as { workflow?: unknown }
-    return sanitizeWorkflow(s.workflow)
-  } catch {
-    return 'rag'
-  }
-}
-
 /** POST /api/rooms —— 创建房间（只持久化，不激活内存实例：懒激活，ADR-0001）。 */
 export function createRoom(
   userId: number,
@@ -904,13 +856,13 @@ export async function createSoloRoom(
   if (!sheet || typeof sheet !== 'object' || !sheet.derived) {
     return { ok: false, reason: 'bad-request', message: 'sheet required (COCCharacterSheet)' }
   }
-  if (workflow === 'dossier') {
-    // 门闩（#55 产物期）：solo 出生即 playing、不经 startRoom——降质档案在此拦下，
-    // 否则 A/B harness 与 API 调用方仍会静默拿到残档房。缺档案不在此拦（维持现状：
-    // 多人 startRoom 已有「未生成」门闩，#55 只收窄「生成了但质量不足」的静默放行）。
-    const notice = await dossierGateNoticeForOwner(userId, storyId)
-    if (notice) return { ok: false, reason: 'conflict', message: notice }
-  }
+  // 开局门闩（唯一判定落点 startGate，gateFor='solo-create'）：solo 出生即 playing、不经
+  // startRoom——dossier workflow 只拦降质档案（#55 产物期），否则 A/B harness 与 API 调用方
+  // 仍会静默拿到残档房。缺档案不拦（维持现状：多人 startRoom 已有「未生成」门闩，#55 只
+  // 收窄「生成了但质量不足」的静默放行）；rag 局零门闩（现状不变）。无结束态/已选剧本/
+  // 绑卡闩——房间行尚未存在，一体动作自己在下面的同一事务里绑卡。
+  const gate = await checkStartGate({ gateFor: 'solo-create', storyId, ownerId: userId, workflow: input?.workflow })
+  if (!gate.ok) return gate
   const characterId = `char_${crypto.randomUUID().slice(0, 8)}`
   // 一体动作的六次写库包进事务：中途失败整体回滚，不留孤儿角色卡/房间
   const db = roomStorage.tx()
@@ -983,10 +935,12 @@ export function getRoomDetail(
   }
 }
 
-/** POST /api/rooms/:id/start —— 房主开始游戏。开局门闩（ADR-0005）：
- *  房主已选剧本 + 每名成员已绑定角色卡 → 否则 409 带缺项提示。
- *  剧本门闩按 workflow：rag 房须已索引（embedding）；dossier 房须已生成档案。
- *  就绪是软信号，开局不等待全员就绪。门闩通过 → 写库 + 活跃实例即时同步 + opening。 */
+/** POST /api/rooms/:id/start —— 房主开始游戏。开局门闩（ADR-0005）判定单源在
+ *  startGate.checkStartGate（gateFor='lobby-start'：结束态终态 #54 / 已选剧本 /
+ *  workflow 可用性——dossier 已生成+未降质一次 readdir、rag 已索引 / 成员绑卡），
+ *  409 reason/message 与拆分前逐字节一致。本方法保留治理前置（成员资格/房主判定）
+ *  与成功路径副作用时序（写库 → 活跃实例对账 → opening）。就绪是软信号，开局不等待
+ *  全员就绪。 */
 export async function startRoom(
   userId: number,
   roomId: string,
@@ -995,39 +949,16 @@ export async function startRoom(
   const g = governanceGate(userId, roomId)
   if (!g.ok) return g
   if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
-  // 门闩 0（#54）：结束是终态——已结束的房间不得被 start 复活成 playing
-  // （否则 updateRoomStart 会把 phase 列写回 playing，继续游戏入口重新列出该局）。
-  if (g.room.phase === 'ended') return { ok: false, reason: 'conflict', message: '对局已结束，无法重新开始' }
-  // 门闩 1：已选剧本（storyId 必填——房间创建时允许为空，开局前必须选定）
-  if (!storyId) return { ok: false, reason: 'conflict', message: '请先在等待室选定剧本' }
-  // 门闩 2：剧本可用（按 workflow：rag=已索引 / dossier=已生成档案）
-  const workflow = roomWorkflowFromRow(g.room)
-  if (workflow === 'dossier') {
-    const dossiers = await listDossiersForOwner(g.room.owner_id)
-    if (!dossiers.includes(storyId)) {
-      return { ok: false, reason: 'conflict', message: '该剧本尚未生成档案，请先在「我的故事」中为剧本生成档案' }
-    }
-    // 门闩 2b（#55 产物期）：低覆盖/分节失败的残档不再静默放行。文案与「未生成
-    // 档案」分开——缺档案指引生成，残档指引重生成。判定走档案清单（磁盘扫描）
-    // + 纯函数：REST 可达链上不引入"以请求 id 为键"的 fs 读。
-    const notice = await dossierGateNoticeForOwner(g.room.owner_id, storyId)
-    if (notice) return { ok: false, reason: 'conflict', message: notice }
-  } else {
-    const indexed = listIndexedStoriesForOwner(g.room.owner_id)
-    if (!indexed.includes(storyId)) {
-      return { ok: false, reason: 'conflict', message: '该剧本尚未索引，请先在「我的故事」中完成索引' }
-    }
-  }
-  // 门闩 3：每名成员已绑定角色卡（不等待就绪——软信号）
-  const members = roomStorage.listMembers(roomId)
-  const unbound = members.filter((m) => !m.character_id)
-  if (unbound.length > 0) {
-    return {
-      ok: false,
-      reason: 'conflict',
-      message: `${unbound.length} 名成员未绑定角色卡${unbound.length > 0 ? `（${unbound.map((m) => m.username).join('、')}）` : ''}`,
-    }
-  }
+  // 开局门闩（唯一判定落点 startGate）：入口只喂房间行摘要 + 成员行摘要 + 归属，
+  // 判定（含 rooms.state workflow 解析与分派）全在门内。
+  const gate = await checkStartGate({
+    gateFor: 'lobby-start',
+    storyId,
+    ownerId: g.room.owner_id,
+    room: { phase: g.room.phase, state: g.room.state },
+    members: roomStorage.listMembers(roomId).map((m) => ({ characterId: m.character_id, username: m.username })),
+  })
+  if (!gate.ok) return gate
   roomStorage.updateRoomStart(roomId, storyId)
   syncActiveRoom(roomId)
   // opening 回合（ADR-0002）：实例已激活则立即触发；未激活时随首次 join 触发（懒激活保持）。

@@ -35,7 +35,7 @@ DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执�
 多人局共用的剧本：**房主**已导入并索引的故事，`story_id` 存 `rooms` 表；KP 回合全程以房主账号解析剧本与 RAG 上下文（成员无需拥有该故事）。房主只可从**已索引**故事中选择（未索引不列入候选项，避免 KP 无原文空跑）。
 
 ### 开局门闩（start gate）
-`lobby → playing` 的迁移约束：房主已选剧本 + **每名成员已绑定角色卡**，任一不满足则开局被拒（服务端 409 带缺项提示）。角色卡绑定是硬前提；就绪是软信号。
+`lobby → playing` 的迁移约束：房主已选剧本 + **每名成员已绑定角色卡**，任一不满足则开局被拒（服务端 409 带缺项提示）。角色卡绑定是硬前提；就绪是软信号。判定单源落点 `server/src/services/startGate.ts`（`checkStartGate`：结束态终态/已选剧本/workflow 可用性/成员绑卡全收编；startRoom 与 createSoloRoom 双入口差异用 `gateFor: 'lobby-start' | 'solo-create'` 表达；dossier「已生成 + 未降质」两个判定共用 dossierCore.listDossiers 的一次 readdir 扫描——消掉原双入口各自的双扫描）。
 
 ### 就绪（ready）
 成员在等待室表示「已准备好开局」的软信号（与角色卡绑定相对）：房主可借此判断全员到位，但开局不强制等待全员就绪。

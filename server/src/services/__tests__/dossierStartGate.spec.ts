@@ -5,8 +5,8 @@
  *    同样拦降质档案——A/B harness 走的正是 POST /api/rooms/solo；
  *  - 「生成了但质量不足」的 409 文案与「尚未生成档案」严格分开（缺档案指引
  *    生成，残档指引重生成）。
- * roomService 动态 import 的轻核 dossierCore 只 mock `listDossiers`（磁盘扫描
- * 缝）；降质判定走真实纯函数
+ * startGate（门闩判定单源，架构走查候选 4 收编自 roomService）动态 import 的轻核
+ * dossierCore 只 mock `listDossiers`（磁盘扫描缝）；降质判定走真实纯函数
  * `dossierGateNotice`（无 IO）——门闩到文案的整条链在本 spec 内真实验证。
  * 判定的快照/兜底语义由 storyDossierService.spec / schema.spec 覆盖。
  */
