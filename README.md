@@ -135,7 +135,7 @@ node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端�
 
 - **MVP 完成**：单人 + 多人全功能闭环落地 main；OPEN issue = 0；回归全绿（server 457 / client 113 / E2E 14×3）；
 - 主要里程碑：Electron → 服务端重构（ADR-0002）→ LLM 协议化（ADR-0003）→ UI 全面重设计（ADR-0004）→ 多人房间（ADR-0005）→ BYOK / 依赖安全收口；
-- 路线图候选（未立项）：saves 迁移、流式输出、A3 userGraph、observer 观战、多人结局、故事共享。
+- 路线图候选（未立项）：saves 迁移、流式输出、observer 观战、多人结局、故事共享。
 
 ## 安全设计
 

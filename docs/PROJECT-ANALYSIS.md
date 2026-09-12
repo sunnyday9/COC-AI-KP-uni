@@ -36,8 +36,8 @@ AI-COC-KP/
 │   │   └── scriptContext.ts#   剧本结构化加载 + 线索门控（requiredClues 判定）
 │   ├── routes/             # 8 组路由：auth/settings/ai/kp/stories/scripts/saves/rag
 │   ├── services/           # auth/settings/ai/kpAgent/mockAi/save/story/script/rag 服务
-│   ├── rag/                # embedding/vectorStore/graphStore/graphExtractLLM/graphRag/userGraphStore/storyParsers
-│   ├── db/index.ts         # node:sqlite 单例 + 7 张表
+│   ├── rag/                # embedding/vectorStore/graphStore/graphExtractLLM/graphRag/storyParsers
+│   ├── db/index.ts         # node:sqlite 单例 + 6 张表
 │   ├── middleware/auth.ts  # JWT 签发/校验 + requireAuth
 │   ├── ws/                 # /ws（token 认证、kp:invoke 流式、rag:progress 推送）
 │   └── utils/              # errors/logging/crypto/outboundUrl(SSRF)/pathSafety/fileNames/fsSafe
@@ -63,7 +63,7 @@ AI-COC-KP/
 ### 3.1 启动与数据层
 
 - `app.ts`：`createApp()` 挂 `cors` + `express.json({limit:'1mb'})` → 8 组路由 → 404 兜底 → 全局错误处理（4xx 保留状态、其余 500 不泄栈）。直跑时 `listen(PORT)` 后 `createWsServer(httpServer)`。
-- `db/index.ts`：`node:sqlite` `DatabaseSync` 单例，首次请求时懒建 7 张表——`users` / `settings`（JSON 文档）/ `saves` / `scripts` / `stories` / `rag_index` / `user_graphs`。无迁移机制（幂等 CREATE IF NOT EXISTS）。
+- `db/index.ts`：`node:sqlite` `DatabaseSync` 单例，首次请求时懒建 6 张表——`users` / `settings`（JSON 文档）/ `saves` / `scripts` / `stories` / `rag_index`。无迁移机制（幂等 CREATE IF NOT EXISTS）。
 - 存储约定：**数据库存元数据与 JSON 文档，文件存故事/剧本实体**（`UPLOADS_DIR/<userId>/stories|scripts/`）；`scripts`/`stories` 表为 schema 遗留（实际未用，见 §6 遗留项）。
 
 ### 3.2 认证与设置
@@ -104,7 +104,6 @@ START → analyzeInput → routeByIntent ─(条件边)→ {generic|combat|sanit
 
 - **双索引**：`vectorStore`（TF-IDF + 稠密混合，JSON 落盘）与 `graphStore`（LLM 抽取实体/关系 → union-find 社区 → 摘要）。
 - **运行时**（`graphRag.buildContextWithGraph`）：向量召回（sceneId 候选策略防剧透）→ 图 BFS 2 跳扩展 → 结构化摘要（社区摘要/当前场景/关联节点/线索，边语义 CONTAIN/UNLOCK/TRANSITION）。
-- **玩家会话图**（`userGraphStore`，DB）：investigator 根节点 + obtained/visited/performed/met 事件边，供摘要与结局报告。
 - **文档解析**（`storyParsers`）：mammoth(docx)/epub2(epub)/jsdom(html)/pdf-parse+pdf-lib+tesseract.js OCR(pdf)。
 - **embedding 双通道**：内置 transformers.js（text2vec-base-chinese-sentence，模型缓存 MODELS_DIR）优先，失败回退 OpenAI 兼容 `/v1/embeddings`。
 
@@ -177,7 +176,7 @@ START → analyzeInput → routeByIntent ─(条件边)→ {generic|combat|sanit
 
 ```
 玩家 ──> H5 页面 ──> gameStore.sendPlayerMessage
-  ──> RAG 检索（/api/rag/context：向量召回 + 图扩展 + 会话图）
+  ──> RAG 检索（/api/rag/context：向量召回 + 图扩展）
   ──> runKpAgentLoop ──> WS kp:invoke（messages + storyContext{scriptId,openClues,scene}）
   ──> 服务端：normalizeMessages 校验 → kpGraph 状态机
        （意图分类/短路 → planTools(含门控) → LLM 生成 → validate → forceTools）

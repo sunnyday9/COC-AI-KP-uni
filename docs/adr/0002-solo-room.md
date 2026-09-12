@@ -12,7 +12,7 @@
 1. **单人游戏实现为 `kind='solo'` 的单成员房间**：不出现在房间列表、`turnWindowMs` 恒 0、出生即 playing——「确认角色卡」是一体领域动作（落角色卡 + 建 solo 房 + 绑卡 + start）。
 2. **单人使用与多人完全相同的 wire 协议**（`room:join` / `room:action` / `room:event` / `room:sync`），无任何 solo 专用帧。
 3. **删除面**：ws `kp:turn` 帧及其 handler、`POST /api/kp/invoke`、客户端 kpSessionService、直连 LLM 兜底（runDirectChat）全部删除；KP agent 可用性是纯服务端部署问题。
-4. **上下文注入服务端收口**：提示词组装、RAG 检索上下文、记忆编排（kpMemory/长程摘要/抽取）移入服务端房间回合链路，数据落 `rooms.state`；userGraph 注入延后 A3。
+4. **上下文注入服务端收口**：提示词组装、RAG 检索上下文、记忆编排（kpMemory/长程摘要/抽取）移入服务端房间回合链路，数据落 `rooms.state`；本局会话图注入延后 A3（该延后特性已于 2026-09-12 退役删除，见 9d8fc10）。
 5. **客户端形态**：gameStore 删除，页面消费 RoomClient（roomStore）；唯一乐观面 = 自己发出的消息。
 
 ## 被否决的替代

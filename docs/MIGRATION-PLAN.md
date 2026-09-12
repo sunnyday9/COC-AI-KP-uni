@@ -73,7 +73,7 @@ AI-COC-KP/
 │   │   ├── agent/kpGraph.ts              # ← electron/agent/kpGraph.mjs
 │   │   ├── rag/                          # ← electron/rag/*
 │   │   │   ├── embedding.ts, vectorStore.ts, graphRag.ts,
-│   │   │   ├── graphStore.ts, userGraphStore.ts, storyParsers.ts
+│   │   │   ├── graphStore.ts, storyParsers.ts
 │   │   │   └── prompts/ (COC 定制抽取 Prompt)
 │   │   ├── services/
 │   │   │   ├── aiService.ts, kpAgentService.ts,
@@ -146,9 +146,9 @@ AI-COC-KP/
 - 迁移 `embedding.mjs` → 后端嵌入服务（保留 `@huggingface/transformers` 本地模型 + OpenAI Embedding API 双模式）
 - 迁移 `vectorStore.mjs` → 后端向量存储（文件持久化方案保留，或迁移至 SQLite）
 - 迁移 `graphRag.mjs` + `graphStore.mjs` → GraphRAG 服务（实体/关系图谱 + 2-hop 扩展 + 社区摘要）
-- 迁移 `userGraphStore.mjs` → 用户行动图谱（DB-backed，替代 electron-store）
+- 迁移行动图谱存储 → DB-backed 用户行动图谱（替代 electron-store）
 - 迁移 `storyParsers.mjs` → 文档解析（pdf-parse + tesseract.js OCR + mammoth + epub2，traineddata 留服务端）
-- 迁移 `ragHandlers.cjs` → `/api/rag/*` 路由（index/query/context/list/delete/health/usergraph）
+- 迁移 `ragHandlers.cjs` → `/api/rag/*` 路由（index/query/context/list/delete/health）
 - 向量索引与图谱持久化策略：按用户 ID + Story ID 隔离
 - **交付物**：三层 RAG 检索在服务端完整运行
 

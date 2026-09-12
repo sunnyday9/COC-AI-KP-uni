@@ -140,9 +140,6 @@ interface AppSettings {
 | GET | `/api/rag/stories` | — | `{ storyId, name, chunkCount, indexedAt }[]` |
 | POST | `/api/rag/story-overview` | `{ storyId, topK? }` | `{ overview, storyName }` |
 | GET | `/api/rag/index/:scriptId` | — | `{ scriptId, storyName, chunkCount, chunks: {id,content,type,metadata,hasVector}[] }` |
-| POST | `/api/rag/user-graph/event` | `{ storyId, sessionId, event: {type,name,description?} }` | `{ ok }` |
-| POST | `/api/rag/user-graph/sync` | `{ storyId, sessionId, state: {cluesObtained, currentScene} }` | `{ ok }` |
-| POST | `/api/rag/user-graph/summary` | `{ storyId, sessionId }` | `{ summary }` |
 
 - 数据按 `userId + storyId` 隔离。嵌入：`builtin`（@huggingface/transformers 本地模型，服务端加载）或 `api`（用用户 AI 设置中的 embedding 模型，同样受 outbound URL 校验约束）。
 
@@ -159,7 +156,7 @@ interface AppSettings {
 | kpInvoke | POST `/api/kp/invoke` |
 | kpInvokeStream / onKpStream | WebSocket `kp:invoke` + 消息分发 |
 | listSaves / readSave / writeSave | `/api/saves*` |
-| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragStoryOverview / ragGetIndex / ragUserGraphAdd / ragUserGraphSync / ragUserGraphSummary / ragTestEmbedding | `/api/rag*` |
+| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragStoryOverview / ragGetIndex / ragTestEmbedding | `/api/rag*` |
 | login / register / logout / me（新增） | `/api/auth*` |
 | platform | `'h5' \| 'mp-weixin' \| 'app'` |
 

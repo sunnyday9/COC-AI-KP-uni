@@ -118,14 +118,14 @@ AI-COC-KP/
 │   └── src/
 │       ├── app.ts             # Express 工厂：cors + json(1mb) → 8 组路由 → 404 → 错误处理；直跑时 listen + WS
 │       ├── config.ts          # 环境变量（PORT/JWT_SECRET/MOCK_AI/DATA_DIR/…）
-│       ├── db/index.ts        # node:sqlite 单例，懒建 7 张表
+│       ├── db/index.ts        # node:sqlite 单例，懒建 6 张表
 │       ├── middleware/auth.ts # JWT 签发/校验 + requireAuth
 │       ├── agent/             # ★ 智能核心
 │       │   ├── kpGraph.ts     #   LangGraph 状态机（1133 行，见 §5）
 │       │   └── scriptContext.ts # 剧本结构化加载 + 线索门控（见 §6）
 │       ├── routes/            # auth/settings/ai/kp/stories/scripts/saves/rag 8 组
 │       ├── services/          # aiService / kpAgentService / mockAi / settings / save / story / script / rag
-│       ├── rag/               # embedding / vectorStore / graphStore / graphExtractLLM / graphRag / userGraphStore / storyParsers / prompts/
+│       ├── rag/               # embedding / vectorStore / graphStore / graphExtractLLM / graphRag / storyParsers / prompts/
 │       ├── ws/                # /ws（token 鉴权、kp:invoke 流式、rag:progress 推送）
 │       └── utils/             # errors / logging / crypto / outboundUrl(SSRF) / pathSafety / fileNames / fsSafe
 ├── client/                    # uni-app (Vue 3 + Pinia)
@@ -294,10 +294,6 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 
 **关键设计**：上下文构建**不调 LLM**（否则每轮对话多一次推理）。LLM 综合检索（local/global search prompt）保留在 `prompts/` 但非默认路径。
 
-### 7.6 玩家会话图（userGraphStore.ts）
-
-DB 表 `user_graphs`：每局记录线索获得（clue）/场景到访（scene）/行动（action：技能检定/SAN检定/攻击）。运行时 `GET /api/rag/user-graph/summary` 生成"调查员行动记录"，与 RAG 上下文一起注入 prompt；结局报告也用它回溯。客户端 `gameStore.addClue / transitionToScene / processToolCalls` 处埋点上报。
-
 ---
 
 ## 八、AI 协议适配层与 MOCK_AI
@@ -353,7 +349,7 @@ DB 表 `user_graphs`：每局记录线索获得（clue）/场景到访（scene�
 ③ 记忆提取：extractMemoryPoints（LLM 抽 3-5 条 ≤40 字要点）→ kpMemory（上限 30）
 ④ 长程摘要触发：场景切换 / 每 N 回合（自适应：<20 回合每 5、≥20 每 3、≥40 每 2）/
    高影响工具回合（grant_clue/melee_attack/ranged_attack/san_check/trigger_insanity）
-   → runLongTermSummarization：RAG 检索 + 会话图摘要 + LLM 合并，收缩率 <85% 才落地（防劣化），fire-and-forget
+   → runLongTermSummarization：RAG 检索 + LLM 合并，收缩率 <85% 才落地（防劣化），fire-and-forget
 ⑤ narrativeStall 计数：_turnHadProgressTool ? 0 : min(10, +1)
 ⑥ traceBus 全程打点（prompt_assembly / kp_agent_loop_iteration / state_update / long_term_summary…）
 ```
@@ -361,7 +357,7 @@ DB 表 `user_graphs`：每局记录线索获得（clue）/场景到访（scene�
 **关键状态与动作**：
 
 - `cluesObtained` 结构化 `{id, description}`（旧存档纯字符串自动迁移）；
-- `transitionToScene`：记 `scenesVisited` + 上报会话图 + 触发摘要；
+- `transitionToScene`：记 `scenesVisited` + 触发摘要；
 - `updateCharacterHP`：HP≤0 → 自动 `endGame('defeat')`；
 - `updateCharacterSAN`：SAN≤0 → **先置 insanityState='permanent' 再 endGame**（修复了原来只 endGame 状态不一致的 bug）；
 - `updateCharacterInsanityState`：设置疯狂状态 + 恐惧症/躁狂症；
@@ -434,7 +430,7 @@ runKpAgentLoop（≤8 轮）：
 
 ## 十一、数据模型与持久化
 
-`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 7 张表（幂等）：
+`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 6 张表（幂等）：
 
 | 表 | 用途 |
 |---|---|
@@ -444,7 +440,6 @@ runKpAgentLoop（≤8 轮）：
 | `scripts` | 剧本库（schema 遗留，当前路由为死代码，见 §16） |
 | `stories` | 故事元数据（schema 遗留，实际文件落盘） |
 | `rag_index` | 向量索引 JSON 文档（实际按文件落盘 `RAG_DATA_DIR`，此表为索引记录） |
-| `user_graphs` | 玩家会话图 JSON（clue/scene/action 事件） |
 
 **存储约定**：DB 存元数据与 JSON 文档；故事/剧本实体文件按 `UPLOADS_DIR/<userId>/stories|scripts/` 落盘（`pathSafety` 防护）。
 

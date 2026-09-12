@@ -64,8 +64,8 @@ GraphRAG 索引期烧 LLM 建图、查询期 2 跳扩展无数量上限。
   T4 场景归属与 query 构造 / T5 检索编排与注入装配 / T6 提示词与开关接线 / T7 图链删除
   均已落地。T7 的删除范围 = 3 个图模块（graphStore/graphRag/graphExtractLLM）+ 4 个图提示词 + 图端点与 `useGraphRAG`/
   `extractionModel` 设置项 + 客户端脚本页图面板与 GraphBrowser 组件；
-  `rag.supplement`（默认开）为唯一新增开关。**注意**：`userGraphStore`（本局线索/到访
-  场景的会话级记录）**不在删除范围**——它是 ADR-0002 决策 4 的 A3 延后特性，与 GraphRAG
-  不是一回事（当前无回合路径消费方，保留待 A3）。
+  `rag.supplement`（默认开）为唯一新增开关。**注意**：本局线索/到访场景的会话级记录
+  （ADR-0002 决策 4 的 A3 延后特性，与 GraphRAG 不是一回事）当时**不在删除范围**；
+  该延后特性已于 2026-09-12 退役删除（9d8fc10）。
 - **rag 房基线代际**：rag 房从 `topK 8 + 图 2 跳扩展` 改为标准管线（top10 召回 →
   rerank top3 + 1.6k 预算），**P10–P27 的 rag 注入量基线不再可比**；T8 验收需重新标注基线。
