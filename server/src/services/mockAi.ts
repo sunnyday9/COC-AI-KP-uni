@@ -8,12 +8,14 @@
  * answered with a deterministic response driven by the conversation content.
  *
  * Behavior contract (used by the H5 E2E journey `e2e/h5.journey.mjs`):
- *  - intent classifier call → keyword → intent word (combat/investigate/…)
- *  - fresh-turn generate call → keyword → matching toolCalls sequence:
- *      "战斗/攻击/…"      → skill_check(格斗) → roll_dice → adjust_hp (-2 HP)
- *      "侦查/搜索/检查…"  → skill_check(侦查) → grant_clue(铜钥匙)
- *      "撬锁/开锁"        → skill_check(机械维修)
- *      otherwise          → fixed narrative text
+ *  - intent classifier call → kpGraph rule intent (classifyIntentByRules,
+ *    single-sourced with the real graph) ?? 'narrative'
+ *  - fresh-turn generate call → rule intent → matching toolCalls sequence:
+ *      combat intent        → skill_check(格斗) → roll_dice → adjust_hp (-2 HP)
+ *      investigate intent   → skill_check(侦查) → grant_clue(铜钥匙)
+ *      skill_check intent   → skill_check(机械维修)
+ *      san_encounter intent → san_check
+ *      otherwise            → fixed narrative text
  *  - tool-continuation call → previous tool result → next tool in the chain
  *    (skill_check with combat skill → roll_dice → adjust_hp), so the full
  *    client-side tool-execution loop is exercised end-to-end deterministically.
@@ -26,28 +28,16 @@
  */
 import type { ChatBody, ChatMessage, ChatResult, ToolCallResult } from './aiService.js'
 import type { ModelOption } from '../../../shared/constants/providers.js'
+import { classifyIntentByRules, COMBAT_SKILLS } from '../agent/kpGraph.js'
 
 /* ═══════════════════ Constants ═══════════════════ */
 
 /** Fixed narrative used for plain chat() and default narrative turns. */
 export const MOCK_NARRATIVE = '（测试模式）守秘人回应：你听到了远处的脚步声。'
 
-/** Keyword → intent word for the classifier call (parseIntent-compatible). */
-const INTENT_RULES: [RegExp, string][] = [
-  // dossier 查证词：属叙事性信息动作 → narrative（避免被判 investigate 而强制授线索）
-  [/情报确认|查证一下|查一下档案|查阅档案|确认一下/, 'narrative'],
-  [/战斗|攻击|开枪|射击|格斗|挥拳|扑向/, 'combat'],
-  [/撬锁|开锁/, 'skill_check'],
-  // 调查(?!员): the word 调查员 (investigator) must NOT trigger an action.
-  [/侦查|搜索|检查|查看|搜寻|翻找|调查(?!员)/, 'investigate'],
-  [/恐怖|疯狂|尖叫|理智/, 'san_encounter'],
-  [/对话|询问|交谈|打听|说服|恐吓/, 'talk_npc'],
-  [/移动|前往|走到|进入/, 'move'],
-  [/使用|掏出|拿出/, 'use_item'],
-]
-
-/** Combat skills whose successful check chains into roll_dice (kpGraph logic). */
-const COMBAT_SKILLS = ['格斗', '射击', '手枪', '步枪', '投掷', '弓术', '斧', '刀', '矛', '鞭', '拳']
+// 意图词表与战斗技能表均为单源：词表 = kpGraph.classifyIntentByRules 的
+// INTENT_RULES_ORDER（本文件不再手抄词面），战斗技能 = kpGraph.COMBAT_SKILLS
+// （上面的 import）。mock 只负责把意图映射成确定性的工具调用。
 
 /** Deterministic arguments for each tool name (used by fresh-turn & force calls). */
 const TOOL_ARGS: Record<string, Record<string, unknown>> = {
@@ -121,14 +111,6 @@ function isForceToolCall(messages: ChatMessage[]): boolean {
   )
 }
 
-/** Classifier: keyword → intent word (deterministic). */
-function classifyIntent(userText: string): string {
-  for (const [re, intent] of INTENT_RULES) {
-    if (re.test(userText)) return intent
-  }
-  return 'narrative'
-}
-
 /** Force-tools retry call: one toolCall per requested tool name. */
 function mockForceTools(messages: ChatMessage[]): { content: string; toolCalls: ToolCallResult[] } {
   const text = findLastUserText(messages)
@@ -192,24 +174,28 @@ function mockContinuation(messages: ChatMessage[]): { content: string; toolCalls
   return { content: MOCK_NARRATIVE }
 }
 
-/** Fresh-turn generate call: keyword → first tool of the chain. */
+/** Fresh-turn generate call: rule intent → first tool of the chain. */
 function mockFreshTurn(messages: ChatMessage[]): { content: string; toolCalls?: ToolCallResult[] } {
   const userText = findLastUserText(messages)
-  // dossier workflow：查证型消息 → scene_list（查证工具链起点）
+  // dossier workflow：查证型消息 → scene_list（查证工具链起点）。这条是 mock
+  // 专属路由（对齐 roomService.buildStoryLookup 的查证链），不是 kpGraph 词表
+  // 的一部分，故意排在意图推导之前。
   if (/打听|查证|查阅档案|剧本里|故事里|确认一下|情报/.test(userText)) {
     return { content: '', toolCalls: [makeToolCall('scene_list', {}, 0)] }
   }
-  // 调查(?!员): the word 调查员 (investigator) must NOT trigger an action.
-  if (/战斗|攻击|开枪|射击|格斗|挥拳|扑向/.test(userText)) {
+  // 词表单源：分支条件由 kpGraph.classifyIntentByRules 派生（与真实图同一张
+  // 规则表），不再手抄词面。只把图内会产生工具链的意图映射成确定性的首工具。
+  const intent = classifyIntentByRules(userText)
+  if (intent === 'combat') {
     return { content: '', toolCalls: [makeToolCall('skill_check', { skillName: '格斗', skillValue: 60, difficulty: 'regular' }, 0)] }
   }
-  if (/撬锁|开锁/.test(userText)) {
+  if (intent === 'skill_check') {
     return { content: '', toolCalls: [makeToolCall('skill_check', { skillName: '机械维修', skillValue: 50, difficulty: 'regular' }, 0)] }
   }
-  if (/侦查|搜索|检查|查看|搜寻|翻找|调查(?!员)/.test(userText)) {
+  if (intent === 'investigate') {
     return { content: '', toolCalls: [makeToolCall('skill_check', TOOL_ARGS.skill_check ?? { skillName: '侦查', skillValue: 65, difficulty: 'regular' }, 0)] }
   }
-  if (/恐怖|疯狂|尖叫|理智/.test(userText)) {
+  if (intent === 'san_encounter') {
     return { content: '', toolCalls: [makeToolCall('san_check', TOOL_ARGS.san_check ?? { currentSan: 60 }, 0)] }
   }
   return { content: MOCK_NARRATIVE }
@@ -236,7 +222,10 @@ export function mockChatForAgent(
     const promptText = findLastUserText(messages)
     const marker = '玩家消息: '
     const playerText = promptText.lastIndexOf(marker) >= 0 ? promptText.slice(promptText.lastIndexOf(marker) + marker.length) : promptText
-    return { content: classifyIntent(playerText) }
+    // 词表单源：与 kpGraph.analyzeInput 的规则表一致。真实图只在规则未命中
+    // 时才调分类器，此时这里也返回 null → 'narrative'（mock 分类器必须总是
+    // 给出一个关键词）。
+    return { content: classifyIntentByRules(playerText) ?? 'narrative' }
   }
   if (isForceToolCall(messages)) {
     return mockForceTools(messages)

@@ -177,9 +177,10 @@ function parseIntent(raw: string | null | undefined): string {
 
 /**
  * Rule-first intent classification (perf: skips the classifier LLM call when
- * a deterministic keyword match exists). The word table mirrors mockAi's
- * INTENT_RULES so MOCK_AI=1 and the real LLM path agree. Falls back to the
- * classifier LLM in analyzeInput when no rule matches.
+ * a deterministic keyword match exists). This is the single source of the
+ * intent word table: services/mockAi.ts calls this function so MOCK_AI=1 and
+ * the real LLM path agree — do not copy the word faces elsewhere. Falls back
+ * to the classifier LLM in analyzeInput when no rule matches.
  */
 const INTENT_RULES_ORDER: Array<{ re: RegExp; intent: string }> = [
   // dossier 查证词：叙事性信息动作 → narrative（避免误判 investigate 强制授线索）
@@ -214,6 +215,14 @@ export function classifyIntentByRules(userText: string): string | null {
 /* ================================================================== */
 
 /**
+ * Combat skills whose successful skill_check chains into roll_dice
+ * (used by analyzeToolContinuation below). Single source:
+ * services/mockAi.ts imports this table for its deterministic
+ * tool-continuation script — do not copy the array elsewhere.
+ */
+export const COMBAT_SKILLS = ['格斗', '射击', '手枪', '步枪', '投掷', '弓术', '斧', '刀', '矛', '鞭', '拳']
+
+/**
  * Parse the JSON payload out of a tool-result message. The client prepends a
  * `【结果摘要】…` head to tool results (kpSessionService perf A4) before
  * echoing them back, so the JSON body starts at the first `{` — parse from
@@ -246,10 +255,9 @@ function analyzeToolContinuation(messages: KpMessage[]): { isContinuation: boole
       const data = parseToolResultContent(toolResults[j].content)
       if (!data) continue
       if (data.success === true && data.skillName) {
-        const combatSkills = ['格斗', '射击', '手枪', '步枪', '投掷', '弓术', '斧', '刀', '矛', '鞭', '拳']
         let isCombat = false
-        for (let k = 0; k < combatSkills.length; k++) {
-          if ((String(data.skillName) || '').indexOf(combatSkills[k]) >= 0) { isCombat = true; break }
+        for (let k = 0; k < COMBAT_SKILLS.length; k++) {
+          if ((String(data.skillName) || '').indexOf(COMBAT_SKILLS[k]) >= 0) { isCombat = true; break }
         }
         if (isCombat) followUp.push('roll_dice')
       }
