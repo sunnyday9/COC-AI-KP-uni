@@ -477,46 +477,6 @@ export async function queryChunks(params: {
 }
 
 /**
- * Build a formatted context string for the LLM prompt.
- */
-export async function buildContext(params: {
-  userId: number
-  query: string
-  scriptId?: string
-  sceneId?: string
-  topK?: number
-  getEmbedding?: (text: string) => Promise<number[]>
-}): Promise<{ context: string }> {
-  const query = params.query
-  const userId = params.userId
-  const scriptId = params.scriptId
-  const sceneId = params.sceneId
-  const topK = params.topK || 5
-  const getEmbedding = params.getEmbedding
-
-  const result = await queryChunks({
-    userId,
-    query: query,
-    scriptId: scriptId,
-    sceneId: sceneId,
-    topK: topK,
-    getEmbedding: getEmbedding,
-  })
-  const chunks = result.chunks
-  if (!chunks.length) return { context: '' }
-
-  const lines = ['## 剧本相关情报']
-  for (let i = 0; i < chunks.length; i++) {
-    const meta = chunks[i]!.metadata || {}
-    const t = meta.type || 'info'
-    lines.push('### [' + (i + 1) + '] ' + String(t))
-    lines.push(chunks[i]!.content)
-    lines.push('')
-  }
-  return { context: lines.join('\n') }
-}
-
-/**
  * Get chunk content by ids (for graph expansion).
  */
 export function getChunksByIds(

@@ -110,23 +110,6 @@ describe('rag/vectorStore', () => {
     expect(r.chunks[0]!.content).toContain('图书馆')
   })
 
-  it('buildContext formats output with headings', async () => {
-    const rag = await import('../vectorStore.js')
-    const userId = 1
-    const storyId = 'X'
-    const embed = async () => [1, 0, 0]
-    await rag.indexChunks(
-      userId,
-      storyId,
-      [{ id: 'c', content: '线索：钥匙在花瓶里。', type: 'clue', metadata: { type: 'clue' } }],
-      {},
-      { getEmbedding: embed }
-    )
-    const ctx = await rag.buildContext({ userId, query: '钥匙', scriptId: storyId, topK: 1, getEmbedding: embed })
-    expect(ctx.context).toContain('## 剧本相关情报')
-    expect(ctx.context).toContain('### [1]')
-  })
-
   it('checkHealth reports indexedStoryCount', async () => {
     const rag = await import('../vectorStore.js')
     const userId = 1
