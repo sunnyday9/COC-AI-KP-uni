@@ -135,16 +135,4 @@ export interface Bridge {
     chunkCount: number
     chunks: { id: string; content: string; type: string; metadata: Record<string, unknown>; hasVector: boolean }[]
   }>
-  // ── RAG 用户行动图谱（Task 3+ 填充）──────────────────────────
-  ragUserGraphAdd: (params: {
-    storyId: string
-    sessionId: string
-    event: { type: string; name: string; description?: string }
-  }) => Promise<{ ok: boolean }>
-  ragUserGraphSync: (params: {
-    storyId: string
-    sessionId: string
-    state: { cluesObtained: { id: string; description: string }[]; currentScene: string }
-  }) => Promise<{ ok: boolean }>
-  ragUserGraphSummary: (params: { storyId: string; sessionId: string }) => Promise<{ summary: string }>
 }

@@ -431,24 +431,4 @@ export class PlatformBridge implements Bridge {
   ragGetIndex(params: { scriptId: string }): Promise<RagGetIndexResult> {
     return request<RagGetIndexResult>('GET', `/api/rag/index/${encodeURIComponent(params.scriptId)}`)
   }
-
-  ragUserGraphAdd(params: {
-    storyId: string
-    sessionId: string
-    event: { type: string; name: string; description?: string }
-  }): Promise<{ ok: boolean }> {
-    return request('POST', '/api/rag/user-graph/event', params)
-  }
-
-  ragUserGraphSync(params: {
-    storyId: string
-    sessionId: string
-    state: { cluesObtained: { id: string; description: string }[]; currentScene: string }
-  }): Promise<{ ok: boolean }> {
-    return request('POST', '/api/rag/user-graph/sync', params)
-  }
-
-  ragUserGraphSummary(params: { storyId: string; sessionId: string }): Promise<{ summary: string }> {
-    return request('POST', '/api/rag/user-graph/summary', params)
-  }
 }

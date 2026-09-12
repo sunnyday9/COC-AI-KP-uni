@@ -97,35 +97,7 @@ export async function getContext(params: {
   return result
 }
 
-/** Add user graph event (clue obtained, scene visited, etc.). */
-export async function addUserGraphEvent(params: {
-  storyId: string
-  sessionId: string
-  event: { type: 'clue' | 'scene' | 'action' | 'item' | 'npc'; name: string; description?: string }
-}): Promise<void> {
-  await getBridge().ragUserGraphAdd(params)
-}
-
-/** Sync user graph from game state (on load). */
-export async function syncUserGraphFromState(params: {
-  storyId: string
-  sessionId: string
-  state: { cluesObtained: { id: string; description: string }[]; currentScene: string }
-}): Promise<void> {
-  await getBridge().ragUserGraphSync(params)
-}
-
 /** Get full chunk index for a story (dev/inspector use). */
 export async function getStoryIndex(scriptId: string) {
   return getBridge().ragGetIndex({ scriptId })
-}
-
-/**
- * Get user graph summary for memory/context.
- * Adjustment (api-contract §8): the endpoint returns `{ summary }`; unwrap
- * the string (the original IPC returned the string directly).
- */
-export async function getUserGraphSummary(storyId: string, sessionId: string): Promise<string> {
-  const r = await getBridge().ragUserGraphSummary({ storyId, sessionId })
-  return r?.summary ?? ''
 }

@@ -347,22 +347,6 @@ describe('PlatformBridge', () => {
       expect(state.requests[0].data).toEqual(params)
     })
 
-    it('ragUserGraphAdd posts the event', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
-      const bridge = new PlatformBridge()
-      const params = { storyId: 'st1', sessionId: 'sess', event: { type: 'clue', name: '信件' } }
-      await expect(bridge.ragUserGraphAdd(params)).resolves.toEqual({ ok: true })
-      expect(state.requests[0]).toMatchObject({ url: '/api/rag/user-graph/event', method: 'POST' })
-      expect(state.requests[0].data).toEqual(params)
-    })
-
-    it('ragUserGraphSummary returns the summary', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { summary: 'sum' } })
-      const bridge = new PlatformBridge()
-      await expect(bridge.ragUserGraphSummary({ storyId: 'st1', sessionId: 'sess' })).resolves.toEqual({ summary: 'sum' })
-      expect(state.requests[0].url).toBe('/api/rag/user-graph/summary')
-    })
-
     it('ragTestEmbedding posts with no body', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { ok: true, vectorLength: 384 } })
       await expect(new PlatformBridge().ragTestEmbedding()).resolves.toEqual({ ok: true, vectorLength: 384 })
