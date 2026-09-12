@@ -6,15 +6,17 @@
  * rag_lexical_approximation_offline（数据卡同步记录）。
  *
  * 复用面：
- *  - 切块 = client/src/services/storyService.textToChunks（产品 RAG 索引的真实切块器，
- *    纯函数无运行时副作用——training 工作区 import 契约的唯一 client 扩展点）；
+ *  - 切块 = server/src/rag/chunker.chunkStoryText（M1-T3 起产品索引的真实切块器：递归
+ *    语义分块、带字符偏移，纯函数且对 vectorStore 仅 type-import——training 工作区
+ *    跨工作区 import 的唯一扩展点。旧 client storyService.textToChunks 已随 M1-T3
+ *    客户端断代删除，import 契约随之改指向服务端）；
  *  - 注入串格式 = server/src/rag/vectorStore.buildContext 的 8 行组装（## 剧本相关情报 /
  *    ### [n] type 分节）。vectorStore 拖 server 运行时栈不可离线 import，按
  *    training/eval/lib/request.ts「最小复制 + 来源锚定注释」先例逐字镜像。
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { textToChunks } from '../../../client/src/services/storyService.js'
+import { chunkStoryText } from '../../../server/src/rag/chunker.js'
 
 export interface StoryDoc {
   storyId: string
@@ -83,11 +85,11 @@ export async function loadCorpus(corpusRoot: string): Promise<{ docs: StoryDoc[]
   return { docs, warnings }
 }
 
-/** 产品切块器出 chunk（800 字/100 重叠，与线上索引同形），摊平成语料级检索集合。 */
+/** 产品切块器出 chunk（M1 递归语义切块，~800 字/100 重叠，与线上索引同形），摊平成语料级检索集合。 */
 export function buildCorpusChunks(docs: StoryDoc[]): CorpusChunk[] {
   const chunks: CorpusChunk[] = []
   for (const doc of docs) {
-    const raw = textToChunks(doc.text, doc.storyId)
+    const raw = chunkStoryText(doc.text)
     raw.forEach((c, i) => {
       chunks.push({ storyId: doc.storyId, storyName: doc.name, index: i, content: c.content })
     })
