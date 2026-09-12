@@ -12,7 +12,7 @@ import KPMessage from './KPMessage.vue'
 import SystemMessage from './SystemMessage.vue'
 import PlayerMessage from './PlayerMessage.vue'
 import { classifySystemMessage } from '../../../utils/classifySystemMessage'
-import type { Message } from '../../../types/game'
+import type { Message } from '../../../../../shared/types/game'
 
 const mountCm = (msg: unknown) =>
   mount(ChatMessage as unknown as typeof ChatMessage, { props: { msg: msg as Message }, global: { stubs: { 'kp-message': true, 'player-message': true, 'system-message': true } } })

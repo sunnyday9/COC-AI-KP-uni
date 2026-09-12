@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { classifySystemMessage } from './classifySystemMessage'
-import type { Message } from '../../src/types/game'
+import type { Message } from '../../../shared/types/game'
 
 function sys(content: string): Message {
   return { id: 'm', timestamp: 1, role: 'system', content }

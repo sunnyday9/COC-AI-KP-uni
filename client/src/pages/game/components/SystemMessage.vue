@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Message } from '../../../types/game'
+import type { Message } from '../../../../../shared/types/game'
 import { classifySystemMessage, type SystemMessageKind } from '../../../utils/classifySystemMessage'
 
 /**

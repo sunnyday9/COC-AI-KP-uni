@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Message } from '../../../types/game'
+import type { Message } from '../../../../../shared/types/game'
 
 /**
  * T4：玩家消息（ADR-0004）——右侧气泡，eldritch 描边 + 顶部成员名（角色色）。

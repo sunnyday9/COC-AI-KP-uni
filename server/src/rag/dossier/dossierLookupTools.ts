@@ -38,13 +38,6 @@ export interface StoryLookupInput {
 /** 查证工具执行器：按工具名查档案，返回工具结果 content（kpTurnService seam 形态）。 */
 export type StoryLookupHandler = (toolName: string, args: Record<string, unknown>) => Promise<{ content: string }>
 
-/** dossier workflow 查证工具执行器工厂：dossier 房返回执行器；rag workflow /
- *  未绑剧本返回 undefined（无查证工具——这些工具只对档案房有意义）。 */
-export function buildStoryLookup(input: StoryLookupInput): StoryLookupHandler | undefined {
-  if (input.getWorkflow() !== 'dossier' || !input.getStoryId()) return undefined
-  return async (toolName, args) => runStoryLookup(input, toolName, args)
-}
-
 /**
  * 执行器本体（dossier workflow 已由工厂门判定）：按工具名查档案，返回工具结果
  * content。任何可预期失败都以回包文本降级（不抛出、不阻断回合）。

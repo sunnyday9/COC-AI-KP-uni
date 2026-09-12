@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useRoomStore } from '../../../stores/roomStore'
 import { getSkillName } from '../../../../../shared/coc/coc7'
-import type { COCAttributes } from '../../../types/character'
+import type { COCAttributes } from '../../../../../shared/types/character'
 
 /** 服务端权威角色卡（state_patch 推平，ADR-0002）：自己绑定的卡即属性来源。 */
 const roomStore = useRoomStore()

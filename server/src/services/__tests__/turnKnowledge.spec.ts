@@ -278,8 +278,9 @@ describe('assembleTurnKnowledge — trace JSONL 落盘（实验追踪，默认�
 })
 
 describe('buildStoryLookup — 查证工具供给决策（workflow 门；执行器本体在档案域）', () => {
-  it('rag workflow → undefined（本回合不提供查证工具）', () => {
+  it('rag workflow → undefined（本回合不提供查证工具）；dossier 未绑剧本 → undefined（#74：门判定自档案域死工厂收拢到此单源）', () => {
     expect(buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'rag', getOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => null })).toBeUndefined()
+    expect(buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'dossier', getOwnerId: () => 7, getStoryId: () => null, getScene: () => null })).toBeUndefined()
   })
 
   it('dossier workflow → 返回执行器（活值 getter 透传；四工具行为直测在 rag/dossier/__tests__/dossierLookupTools.spec.ts）', () => {

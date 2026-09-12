@@ -1,4 +1,4 @@
-import type { Message } from '../types/game'
+import type { Message } from '../../../shared/types/game'
 
 /**
  * T4：系统消息视觉分类（ADR-0004 消息类型体系）。
