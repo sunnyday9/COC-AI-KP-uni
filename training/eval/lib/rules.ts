@@ -6,8 +6,8 @@
  * （含 melee/ranged_attack 等价展开）+ 文字模拟骰子正则。本模块只追加
  * 评测侧需要的参数匹配原语（子集匹配 + 数组包含 + 数字宽化），不复制规则。
  */
-import { COC_TOOL_NAMES } from '../../../shared/tools/cocTools.ts'
-import { coversRequiredTools } from '../../../shared/tools/kpValidation.ts'
+import { COC_TOOL_NAMES } from '../../../shared/tools/cocTools.js'
+import { coversRequiredTools } from '../../../shared/tools/kpValidation.js'
 import type { ExpectedCall, GoldenSample } from './types.ts'
 
 export function isKnownToolName(name: string): boolean {

@@ -7,7 +7,7 @@
  * tool(结果回填原文)。唯一的 3 行复制是 toOpenAiToolCallShape（OpenAI wire
  * 形态单点在 server/src/services/wireSampleService.ts，此处不引 server 运行时）。
  */
-import { buildRoomTurnMessages, injectCharacterRoster } from '../../../server/src/services/kpPromptService.ts'
+import { buildRoomTurnMessages, injectCharacterRoster } from '../../../server/src/services/kpPromptService.js'
 import type { GoldenSample } from './types.ts'
 
 /** 线上 KpMessage 的最小 wire 形态（system/user/assistant/tool + tool_calls）。 */

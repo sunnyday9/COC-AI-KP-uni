@@ -8,8 +8,8 @@
  * 失败分类（票 #39）：no_tool_call / wrong_tool / bad_args / text_dice，
  * 另有 unparseable（工具名未知或参数非 JSON 对象）。
  */
-import { hasTextSimulation } from '../../../shared/tools/kpValidation.ts'
-import { isKnownToolName, parseToolArguments, requiredToolsCovered, sequenceMatches, valueMatches } from './rules.ts'
+import { hasTextSimulation } from '../../../shared/tools/kpValidation.js'
+import { isKnownToolName, parseToolArguments, requiredToolsCovered, sequenceMatches, valueMatches } from './rules.js'
 import type { GoldenSample, ModelResponse, SampleJudgement } from './types.ts'
 
 interface ParsedCall {

@@ -5,10 +5,10 @@
  */
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import { COC_KP_TOOLS, COC_TOOL_NAMES } from '../../../shared/tools/cocTools.ts'
-import { callTurn, EndpointError, type EvalEndpoint } from './client.ts'
-import { judgeSample } from './judge.ts'
-import { buildTurnRequest } from './request.ts'
+import { COC_KP_TOOLS, COC_TOOL_NAMES } from '../../../shared/tools/cocTools.js'
+import { callTurn, EndpointError, type EvalEndpoint } from './client.js'
+import { judgeSample } from './judge.js'
+import { buildTurnRequest } from './request.js'
 import type { GoldenSample, SampleJudgement } from './types.ts'
 
 export interface EvalOptions {
