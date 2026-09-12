@@ -86,7 +86,7 @@ T4（spec #36 / 票 #40 / ADR-0006 决策 4）落点 `training/src/distill/`：�
 剧本的结构化预生成摘要：场景（含原文誊抄的 sceneText）/线索/NPC/切换边/事件/真相/结局，生成期由 LLM 从剧本原文抽取落盘，运行时**按当前场景整块注入**取代逐回合检索。事实的**权威来源**——与检索补充层冲突时以档案为准。落点 `server/src/rag/dossier/`；双轨分工见 ADR-0007。生成期质量门（#55）：低覆盖（sceneText 覆盖率 < 30%，仅对 >5000 字符剧本）或分节解析失败 → quality 快照随档案落盘，开局门闩（startRoom / createSoloRoom）据此 409 提示重新生成——**残档不再静默放行**；阈值常量 `DOSSIER_MIN_COVERAGE_PCT` 单源在 schema.ts。模块布局（按重量切两条 seam）：轻查询核 `dossierCore.ts`（持久化/清单/质量门/场景块渲染/纯函数 lookups——查询期消费方动态 import 的目标，只依赖 fs/config/pathSafety 与同目录轻模块）、重生成器 `dossierGenerate.ts`（storyService/aiService/annex/prompts 重依赖链，仅生成期路由）、`storyDossierService.ts` 为纯 re-export 兼容门面（静态引它 = 连带生成链）。
 
 ### 原文查证（verify_original）
-档案说不清时的**事实层深挖**：按当前场景锚点窗口取剧本原文片段（≤12k 字符），交一次全新上下文的子阅读器作答，返回结论 + 逐字引用；真相/结局类问句、或命中 `truths[].revealScene` 锚点的结果，标注「仅限 KP 内部裁定」。降级为「未取得」，永不阻断回合。落点 `server/src/rag/dossier/originalLookup.ts`；服务端可自动触发（预取）。
+档案说不清时的**事实层深挖**：按当前场景锚点窗口取剧本原文片段（≤12k 字符），交一次全新上下文的子阅读器作答，返回结论 + 逐字引用；真相/结局类问句、或命中 `truths[].revealScene` 锚点的结果，标注「仅限 KP 内部裁定」。降级为「未取得」，永不阻断回合。落点 `server/src/rag/dossier/originalLookup.ts`（KP 回合内作为查证工具的执行分派在 `dossierLookupTools.ts`）；服务端可自动触发（预取）。
 
 ### 检索补充层（retrieval supplement）
 RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、具体数字），不承担事实权威。每回合固定检索（递归切块 → 本地嵌入 → top10 → 本地 cross-encoder rerank → top3），以独立小节 `## 原文片段（检索补充·仅作描写素材）` 注入；跨场景块至多 1 条并标注，与 `revealScene` 锚点相交者丢弃。落点 `server/src/rag/`（标准管线，无图）；见 ADR-0007。总开关 `rag.supplement`（默认开）。
@@ -94,7 +94,7 @@ RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、
 装配有两种模式（检索同一套，闸门不同）：**`supplement`** = 档案房的纹理补充，走"档案重叠剔除 + 场景内优先 + 跨场景限额/前缀"；**`plain`** = rag 房的标准情报块，因没有档案块（按重叠剔除会清空它唯一的知识来源）而只做相关性排序 + 条数/预算截断。**剧透硬闸两模式共有**。
 
 ### 回合知识装配（TurnKnowledge）
-「KP 本回合看到什么知识」的唯一 interface（deep module）：workflow 分派（rag = 玩家发言当 query 的标准检索情报块 `plain` 模式；dossier = 当前场景档案块——含「场景未覆盖」分支——+ 检索补充层 `supplement` 模式）、P27 预取触发（仅玩家回合；opening 不触发）、PREFETCH_TRACE/SUPPLEMENT_TRACE JSONL 落盘、dossier 查证工具执行器（scene_list/scene_dossier/lexical_search/verify_original）、wire 采样「注入列」拼装（`[sceneBlock, supplement].filter(nonEmpty).join('\n\n') || ragContext`——**全仓唯一口径**，ab-compare 报告按此格式统计注入量）。无状态：房间运行时状态（roomId/ownerId/storyId/scene/玩家合并发言）由 RoomService 在 flushTurn 与 opening 两个回合入口以参数传入（opening 走 `stage:'opening'`：rag query 退化为开场固定 query、补充层 query 退化为纯场景名）。任何失败静默降级为空串，回合不中断。落点 `server/src/services/turnKnowledge.ts`；对知识层实现保持动态 import（Mimosa 门禁安全边界），测「KP 本轮看到什么」只需桩这一个模块。
+「KP 本回合看到什么知识」的唯一 interface（deep module）：workflow 分派（rag = 玩家发言当 query 的标准检索情报块 `plain` 模式；dossier = 当前场景档案块——含「场景未覆盖」分支——+ 检索补充层 `supplement` 模式）、P27 预取触发（仅玩家回合；opening 不触发）、PREFETCH_TRACE/SUPPLEMENT_TRACE JSONL 落盘、dossier 查证工具供给决策（scene_list/scene_dossier/lexical_search/verify_original——workflow 门在本模块，执行器本体单源落档案域 `rag/dossier/dossierLookupTools.ts` 工厂，此处薄委托）、wire 采样「注入列」拼装（`[sceneBlock, supplement].filter(nonEmpty).join('\n\n') || ragContext`——**全仓唯一口径**，ab-compare 报告按此格式统计注入量）。无状态：房间运行时状态（roomId/ownerId/storyId/scene/玩家合并发言）由 RoomService 在 flushTurn 与 opening 两个回合入口以参数传入（opening 走 `stage:'opening'`：rag query 退化为开场固定 query、补充层 query 退化为纯场景名）。任何失败静默降级为空串，回合不中断。落点 `server/src/services/turnKnowledge.ts`；对知识层实现保持动态 import（Mimosa 门禁安全边界），测「KP 本轮看到什么」只需桩这一个模块。
 
 ### 场景归属（scene attribution）
 检索块"属于哪个场景"的判定：块只落盘**字符偏移**，查询期用 `coverageGaps` 的场景锚点现算——索引与档案生成的先后解耦，档案重生成后归属自动跟随。区域 = `[首锚点-300, 末锚点+2500)`（与 coveragePct 同口径）。**场景内**另收窄到"末锚点+300 之内"：信封尾巴的 2500 字符有 2.5–8 个块宽，常已是下一场景的正文，按眼前景象喂出去会把未来场景的描写当成现况（安全侧收窄）。

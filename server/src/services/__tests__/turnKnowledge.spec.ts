@@ -5,9 +5,11 @@
  * 此前「KP 本回合看到什么知识」以 6 个私有方法散在 RoomService 活跃实例里，测它要
  * mock 8-9 个深层模块（kpWireSampleRoom 8 个、dossierSceneMismatch 9 个 vi.mock）。
  * 收编后本 spec 只桩知识层实现（dossierCore / coverageGaps / supplementService /
- * prefetch / originalLookup / ragService / settingsService），对着唯一入口
+ * prefetch / ragService / settingsService），对着唯一入口
  * `assembleTurnKnowledge` 断言装配语义；wire 注入列口径（ab-compare 报告依赖）在
- * 这里逐字固化。
+ * 这里逐字固化。buildStoryLookup 只测「回合内要不要提供查证工具」的 workflow 门
+ * 决策——四工具执行语义归档案域 dossierLookupTools（直测在
+ * rag/dossier/__tests__/dossierLookupTools.spec.ts）。
  */
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
 import fs from 'node:fs/promises'
@@ -56,9 +58,6 @@ vi.mock('../../rag/dossier/dossierCore.js', () => ({
   listScenes: vi.fn(() => [{ id: 's1', name: '门厅' }]),
   findScene: vi.fn(() => ({ id: 's1', name: '门厅' })),
   renderSceneUncovered: vi.fn((name: string, names: string[]) => `【场景归属提示】档案未覆盖当前场景「${name}」。档案中的场景：${names.join('、')}。`),
-  renderSceneNotFound: vi.fn((name: string) => `error: scene not found: ${name}`),
-  renderLexicalMiss: vi.fn((query: string) => `未检索到与「${query}」相关的条目。`),
-  lexicalSearch: vi.fn(() => []),
 }))
 vi.mock('../../rag/dossier/coverageGaps.js', () => ({
   loadGaps: vi.fn(async () => null),
@@ -70,16 +69,12 @@ vi.mock('../../rag/dossier/prefetch.js', () => ({
     return { content: '查证结论（桩）：铜钥匙在门厅。', meta: { tier: 'scene', chars: 20, ok: true, durationMs: 1 } }
   }),
 }))
-vi.mock('../../rag/dossier/originalLookup.js', () => ({
-  verifyOriginal: vi.fn(async () => ({ content: '查证内容（桩）', meta: { tier: 'scene', chars: 10, ok: true, durationMs: 1 } })),
-}))
 
 import { assembleTurnKnowledge, buildStoryLookup } from '../turnKnowledge.js'
 import { OPENING_RAG_QUERY } from '../kpPromptService.js'
 import { buildSupplement } from '../../rag/supplementService.js'
 import { runPrefetch } from '../../rag/dossier/prefetch.js'
-import { verifyOriginal } from '../../rag/dossier/originalLookup.js'
-import { loadDossier, buildSceneBlock, listScenes, findScene, renderSceneUncovered, lexicalSearch, renderLexicalMiss } from '../../rag/dossier/dossierCore.js'
+import { loadDossier, buildSceneBlock, listScenes, findScene, renderSceneUncovered } from '../../rag/dossier/dossierCore.js'
 import { loadGaps, computeSceneCoverage } from '../../rag/dossier/coverageGaps.js'
 import { getSettings } from '../settingsService.js'
 import { listStories, buildGetEmbeddingForUser } from '../ragService.js'
@@ -282,26 +277,13 @@ describe('assembleTurnKnowledge — trace JSONL 落盘（实验追踪，默认�
   })
 })
 
-describe('buildStoryLookup — dossier 查证工具执行器', () => {
-  it('rag workflow → undefined（无查证工具）；dossier → 执行器', () => {
+describe('buildStoryLookup — 查证工具供给决策（workflow 门；执行器本体在档案域）', () => {
+  it('rag workflow → undefined（本回合不提供查证工具）', () => {
     expect(buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'rag', getOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => null })).toBeUndefined()
-    const lookup = buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'dossier', getOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => '门厅' })
-    expect(typeof lookup).toBe('function')
   })
 
-  it('verify_original 缺省场景取 getScene() 活值；未知工具报错；lexical 落空渲染 miss', async () => {
-    const lookup = buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'dossier', getOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => '门厅' })!
-    expect(lookup).toBeDefined()
-
-    const verified = await lookup('verify_original', { question: '铜钥匙在哪' })
-    expect(verifyOriginal).toHaveBeenCalledWith({ question: '铜钥匙在哪', scene: '门厅' }, { userId: 7, scriptId: 'story_k' })
-    expect(verified).toEqual({ content: '查证内容（桩）' })
-
-    const missed = await lookup('lexical_search', { query: '铜钥匙' })
-    expect(lexicalSearch).toHaveBeenCalledWith(expect.anything(), '铜钥匙', 5)
-    expect(renderLexicalMiss).toHaveBeenCalledWith('铜钥匙')
-    expect(missed).toEqual({ content: '未检索到与「铜钥匙」相关的条目。' })
-
-    expect(await lookup('nope', {})).toEqual({ content: 'error: unknown tool "nope"' })
+  it('dossier workflow → 返回执行器（活值 getter 透传；四工具行为直测在 rag/dossier/__tests__/dossierLookupTools.spec.ts）', () => {
+    const lookup = buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'dossier', getOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => '门厅' })
+    expect(typeof lookup).toBe('function')
   })
 })

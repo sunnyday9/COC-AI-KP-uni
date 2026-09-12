@@ -8,9 +8,11 @@
  * （房间 id / owner / 剧本 / 场景 / 玩家发言）以参数传入；不持有实例、不 import
  * roomStorage、不读房间表。
  *
- * 唯一实现处（对外只有 assembleTurnKnowledge / buildStoryLookup 两个入口）：
+ * 两个入口：assembleTurnKnowledge（知识装配唯一实现）+ buildStoryLookup（查证工具
+ * 供给的 workflow 门——执行器本体在档案域 dossierLookupTools，此处薄委托）：
  *  - workflow 分派：rag = 玩家发言当 query 的标准检索情报块（plain 模式，ADR-0007 决策 2）；
  *    dossier = 当前场景档案块（含「未覆盖」分支）+ 检索补充层（supplement 模式，ADR-0007 决策 5）
+ *  - P27 预取触发（事实层深挖；仅玩家回合——opening 无玩家问句，不触发）
  *  - P27 预取触发（事实层深挖；仅玩家回合——opening 无玩家问句，不触发）
  *  - PREFETCH_TRACE / SUPPLEMENT_TRACE 逐行 JSONL 落盘（实验追踪，默认关；两份
  *    曾复制的 helper 在此归一）
@@ -18,7 +20,7 @@
  *    ——该口径**只存在于此**（ab-compare 报告按此格式统计注入量与还原现场）
  *
  * 对知识层实现（dossierCore / coverageGaps / supplementService / supplementAssembly /
- * prefetch / originalLookup / ragService / settingsService）保持动态 import（Mimosa
+ * prefetch / dossierLookupTools / ragService / settingsService）保持动态 import（Mimosa
  * 门禁安全边界：轻消费方不背重依赖链，RoomService → 本模块同样走动态 import）。
  * 任何失败一律静默降级为空串/空块——回合不因知识装配中断（既有约定）。
  */
@@ -26,6 +28,11 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { OPENING_RAG_QUERY, type StoryWorkflow } from './kpPromptService.js'
 import type { SceneCoverage } from '../rag/dossier/coverageGaps.js'
+import type { StoryLookupHandler, StoryLookupInput } from '../rag/dossier/dossierLookupTools.js'
+
+/** 查证工具执行器的输入/Handler 形态单源在档案域 dossierLookupTools（类型擦除的
+ *  re-export——保持本模块既有导出面，调用方零变化）。 */
+export type { StoryLookupHandler, StoryLookupInput }
 
 /** 回合阶段：玩家回合（flushTurn） vs 开场回合（opening）。两条路径的知识差异全在此：
  *  rag 检索 query（玩家合并发言 vs OPENING_RAG_QUERY）、补充层 query（玩家合并发言
@@ -325,70 +332,16 @@ async function prefetchVerification(
   }
 }
 
-/** dossier 查证工具执行器的输入：房间 id 直传；owner/剧本/场景是**运行时活值**——
- *  工具在回合执行中才被调用（transition_to_scene → 随后的 verify_original 应拿到
- *  新场景），经读取器在调用时刻取值，与本模块的无状态约定一致。 */
-export interface StoryLookupInput {
-  roomId: string
-  getWorkflow: () => StoryWorkflow
-  getOwnerId: () => number
-  getStoryId: () => string | null
-  getScene: () => string | null
-}
-
-/** dossier workflow 查证工具执行器：按工具名查档案，返回工具结果 content。
- *  rag workflow 返回 undefined（无查证工具）。供 RoomService 的 KP 回合执行器挂接。 */
-export function buildStoryLookup(
-  input: StoryLookupInput,
-): ((toolName: string, args: Record<string, unknown>) => Promise<{ content: string }>) | undefined {
+/** dossier 查证工具执行器（架构走查候选 3，**薄委托**）：本模块只保留「回合内要不要
+ *  提供查证工具」的决策——workflow 门（dossier 房且已绑剧本）在装配时刻同步判定
+ *  （rag 房连档案模块都不加载，返回 undefined = 无查证工具）；scene_list /
+ *  scene_dossier / lexical_search / verify_original 的执行语义（回包文案/数据源/
+ *  活值 getter）单源归档案域 dossierLookupTools，动态 import 转发（Mimosa 轻消费方
+ *  边界）。签名与调用面与收编前一致——供 RoomService 的 KP 回合执行器挂接。 */
+export function buildStoryLookup(input: StoryLookupInput): StoryLookupHandler | undefined {
   if (input.getWorkflow() !== 'dossier' || !input.getStoryId()) return undefined
   return async (toolName, args) => {
-    const ownerId = input.getOwnerId()
-    const storyId = input.getStoryId() as string
-    const { loadDossier, listScenes, buildSceneBlock, findScene, lexicalSearch, renderSceneNotFound, renderLexicalMiss } = await import('../rag/dossier/dossierCore.js')
-    const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
-    const dossier = await loadDossier(ownerId, storyId)
-    if (!dossier) return { content: 'error: 剧本档案不存在' }
-    if (toolName === 'scene_list') {
-      const scenes = listScenes(dossier)
-      if (scenes.length === 0) return { content: '剧本档案中暂无场景。' }
-      return { content: scenes.map((s) => `- ${s.name}${s.description ? `：${s.description}` : ''}`).join('\n') }
-    }
-    if (toolName === 'scene_dossier') {
-      const name = String(args.sceneName ?? '').trim()
-      if (!name) return { content: 'error: sceneName required' }
-      const scene = findScene(dossier, name)
-      if (!scene) {
-        return { content: renderSceneNotFound(name, listScenes(dossier).map((s) => s.name)) }
-      }
-      // P26：附场景覆盖提示（缺口归属按 .gaps.json；loadGaps 内部已吞错返回 null）
-      const gaps = await loadGaps(ownerId, storyId)
-      const coverage = gaps ? computeSceneCoverage(gaps, scene.id) : null
-      return { content: buildSceneBlock(dossier, scene.id, coverage) }
-    }
-    if (toolName === 'lexical_search') {
-      const query = String(args.query ?? '').trim()
-      if (!query) return { content: 'error: query required' }
-      const hits = lexicalSearch(dossier, query, 5)
-      if (hits.length === 0) return { content: renderLexicalMiss(query) }
-      return { content: hits.map((h) => `[${h.kind}] ${h.name}${h.text ? `：${h.text.slice(0, 200)}` : ''}`).join('\n') }
-    }
-    if (toolName === 'verify_original') {
-      // P25 运行时原文查证：场景锚点窗口 → 全新上下文子阅读器（剧透层标注随内容）。
-      // 缺省场景 = 房间当前场景；内部失败一律降级为「未取得」文本（不阻断回合）。
-      const question = String(args.question ?? '').trim()
-      if (!question) return { content: 'error: question required' }
-      const sceneArg = String(args.scene ?? '').trim() || input.getScene() || undefined
-      const { verifyOriginal } = await import('../rag/dossier/originalLookup.js')
-      const res = await verifyOriginal(
-        { question, scene: sceneArg },
-        { userId: ownerId, scriptId: storyId },
-      )
-      if (process.env.KP_LLM_DEBUG === '1') {
-        console.error(`[verify-original] room=${input.roomId} scene=${sceneArg ?? ''} tier=${res.meta.tier} chars=${res.meta.chars} ok=${res.meta.ok} ${res.meta.durationMs}ms`)
-      }
-      return { content: res.content }
-    }
-    return { content: `error: unknown tool "${toolName}"` }
+    const { runStoryLookup } = await import('../rag/dossier/dossierLookupTools.js')
+    return runStoryLookup(input, toolName, args)
   }
 }
