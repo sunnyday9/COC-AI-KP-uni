@@ -17,7 +17,7 @@
 6. [线索门控：剧本结构化与程序化判定](#六线索门控剧本结构化与程序化判定)
 7. [RAG 检索系统（剧本知识）](#七rag-检索系统剧本知识)
 8. [AI 协议适配层与 MOCK_AI](#八ai-协议适配层与-mock_ai)
-9. [前端核心：gameStore 与工具执行链](#九前端核心gamestore-与工具执行链)
+9. [前端核心：RoomClient 与服务端回合链路](#九前端核心roomclient-与服务端回合链路)
 10. [平台抽象层 Bridge 与 WebSocket](#十平台抽象层-bridge-与-websocket)
 11. [数据模型与持久化](#十一数据模型与持久化)
 12. [安全设计](#十二安全设计)
@@ -332,59 +332,53 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 
 ---
 
-## 九、前端核心：gameStore 与工具执行链
+## 九、前端核心：RoomClient 与服务端回合链路（ADR-0002 现行架构）
 
-### 9.1 gameStore（`client/src/stores/gameStore.ts`，857 行）——客户端状态真源
+> 本节描述 **ADR-0002 之后的形态**：上下文注入（提示词组装 / RAG / 记忆编排）与工具循环已**整体服务端收口**，旧客户端架构的 gameStore、kpSessionService、客户端 toolCalling 均已删除；单人游戏 = 单成员房间，与多人共用同一 wire 协议。
 
-**游戏阶段机**：`story_selected → occupation_selected → playing → ended`（`useGameGuard` 守卫）。
+### 9.1 RoomClient（`client/src/stores/roomStore.ts`）——客户端唯一的房间视图模型
 
-**每轮玩家消息主链路**（`sendPlayerMessage`）：
-
-```
-① 组装 chatMessages（最近 18 条对话 + 长期摘要 + 记忆点 + 角色卡 + RAG 上下文）
-   —— kpPromptService：BASE_INSTRUCTIONS（KP 身份/防剧透/严禁文字编骰/战斗链/三线索冗余/孤注一掷细则…
-      共约 40 条 COC 7th 守则）+ buildCharacterContext + buildMemoryBlock(≤30) +
-      buildRecentTurnsBlock(最近5轮每轮120字) + longTermSummary + ragContext
-② runKpAgentLoop（kpSessionService，见 9.2）→ 工具循环
-③ 记忆提取：extractMemoryPoints（LLM 抽 3-5 条 ≤40 字要点）→ kpMemory（上限 30）
-④ 长程摘要触发：场景切换 / 每 N 回合（自适应：<20 回合每 5、≥20 每 3、≥40 每 2）/
-   高影响工具回合（grant_clue/melee_attack/ranged_attack/san_check/trigger_insanity）
-   → runLongTermSummarization：RAG 检索 + LLM 合并，收缩率 <85% 才落地（防劣化），fire-and-forget
-⑤ narrativeStall 计数：_turnHadProgressTool ? 0 : min(10, +1)
-⑥ traceBus 全程打点（prompt_assembly / kp_agent_loop_iteration / state_update / long_term_summary…）
-```
-
-**关键状态与动作**：
-
-- `cluesObtained` 结构化 `{id, description}`（旧存档纯字符串自动迁移）；
-- `transitionToScene`：记 `scenesVisited` + 触发摘要；
-- `updateCharacterHP`：HP≤0 → 自动 `endGame('defeat')`；
-- `updateCharacterSAN`：SAN≤0 → **先置 insanityState='permanent' 再 endGame**（修复了原来只 endGame 状态不一致的 bug）；
-- `updateCharacterInsanityState`：设置疯狂状态 + 恐惧症/躁狂症；
-- `endGame`：冻结 endingState（outcome/title/summary/epilogueOptions/keyFacts/finalSnapshot/clues/scenes）+ 跳结局页；
-- `sanitizeKpResponse`：把 LLM 泄漏的内部指引（`[意图提示]`/`[工具说明]`/`## 内部指引`…）从流式预览里洗掉；
-- `buildStoryContext`：拼 `{scriptId, openClues, sceneId/sceneName, sanity:{currentSan, dailySanLoss}, forceTransitionScene}` 每轮随 invoke 上传；
-- 存档 `saveGame` → `writeSaveSnapshot`（全量快照含角色卡）；`loadGame` 按 `SAVE_VERSION` 分新旧档恢复（版本不符则丢弃摘要类字段）。
-
-### 9.2 工具循环（`client/src/services/kpSessionService.ts`）
+本 store **不产生任何房间状态**，状态真源是服务端 RoomService（每房间单实例，seq 全序广播）。RoomClient 只做三件事：
 
 ```
-runKpAgentLoop（≤8 轮）：
-  kpInvokeOnce（优先 WS 流式 kp:invokeStream，无 WS 回退 REST kpInvoke）
-    → chunk 流式拼 preview 更新 UI（base + '\n\n' + iter）
-    → end 帧 {content, toolCalls}
-  → 有 toolCalls → processToolCalls（orchestrator 执行）
-  → insertMessagesBeforeLast（骰子/系统展示消息插到流式消息前）
-  → msgs 追加 assistant(tool_calls) + tool 结果（summarizeToolResult 摘要头 + 600 字符截断）
-  → 下一轮
-单轮失败 → trace_error + break（保留已产出叙事，不烧剩余重试）
+① 订阅 room:event 增量，按 seq 顺序应用到本地视图模型（消息/角色组/线索/场景/结局）；
+② 首次加入或断线重连缺口过大时，接收 room:state 全量快照，整体替换本地状态；
+③ 把页面动作发往服务端——治理动作（建房/邀请码加入/绑卡/开局/就绪…）走 REST
+   （RoomService 领域方法，ADR-0001），回合发言走 WS room:action（type:'chat'）。
 ```
 
-**性能保护**（perf A4）：工具结果回传时先加 `【结果摘要】` 头部（前 6 个字段各 40 字符），再截断 600 字符——长工具链历史不再无限膨胀。服务端 `parseToolResultContent` 从第一个 `{` 起解析，兼容摘要头。
+**唯一乐观面 = 自己发出的消息**：本地置 `pending` 标记，服务端 `message_appended` 回灌后移除；其余一切以服务端事件为准。
 
-### 9.3 工具执行（`client/src/toolCalling/`）
+**生命周期**（joinRoom 幂等）：`idle ──joinRoom──▶ joining ──room:state──▶ joined`；断线重连按 seq 游标 `room:sync` 增量补齐，缺口过大退回全量快照；被移出（kicked）或房间解散（dissolved）有成员资格自检。页面不持有领域状态、不组装提示词、不拉取 RAG（ADR-0002 决策 5）。
 
-**orchestrator**：JSON.parse 参数 → `NAME_TO_HANDLER` 路由 → 异常捕获返回 `error: 原因`（**回喂 LLM 让其自纠**，而不是中断流程）→ 逐条 trace `tool_executed`。DEV 模式校验 shared 18 工具都有 handler。
+### 9.2 服务端回合链路：一条 wire 协议，solo 与 multi 同路径
+
+每轮 KP 回合（`RoomService.flushTurn`，串行队列按到达顺序处理；多人房可经 `turnWindowMs` 合并窗口，solo 恒为 0）：
+
+```
+① 上下文组装（服务端收口，客户端零参与）：kpPromptService.buildRoomTurnMessages——
+   BASE_INSTRUCTIONS 守则（KP 身份/防剧透/严禁文字编骰/战斗链…）+ 角色花名册注入 +
+   记忆要点块（上限 MAX_MEMORY_ENTRIES=30）+ 近轮对话窗；知识块由 TurnKnowledge
+   装配（dossier 档案块 / 标准 RAG 检索情报块，见 §7）；
+② kpTurnService.runKpTurn：服务端图内工具循环（≤8 轮），LLM 调用与工具执行
+   都在同一进程内完成，不再经网络往返；
+③ 回合产物落房间状态并广播 room:event：KP 叙事整段 message_appended（ADR-0002
+   否决 kp:chunk 流式帧——流式破坏 seq/补发语义；KP_CHUNK_STREAM=1 实验帧客户端
+   不消费）、骰子 dice_result、调试 trace、状态增量 state_patch；变更节流落库
+   rooms.state 快照（重进房间 = 续玩）；
+④ 记忆编排同在服务端（roomMemory）：抽取 3-5 条 ≤40 字要点 + 摘要收缩，
+   失败回退（抽取失败→截断兜底，摘要失败→保持原摘要）。
+```
+
+**性能保护原样保留**：工具结果回传先加摘要头（前 6 个字段各 40 字符），再截断 600 字符（`MAX_TOOL_RESULT_SUMMARY_CHARS` / `MAX_TOOL_RESULT_CHARS`）——长工具链历史不再无限膨胀。
+
+**单人模式**（ADR-0002）：不出现在房间列表、出生即 playing；「确认角色卡」是一体领域动作（落角色卡 + 建 `kind='solo'` 单成员房间 + 绑卡 + start）。solo 免费获得 seq 全序、断线重连、服务端持久化——**单人没有独立的回合协议**。
+
+### 9.3 规则引擎（`server/src/rule-engine/`）——COC 工具的服务端执行
+
+原客户端 `toolCalling/` 的 orchestrator + 6 个 handler **整体迁到服务端**，由 kpTurnService 在图内调用（`processToolCalls` + `buildToolContext`）；工具集 = 全部 COC 规则工具（`shared/tools/cocTools.ts` 的 `COC_KP_TOOLS`，24 个）+ 按需挂载的 4 个档案查证工具（scene_list / scene_dossier / lexical_search / verify_original，是否供给由 TurnKnowledge 的 workflow 门决定，见 CONTEXT.md「TurnKnowledge」）：
+
+- **orchestrator**：JSON.parse 参数 → `NAME_TO_HANDLER` 路由 → 异常捕获返回 `error: 原因`（**回喂 LLM 让其自纠**，而不是中断流程）→ 逐条 trace `tool_executed`。
 
 **6 个 handler 的规则实现**（COC 7th 规则书合规的核心）：
 
@@ -392,12 +386,12 @@ runKpAgentLoop（≤8 轮）：
 |---|---|---|
 | checkHandler | skill_check / opposed_check / roll_dice | d100 vs 技能值；regular/hard/extreme（÷1/2/5）；奖惩骰（0-2，十位数取高/低，互消）；大失败 96+/100（技能<50 时）；孤注一掷 isPush；对抗等级链 critical > extreme > hard > regular > failure > fumble，同级比技能值 |
 | combatHandler | melee_attack / ranged_attack / adjust_hp / apply_major_wound / first_aid / medicine | 命中→伤害骰+伤害加值DB−护甲；**贯穿武器极难成功伤害取满+额外再骰一份**；重伤（≥半HP，CON 检定昏迷）/濒死/即死；急救稳定 1HP；医学 1D3 |
-| sanityHandler | san_check / trigger_insanity / adjust_san / reset_day | 大失败 SAN 损失取最大骰；**疯狂三级判定**：SAN≤0 永久 / 当日累计 ≥⌊SAN/5⌋ 不定性 / 单次损失 ≥5 → INT 检定（成功临时失败压抑）；1D10 发作表（9=恐惧症、10=躁狂症，从 `insanityTables.ts` 表抽取）；克苏鲁神话值下调 SAN 上限（99−mythos）；reset_day 重置当日损失 |
+| sanityHandler | san_check / trigger_insanity / adjust_san / reset_day | 大失败 SAN 损失取最大骰；**疯狂三级判定**：SAN≤0 永久 / 当日累计 ≥⌊SAN/5⌋ 不定性 / 单次损失 ≥5 → INT 检定（成功临时失败压抑）；1D10 发作表（9=恐惧症、10=躁狂症，从 `shared/coc/insanityTables.ts` 表抽取）；克苏鲁神话值下调 SAN 上限（99−mythos）；reset_day 重置当日损失 |
 | resourceHandler | adjust_mp / spend_luck | 幸运 1:1 改骰（不可用于幸运/SAN/伤害骰）；MP 增减 |
 | narrativeHandler | transition_scene / grant_clue / end_game | 场景切换（防重复入栈）、线索授予（去重、可选 clueId）、结局快照 |
 | rulesHandler | 剩余规则扩展 | 见 `rulesHandler.ts` |
 
-`toolContextFactory` 把 gameStore 的角色更新器 + 规则纯函数（parseDiceExpr/rollDamageBonus/奖惩骰）组装成 `ToolHandlerContext` 注入 handler——**规则纯逻辑与 UI 状态解耦**，这也是 `logic/` 纯函数层（coc7Rules 等，137 个用例零改动复用）的设计。
+**规则纯函数上收 `shared/coc/`**：coc7Rules（检定公式）、diceService、insanityTables、coc7Character 等纯函数层由两端共享，服务端消费（`server/test/coc/`、`server/test/rule-engine/` 承载其用例）。`toolContextFactory` + `characterMutators` 把角色卡更新回调组装成 `ToolHandlerContext` 注入 handler，更新落房间会话角色（sessionCharacter 快照）——**规则纯逻辑与持久化状态解耦**的设计不变。
 
 ---
 

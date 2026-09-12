@@ -65,13 +65,6 @@ function initSchema(database: DatabaseSync): void {
       data TEXT NOT NULL,
       PRIMARY KEY (user_id, story_id)
     );
-    CREATE TABLE IF NOT EXISTS user_graphs (
-      user_id INTEGER NOT NULL,
-      story_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      data TEXT NOT NULL,
-      PRIMARY KEY (user_id, story_id, session_id)
-    );
     CREATE TABLE IF NOT EXISTS rooms (
       room_id TEXT PRIMARY KEY,
       owner_id INTEGER NOT NULL,
