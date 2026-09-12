@@ -580,15 +580,6 @@ async function confirmLogout() {
                 </view>
               </view>
 
-              <view>
-                <text class="field-label">同步服务 URL</text>
-                <input
-                  v-model="settings.syncServerUrl"
-                  class="gothic-input"
-                  placeholder="http://localhost:3000"
-                  placeholder-class="gothic-ph"
-                />
-              </view>
               <button class="gothic-btn" hover-class="gothic-btn-press" @click="handleSave">保存</button>
             </view>
           </view>
@@ -603,15 +594,6 @@ async function confirmLogout() {
               <text class="dev-badge">DEV ONLY</text>
             </view>
             <view class="section-content">
-              <view class="toggle-row" @click="settings.debugMode = !settings.debugMode">
-                <view class="checkbox" :class="{ 'checkbox-on': settings.debugMode }">
-                  <text v-if="settings.debugMode" class="check-mark">✓</text>
-                </view>
-                <view>
-                  <text class="toggle-label">启用 KPTrace 追踪</text>
-                  <text class="field-note">记录 Agent 循环、RAG 检索、工具执行等全链路事件</text>
-                </view>
-              </view>
               <view class="kbd-hint">快捷键：在游戏房间按 Ctrl+Shift+D 打开/关闭 Debug Panel（H5）</view>
               <!-- #ifdef H5 -->
               <view class="kbd-hint">RAG Inspector：H5 端访问 /#/pages/rag-inspector/index（检查 RAG 索引与搜索质量；小程序不包含此页）</view>

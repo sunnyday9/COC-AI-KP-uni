@@ -23,8 +23,6 @@ export interface RAGSettings {
 export interface AppSettings {
   ai: AIProviderConfig
   rag?: RAGSettings
-  syncServerUrl: string
-  debugMode?: boolean
 }
 
 const ALL_PROTOCOLS = new Set<string>(PROTOCOL_DEFS.map((p) => p.id))
@@ -46,7 +44,6 @@ const defaultSettings: AppSettings = {
     maxTokens: 2048,
   },
   rag: defaultRAG,
-  syncServerUrl: 'http://localhost:3000',
 }
 
 /**
@@ -80,7 +77,6 @@ export const useSettingsStore = defineStore('settings', () => {
         temperature: typeof rawAi.temperature === 'number' ? rawAi.temperature : defaultSettings.ai.temperature,
         maxTokens: typeof rawAi.maxTokens === 'number' ? rawAi.maxTokens : defaultSettings.ai.maxTokens,
       }
-      const syncServerUrl = typeof saved.syncServerUrl === 'string' ? saved.syncServerUrl : defaultSettings.syncServerUrl
       const rawRag = saved.rag && typeof saved.rag === 'object' ? (saved.rag as unknown as Record<string, unknown>) : {}
       const rag: RAGSettings = {
         // 若未显式保存 useEmbeddings，则使用默认值（true）；只有明确写入 false 才关闭
@@ -90,8 +86,7 @@ export const useSettingsStore = defineStore('settings', () => {
         // 漏掉这行 = 每次 save() 把用户的关闭状态改回默认开（服务端 mergeDefaults 回填 true）
         supplement: rawRag.supplement === false ? false : true,
       }
-      const debugMode = typeof saved.debugMode === 'boolean' ? saved.debugMode : false
-      settings.value = { ai, rag, syncServerUrl, debugMode }
+      settings.value = { ai, rag }
     }
   }
 
@@ -132,12 +127,10 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   const aiConfig = computed(() => settings.value.ai)
-  const debugMode = computed(() => settings.value.debugMode ?? false)
 
   return {
     settings,
     aiConfig,
-    debugMode,
     isAuthenticated,
     load,
     save,

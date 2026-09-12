@@ -45,8 +45,6 @@ describe('settingsStore', () => {
         maxTokens: 100,
       },
       rag: { useEmbeddings: false, provider: 'api', model: 'embed-1' },
-      syncServerUrl: 'http://sync.example',
-      debugMode: true,
     })
     const store = useSettingsStore()
     await store.load()
@@ -58,11 +56,9 @@ describe('settingsStore', () => {
     expect(store.settings.ai.apiKey).toBe(TEST_KEY_A)
     expect(store.settings.ai.temperature).toBe(0.5)
     expect(store.settings.ai.maxTokens).toBe(100)
-    expect(store.settings.syncServerUrl).toBe('http://sync.example')
     expect(store.settings.rag?.useEmbeddings).toBe(false)
     expect(store.settings.rag?.provider).toBe('api')
     expect(store.settings.rag?.model).toBe('embed-1')
-    expect(store.debugMode).toBe(true)
   })
 
   it('load() keeps defaults when the server returns an empty object', async () => {
@@ -74,8 +70,6 @@ describe('settingsStore', () => {
     expect(store.settings.ai.model).toBe('')
     expect(store.settings.rag?.useEmbeddings).toBe(true)
     expect(store.settings.rag?.provider).toBe('builtin')
-    expect(store.settings.syncServerUrl).toBe('http://localhost:3000')
-    expect(store.settings.debugMode).toBe(false)
   })
 
   it('save() PUTs the current settings via bridge.setSettings (apiKey passthrough)', async () => {

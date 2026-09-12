@@ -48,8 +48,6 @@ interface RAGSettings {
 interface AppSettings {
   ai: AIProviderConfig
   rag?: RAGSettings
-  syncServerUrl: string
-  debugMode?: boolean
 }
 ```
 

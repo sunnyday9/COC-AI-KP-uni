@@ -29,6 +29,4 @@ export interface RAGSettings {
 export interface AppSettings {
   ai: AIProviderConfig
   rag?: RAGSettings
-  syncServerUrl: string
-  debugMode?: boolean
 }

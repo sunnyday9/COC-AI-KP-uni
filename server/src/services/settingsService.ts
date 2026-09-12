@@ -30,7 +30,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // 检索补充层（ADR-0007 决策 5/6）：默认开——每回合固定检索注入原文纹理
     supplement: true,
   },
-  syncServerUrl: 'http://localhost:3000',
 }
 
 /**
@@ -119,13 +118,6 @@ export function validatePatch(patch: unknown): void {
   }
   if (supplement !== undefined && typeof supplement !== 'boolean') {
     throw new BadRequestError('settings.rag.supplement must be a boolean')
-  }
-
-  if (patch.syncServerUrl !== undefined && typeof patch.syncServerUrl !== 'string') {
-    throw new BadRequestError('settings.syncServerUrl must be a string')
-  }
-  if (patch.debugMode !== undefined && typeof patch.debugMode !== 'boolean') {
-    throw new BadRequestError('settings.debugMode must be a boolean')
   }
 }
 
@@ -219,8 +211,6 @@ function mergeDefaults(patch: Record<string, unknown>): StoredSettings {
       // 旧配置里的 useGraphRAG / extractionModel 直接忽略（M1-T7 干净断代，不做兼容层）
       supplement: typeof ragIn.supplement === 'boolean' ? ragIn.supplement : DEFAULT_SETTINGS.rag!.supplement,
     },
-    ...(typeof patch.syncServerUrl === 'string' ? { syncServerUrl: patch.syncServerUrl } : {}),
-    ...(typeof patch.debugMode === 'boolean' ? { debugMode: patch.debugMode } : {}),
   }
   return merged
 }

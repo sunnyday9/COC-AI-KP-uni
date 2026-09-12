@@ -2,7 +2,6 @@
  * RAG Service — communicates with the backend vector store via the Platform
  * Bridge (replaces the Electron IPC `window.electronAPI.rag*` calls, Task 7).
  */
-import { traceBus } from './tracing'
 import { getBridge } from '../platform'
 
 export interface RAGChunkResult {
@@ -76,24 +75,12 @@ export async function getContext(params: {
   sceneId?: string
   topK?: number
 }): Promise<{ context: string; chunkCount?: number }> {
-  traceBus.emit('rag_retrieval', 'rag_query_sent', {
-    query: params.query,
-    scriptId: params.scriptId,
-    topK: params.topK ?? 5,
-  })
   const result = await getBridge().ragContext({
     query: params.query,
     scriptId: params.scriptId,
     sceneId: params.sceneId,
     topK: params.topK ?? 5,
   })
-  // hasUserGraph 字段在原 TraceEventMap 中为必填但原代码未传（原类型缺口，运行时不变）；
-  // M1-T7 起无图，hasGraphSummary 恒 false（字段保留以免动 trace 契约）
-  traceBus.emit('rag_retrieval', 'rag_context_received', {
-    chunkCount: result?.chunkCount ?? 0,
-    contextLength: result?.context?.length ?? 0,
-    hasGraphSummary: false,
-  } as unknown as Parameters<typeof traceBus.emit<'rag_context_received'>>[2])
   return result
 }
 

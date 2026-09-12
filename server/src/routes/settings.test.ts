@@ -64,7 +64,6 @@ describe('settings routes', () => {
     expect(res.status).toBe(200)
     expect(res.body.ai).toEqual(DEFAULT_AI)
     expect(res.body.rag).toEqual(DEFAULT_RAG)
-    expect(res.body.syncServerUrl).toBe('http://localhost:3000')
     expect('apiKey' in res.body.ai).toBe(false)
   })
 
@@ -80,6 +79,7 @@ describe('settings routes', () => {
         maxTokens: 1024,
       },
       rag: { useEmbeddings: false, provider: 'api', model: 'text-embedding-3-large' },
+      // 旧客户端残留字段（#58 已删除）：PUT 须接受，GET 不得回显
       syncServerUrl: 'https://sync.example.com',
       debugMode: true,
     })
@@ -103,8 +103,8 @@ describe('settings routes', () => {
       // 未在 patch 里给出 → 保持默认开（M1-T6）
       supplement: true,
     })
-    expect(got.body.syncServerUrl).toBe('https://sync.example.com')
-    expect(got.body.debugMode).toBe(true)
+    expect(got.body).not.toHaveProperty('syncServerUrl')
+    expect(got.body).not.toHaveProperty('debugMode')
   })
 
   it('旧配置带已删除的 useGraphRAG/extractionModel → 不报错，读回时已被忽略（M1-T7）', async () => {
