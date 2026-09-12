@@ -22,11 +22,13 @@
  * 降质——REST 可达链上**不引入以请求 storyId 为键的 loadDossier/loadGaps keyed fs 读**。
  * 对知识层实现（dossierCore / ragService）保持动态 import。governanceGate 的
  * multi-only 前置（kind）留在房间域——它被全部治理动作共享，不是开局门闩。
- * 本模块无状态、无静态运行时依赖（类型除外）：入口只喂「行摘要 + 归属」，
- * 成功路径副作用（写库/对账/opening）不在此——门闩只判定。
+ * 本模块无状态、无 fs/db 静态运行时依赖（类型除外）：入口只喂「行摘要 + 归属」，
+ * 成功路径副作用（写库/对账/opening）不在此——门闩只判定。唯一静态运行时依赖是
+ * 零依赖纯函数 codec roomStateCodec（#61 rooms.state 读点收口），不引 fs/db 重量。
  */
 import type { StoryWorkflow } from './kpPromptService.js'
 import type { DossierListItem } from '../rag/dossier/dossierCore.js'
+import { parseRoomState } from './roomStateCodec.js'
 
 /** 门闩入口：lobby-start = startRoom（等待室开局）；solo-create = createSoloRoom（一体动作，出生即 playing）。 */
 export type StartGateFor = 'lobby-start' | 'solo-create'
@@ -70,15 +72,10 @@ export function sanitizeWorkflow(value: unknown): StoryWorkflow {
   return value === 'dossier' ? 'dossier' : 'rag'
 }
 
-/** 房间行内 workflow（lobby 期由 createRoom 写入 state JSON；列无 workflow 列）。 */
+/** 房间行内 workflow（lobby 期由 createRoom 写入 state JSON；列无 workflow 列）。
+ *  rooms.state 经 codec 容错解析（#61）：空值/脏 JSON/JSON null → workflow undefined → 'rag'（原语义）。 */
 function roomWorkflowFromRow(room: StartGateRoomSummary): StoryWorkflow {
-  if (!room.state) return 'rag'
-  try {
-    const s = JSON.parse(room.state) as { workflow?: unknown }
-    return sanitizeWorkflow(s.workflow)
-  } catch {
-    return 'rag'
-  }
+  return sanitizeWorkflow(parseRoomState<{ workflow?: unknown }>(room.state)?.workflow)
 }
 
 /** dossier 门闩材料：一次 readdir 拿全——清单（scriptId 集合判「已生成」）与该剧本的

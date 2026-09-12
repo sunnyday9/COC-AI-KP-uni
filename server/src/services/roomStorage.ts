@@ -8,6 +8,7 @@
  * 外部 id 只作为 DB 键进入查询（D-09 DB 映射：不落 fs 路径）。
  */
 import { getDb } from '../db/index.js'
+import { parseRoomState } from './roomStateCodec.js'
 import type { RoomPhase } from '../../../shared/types/room.js'
 
 export interface RoomRow {
@@ -94,11 +95,10 @@ export function listSoloRoomsForUser(userId: number): SoloRoomListItemRow[] {
     .all(userId) as { room_id: string; story_id: string | null; phase: string; updated_at: number; state: string }[]
   return rows.map((r) => {
     let preview = ''
-    try {
-      const msgs = (JSON.parse(r.state) as { messages?: { role: string; content?: unknown }[] }).messages
-      const last = Array.isArray(msgs) ? msgs[msgs.length - 1] : undefined
-      if (last && typeof last.content === 'string') preview = last.content.slice(0, 50)
-    } catch { /* 脏 state 忽略摘要 */ }
+    // rooms.state 经 codec 容错解析（#61）：脏 JSON/JSON null → 摘要留空（原语义）
+    const msgs = parseRoomState<{ messages?: { role: string; content?: unknown }[] }>(r.state)?.messages
+    const last = Array.isArray(msgs) ? msgs[msgs.length - 1] : undefined
+    if (last && typeof last.content === 'string') preview = last.content.slice(0, 50)
     return { roomId: r.room_id, storyId: r.story_id, phase: r.phase, updatedAt: r.updated_at, preview }
   })
 }

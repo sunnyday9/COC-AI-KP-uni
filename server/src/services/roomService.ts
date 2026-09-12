@@ -16,9 +16,12 @@ import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.
 import { isKpChunkStreamEnabled } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
-// 共用 checkStartGate，差异用 gateFor 表达。startGate 是零静态运行时依赖的叶子
-// （dossierCore/ragService 知识层走其内部动态 import），静态引入不加重量。
+// 共用 checkStartGate，差异用 gateFor 表达。startGate 是零 fs/db 运行时依赖的叶子
+// （dossierCore/ragService 知识层走其内部动态 import，唯一静态运行时依赖是零依赖
+// 纯函数 codec roomStateCodec），静态引入不加重量。
 import { checkStartGate, sanitizeWorkflow } from './startGate.js'
+// rooms.state JSON 文档 codec（#61）：读点容错解析 / 写点序列化单点收口。
+import { parseRoomState, parseRoomStateOr, serializeRoomState } from './roomStateCodec.js'
 import type {
   RoomEventPayloadMap,
   RoomEventType,
@@ -694,7 +697,7 @@ export class RoomService {
   async persistSnapshot(): Promise<void> {
     this.eventCountSinceSnapshot = 0
     this.lastSnapshotAt = Date.now()
-    roomStorage.updateRoomStateSnapshot(this.roomId, JSON.stringify(this.snapshot()))
+    roomStorage.updateRoomStateSnapshot(this.roomId, serializeRoomState(this.snapshot()))
   }
 
   /** 停止定时器（房间回收时调用）。 */
@@ -723,9 +726,7 @@ export function getOrCreateRoom(
     // REST start 只更新列，实例 restore 必须拿到最新 storyId/phase）
     const r = roomStorage.getRoomRow(roomId)
     let restore: RoomSnapshot | null = null
-    if (r?.state) {
-      try { restore = JSON.parse(r.state) as RoomSnapshot } catch { restore = null }
-    }
+    if (r?.state) restore = parseRoomState<RoomSnapshot>(r.state)
     if (restore) {
       // 列是权威：覆盖快照中的过期值
       if (typeof r?.story_id === 'string') restore.storyId = r.story_id
@@ -826,7 +827,7 @@ export function createRoom(
   roomStorage.insertMember(roomId, userId, 'owner')
   // lobby 期即定 workflow（开局门闩/实例物化按它校验），存 state。
   if (sanitizeWorkflow(opts.workflow) === 'dossier') {
-    roomStorage.updateRoomStateSettings(roomId, JSON.stringify({ workflow: 'dossier' }))
+    roomStorage.updateRoomStateSettings(roomId, serializeRoomState({ workflow: 'dossier' }))
   }
   return { roomId, inviteCode }
 }
@@ -878,7 +879,7 @@ export async function createSoloRoom(
     // workflow（实验分支）一并进 state——实例物化时经 snapshot restore 读到。
     // 懒激活保持：REST 建房只持久化，不激活实例。
     roomStorage.updateRoomStart(roomId, storyId)
-    roomStorage.updateRoomStateSettings(roomId, JSON.stringify(workflow === 'dossier' ? { turnWindowMs: 0, workflow: 'dossier' } : { turnWindowMs: 0 }))
+    roomStorage.updateRoomStateSettings(roomId, serializeRoomState(workflow === 'dossier' ? { turnWindowMs: 0, workflow: 'dossier' } : { turnWindowMs: 0 }))
     db.exec('COMMIT')
     return { ok: true, roomId, inviteCode, characterId }
   } catch (err) {
@@ -912,8 +913,8 @@ export function getRoomDetail(
   if (!roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
   const room = roomStorage.getRoomRow(roomId)
   if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
-  let state: unknown = {}
-  try { state = JSON.parse(room.state) } catch { state = {} }
+  // rooms.state 经 codec 容错解析（#61）：脏 JSON → {}；成功值原样透传（含 JSON null，原语义）
+  const state: unknown = parseRoomStateOr(room.state, {})
   return {
     ok: true,
     detail: {
@@ -1010,8 +1011,9 @@ export function setRoomTurnWindow(
   if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can change room settings' }
   // ADR-0002：solo 房间回合窗口恒为 0（单成员无需合并缓冲），不可设置
   if (room.kind === 'solo') return { ok: false, reason: 'bad-request', message: 'solo rooms have a fixed turn window of 0' }
-  let state: Record<string, unknown> = {}
-  try { state = JSON.parse(room.state) as Record<string, unknown> } catch { state = {} }
+  // rooms.state 经 codec 容错解析（#61）：脏 JSON → {}；成功值原样（含 JSON null/原始值，
+  // 后续赋值/写回按现状表现，不附加对象守卫）
+  const state = parseRoomStateOr(room.state, {}) as Record<string, unknown>
   let ms: number | undefined
   if (rawTurnWindowMs !== undefined) {
     const sanitized = sanitizeTurnWindowMs(rawTurnWindowMs)
@@ -1019,7 +1021,7 @@ export function setRoomTurnWindow(
     state.turnWindowMs = sanitized
     ms = sanitized
   }
-  roomStorage.updateRoomStateSettings(roomId, JSON.stringify(state))
+  roomStorage.updateRoomStateSettings(roomId, serializeRoomState(state))
   const active = getRoom(roomId)
   if (active && typeof ms === 'number') active.setTurnWindowMs(ms)
   return { ok: true, turnWindowMs: ms }
