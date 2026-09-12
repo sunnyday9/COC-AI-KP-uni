@@ -59,10 +59,11 @@ vi.mock('../../rag/supplementService.js', () => ({
   defaultRewrite: () => undefined,
 }))
 
-/** 桩档案服务（dossier 房：场景块走档案，补充小节走检索）。
+/** 桩档案服务（dossier 房：场景块走档案，补充小节走检索）。mock 落在轻核
+ *  dossierCore——roomService 动态 import 的就是它。
  *  coverageGaps 桩需保留 `regions.js` 的常量再导出（supplementAssembly 的
  *  场景区域/归一化走那条轻链）。 */
-vi.mock('../../rag/dossier/storyDossierService.js', () => ({
+vi.mock('../../rag/dossier/dossierCore.js', () => ({
   loadDossier: vi.fn(async () => ({ storyName: '雾中镇', scenes: [{ id: 's1', name: '门厅', sceneText: '门厅的铜灯。' }], npcs: [], clues: [], transitions: [], events: [], truths: [], endings: [] })),
   buildSceneBlock: vi.fn(() => '场景：门厅\n简介：进门处。'),
   listScenes: vi.fn(() => [{ id: 's1', name: '门厅' }]),

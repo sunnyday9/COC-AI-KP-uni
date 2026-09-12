@@ -57,7 +57,7 @@ vi.mock('../../rag/supplementService.js', () => ({
 /** 档案桩：三个场景（含一个拉丁名场景用于大小写变体）。
  *  `findScene` **取真实实现**（`rag/dossier/sceneLookup.ts`，无 IO 的纯函数）——
  *  归一化匹配正是本票要验的逻辑，桩掉它测试就没有意义了。 */
-vi.mock('../../rag/dossier/storyDossierService.js', async () => {
+vi.mock('../../rag/dossier/dossierCore.js', async () => {
   const { findScene } = await vi.importActual<typeof import('../../rag/dossier/sceneLookup.js')>('../../rag/dossier/sceneLookup.js')
   return {
     findScene,
@@ -87,9 +87,8 @@ vi.mock('../../rag/dossier/storyDossierService.js', async () => {
       }
       return byId[id] ?? ''
     }),
-    // 「未覆盖」文案**取真实实现**（`storyDossierService` 与本模块同链，无法 partial
-    // mock 单函数）：改用真实实现的语义子集，并在用例里断言调用参数——文案正文的
-    // 逐字断言留在 storyDossierService.spec.ts 对着真实实现做。
+    // 「未覆盖」文案保持语义子集桩（沿用 #53 时的形态：本 spec 只断言调用参数，
+    //  文案正文的逐字断言留在 storyDossierService.spec.ts 对着真实实现做）。
     renderSceneUncovered: vi.fn(
       (name: string, names: string[]) =>
         `【场景归属提示】档案未覆盖当前场景「${name}」。档案中的场景：${names.join('、') || '（无）'}。`,
@@ -173,7 +172,7 @@ describe('#53 档案房场景归属（错配不回落到别的场景）', () => 
   })
 
   it('房间场景有值但档案没有 → 不注入别的场景，注入「未覆盖」提示，覆盖率不冒充', async () => {
-    const { buildSceneBlock, renderSceneUncovered } = await import('../../rag/dossier/storyDossierService.js')
+    const { buildSceneBlock, renderSceneUncovered } = await import('../../rag/dossier/dossierCore.js')
     const { computeSceneCoverage, loadGaps } = await import('../../rag/dossier/coverageGaps.js')
     const { buildSupplement } = await import('../../rag/supplementService.js')
     const { runPrefetch } = await import('../../rag/dossier/prefetch.js')

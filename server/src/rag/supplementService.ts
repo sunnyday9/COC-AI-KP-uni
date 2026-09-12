@@ -122,10 +122,10 @@ async function defaultVectorQuery(params: {
   })
 }
 
-/** 默认档案读取：动态导入（storyDossierService → storyService/annex → jsdom/pdf-lib，
- *  不该静态进回合模块图——同 indexOrchestration 的处理）。 */
+/** 默认档案读取：动态导入轻核 dossierCore（拆分后查询核已无重依赖链；动态
+ *  风格保持不变——回合模块图不新增静态边，见 Mimosa 门禁安全边界）。 */
 async function defaultLoadDossier(userId: number, scriptId: string): Promise<StoryDossier | null> {
-  const mod = await import('./dossier/storyDossierService.js')
+  const mod = await import('./dossier/dossierCore.js')
   return mod.loadDossier(userId, scriptId)
 }
 

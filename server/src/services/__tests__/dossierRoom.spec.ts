@@ -23,7 +23,8 @@ const roomStorage = await import('../roomStorage.js')
 const { getDb } = await import('../../db/index.js')
 
 // Mock the dossier store so flushTurn resolves a deterministic dossier block.
-vi.mock('../rag/dossier/storyDossierService.js', async () => {
+// mock 落在轻核 dossierCore——roomService 动态 import 的就是它。
+vi.mock('../rag/dossier/dossierCore.js', async () => {
   const { findScene } = await vi.importActual<typeof import('../../rag/dossier/sceneLookup.js')>('../../rag/dossier/sceneLookup.js')
   return {
     findScene,

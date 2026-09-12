@@ -517,7 +517,7 @@ export class RoomService {
   private buildStoryLookup(): ((toolName: string, args: Record<string, unknown>) => Promise<{ content: string }>) | undefined {
     if (this.workflow !== 'dossier' || !this.storyId) return undefined
     return async (toolName, args) => {
-      const { loadDossier, listScenes, buildSceneBlock, findScene, lexicalSearch, renderSceneNotFound, renderLexicalMiss } = await import('../rag/dossier/storyDossierService.js')
+      const { loadDossier, listScenes, buildSceneBlock, findScene, lexicalSearch, renderSceneNotFound, renderLexicalMiss } = await import('../rag/dossier/dossierCore.js')
       const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
       const dossier = await loadDossier(this.ownerId, this.storyId as string)
       if (!dossier) return { content: 'error: 剧本档案不存在' }
@@ -776,7 +776,7 @@ export class RoomService {
   private async fetchDossierContext(): Promise<{ block: string; sceneName?: string; coverage?: SceneCoverage | null }> {
     if (!this.storyId) return { block: '' }
     try {
-      const { loadDossier, buildSceneBlock, listScenes, findScene, renderSceneUncovered } = await import('../rag/dossier/storyDossierService.js')
+      const { loadDossier, buildSceneBlock, listScenes, findScene, renderSceneUncovered } = await import('../rag/dossier/dossierCore.js')
       const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
       const dossier = await loadDossier(this.ownerId, this.storyId)
       if (!dossier) return { block: '' }
@@ -832,7 +832,7 @@ export class RoomService {
     if (!this.storyId) return ''
     try {
       if (this.workflow === 'dossier') {
-        const { loadDossier } = await import('../rag/dossier/storyDossierService.js')
+        const { loadDossier } = await import('../rag/dossier/dossierCore.js')
         const dossier = await loadDossier(this.ownerId, this.storyId)
         if (dossier?.storyName) return dossier.storyName
       }
@@ -1089,7 +1089,7 @@ function listIndexedStoriesForOwner(ownerId: number): string[] {
 /** 房主已生成 dossiers 的剧本 id 集（dossier workflow 门闩）。 */
 async function listDossiersForOwner(ownerId: number): Promise<string[]> {
   try {
-    const { listDossiers } = await import('../rag/dossier/storyDossierService.js')
+    const { listDossiers } = await import('../rag/dossier/dossierCore.js')
     return (await listDossiers(ownerId)).map((d) => d.scriptId)
   } catch {
     return []
@@ -1104,7 +1104,7 @@ async function listDossiersForOwner(ownerId: number): Promise<string[]> {
  */
 async function dossierGateNoticeForOwner(ownerId: number, storyId: string): Promise<string | null> {
   try {
-    const { listDossiers, dossierGateNotice } = await import('../rag/dossier/storyDossierService.js')
+    const { listDossiers, dossierGateNotice } = await import('../rag/dossier/dossierCore.js')
     return dossierGateNotice(await listDossiers(ownerId), storyId)
   } catch {
     return null

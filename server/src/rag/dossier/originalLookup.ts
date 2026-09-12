@@ -25,7 +25,7 @@
 import { chatForRag } from '../../services/aiService.js'
 import { readStoryForRag } from '../../services/storyService.js'
 import { loadGaps, SCENE_REGION_LEAD, SCENE_REGION_SPAN, type CoverageGaps } from './coverageGaps.js'
-import { loadDossier, findScene } from './storyDossierService.js'
+import { loadDossier, findScene } from './dossierCore.js'
 import { assertNonProModel } from '../modelGuard.js'
 import { BadRequestError } from '../../utils/errors.js'
 import type { ChatMessage } from '../../services/llm/types.js'

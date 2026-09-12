@@ -112,7 +112,7 @@ export function parseScriptContent(content: string): ScriptContext | null {
  * Load the structured script for a user+scriptId; null when unavailable / not a script JSON.
  *
  * Two sources (experiment branch feature/kp-dossier-workflow):
- *  1. A generated dossier (`rag/dossier/storyDossierService`), which is the
+ *  1. A generated dossier (`rag/dossier/dossierCore`), which is the
  *     structured digest of ANY story format (PDF/txt/md…) produced by an LLM.
  *     This makes clue/scene gating work for dossier rooms on arbitrary files.
  *  2. Fallback: a hand-authored COC script JSON (legacy path) — behavior
@@ -127,7 +127,7 @@ export async function loadScriptContext(userId: number, scriptId: string): Promi
 
   // Source 1: generated dossier (dossier workflow).
   try {
-    const { loadDossier } = await import('../rag/dossier/storyDossierService.js')
+    const { loadDossier } = await import('../rag/dossier/dossierCore.js')
     const dossier = await loadDossier(userId, scriptId)
     if (dossier) {
       const { toScriptContext } = await import('../rag/dossier/schema.js')
