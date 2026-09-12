@@ -92,11 +92,6 @@ export interface Bridge {
 
   // ── KP 回合（ADR-0002：kp: 前缀帧与 /api/kp/invoke 已退役，回合走房间协议）──
 
-  // ── Saves ─────────────────────────────────────────────────────
-  listSaves: () => Promise<string[]>
-  readSave: (saveId: string) => Promise<unknown>
-  writeSave: (saveId: string, data: unknown) => Promise<void>
-
   // ── Rooms（Phase B3 多人联机）─────────────────────────────────
   roomCreate: (storyId?: string) => Promise<{ ok: boolean; roomId: string; inviteCode: string; ownerId: number; ownerName: string }>
   roomList: () => Promise<RoomListItem[]>

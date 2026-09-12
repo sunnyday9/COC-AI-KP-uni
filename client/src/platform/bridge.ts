@@ -380,20 +380,6 @@ export class PlatformBridge implements Bridge {
     return request('DELETE', `/api/characters/${encodeURIComponent(id)}`)
   }
 
-  // ── Saves ────────────────────────────────────────────────────────────────
-
-  listSaves(): Promise<string[]> {
-    return request<string[]>('GET', '/api/saves')
-  }
-
-  readSave(saveId: string): Promise<unknown> {
-    return request<unknown>('GET', `/api/saves/${encodeURIComponent(saveId)}`)
-  }
-
-  async writeSave(saveId: string, data: unknown): Promise<void> {
-    await request<{ ok: boolean }>('PUT', `/api/saves/${encodeURIComponent(saveId)}`, data)
-  }
-
   // ── RAG ──────────────────────────────────────────────────────────────────
 
   ragHealth(): Promise<{ status: string; service: string }> {

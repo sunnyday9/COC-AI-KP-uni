@@ -295,29 +295,6 @@ describe('PlatformBridge', () => {
     })
   })
 
-  describe('saves', () => {
-    it('listSaves returns the id list', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: ['s1', 's2'] })
-      await expect(new PlatformBridge().listSaves()).resolves.toEqual(['s1', 's2'])
-    })
-
-    it('readSave returns the raw snapshot', async () => {
-      const snap = { version: 1, name: 's1', storyId: 'st' }
-      state.requestResponder = () => ({ statusCode: 200, data: snap })
-      await expect(new PlatformBridge().readSave('s1')).resolves.toEqual(snap)
-      expect(state.requests[0].url).toBe('/api/saves/s1')
-    })
-
-    it('writeSave PUTs the snapshot body', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
-      const snap = { version: 1, name: 's1' }
-      const bridge = new PlatformBridge()
-      await expect(bridge.writeSave('s1', snap as never)).resolves.toBeUndefined()
-      expect(state.requests[0]).toMatchObject({ url: '/api/saves/s1', method: 'PUT' })
-      expect(state.requests[0].data).toEqual(snap)
-    })
-  })
-
   describe('rag', () => {
     it('ragHealth GETs /api/rag/health', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { status: 'ok', service: 'builtin' } })
