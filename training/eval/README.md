@@ -1,6 +1,6 @@
-# KP 金样本评测（T3 #39 / spec #36）
+# KP 金样本评测（T3 #39）
 
-三层评测（格式遵循 ≥99% / 金样本裁定 ≥90% / 人工盲评）的前两层自动化资产，**先于训练存在**（#42 gate 依赖本票 + #41）。
+三层评测（格式遵循 ≥99% / 金样本裁定 ≥90% / 人工盲评）的前两层自动化资产，**先于训练存在**。原用途是自训 KP 模型的 #42 gate；2026-09-12 自训方向放弃（#36/#42/#43 关闭，见 `.out-of-scope/self-trained-kp-model.md`）后，本 harness 转作 **BYOK 端点的质量基线**——换模型/改提示词后重跑一遍即得可比数字。
 
 ## 构成
 
@@ -11,7 +11,7 @@
   - 请求同构：`lib/request.ts` 复用 server 提示词纯函数（`kpPromptService.buildRoomTurnMessages` + `injectCharacterRoster`）+ 按线上形态回放工具结果（`【结果摘要】`+JSON 截断回填）；
   - `lib/judge.ts` 产出双指标（格式遵循率/裁定正确率）与可分类失败明细：`no_tool_call`（未调工具）/ `wrong_tool`（调错工具）/ `bad_args`（参数错）/ `text_dice`（文字骰点）/ `unparseable`（未知工具名或参数非 JSON，属格式层，对应「调错工具」的解析子类）。
 - `run-eval.ts` — CLI：任意 openai_chat 端点 → 报告 JSON（两数字 + 明细 + 24 工具覆盖 + tokens）。
-- `reports/` — 基线与历次报告落盘（gate 对照基准）。当前基线：`baseline-mimo-v2.5-2026-09-05.json`（mimo-v2.5 @ opencode，格式遵循 80.7% / 裁定正确 63.2%，57/57 判定，明细含 `search_memory` 幻视工具名等）。
+- `reports/` — 基线与历次报告落盘。当前基线：`baseline-mimo-v2.5-20260912.json`（M1 提示词改革后刷新）。
 - `test/` — 判定器/请求构建/金样本集守卫的自测（node:test，21 条）。
 
 ## 用法
@@ -27,6 +27,11 @@ node --import ./training/eval/register-ts.ts training/eval/run-eval.ts --list
 EVAL_API_KEY=sk-... node --import ./training/eval/register-ts.ts training/eval/run-eval.ts \
   --endpoint https://api.example.com/v1 --model qwen3-8b \
   --tag qwen3-8b-sft-r1 --out training/eval/reports/qwen3-8b-sft-r1.json
+
+# opencode zen 网关要求 x-opencode-session 头才路由（--session 或 EVAL_SESSION/OPENCODE_SESSION）
+OPENCODE_SESSION=eval-$(date +%Y%m%d) EVAL_API_KEY=... node --import ./training/eval/register-ts.ts \
+  training/eval/run-eval.ts --endpoint https://opencode.ai/zen/go/v1 --model mimo-v2.5 \
+  --tag mimo-$(date +%Y%m%d) --out training/eval/reports/mimo-$(date +%Y%m%d).json
 ```
 
 参数：`--concurrency`（默认 4）、`--limit N`（冒烟）、`--temperature`（默认 0.7，与 server openai_chat 适配器默认一致）、`--max-tokens`（默认 2048）。
@@ -42,7 +47,7 @@ EVAL_API_KEY=sk-... node --import ./training/eval/register-ts.ts training/eval/r
 
 ## 基线报告
 
-当前基线 `reports/baseline-mimo-v2.5-2026-09-05.json`：**格式遵循 80.7% / 裁定正确 63.2%**（57/57 判定，0 端点错误；bad_args 10 / wrong_tool 7 / unparseable 1 / no_tool_call 2 / text_dice 1；含 `search_memory` 幻视工具名、chase_turn 用 skill_check/melee_attack 替代、多人漏 characterId 等真实失败样本）。端点 = 用户当前 BYOK KP 配置（opencode `mimo-v2.5`，temperature 0.7 / max_tokens 2048，与 server 适配器默认一致），报告内含 baseUrl/model 可复核；这是 #42 gate（格式 ≥99% / 裁定 ≥90%）的对照基准。
+当前基线 `reports/baseline-mimo-v2.5-20260912.json`：**格式遵循 77.2% / 裁定正确 57.9%**（57/57 判定，0 端点错误；wrong_tool 12 / bad_args 10 / no_tool_call 2）。与上一基线（2026-09-05：80.7% / 63.2%，bad_args 10 / wrong_tool 7 / unparseable 1 / no_tool_call 2 / text_dice 1）相比：unparseable/text_dice 清零（格式层改善）、wrong_tool +5——总分差 ≈2-3 条样本，在 temperature 0.7 单跑噪声带内，且 M1 提示词改革改动了知识块措辞，与模型侧漂移不可区分；以本基线为 M1 后参照，换模型/改提示词后同参重跑对比。端点 = 用户当前 BYOK KP 配置（opencode `mimo-v2.5`，temperature 0.7 / max_tokens 2048，与 server 适配器默认一致，经 `x-opencode-session` 头路由），报告内含 baseUrl/model 可复核。
 
 ## 工程边界
 
