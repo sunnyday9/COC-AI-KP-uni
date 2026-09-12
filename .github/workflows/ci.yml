@@ -44,6 +44,10 @@ jobs:
         working-directory: client
         run: npx tsc --noEmit
 
+      - name: TypeScript check (training)
+        working-directory: training
+        run: npx tsc --noEmit
+
       - name: KP training exporter tests (T2 #38)
         run: npm run test:training
 

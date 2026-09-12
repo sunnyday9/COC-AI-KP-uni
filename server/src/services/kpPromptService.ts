@@ -4,7 +4,6 @@
  * 房间适配层（buildRoomTurnMessages / buildRoomOpeningMessages）把房间状态
  * （剧本名/场景/线索/角色组/消息流）与 RAG 上下文注入 system。客户端副本随 T4 退役。
  */
-import type { Message } from '../../../shared/types/game.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import { getSkillName } from '../../../shared/coc/coc7.js'
 import { VERIFY_SECTION_HEADING } from '../rag/promptMarkers.js'
@@ -226,9 +225,9 @@ export function buildMemoryBlock(kpMemory: string[]): string {
   return `\n## 记忆：你（守密人）在本局已说过的内容\n以下是你已经向调查员表述过的内容，请避免用相同或高度相似的措辞重复。每次回应请用新的表述方式推进剧情。\n${lines.map((t) => `- ${t}`).join('\n')}\n`
 }
 
-export function buildRecentTurnsBlock(msgs: Message[], maxTurns: number = RECENT_TURNS_COUNT): string {
+export function buildRecentTurnsBlock(msgs: RoomPromptMessage[], maxTurns: number = RECENT_TURNS_COUNT): string {
   const filtered = msgs.filter(
-    (m): m is Message => (m.role === 'kp' || m.role === 'player') && !(m.role === 'kp' && (m as { isStreaming?: boolean }).isStreaming),
+    (m): m is RoomPromptMessage => (m.role === 'kp' || m.role === 'player') && !(m.role === 'kp' && (m as { isStreaming?: boolean }).isStreaming),
   )
   if (filtered.length === 0) return ''
   const pairs: string[] = []
@@ -259,12 +258,23 @@ export function buildRecentTurnsBlock(msgs: Message[], maxTurns: number = RECENT
   return `\n## 最近几轮\n${pairs.map((p) => `- ${p}`).join('\n')}\n`
 }
 
+/** messages 消费面投影：提示词链路（buildRecentTurnsBlock / conversationMessages）
+ *  只读 role/content/playerName/isStreaming 四字段。完整 Message（shared/types/game）
+ *  结构兼容、可直接赋值；training 金样本 history 同形最小结构即可复用同一提示词
+ *  纯函数（#70 seam 收窄）。 */
+export interface RoomPromptMessage {
+  role: 'kp' | 'player' | 'system'
+  content: string
+  playerName?: string
+  isStreaming?: boolean
+}
+
 /** 房间提示词输入：RoomService 运行态的只读投影。 */
 export interface RoomPromptInput {
   storyName: string
   scene: string | null
   clues: { id: string; description: string }[]
-  messages: Message[]
+  messages: RoomPromptMessage[]
   kpMemory: string[]
   longTermSummary: string
   /** 房间角色组（sheet 内含 playerName）。 */

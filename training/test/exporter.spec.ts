@@ -12,6 +12,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { COC_KP_TOOLS } from '../../shared/tools/cocTools.js'
 import type { COCCharacterSheet } from '../../shared/types/character.js'
+import type { Message } from '../../shared/types/game.js'
 import {
   OPENING_USER_REQUEST,
   buildRoomOpeningMessages,
@@ -85,7 +86,7 @@ describe('demo 剧本局金样本导出（票 #38）', () => {
   it('重建行与线上请求同构：与 buildRoomTurnMessages + injectCharacterRoster 直接对拍', () => {
     const { lines } = exportAll()
     const snap = roomDemoLibState() as unknown as {
-      messages: { role: string; content: string }[]
+      messages: Message[]
       characters: Record<string, never>
       clues: { id: string; description: string }[]
       scene: string | null
@@ -99,7 +100,7 @@ describe('demo 剧本局金样本导出（票 #38）', () => {
       storyName: 'demo-story',
       scene: snap.scene,
       clues: snap.clues,
-      messages: history as never,
+      messages: history,
       kpMemory: snap.kpMemory,
       longTermSummary: snap.longTermSummary,
       characters: Object.values(snap.characters),
