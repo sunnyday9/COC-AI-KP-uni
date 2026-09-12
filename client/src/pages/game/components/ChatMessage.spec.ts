@@ -30,6 +30,26 @@ describe('ChatMessage 路由', () => {
     expect(w.find('.dice-roll').text()).toContain('d100: 45')
   })
 
+  it('结构化骰子消息（type/result）渲染视觉与文本路径一致（#79 视觉不变）', () => {
+    // 服务端 DiceMessage 直达：大数字仍取 content 的 d100 段（同文本路径，非 result.roll）
+    const m: Message = { id: 'm1', timestamp: 1, role: 'system', type: 'dice', content: '侦查检定(常规) d100: 45 / 目标≤60 → 成功', result: { roll: 45, target: 60 } }
+    const w = mount(SystemMessage, { props: { msg: m } })
+    expect(w.find('.dice-card').exists()).toBe(true)
+    expect(w.find('.dice-roll').text()).toContain('d100: 45')
+    expect(w.find('.dice-desc').text()).toContain('成功')
+  })
+
+  it('结构化 result.outcome 存在时辉光直读字段，否则回退 content 关键词（#79）', () => {
+    // outcome='大失败' 直读 → fail 血色调（content 无成败关键词，旧路径会是 neutral）
+    const fail: Message = { id: 'm1', timestamp: 1, role: 'system', type: 'dice', content: '对抗检定红骰(d100:50)', result: { roll: 50, target: 60, outcome: '大失败' } }
+    const wf = mount(SystemMessage, { props: { msg: fail } })
+    expect(wf.find('.dice-roll').attributes('style')).toContain('var(--c-blood-400)')
+    // 无 outcome → 回退 content 关键词：成功 → 非 fail 色调
+    const ok: Message = { id: 'm2', timestamp: 1, role: 'system', type: 'dice', content: '侦查检定(常规) d100: 45 / 目标≤60 → 成功', result: { roll: 45, target: 60 } }
+    const wo = mount(SystemMessage, { props: { msg: ok } })
+    expect(wo.find('.dice-roll').attributes('style')).not.toContain('var(--c-blood-400)')
+  })
+
   it('system clue 消息渲染左缘绿光条', () => {
     const m = msgOf('system', '获得线索: 书架后的暗格里藏着一把铜钥匙')
     const w = mount(SystemMessage, { props: { msg: m } })

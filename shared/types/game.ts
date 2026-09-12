@@ -26,7 +26,8 @@ export interface DiceMessage extends BaseMessage {
   role: 'system'
   type: 'dice'
   content: string
-  result: { skill?: string; roll: number; target?: number; outcome?: string }
+  /** 骰子结构化事实（#79）。可选：环境伤害类（溺水/毒药/坠落/火焰）产 type:'dice' 无 result。 */
+  result?: { skill?: string; roll: number; target?: number; outcome?: string }
 }
 
 export type Message = KPMessage | PlayerMessage | SystemMessage | DiceMessage

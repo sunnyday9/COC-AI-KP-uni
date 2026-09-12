@@ -47,4 +47,27 @@ describe('classifySystemMessage（T4 消息类型体系）', () => {
     // e2e 步骤 11 完整序列：投骰 d6: N 为纯掷骰（无 target），战斗随后 HP -2 独立 damage
     expect(classifySystemMessage(sys('投骰 d6: 4'))).toBe('dice')
   })
+
+  it('结构化字段优先：type:dice + result.target 直判 dice（与文本形态无关，#79）', () => {
+    const m: Message = { id: 'm', timestamp: 1, role: 'system', type: 'dice', content: '侦查检定(常规) d100: 45 / 目标≤60 → 成功', result: { roll: 45, target: 60 } }
+    expect(classifySystemMessage(m)).toBe('dice')
+    // 字段优先的直接证明：content 不匹配任何骰子文本形态，仍按结构化事实判 dice
+    const m2: Message = { id: 'm2', timestamp: 1, role: 'system', type: 'dice', content: '（结构化检定事实）', result: { roll: 45, target: 60 } }
+    expect(classifySystemMessage(m2)).toBe('dice')
+  })
+
+  it('type:dice 无 result.target（SAN 损失/大失败惩罚形状）→ 走文本兜底判 generic（等价性钉住，#79）', () => {
+    // 服务端 sanityHandler 现产形状：type:'dice' + result:{roll} 无 target，今日显示为 generic
+    const m: Message = { id: 'm', timestamp: 1, role: 'system', type: 'dice', content: 'SAN损失检定 1d4+1: 3', result: { roll: 3 } }
+    expect(classifySystemMessage(m)).toBe('generic')
+    // 环境伤害形状：type:'dice' 无 result，content 带 d100 段 → 文本兜底判 dice
+    const m2: Message = { id: 'm2', timestamp: 1, role: 'system', type: 'dice', content: '溺水: CON 检定 d100:42 > 50 失败 → 受到 3 点伤害' }
+    expect(classifySystemMessage(m2)).toBe('dice')
+  })
+
+  it('旧快照无 type/result → 文本正则兜底路径不变（#79）', () => {
+    expect(classifySystemMessage(sys('灵感检定 d100: 12 / 目标≤40 → 失败（无论成败线索都会给出）'))).toBe('dice')
+    expect(classifySystemMessage(sys('远程: 射击检定 d100:88 → 未中'))).toBe('dice')
+    expect(classifySystemMessage(sys('坠落伤害(轻微) → 3 点'))).toBe('generic')
+  })
 })

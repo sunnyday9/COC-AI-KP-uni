@@ -38,9 +38,7 @@ export interface RoomMemberInfo {
 export interface RoomEventPayloadMap {
   message_appended: RoomMessageAppendedPayload
   state_patch: RoomStatePatchPayload
-  dice_result: RoomDiceResultPayload
   room_meta: RoomMetaPayload
-  trace: RoomTracePayload
   /** KP 回复流式增量（服务端 KP_CHUNK_STREAM=1 时广播；客户端暂不消费，整段 message_appended 为准）。 */
   kp_chunk: RoomKpChunkPayload
 }
@@ -68,20 +66,10 @@ export interface RoomStatePatchPayload {
   value: unknown
 }
 
-export interface RoomDiceResultPayload {
-  rolls: number[]
-  expr: string
-  displayText: string
-}
-
 export interface RoomMetaPayload {
   phase: RoomPhase
   turnWindowMs: number
   members: RoomMemberInfo[]
-}
-
-export interface RoomTracePayload {
-  traceEvents: unknown[]
 }
 
 /** 服务端增量事件（room:event 帧）。 */

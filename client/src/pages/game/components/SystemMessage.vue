@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Message } from '../../../../../shared/types/game'
-import { classifySystemMessage, type SystemMessageKind } from '../../../utils/classifySystemMessage'
+import { classifySystemMessage, diceResultOf, type SystemMessageKind } from '../../../utils/classifySystemMessage'
 
 /**
  * T4：系统消息分类渲染（ADR-0004 消息类型体系）。
- * 房间消息流中系统消息为纯文本 → classifySystemMessage 推断视觉类别，不复用分类器之外的判词。
+ * 系统消息视觉类别经 classifySystemMessage 推断：服务端结构化检定事实（type/result）
+ * 字段优先，存量快照与无字段形状回落文本形态（#79，视觉行为不变）。
  * - dice    → 掷骰结果大卡：抽取 d100 大数字 + 成败辉光（金/血/紫三态）
  * - clue    → 线索获得（左缘绿光条，发光路径卷轴图标）
  * - damage  → 战斗伤害（血色调脉冲卡）
@@ -18,7 +19,9 @@ const props = defineProps<{ msg: Message }>()
 
 const kind = computed<SystemMessageKind>(() => classifySystemMessage(props.msg))
 
-/** dice: 提取「d100: N」段 → 大数字（无则回退整条文本无高亮）。 */
+/** dice: 提取「d100: N」段 → 大数字（无则回退整条文本无高亮）。
+ *  刻意保留文本正则而非直读 result.roll（#79）：近战卡带 result.roll 但今日设计上
+ *  不显示大数字（content 无 dN:N 段），盲用结构化 roll 会改变现有视觉。 */
 const diceRoll = computed(() => {
   const content = props.msg.content ?? ''
   const m = content.match(/d100\s*[:：]\s*(\d+)/)
@@ -31,6 +34,13 @@ const diceRoll = computed(() => {
 const diceText = computed(() => (diceRoll.value ? `d100: ${diceRoll.value}` : (props.msg.content ?? '').trim()))
 
 const diceGlow = computed(() => {
+  // 字段优先（#79）：服务端结构化 outcome 若存在则直接定调（今日 handler 均未填
+  // outcome，此路径为接缝预留，对现存消息零影响）；成败关键词与 content 路径同序。
+  const outcome = diceResultOf(props.msg)?.outcome
+  if (outcome) {
+    if (/大失败|失败|未中/.test(outcome)) return 'fail'
+    if (/大成功|极难成功|困难成功|成功|命中/.test(outcome)) return 'success'
+  }
   const c = props.msg.content ?? ''
   if (/大失败|失败|未中|反噬|受到 \d+ 点伤害|没能读懂/.test(c)) return 'fail'
   if (/大成功|极难成功|困难成功|成功|命中/.test(c)) return 'success'

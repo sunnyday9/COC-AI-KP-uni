@@ -154,12 +154,27 @@ describe('roomStore', () => {
     expect(Object.keys(store.characters.char_a as object)).toEqual(['derived'])
   })
 
-  it('handles dice_result by appending a system message', async () => {
+  it('message_appended 携带结构化骰子消息 → record/toMessage 透传 type/result（#79）', async () => {
     await joinAndSync()
-    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 3, eventType: 'dice_result', payload: { rolls: [12], expr: '1d20', displayText: '侦查: 1d20 → 12' } })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 3, eventType: 'message_appended', payload: { message: { id: 'd1', timestamp: 1720000000000, role: 'system', type: 'dice', content: '侦查检定(常规) d100: 45 / 目标≤60 → 成功', result: { roll: 45, target: 60 } }, author: { userId: 0, roleName: 'KP' } } })
     expect(store.messages).toHaveLength(1)
-    expect(store.messages[0].role).toBe('system')
-    expect(store.messages[0].content).toContain('12')
+    expect(store.messages[0].type).toBe('dice')
+    expect(store.messages[0].result).toEqual({ roll: 45, target: 60 })
+    const m = store.toMessage(store.messages[0])
+    expect(m).toMatchObject({ role: 'system', type: 'dice', content: '侦查检定(常规) d100: 45 / 目标≤60 → 成功', result: { roll: 45, target: 60 } })
+  })
+
+  it('旧快照/无字段系统消息 → toMessage 产出纯文本形状（正则兜底路径不变，#79）', async () => {
+    await joinAndSync()
+    // 快照携带存量无字段骰子消息（老局历史）
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 1, snapshot: { ...SNAP0, seq: 1, messages: [{ id: 'd0', timestamp: 1720000000000, role: 'system', content: 'SAN检定 d100: 30 / 目标≤65 → 成功' }] } })
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].type).toBeUndefined()
+    const m = store.toMessage(store.messages[0])
+    expect(m).toEqual({ id: 'd0', timestamp: 1720000000000, role: 'system', content: 'SAN检定 d100: 30 / 目标≤65 → 成功' })
+    // 增量同样无字段 → 仍纯文本形状
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'message_appended', payload: { message: { id: 'd2', timestamp: 1720000000001, role: 'system', content: 'HP -2' }, author: { userId: 0, roleName: 'KP' } } })
+    expect(store.toMessage(store.messages[1])).toEqual({ id: 'd2', timestamp: 1720000000001, role: 'system', content: 'HP -2' })
   })
 
   it('room_meta updates phase and members', async () => {

@@ -17,8 +17,8 @@
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomDiceResultPayload, RoomMetaPayload, RoomTracePayload } from '../../../shared/types/room'
-import type { Message } from '../../../shared/types/game'
+import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomMetaPayload } from '../../../shared/types/room'
+import type { Message, DiceMessage } from '../../../shared/types/game'
 import type { COCCharacterSheet } from '../../../shared/types/character'
 import { getBridge } from '../platform'
 
@@ -47,6 +47,10 @@ export interface RoomMessageRecord {
   isStreaming?: boolean
   /** 乐观消息标记（唯一乐观面 = 自己的 chat，ADR-0002；服务端 echo 到达后移除）。 */
   pending?: boolean
+  /** 结构化骰子字段透传（#79）：服务端 rule-engine DiceMessage 完整过 wire/快照，
+   *  record 原样持有，toMessage 不再剥掉；旧快照消息无这两个字段（可选，正则兜底）。 */
+  type?: DiceMessage['type']
+  result?: DiceMessage['result']
 }
 
 function toMessage(m: RoomMessageRecord): Message {
@@ -54,6 +58,11 @@ function toMessage(m: RoomMessageRecord): Message {
     return { id: m.id, timestamp: m.timestamp, role: 'player', playerName: m.playerName ?? '调查员', content: m.content }
   }
   if (m.role === 'system') {
+    // #79：结构化骰子字段透传（wire/快照里服务端已带 type/result，store 边界不再剥掉）；
+    // 旧消息无字段时回落纯文本 SystemMessage，形状不变。
+    if (m.type === 'dice') {
+      return { id: m.id, timestamp: m.timestamp, role: 'system', type: 'dice', content: m.content, result: m.result }
+    }
     return { id: m.id, timestamp: m.timestamp, role: 'system', content: m.content }
   }
   return { id: m.id, timestamp: m.timestamp, role: 'kp', content: m.content, isStreaming: m.isStreaming }
@@ -166,17 +175,6 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         applyPathPatch(p.path, p.value)
         break
       }
-      case 'dice_result': {
-        const p = payload as RoomDiceResultPayload
-        if (!p) break
-        messages.value.push({
-          id: `dice_${seq}`,
-          timestamp: Date.now(),
-          role: 'system',
-          content: p.displayText || `${p.expr} → ${(p.rolls ?? []).join(', ')}`,
-        })
-        break
-      }
       case 'room_meta': {
         const p = payload as RoomMetaPayload
         if (!p) break
@@ -200,8 +198,6 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         }
         break
       }
-      case 'trace':
-        break // 调试帧，视图不消费
     }
   }
 
