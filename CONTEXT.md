@@ -83,7 +83,7 @@ KP 回合管线上的唯一新增缝（T1，spec #36 / ADR-0006）：每个真�
 T4（spec #36 / 票 #40 / ADR-0006 决策 4）落点 `training/src/distill/`：教师（DeepSeek V4 Flash）对 context 骨架重放理想回复生成 SFT 语料。关键约定——多步工具链的工具结果由离线规则引擎真实执行（真骰子、真结算，教师不得自拟）；变量块瘦身旁数据侧（对话窗 18→8、记忆 30→12、RAG 取前 4 节、序列 cap ~6k）；validate 过滤与 #42 gate 同源 kpValidation；样本出处标注 `meta.source`（seed=真实骨架重放 / synthetic=rollout 合成 / anchor=金样本裁定锚 / human=人工示范）与 caveat（`rag_lexical_approximation_offline`=离线词面检索近似、`rag_context_unavailable_offline`=重建行无故事情报）。
 
 ### 档案（dossier）
-剧本的结构化预生成摘要：场景（含原文誊抄的 sceneText）/线索/NPC/切换边/事件/真相/结局，生成期由 LLM 从剧本原文抽取落盘，运行时**按当前场景整块注入**取代逐回合检索。事实的**权威来源**——与检索补充层冲突时以档案为准。落点 `server/src/rag/dossier/`；双轨分工见 ADR-0007。
+剧本的结构化预生成摘要：场景（含原文誊抄的 sceneText）/线索/NPC/切换边/事件/真相/结局，生成期由 LLM 从剧本原文抽取落盘，运行时**按当前场景整块注入**取代逐回合检索。事实的**权威来源**——与检索补充层冲突时以档案为准。落点 `server/src/rag/dossier/`；双轨分工见 ADR-0007。生成期质量门（#55）：低覆盖（sceneText 覆盖率 < 30%，仅对 >5000 字符剧本）或分节解析失败 → quality 快照随档案落盘，开局门闩（startRoom / createSoloRoom）据此 409 提示重新生成——**残档不再静默放行**；阈值常量 `DOSSIER_MIN_COVERAGE_PCT` 单源在 schema.ts。
 
 ### 原文查证（verify_original）
 档案说不清时的**事实层深挖**：按当前场景锚点窗口取剧本原文片段（≤12k 字符），交一次全新上下文的子阅读器作答，返回结论 + 逐字引用；真相/结局类问句、或命中 `truths[].revealScene` 锚点的结果，标注「仅限 KP 内部裁定」。降级为「未取得」，永不阻断回合。落点 `server/src/rag/dossier/originalLookup.ts`；服务端可自动触发（预取）。

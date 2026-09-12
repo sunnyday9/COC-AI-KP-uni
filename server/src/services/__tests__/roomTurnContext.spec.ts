@@ -124,7 +124,7 @@ describe('kpPromptService 房间组装器（纯函数）', () => {
 describe('RoomService 回合上下文收口', () => {
   it('flushTurn：记忆/角色组注入 system，本批 user 合并收尾；回合后 kpMemory 更新进快照', async () => {
     const userId = seedUser('ctx_turn')
-    const created = createSoloRoom(userId, { storyId: 'story_x', name: '艾丽丝', sheet })
+    const created = await createSoloRoom(userId, { storyId: 'story_x', name: '艾丽丝', sheet })
     if (!created.ok) throw new Error('unreachable')
     const room = joinRoom(created.roomId, userId, 'ctx_turn')!
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1)) // opening 先行
@@ -157,7 +157,7 @@ describe('RoomService 回合上下文收口', () => {
 describe('opening 回合（ADR-0002）', () => {
   it('solo 房 joinRoom 触发 opening：playing + 无消息 → 一次 KP 回合；重复触发不再跑', async () => {
     const userId = seedUser('ctx_open')
-    const created = createSoloRoom(userId, { storyId: 'story_o', name: '欧文', sheet })
+    const created = await createSoloRoom(userId, { storyId: 'story_o', name: '欧文', sheet })
     expect(created.ok).toBe(true)
     if (!created.ok) return
 
@@ -177,7 +177,7 @@ describe('opening 回合（ADR-0002）', () => {
 
   it('TTL 回收后 restore：kpMemory/longTermSummary/turnWindow 从 rooms.state 恢复', async () => {
     const userId = seedUser('ctx_restore')
-    const created = createSoloRoom(userId, { storyId: 'story_r', name: '瑞秋', sheet })
+    const created = await createSoloRoom(userId, { storyId: 'story_r', name: '瑞秋', sheet })
     if (!created.ok) throw new Error('unreachable')
     const room = joinRoom(created.roomId, userId, 'ctx_restore')!
     await vi.waitFor(() => expect(room.snapshot().kpMemory).toHaveLength(2))
@@ -196,7 +196,7 @@ describe('opening 回合（ADR-0002）', () => {
 
   it('opening 失败不阻塞：回合拒绝后玩家消息照常触发回合', async () => {
     const userId = seedUser('ctx_openfail')
-    const created = createSoloRoom(userId, { storyId: 'story_f', name: '菲尔', sheet })
+    const created = await createSoloRoom(userId, { storyId: 'story_f', name: '菲尔', sheet })
     if (!created.ok) throw new Error('unreachable')
     runKpTurnMock.mockImplementationOnce(async () => {
       throw new Error('KP agent 不可用')

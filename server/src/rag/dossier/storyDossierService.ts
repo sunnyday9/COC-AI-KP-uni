@@ -38,11 +38,13 @@ import {
   sanitizeScriptId,
   resolveRefs,
   assessDossier,
+  DOSSIER_MIN_COVERAGE_PCT,
   type StoryDossier,
+  type DossierQualitySummary,
 } from './schema.js'
 import { findScene as findSceneImpl } from './sceneLookup.js'
 import { persistAnnex, deleteAnnex, runAnnex } from './annex.js'
-import { computeCoverageGaps, persistGaps, deleteGaps, type SceneCoverage } from './coverageGaps.js'
+import { computeCoverageGaps, persistGaps, deleteGaps, GAPS_VERSION, type SceneCoverage } from './coverageGaps.js'
 
 /** TTL for in-memory dossier cache (ms). */
 const CACHE_TTL_MS = 60_000
@@ -50,6 +52,19 @@ const CACHE_TTL_MS = 60_000
 const MAX_GENERATE_CHARS = 200_000
 /** Max generation batches per story (safety). */
 const MAX_BATCHES = 24
+/**
+ * #55 生成期重试预算：每节最多 4 次尝试。前两次原额重发（上游偶发 400/503/
+ * 空响应），后两次抬 maxTokens（见 DOSSIER_GEN_MAX_TOKENS_ESCALATED）。
+ */
+const DOSSIER_GEN_ATTEMPTS = 4
+/** 单节生成 maxTokens：推理模型 reasoning 吃 output budget，8k 曾致分节解析空（P13 抬到 16k）。 */
+const DOSSIER_GEN_MAX_TOKENS = 16384
+/**
+ * 重试后段抬到的 maxTokens：temp=0 下原样重发近似复现同一截断（#55 实测
+ * 生成 A 三节连挂 4 次重发全灭），抬上限是唯一不动提示词/批大小的自愈杠杆；
+ * 端点若拒绝更大值会抛 400 → 计入失败，不劣于现状。
+ */
+const DOSSIER_GEN_MAX_TOKENS_ESCALATED = 32768
 
 export interface GenerateResult {
   ok: boolean
@@ -65,6 +80,11 @@ export interface GenerateResult {
   warnings?: string[]
   /** 档案 sceneText 覆盖剧本原文比例（%）。 */
   coveragePct?: number
+  /**
+   * #55 降质标记：低覆盖（< DOSSIER_MIN_COVERAGE_PCT，仅对 >5000 字符剧本）
+   * 或分节解析失败。已随档案落盘（quality 快照）——开局门闩据此拒绝开局。
+   */
+  degraded?: boolean
   /** annex（图信息通道）统计；annex 未跑时为 undefined（见 runAnnex）。 */
   annexImages?: number
   annexDrops?: number
@@ -171,40 +191,39 @@ export async function generateDossier(
       seenNpcNames,
       seenClueDescriptions,
     })
-    try {
-      // 推理模型偶发把 output budget 耗在 reasoning 上导致 JSON 截断/解析空 → 重试最多 3 次
-      let parsed = null
-      let res = null
-      for (let attempt = 0; attempt < 4 && !parsed; attempt++) {
-        res = await chatForRag(userId, {
+    // #55：同一节内重试——parse 失败与 chatForRag 抛错（上游 400/503/超时）都算
+    // 一次失败尝试；后段尝试抬 maxTokens（temp=0 下原样重发自愈不了确定性截断）。
+    let parsed: StoryDossier | null = null
+    let lastBatchError = ''
+    for (let attempt = 0; attempt < DOSSIER_GEN_ATTEMPTS && !parsed; attempt++) {
+      try {
+        const res = await chatForRag(userId, {
           messages: [
             { role: 'system', content: DOSSIER_SYSTEM_PROMPT },
             { role: 'user', content: prompt },
           ],
           temperature: 0,
-          // schema v2 每节还要输出 transitions/events/relations，推理模型 reasoning 会吃
-          // output budget → 8k 偶发截断/解析空（原型实测 5 节挂 3 节）→ 提到 16k
-          maxTokens: 16384,
+          maxTokens: attempt < 2 ? DOSSIER_GEN_MAX_TOKENS : DOSSIER_GEN_MAX_TOKENS_ESCALATED,
           model,
         })
         parsed = parseDossierJson(stripCodeFence(res?.content || ''))
+        if (!parsed) lastBatchError = '解析结果为空/无效 JSON'
+      } catch (e) {
+        lastBatchError = e instanceof Error ? e.message : String(e)
       }
-      if (parsed && parsed.scenes.length + parsed.clues.length + parsed.npcs.length + (parsed.transitions?.length ?? 0) + (parsed.events?.length ?? 0) + (parsed.truths?.length ?? 0) + (parsed.endings?.length ?? 0) > 0) {
-        parsedParts.push({
-          ...parsed,
-          scriptId: parsed.scriptId || scriptId,
-          storyName: parsed.storyName || raw.name || scriptId,
-          generatedByModel: parsed.generatedByModel || model,
-        })
-        for (const s of parsed.scenes) if (s.name && !seenSceneNames.includes(s.name)) seenSceneNames.push(s.name)
-        for (const n of parsed.npcs) if (n.name && !seenNpcNames.includes(n.name)) seenNpcNames.push(n.name)
-        for (const c of parsed.clues) if (c.description && !seenClueDescriptions.includes(c.description)) seenClueDescriptions.push(c.description)
-      } else {
-        lastError = `batch ${bi + 1}/${totalBatches}: 解析结果为空`
-        batchFailures++
-      }
-    } catch (e) {
-      lastError = `batch ${bi + 1}/${totalBatches}: ${e instanceof Error ? e.message : String(e)}`
+    }
+    if (parsed && parsed.scenes.length + parsed.clues.length + parsed.npcs.length + (parsed.transitions?.length ?? 0) + (parsed.events?.length ?? 0) + (parsed.truths?.length ?? 0) + (parsed.endings?.length ?? 0) > 0) {
+      parsedParts.push({
+        ...parsed,
+        scriptId: parsed.scriptId || scriptId,
+        storyName: parsed.storyName || raw.name || scriptId,
+        generatedByModel: parsed.generatedByModel || model,
+      })
+      for (const s of parsed.scenes) if (s.name && !seenSceneNames.includes(s.name)) seenSceneNames.push(s.name)
+      for (const n of parsed.npcs) if (n.name && !seenNpcNames.includes(n.name)) seenNpcNames.push(n.name)
+      for (const c of parsed.clues) if (c.description && !seenClueDescriptions.includes(c.description)) seenClueDescriptions.push(c.description)
+    } else {
+      lastError = `batch ${bi + 1}/${totalBatches}: ${lastBatchError || '解析结果为空'}`
       batchFailures++
     }
   }
@@ -263,6 +282,18 @@ export async function generateDossier(
     warnings.push(`有 ${batchFailures} 个分节解析失败，档案只覆盖前 ${parsedParts.length}/${totalBatches} 节——内容不完整`)
   }
 
+  // #55：生成期质量快照随档案落盘——开局门闩（startRoom / createSoloRoom）据此
+  // 拒绝残档开局，不再静默放行。分节失败独立于覆盖率计入：小节失败可能拉不低
+  // 覆盖率，但档案依旧不完整。
+  const degraded = quality.degraded || batchFailures > 0
+  const qualitySummary: DossierQualitySummary = {
+    coveragePct: quality.coveragePct,
+    degraded,
+    failedBatches: batchFailures > 0 ? batchFailures : undefined,
+    at: Date.now(),
+  }
+  dossier = { ...dossier, quality: qualitySummary }
+
   await persist(userId, dossier)
   const result: GenerateResult = {
     ok: true,
@@ -276,6 +307,7 @@ export async function generateDossier(
     endings: dossier.endings?.length ?? 0,
     warnings: warnings.length ? warnings : undefined,
     coveragePct: quality.coveragePct,
+    degraded,
   }
   if (annex && annexRan) {
     result.annexImages = quality.annexImages
@@ -346,26 +378,102 @@ export function peekDossier(userId: number, scriptId: string): StoryDossier | nu
   return memoryCache.get(cacheKey(userId, scriptId))?.dossier ?? null
 }
 
+/** 档案清单条目（#55：带生成期质量视图，故事列表/开局门闩据此判定降质）。 */
+export interface DossierListItem {
+  scriptId: string
+  name: string
+  sceneCount: number
+  generatedAt: number
+  /** sceneText 覆盖率（%）：快照直读；旧档案由 .gaps.json 兄弟文件估算。 */
+  coveragePct?: number
+  /** 降质标记：快照 degraded，或旧档案估算覆盖 < DOSSIER_MIN_COVERAGE_PCT。 */
+  degraded?: boolean
+  /** 快照中的分节失败数（旧档案估算路径无此值）。 */
+  failedBatches?: number
+}
+
 /** List a user's generated dossiers (disk scan). */
-export async function listDossiers(userId: number): Promise<{ scriptId: string; name: string; sceneCount: number; generatedAt: number }[]> {
+export async function listDossiers(userId: number): Promise<DossierListItem[]> {
   let entries: string[]
   try {
     entries = await fs.readdir(userDir(userId))
   } catch {
     return []
   }
-  const out: { scriptId: string; name: string; sceneCount: number; generatedAt: number }[] = []
+  const out: DossierListItem[] = []
   for (const f of entries) {
     if (!f.endsWith('.json')) continue
     try {
       const raw = await fs.readFile(path.join(userDir(userId), f), 'utf-8')
       const d = parseDossierJson(raw)
-      if (d) out.push({ scriptId: d.scriptId, name: d.storyName, sceneCount: d.scenes.length, generatedAt: d.generatedAt })
+      if (!d) continue
+      const item: DossierListItem = {
+        scriptId: d.scriptId,
+        name: d.storyName,
+        sceneCount: d.scenes.length,
+        generatedAt: d.generatedAt,
+        coveragePct: d.quality?.coveragePct,
+        degraded: d.quality?.degraded,
+        failedBatches: d.quality?.failedBatches,
+      }
+      if (d.quality === undefined) {
+        // 旧档案（quality 快照引入前）：读同目录兄弟 .gaps.json 估算覆盖。
+        // 兄弟文件名源自 readdir 磁盘清单（非请求输入），不引入 keyed fs 读。
+        const est = await estimateLegacyCoverage(userDir(userId), f)
+        if (est !== undefined) {
+          item.coveragePct = est
+          item.degraded = est < DOSSIER_MIN_COVERAGE_PCT
+        }
+      }
+      out.push(item)
     } catch {
       // skip unparsable files
     }
   }
   return out.sort((a, b) => b.generatedAt - a.generatedAt)
+}
+
+/** 旧档案覆盖估算：兄弟 .gaps.json 的缺口比（100 - gapPct）。仅信当前算法版本
+ *  （v1 的 gapPct 系统性偏高，宁放行不误伤）；无明细/损坏 → undefined（不判定）。 */
+async function estimateLegacyCoverage(dir: string, dossierFileName: string): Promise<number | undefined> {
+  try {
+    const gapsPath = path.join(dir, `${dossierFileName.slice(0, -'.json'.length)}.gaps.json`)
+    const gaps = JSON.parse(await fs.readFile(gapsPath, 'utf-8')) as { storyChars?: number; gapPct?: number; gapsVersion?: number } | null
+    if (!gaps || typeof gaps.storyChars !== 'number' || typeof gaps.gapPct !== 'number') return undefined
+    if ((gaps.gapsVersion ?? 1) < GAPS_VERSION) return undefined
+    if (gaps.storyChars <= 5_000) return undefined // 小剧本不判降质（与快照口径一致）
+    return Math.round((100 - gaps.gapPct) * 10) / 10
+  } catch {
+    return undefined
+  }
+}
+
+/* ═══════════════════ 质量门提示（#55 产物期） ═══════════════════ */
+
+/** 降质档案的开局拒绝文案（单源：startRoom / createSoloRoom 经 dossierGateNotice
+ *  共用，与「尚未生成档案」的 409 严格分开——缺档案指引生成，残档指引重生成）。 */
+function dossierDegradedNoticeText(q: { coveragePct?: number; failedBatches?: number }): string {
+  const bits: string[] = []
+  if (typeof q.coveragePct === 'number') bits.push(`sceneText 覆盖率仅 ${q.coveragePct}%`)
+  if (q.failedBatches) bits.push(`${q.failedBatches} 个分节解析失败`)
+  return (
+    `档案质量不足（${bits.join('；') || '低覆盖'}）——残档会让 KP 反复查证空转、游玩体验明显变差。` +
+    `建议在「我的故事」中重新生成档案后再开局。`
+  )
+}
+
+/**
+ * #55 开局门闩降质判定（**纯函数**）：档案清单里该剧本的降质提示，null = 放行。
+ * 输入来自 listDossiers 磁盘扫描（文件名源自 readdir，非请求输入）——门闩的
+ * REST 可达链上不出现"以请求 id 为键"的 fs 读；缺档案与无质量数据的旧档案
+ * 返回 null（「未生成」由各门闩的既有分支提示，不是降质）。
+ */
+export function dossierGateNotice(items: DossierListItem[], scriptId: string): string | null {
+  const hit = items.find((d) => d.scriptId === scriptId)
+  if (!hit || hit.degraded === undefined) return null
+  return hit.degraded
+    ? dossierDegradedNoticeText({ coveragePct: hit.coveragePct, failedBatches: hit.failedBatches })
+    : null
 }
 
 /* ═══════════════════ Lookups ═══════════════════ */

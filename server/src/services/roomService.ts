@@ -1096,6 +1096,21 @@ async function listDossiersForOwner(ownerId: number): Promise<string[]> {
   }
 }
 
+/**
+ * #55 产物期门闩判定：该剧本的降质开局提示（null = 放行）。
+ * 判定走档案清单（readdir 磁盘扫描，文件名非请求输入）+ 纯函数
+ * `dossierGateNotice`——REST 可达链上不引入"以请求 id 为键"的 fs 读；
+ * 清单缺失/服务异常一律放行（不阻断开局，与既有 rag 分支容错风格一致）。
+ */
+async function dossierGateNoticeForOwner(ownerId: number, storyId: string): Promise<string | null> {
+  try {
+    const { listDossiers, dossierGateNotice } = await import('../rag/dossier/storyDossierService.js')
+    return dossierGateNotice(await listDossiers(ownerId), storyId)
+  } catch {
+    return null
+  }
+}
+
 /** 房间行内 workflow（lobby 期由 createRoom 写入 state；列无 workflow 列，走 state JSON）。 */
 function roomWorkflowFromRow(room: { state?: string | null }): StoryWorkflow {
   if (!room.state) return 'rag'
@@ -1136,10 +1151,10 @@ export function listSoloRoomsForUser(userId: number): roomStorage.SoloRoomListIt
 
 /** POST /api/rooms/solo —— 单人开局一体领域动作（ADR-0002）：落角色卡 + 建 solo 房 + 绑卡 + start。
  *  可选 workflow（实验分支双轨；缺省 rag）。 */
-export function createSoloRoom(
+export async function createSoloRoom(
   userId: number,
   input: { storyId: unknown; name: unknown; sheet: unknown; workflow?: unknown },
-): { ok: true; roomId: string; inviteCode: string; characterId: string } | { ok: false; reason: 'bad-request'; message: string } {
+): Promise<{ ok: true; roomId: string; inviteCode: string; characterId: string } | { ok: false; reason: 'bad-request' | 'conflict'; message: string }> {
   const storyId = typeof input?.storyId === 'string' ? input.storyId.trim() : ''
   const name = typeof input?.name === 'string' ? input.name.trim() : ''
   const sheet = input?.sheet as COCCharacterSheet | undefined
@@ -1148,6 +1163,13 @@ export function createSoloRoom(
   if (!name) return { ok: false, reason: 'bad-request', message: 'name required' }
   if (!sheet || typeof sheet !== 'object' || !sheet.derived) {
     return { ok: false, reason: 'bad-request', message: 'sheet required (COCCharacterSheet)' }
+  }
+  if (workflow === 'dossier') {
+    // 门闩（#55 产物期）：solo 出生即 playing、不经 startRoom——降质档案在此拦下，
+    // 否则 A/B harness 与 API 调用方仍会静默拿到残档房。缺档案不在此拦（维持现状：
+    // 多人 startRoom 已有「未生成」门闩，#55 只收窄「生成了但质量不足」的静默放行）。
+    const notice = await dossierGateNoticeForOwner(userId, storyId)
+    if (notice) return { ok: false, reason: 'conflict', message: notice }
   }
   const characterId = `char_${crypto.randomUUID().slice(0, 8)}`
   // 一体动作的六次写库包进事务：中途失败整体回滚，不留孤儿角色卡/房间
@@ -1245,6 +1267,11 @@ export async function startRoom(
     if (!dossiers.includes(storyId)) {
       return { ok: false, reason: 'conflict', message: '该剧本尚未生成档案，请先在「我的故事」中为剧本生成档案' }
     }
+    // 门闩 2b（#55 产物期）：低覆盖/分节失败的残档不再静默放行。文案与「未生成
+    // 档案」分开——缺档案指引生成，残档指引重生成。判定走档案清单（磁盘扫描）
+    // + 纯函数：REST 可达链上不引入"以请求 id 为键"的 fs 读。
+    const notice = await dossierGateNoticeForOwner(g.room.owner_id, storyId)
+    if (notice) return { ok: false, reason: 'conflict', message: notice }
   } else {
     const indexed = listIndexedStoriesForOwner(g.room.owner_id)
     if (!indexed.includes(storyId)) {

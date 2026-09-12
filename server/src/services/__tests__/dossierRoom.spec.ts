@@ -37,6 +37,11 @@ vi.mock('../rag/dossier/storyDossierService.js', async () => {
     })),
     buildSceneBlock: vi.fn(() => '场景：旧图书馆\n现场描述：灰尘与霉味。'),
     listScenes: vi.fn(() => [{ id: 'scene_1', name: '旧图书馆' }]),
+    // #55：createSoloRoom 的降质门闩会动态 import listDossiers/dossierGateNotice——
+    // vitest 对缺失导出抛错（#53 在 kpWireSampleRoom 踩过同一坑），必须显式导出；
+    // 本 spec 不测门闩，给健康清单让门闩放行
+    listDossiers: vi.fn(async () => [{ scriptId: 'demo.txt', name: '旧图书馆的铜钥匙', sceneCount: 1, generatedAt: 1, degraded: false }]),
+    dossierGateNotice: vi.fn(() => null),
     // #53：mock 必须导出它（vitest 对缺失导出抛错 → 被 fetchDossierContext 的 catch 吞成空块）
     renderSceneUncovered: vi.fn((name: string, names: string[]) => `【场景归属提示】档案未覆盖当前场景「${name}」。档案中的场景：${names.join('、')}。`),
   }
@@ -79,7 +84,7 @@ describe('dossier workflow 房间链路', () => {
   })
 
   it('createSoloRoom(workflow:dossier) 持久化 workflow 并随快照 restore 往返', async () => {
-    const created = createSoloRoom(owner, { storyId: 'demo.txt', name: '调查员A', sheet: MINIMAL_SHEET, workflow: 'dossier' })
+    const created = await createSoloRoom(owner, { storyId: 'demo.txt', name: '调查员A', sheet: MINIMAL_SHEET, workflow: 'dossier' })
     expect(created.ok).toBe(true)
     if (!created.ok) return
     const row = roomStorage.getRoomRow(created.roomId)
@@ -99,7 +104,7 @@ describe('dossier workflow 房间链路', () => {
   })
 
   it('createSoloRoom 缺省 workflow 为 rag（现状不变）', async () => {
-    const created = createSoloRoom(owner, { storyId: 'demo.txt', name: '调查员B', sheet: MINIMAL_SHEET })
+    const created = await createSoloRoom(owner, { storyId: 'demo.txt', name: '调查员B', sheet: MINIMAL_SHEET })
     expect(created.ok).toBe(true)
     if (!created.ok) return
     const row = roomStorage.getRoomRow(created.roomId)

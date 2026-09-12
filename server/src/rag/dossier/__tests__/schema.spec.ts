@@ -8,6 +8,7 @@ import {
   parseDossierJson,
   resolveRefs,
   assessDossier,
+  DOSSIER_MIN_COVERAGE_PCT,
   type StoryDossier,
 } from '../schema.js'
 import { mergeDossierParts } from '../prompts.js'
@@ -184,5 +185,57 @@ describe('dossier schema v2', () => {
     expect(npc.relations).toHaveLength(2) // 跨批去重：重复的 仇人/永井纯 不双记
     expect(m.transitions).toHaveLength(2) // 边去重按 from|to：b 批重复的 码头→A 不双记
     expect(m.events).toHaveLength(2)
+  })
+
+  // ═══════ #55 产物期：低覆盖产物不静默放行 ═══════
+
+  it('#55：低覆盖阈值钉住 30（改阈值必须显式改这条断言）', () => {
+    expect(DOSSIER_MIN_COVERAGE_PCT).toBe(30)
+  })
+
+  it('#55：assessDossier degraded——coveragePct<30 且剧本>5000 字符 → true', () => {
+    const dossier: StoryDossier = {
+      scriptId: 's', storyName: 's', generatedAt: 0,
+      scenes: [{ id: 's1', name: '码头', sceneText: '字'.repeat(2_900) }],
+      clues: [], npcs: [],
+    }
+    // 29% < 30 → degraded；同结构 3_000 字符 = 30% 恰在阈值上 → 不降质（严格小于）
+    expect(assessDossier(dossier, 10_000).degraded).toBe(true)
+    expect(assessDossier({ ...dossier, scenes: [{ ...dossier.scenes[0]!, sceneText: '字'.repeat(3_000) }] }, 10_000).degraded).toBe(false)
+  })
+
+  it('#55：assessDossier degraded——小剧本（≤5000 字符）不判降质（避免小模组死循环重生成）', () => {
+    const dossier: StoryDossier = {
+      scriptId: 's', storyName: 's', generatedAt: 0,
+      scenes: [{ id: 's1', name: '码头', sceneText: '海风腥咸。' }],
+      clues: [], npcs: [],
+    }
+    // 611 字符小剧本、覆盖率再低也不降质——门闩只管"大剧本严重欠抽"
+    expect(assessDossier(dossier, 611).degraded).toBe(false)
+    // 无剧本字数（旧调用方）→ 不判降质
+    expect(assessDossier(dossier).degraded).toBe(false)
+  })
+
+  it('#55：parseDossierJson 往返 quality 快照（缺省 → undefined，不误伤旧档案）', () => {
+    const withQuality = parseDossierJson(JSON.stringify({
+      scenes: [{ id: 's1', name: '码头', sceneText: 't' }],
+      clues: [], npcs: [],
+      quality: { coveragePct: 12.5, degraded: true, failedBatches: 3, at: 1_700_000_000_000 },
+    }))
+    expect(withQuality?.quality).toEqual({ coveragePct: 12.5, degraded: true, failedBatches: 3, at: 1_700_000_000_000 })
+
+    const legacy = parseDossierJson(JSON.stringify({
+      scenes: [{ id: 's1', name: '码头', sceneText: 't' }],
+      clues: [], npcs: [],
+    }))
+    expect(legacy?.quality).toBeUndefined()
+
+    // 形残的 quality（缺 degraded/at）→ 丢弃，不崩
+    const malformed = parseDossierJson(JSON.stringify({
+      scenes: [{ id: 's1', name: '码头', sceneText: 't' }],
+      clues: [], npcs: [],
+      quality: { coveragePct: 5 },
+    }))
+    expect(malformed?.quality).toBeUndefined()
   })
 })

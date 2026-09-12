@@ -74,9 +74,9 @@ afterEach(() => {
 })
 
 describe('#54 end_game 落库 phase 列', () => {
-  it('setEnding 后：列 phase=ended、继续游戏列表剔除、getRoomDetail 报 ended', () => {
+  it('setEnding 后：列 phase=ended、继续游戏列表剔除、getRoomDetail 报 ended', async () => {
     const userId = seedUser('ended_alice')
-    const created = createSoloRoom(userId, { storyId: 'story_e1', name: '艾丽丝', sheet: validSheet })
+    const created = await createSoloRoom(userId, { storyId: 'story_e1', name: '艾丽丝', sheet: validSheet })
     expect(created.ok).toBe(true)
     if (!created.ok) return
 
@@ -100,7 +100,7 @@ describe('#54 end_game 落库 phase 列', () => {
 
   it('restore 往返后内存 phase 仍是 ended，玩家消息不再触发回合（正对照证明桩有效）', async () => {
     const userId = seedUser('ended_bob')
-    const created = createSoloRoom(userId, { storyId: 'story_e2', name: '鲍勃', sheet: validSheet })
+    const created = await createSoloRoom(userId, { storyId: 'story_e2', name: '鲍勃', sheet: validSheet })
     expect(created.ok).toBe(true)
     if (!created.ok) return
 
@@ -128,9 +128,9 @@ describe('#54 end_game 落库 phase 列', () => {
     }
   })
 
-  it('旧数据自愈：列=playing 但快照 ending!=null → restore 判 ended 并回写列', () => {
+  it('旧数据自愈：列=playing 但快照 ending!=null → restore 判 ended 并回写列', async () => {
     const userId = seedUser('ended_carol')
-    const created = createSoloRoom(userId, { storyId: 'story_e3', name: '卡罗尔', sheet: validSheet })
+    const created = await createSoloRoom(userId, { storyId: 'story_e3', name: '卡罗尔', sheet: validSheet })
     expect(created.ok).toBe(true)
     if (!created.ok) return
     // 造修复前的坏行形态：快照里有 ending，列仍是 playing

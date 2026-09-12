@@ -49,7 +49,36 @@ export interface StoryDossier {
    * 原文理解时按 span 定位，不再靠词面猜。
    */
   coverageGaps?: DossierCoverageGapSummary
+  /**
+   * 生成期质量快照（#55）：低覆盖/分节失败判定的落盘单源。开局门闩
+   * （startRoom / createSoloRoom）据此拒绝残档开局并提示重新生成——
+   * 生成只落 warnings 不阻断（生成期），阻断发生在开局门闩（产物期）。
+   */
+  quality?: DossierQualitySummary
 }
+
+/**
+ * 生成期质量快照（#55）。随档案落盘；引入该字段前生成的旧档案缺省
+ * （parseDossierJson 返回 undefined），门闩对其退回 .gaps.json 兜底估算。
+ */
+export interface DossierQualitySummary {
+  /** sceneText 总字数 / 剧本总字数（%）。 */
+  coveragePct?: number
+  /** 低覆盖（< DOSSIER_MIN_COVERAGE_PCT，仅对 >5000 字符剧本）或分节解析失败 → true。 */
+  degraded: boolean
+  /** 解析失败的分节数（>0 即生成不完整；未失败时省略）。 */
+  failedBatches?: number
+  at: number
+}
+
+/**
+ * #55 低覆盖阈值：sceneText 覆盖率低于该值（且剧本 >5000 字符）判为降质，
+ * 开局门闩拒绝开局并提示重新生成。与 assessDossier 既有 15%「疑似严重欠抽」
+ * 告警线之间留缓冲：15–30% 属"薄但接近可用"，同样拦下让用户显式重生成。
+ * 5000 字符以下的小剧本不判降质——LLM 对短文做合理概括时覆盖率天然偏低，
+ * 拦了只会造成"重生成也过不了"的死循环。
+ */
+export const DOSSIER_MIN_COVERAGE_PCT = 30
 
 /** coverage gaps 计数摘要（非剧透；明细在 .gaps.json）。 */
 export interface DossierCoverageGapSummary {
@@ -274,6 +303,20 @@ export function parseDossierJson(raw: string): StoryDossier | null {
     search: (obj.search && typeof obj.search === 'object') ? (obj.search as Record<string, number>) : undefined,
     annex: (obj.annex && typeof obj.annex === 'object') ? parseAnnexSummary(obj.annex) : undefined,
     coverageGaps: (obj.coverageGaps && typeof obj.coverageGaps === 'object') ? parseCoverageGapSummary(obj.coverageGaps) : undefined,
+    quality: (obj.quality && typeof obj.quality === 'object') ? parseQualitySummary(obj.quality) : undefined,
+  }
+}
+
+/** 生成期质量快照的防御式解析：缺 degraded/at 视为形残，丢弃（旧档案无此字段）。 */
+function parseQualitySummary(q: unknown): DossierQualitySummary | undefined {
+  if (typeof q !== 'object' || q === null) return undefined
+  const o = q as Record<string, unknown>
+  if (typeof o.degraded !== 'boolean' || typeof o.at !== 'number') return undefined
+  return {
+    degraded: o.degraded,
+    coveragePct: typeof o.coveragePct === 'number' ? o.coveragePct : undefined,
+    failedBatches: typeof o.failedBatches === 'number' ? o.failedBatches : undefined,
+    at: o.at,
   }
 }
 
@@ -502,6 +545,11 @@ export interface DossierQuality {
   warnings: string[]
   /** 档案 sceneText 总字数 / 剧本总字数（%）；无剧本字数时不报告。 */
   coveragePct?: number
+  /**
+   * #55 低覆盖降质判定：coveragePct < DOSSIER_MIN_COVERAGE_PCT 且剧本
+   * >5000 字符。true 时开局门闩拒绝该档案（不再静默放行）。
+   */
+  degraded: boolean
   sceneCount: number
   transitionCount: number
   eventCount: number
@@ -584,10 +632,16 @@ export function assessDossier(d: StoryDossier, storyChars?: number): DossierQual
 
   const totalSceneText = d.scenes.reduce((s, sc) => s + String(sc.sceneText ?? '').length, 0)
   let coveragePct: number | undefined
+  let degraded = false
   if (typeof storyChars === 'number' && storyChars > 0) {
     coveragePct = Math.round((totalSceneText / storyChars) * 1000) / 10
-    if (storyChars > 5_000 && coveragePct < 15) {
-      warnings.push(`sceneText 覆盖率仅 ${coveragePct}%（${totalSceneText}/${storyChars} 字符），档案疑似严重欠抽——不足以反推剧情`)
+    if (storyChars > 5_000) {
+      // #55：低覆盖降质（阈值 DOSSIER_MIN_COVERAGE_PCT）——生成期只多一道判定，
+      // 消费方（开局门闩）据此阻断；15% 的"疑似严重欠抽"告警线保持不变。
+      if (coveragePct < DOSSIER_MIN_COVERAGE_PCT) degraded = true
+      if (coveragePct < 15) {
+        warnings.push(`sceneText 覆盖率仅 ${coveragePct}%（${totalSceneText}/${storyChars} 字符），档案疑似严重欠抽——不足以反推剧情`)
+      }
     }
   }
   if (typeof storyChars === 'number' && storyChars > 12_000 && d.scenes.length <= 3) {
@@ -603,6 +657,7 @@ export function assessDossier(d: StoryDossier, storyChars?: number): DossierQual
   return {
     warnings,
     coveragePct,
+    degraded,
     sceneCount: d.scenes.length,
     transitionCount: d.transitions?.length ?? 0,
     eventCount: d.events?.length ?? 0,

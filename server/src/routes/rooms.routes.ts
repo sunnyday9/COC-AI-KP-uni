@@ -65,12 +65,15 @@ router.get('/', (req: AuthRequest, res) => {
 router.post('/solo', (req: AuthRequest, res) => {
   const userId = req.userId as number
   const body = (req.body ?? {}) as { storyId?: unknown; name?: unknown; sheet?: unknown; workflow?: unknown }
-  const result = createSoloRoom(userId, { storyId: body.storyId, name: body.name, sheet: body.sheet, workflow: body.workflow })
-  if (!result.ok) {
-    sendDomainError(res, result)
-    return
-  }
-  res.json({ ok: true, roomId: result.roomId, inviteCode: result.inviteCode, characterId: result.characterId })
+  void createSoloRoom(userId, { storyId: body.storyId, name: body.name, sheet: body.sheet, workflow: body.workflow })
+    .then((result) => {
+      if (!result.ok) {
+        sendDomainError(res, result)
+        return
+      }
+      res.json({ ok: true, roomId: result.roomId, inviteCode: result.inviteCode, characterId: result.characterId })
+    })
+    .catch((err) => sendError(res, err))
 })
 
 /** GET /api/rooms/solo — 未结束单人局列表（继续游戏）。 */
