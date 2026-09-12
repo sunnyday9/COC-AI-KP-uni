@@ -62,6 +62,8 @@ const endpoint: EvalEndpoint = {
   temperature: num('temperature', 0.7),
   maxTokens: num('max-tokens', 2048),
   timeoutMs: num('timeout-ms', 120_000),
+  // zen 网关要求 x-opencode-session 才路由（与 server 适配器读 OPENCODE_SESSION 同参）
+  sessionHeader: arg('session') ?? process.env.EVAL_SESSION ?? process.env.OPENCODE_SESSION,
 }
 
 console.log(`金样本评测：${endpoint.model} @ ${endpoint.baseUrl}`)

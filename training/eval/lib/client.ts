@@ -14,6 +14,8 @@ export interface EvalEndpoint {
   temperature: number
   maxTokens: number
   timeoutMs: number
+  /** 网关路由头（zen 要求 x-opencode-session；与 server 适配器/ab-compare 同参）。 */
+  sessionHeader?: string
 }
 
 export interface ChatCallResult {
@@ -73,7 +75,13 @@ export async function callTurn(ep: EvalEndpoint, messages: KpWireMessage[], tool
 
 async function callOnce(ep: EvalEndpoint, messages: KpWireMessage[], tools: unknown[]): Promise<ChatCallResult> {
   // 与 server openaiChat 适配器同参：baseURL/apiKey/model/messages/tools/tool_choice/temperature/max_tokens
-  const client = new OpenAI({ baseURL: ep.baseUrl, apiKey: ep.apiKey || 'not-needed', timeout: ep.timeoutMs, maxRetries: 0 })
+  const client = new OpenAI({
+    baseURL: ep.baseUrl,
+    apiKey: ep.apiKey || 'not-needed',
+    timeout: ep.timeoutMs,
+    maxRetries: 0,
+    defaultHeaders: ep.sessionHeader ? { 'x-opencode-session': ep.sessionHeader } : undefined,
+  })
   try {
     const res = await client.chat.completions.create({
       model: ep.model,
