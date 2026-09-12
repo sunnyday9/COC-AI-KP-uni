@@ -17,10 +17,21 @@
  *  - Windows reserved device names (CON/PRN/AUX/NUL/COM1-9/LPT1-9) get a '_'
  *    prefix (mirrors original saveScriptToLibrary guard)
  *  - empty result falls back to a default name
+ *
+ * The module also hosts the server-side generated/stored filename safety base
+ * (D-09, consolidated from scriptService/storyService twins — issue #76):
+ *  - `generateFilePath` — internal uuid filename (fs 路径唯一来源), the
+ *    per-service default extension is a required parameter so each caller
+ *    keeps its original behavior verbatim;
+ *  - `assertStoredFilePath` — defensive whitelist re-validation of the
+ *    DB-stored file_path before it is used in an fs path;
+ *  - `isInternalUuidFileName` — uuid filename classifier (skip guard for
+ *    legacy-store imports).
  */
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { assertSafeId } from './pathSafety.js'
-import { BadRequestError } from './errors.js'
+import { BadRequestError, NotFoundError } from './errors.js'
 
 const WINDOWS_RESERVED = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i
 
@@ -63,4 +74,31 @@ export function repairMojibakeFilename(name: string): string {
     // fall through — leave the original untouched
   }
   return name
+}
+
+/**
+ * 生成内部文件名：uuid + 原扩展名（非外部输入，fs 路径唯一来源）。
+ * `fallbackExt` 为调用方声明的默认扩展名（script '.json' / story '.txt'），
+ * 收编自两份孪生实现时以参数表达各自原行为，语义逐字节保持（issue #76）。
+ */
+export function generateFilePath(displayName: string, fallbackExt: string): string {
+  const ext = path.extname(displayName).toLowerCase()
+  return `${crypto.randomUUID()}${ext || fallbackExt}`
+}
+
+/**
+ * 校验 file_path 只含安全字符且带扩展名（DB 内部值，防御性校验）。
+ * `fileKind` 进入错误消息（`${fileKind} file missing`），与收编前两份实现的
+ * 消息逐字节一致（'script file missing' / 'story file missing'）。
+ */
+export function assertStoredFilePath(filePath: string, fileKind: string): string {
+  if (!/^[a-zA-Z0-9-]+(\.[a-zA-Z0-9]+)?$/.test(filePath)) {
+    throw new NotFoundError(`${fileKind} file missing`)
+  }
+  return filePath
+}
+
+/** uuid 文件名（内部存储）不作为存量导入 —— 它们由 DB 记录引用。 */
+export function isInternalUuidFileName(fileName: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\./i.test(fileName)
 }

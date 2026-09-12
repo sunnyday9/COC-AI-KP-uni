@@ -16,11 +16,10 @@
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import crypto from 'node:crypto'
 import { UPLOADS_DIR } from '../config.js'
 import { getDb } from '../db/index.js'
 import { BadRequestError, NotFoundError } from '../utils/errors.js'
-import { assertId, sanitizeFilename } from '../utils/fileNames.js'
+import { assertId, generateFilePath, isInternalUuidFileName, sanitizeFilename } from '../utils/fileNames.js'
 import { readFileOr404, unlinkOr404 } from '../utils/fsSafe.js'
 import { assertPathInDir, resolveFileInDir } from '../utils/pathSafety.js'
 
@@ -48,20 +47,6 @@ async function ensureScriptsDir(userId: number): Promise<string> {
   return dir
 }
 
-/** 生成内部文件名：uuid + 原扩展名（非外部输入，fs 路径唯一来源）。 */
-function generateFilePath(displayName: string): string {
-  const ext = path.extname(displayName).toLowerCase()
-  return `${crypto.randomUUID()}${ext || '.json'}`
-}
-
-/** 校验 file_path 只含安全字符且带扩展名（DB 内部值，防御性校验）。 */
-function assertStoredFilePath(filePath: string): string {
-  if (!/^[a-zA-Z0-9-]+(\.[a-zA-Z0-9]+)?$/.test(filePath)) {
-    throw new NotFoundError('script file missing')
-  }
-  return filePath
-}
-
 interface ScriptRow {
   script_id: string
   name: string
@@ -87,7 +72,7 @@ function isScriptFile(name: string): boolean {
 async function importLegacyFile(userId: number, fileName: string): Promise<ScriptRow | null> {
   if (!isScriptFile(fileName)) return null
   // uuid 文件名（内部存储）不作为存量导入 —— 它们由 DB 记录引用。
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\./i.test(fileName)) return null
+  if (isInternalUuidFileName(fileName)) return null
   const dir = await ensureScriptsDir(userId)
   const legacyPath = resolveFileInDir(dir, fileName, 'script file')
   let buffer: Buffer
@@ -175,7 +160,7 @@ export async function importScript(
       return { ok: false, error: err instanceof Error ? err.message : 'Invalid script format' }
     }
   }
-  const filePath = generateFilePath(id)
+  const filePath = generateFilePath(id, '.json')
   const dir = await ensureScriptsDir(userId)
   const target = assertPathInDir(dir, resolveFileInDir(dir, filePath, 'script file'), 'script file (sink)')
   await fs.writeFile(target, file.buffer)
