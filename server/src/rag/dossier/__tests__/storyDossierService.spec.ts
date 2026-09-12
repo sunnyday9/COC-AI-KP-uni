@@ -123,6 +123,28 @@ describe('storyDossierService', () => {
     expect(findScene(dossier as never, '档案馆')).toBeNull()
   })
 
+  it('findScene 反向包含（#56）：唯一短名命中；歧义/单字不认；正向与精确优先', async () => {
+    // 走 storyDossierService 门面（dossierCore re-export 同一实现），钉 facade 路径
+    // 与 sceneLookup 单源同步。优先级：精确 > 正向包含 > 反向包含（唯一 + ≥2 字）。
+    const mk = (names: [string, string][]) => ({
+      scriptId: 's', storyName: 's', generatedAt: 0,
+      scenes: names.map(([id, name]) => ({ id, name, sceneText: '' })),
+      clues: [], npcs: [],
+    })
+    // 唯一反向命中：「图书馆」⊂「旧图书馆」且无第二候选 → 命中（#53 遗留缺口）
+    expect(findScene(mk([['a', '地下室'], ['b', '旧图书馆']]) as never, '图书馆')?.id).toBe('b')
+    // 歧义反向：「图书馆」同时 ⊂ 两个场景名 → 宁可 null（不顶替，让上层走未覆盖纠正）
+    expect(findScene(mk([['a', '地下室'], ['b', '旧图书馆'], ['c', '市立图书馆']]) as never, '图书馆')).toBeNull()
+    // 单字 CJK 噪声防护：归一化后 <2 字符不参与反向（即使唯一包含也不认）
+    expect(findScene(mk([['b', '旧图书馆']]) as never, '馆')).toBeNull()
+    // 正向优先于反向：query 正向包含 A、又被 B 唯一反向包含 → 取 A（正向先命中即返回）
+    expect(findScene(mk([['a', '别墅'], ['b', '贾司的别墅二楼书房']]) as never, '贾司的别墅二楼')?.id).toBe('a')
+    // 精确优先：query 精确等于短场景名（同时是长名子串）→ 取精确，不受反向歧义牵连
+    expect(findScene(mk([['a', '别墅'], ['b', '贾司的别墅']]) as never, '别墅')?.id).toBe('a')
+    // 反向不碰 id：id 是不透明标识，query 是某 id 的子串不算命中
+    expect(findScene(mk([['ab1', '门厅']]) as never, 'ab')).toBeNull()
+  })
+
   it('buildSceneBlock renders scene text + npcs + clues', async () => {
     const dossier = {
       scriptId: 's', storyName: 's', generatedAt: 0,

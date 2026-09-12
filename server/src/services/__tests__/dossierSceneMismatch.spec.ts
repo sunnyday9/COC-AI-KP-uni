@@ -11,6 +11,9 @@
  * 链路：RoomService（真实）→ flushTurn → wire 采样行；只有档案持久层（loadDossier）与
  * 需要真实剧本/网络的模块被桩掉。**findScene 不桩**——归一化匹配是本票的核心逻辑，
  * 它来自轻模块 `rag/dossier/sceneLookup.ts`（无 IO），走真实实现。
+ *
+ * #56 在 #53 匹配口径上扩了**反向包含**（场景名 ⊇ query，且 query ≥2 字 + 候选唯一），
+ * 本 spec 一并钉住：唯一反向命中 = 正常命中；歧义反向 / 单字 query 仍走「未覆盖」回落。
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -269,13 +272,22 @@ describe('#53 档案房场景归属（错配不回落到别的场景）', () => 
     }
   })
 
-  it('档案场景名互为子串时按最长匹配消歧（「别墅」→「贾司的别墅」而非落空）', async () => {
-    // 房间名比档案名短属于**未修满**（findScene 只做 target⊇name）——此用例固化现状，
-    // 将来若扩到反向包含（影响面覆盖 T4/T5/查证三处）这里会红，需同步改口径。
+  it('反向包含（#56）：唯一短名命中（房间「别墅」→ 档案「贾司的别墅」）= 正常命中', async () => {
+    // #56 前此用例钉「miss 现状」（findScene 只做 target⊇name）；#56 扩了匹配定义：
+    // 「别墅」归一化后 ≥2 字且是**唯一**包含它的场景名的子串 → 正常命中该场景
+    // （带覆盖提示），不再走「档案未覆盖」回落。歧义/单字的护栏见下方 #56 用例组。
+    const { buildSupplement } = await import('../../rag/supplementService.js')
+    vi.mocked(buildSupplement).mockClear()
     const room = await runTurn('room_shortname', '别墅')
     try {
       const injected = listWireSamplesForRoom('room_shortname')[0]!.rag_context
-      expect(injected).toMatch(/档案未覆盖当前场景「别墅」|场景：贾司的别墅/)
+      expect(injected).toContain('场景：贾司的别墅')
+      expect(injected).not.toContain('档案未覆盖')
+      // 场景名归一为档案里的写法（下游 query/查证窗口按它定位）
+      expect(buildSupplement).toHaveBeenCalledWith(
+        expect.objectContaining({ sceneName: '贾司的别墅' }),
+        expect.anything(),
+      )
     } finally {
       room.dispose()
     }
@@ -289,6 +301,132 @@ describe('#53 档案房场景归属（错配不回落到别的场景）', () => 
       expect(
         spy.mock.calls.some((c) => String(c[0]).includes('废弃的地窖') && String(c[0]).includes('未匹配')),
       ).toBe(true)
+    } finally {
+      room.dispose()
+    }
+  })
+})
+
+/** #56 反向包含用例的自带档案：覆盖 loadDossier/listScenes 各一次（hit/miss 两条
+ *  路径都会消费掉这两个 Once，不残留队列；buildSceneBlock **不**在这里覆盖——
+ *  miss 路径不调它，Once 会泄漏到下一个用例，改用直接断言调用参数）。 */
+async function stageDossier(
+  scenes: { id: string; name: string; text: string }[],
+): Promise<void> {
+  const core = await import('../../rag/dossier/dossierCore.js')
+  const dossier = {
+    scriptId: 'demo.txt',
+    storyName: '测试剧本',
+    generatedAt: 1,
+    scenes: scenes.map((s) => ({
+      id: s.id,
+      name: s.name,
+      sceneText: s.text,
+      description: '',
+      npcIds: [],
+      clueIds: [],
+      requiredClues: [],
+      hooks: [],
+    })),
+    clues: [],
+    npcs: [],
+  }
+  vi.mocked(core.loadDossier).mockResolvedValueOnce(
+    dossier as unknown as Awaited<ReturnType<typeof core.loadDossier>>,
+  )
+  vi.mocked(core.listScenes).mockImplementationOnce(
+    () => scenes.map((s) => ({ id: s.id, name: s.name })),
+  )
+}
+
+describe('#56 场景名反向包含（唯一短名命中才算）', () => {
+  beforeEach(() => {
+    invokeKPAgentMock.mockReset()
+    invokeKPAgentMock.mockResolvedValue({ content: '叙事回复。', toolCalls: [] })
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+  })
+
+  it('歧义反向：短名同时是两个场景名的子串 → 不认，走「未覆盖」回落（不顶替）', async () => {
+    // 歧义即不认（票面约束 b）：「图书馆」⊂「旧图书馆」也 ⊂「市立图书馆」——
+    // 选错场景 = 把别的场景档案当眼前现实注入，比未覆盖更糟，故宁可 miss。
+    await stageDossier([
+      { id: 'c1', name: '旧图书馆', text: '旧图书馆的灰尘。' },
+      { id: 'c2', name: '市立图书馆', text: '市立图书馆的书架。' },
+    ])
+    const { renderSceneUncovered, buildSceneBlock } = await import('../../rag/dossier/dossierCore.js')
+    vi.mocked(buildSceneBlock).mockClear()
+    const room = await runTurn('room_ambig', '图书馆')
+    try {
+      const injected = listWireSamplesForRoom('room_ambig')[0]!.rag_context
+      expect(vi.mocked(renderSceneUncovered)).toHaveBeenCalledWith('图书馆', ['旧图书馆', '市立图书馆'])
+      expect(injected).toContain('档案未覆盖当前场景「图书馆」')
+      // 两个候选的块一个都不许取（#53「不顶别的场景」语义在反向歧义下同样成立）
+      expect(vi.mocked(buildSceneBlock)).not.toHaveBeenCalled()
+    } finally {
+      room.dispose()
+    }
+  })
+
+  it('单字 query（「厅」）→ CJK 单字噪声防护：即使唯一反向包含也不认', async () => {
+    // 票面约束 a：query 归一化后 <2 字符不参与反向——「厅」唯一 ⊂「门厅」也照样 miss
+    // （单字指称噪声太大，宁可让 KP 走未覆盖纠正）。
+    const room = await runTurn('room_singlechar', '厅')
+    try {
+      const injected = listWireSamplesForRoom('room_singlechar')[0]!.rag_context
+      expect(injected).toContain('档案未覆盖当前场景「厅」')
+      expect(injected).not.toMatch(/^场景：门厅$/m)
+      expect(injected).not.toContain('门厅的铜灯')
+    } finally {
+      room.dispose()
+    }
+  })
+
+  it('正向优先于反向：query 既正向包含 A 又被 B 唯一反向包含 → 取 A', async () => {
+    // query「贾司的别墅二楼」正向包含 A=「别墅」，同时 ⊂ B=「贾司的别墅二楼书房」
+    // （反向唯一）——正向层先命中即返回，反向不参与竞争。
+    await stageDossier([
+      { id: 'f1', name: '别墅', text: '别墅的壁炉。' },
+      { id: 'f2', name: '贾司的别墅二楼书房', text: '书房的书架。' },
+    ])
+    const { buildSceneBlock, renderSceneUncovered } = await import('../../rag/dossier/dossierCore.js')
+    const { buildSupplement } = await import('../../rag/supplementService.js')
+    vi.mocked(buildSceneBlock).mockClear()
+    vi.mocked(renderSceneUncovered).mockClear()
+    vi.mocked(buildSupplement).mockClear()
+    const room = await runTurn('room_fwd_priority', '贾司的别墅二楼')
+    try {
+      // 命中的是正向候选 A（按 id 取块），不是反向候选 B；也未走未覆盖回落
+      expect(vi.mocked(buildSceneBlock)).toHaveBeenCalledWith(expect.anything(), 'f1', expect.anything())
+      expect(vi.mocked(buildSceneBlock)).not.toHaveBeenCalledWith(expect.anything(), 'f2', expect.anything())
+      expect(vi.mocked(renderSceneUncovered)).not.toHaveBeenCalled()
+      expect(buildSupplement).toHaveBeenCalledWith(
+        expect.objectContaining({ sceneName: '别墅' }),
+        expect.anything(),
+      )
+    } finally {
+      room.dispose()
+    }
+  })
+
+  it('精确优先：query 精确等于短场景名（同时是长名子串）→ 取精确，不受反向歧义牵连', async () => {
+    // query「别墅」精确命中 A=「别墅」；若无精确短路，反向候选 {别墅, 贾司的别墅}
+    // 会判歧义落 null——精确层在反向之前短路是唯一性的来源。
+    await stageDossier([
+      { id: 'e1', name: '别墅', text: '别墅的壁炉。' },
+      { id: 'e2', name: '贾司的别墅', text: '贾司家的壁炉。' },
+    ])
+    const { buildSceneBlock, renderSceneUncovered } = await import('../../rag/dossier/dossierCore.js')
+    vi.mocked(buildSceneBlock).mockClear()
+    vi.mocked(renderSceneUncovered).mockClear()
+    const room = await runTurn('room_exact_priority', '别墅')
+    try {
+      expect(vi.mocked(buildSceneBlock)).toHaveBeenCalledWith(expect.anything(), 'e1', expect.anything())
+      expect(vi.mocked(buildSceneBlock)).not.toHaveBeenCalledWith(expect.anything(), 'e2', expect.anything())
+      expect(vi.mocked(renderSceneUncovered)).not.toHaveBeenCalled()
     } finally {
       room.dispose()
     }
