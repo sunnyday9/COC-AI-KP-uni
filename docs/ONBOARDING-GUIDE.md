@@ -15,7 +15,7 @@
 4. [Monorepo 结构与模块地图](#四monorepo-结构与模块地图)
 5. [后端核心：KP Agent 工作流（LangGraph 状态机）](#五后端核心kp-agent-工作流langgraph-状态机)
 6. [线索门控：剧本结构化与程序化判定](#六线索门控剧本结构化与程序化判定)
-7. [RAG 检索系统（剧本知识）](#七rag-检索系统剧本知识)
+7. [知识供给：档案 + 检索补充双轨（ADR-0007）](#七知识供给档案--检索补充双轨adr-0007)
 8. [AI 协议适配层与 MOCK_AI](#八ai-协议适配层与-mock_ai)
 9. [前端核心：RoomClient 与服务端回合链路](#九前端核心roomclient-与服务端回合链路)
 10. [平台抽象层 Bridge 与 WebSocket](#十平台抽象层-bridge-与-websocket)
@@ -31,14 +31,14 @@
 
 ## 一、项目立项
 
-**一句话定位**：这是一个「克苏鲁的呼唤第七版（COC 7th）」规则 AI 跑团助手——玩家导入剧本（模组），与一个由大语言模型驱动的 AI 守密人（Keeper，简称 KP）进行文字冒险。KP 不只是聊天，它用一套 **LangGraph 状态机 + 18 个 COC 规则工具** 驱动探索、战斗、理智检定、线索收集与结局结算，并用 **RAG** 从剧本原文中检索知识、防止剧透。
+**一句话定位**：这是一个「克苏鲁的呼唤第七版（COC 7th）」规则 AI 跑团助手——玩家导入剧本（模组），与一个由大语言模型驱动的 AI 守密人（Keeper，简称 KP）进行文字冒险。KP 不只是聊天，它用一套 **LangGraph 状态机 + 24 个 COC 规则工具**（另有 4 个档案查证工具按需挂载）驱动探索、战斗、理智检定、线索收集与结局结算，知识供给走 **档案 + 检索补充双轨**（ADR-0007：档案为事实权威，RAG 只作纹理补充）并做剧透防护。
 
 **立项背景**（从 `docs/MIGRATION-PLAN.md` 与 git 历史还原）：
 
 - 项目最初是一个 **Electron 单机桌面应用**（Vue 3 + Vite + Electron），仓库 `sunnyday9/COC-AI-KP`。渲染进程通过 `window.electronAPI`（约 40 个 IPC 方法）与主进程通信，主进程承载 AI 对话（OpenAI SDK）、KP Agent（LangGraph 状态机）、三层 RAG、文档解析（PDF/OCR/DOCX/EPUB）等全部逻辑。
 - 重构动机：**Electron 单机形态无法支持多端、多用户与云端化**。settingsStore 里预留的 `syncServerUrl` 字段证明团队早有「同步服务器」的伏笔。
 - 2026-08-15 立项重构：将 Electron 版重写为 **server / client / shared 三包 monorepo**，后端 Express 承载原主进程全部逻辑，前端 uni-app 支持 **H5 + 微信小程序 + App** 三端，Electron 完全替换。
-- 当前分支 `feature/coc7-rules-perf-optimization` 的最新提交（e2c522a）标志着 **COC 7th 规则书合规 + 工作流性能优化** 这一阶段的完成：36 个真实 LLM 测试用例全部通过，7 个改进点全部闭环，又新增了 7 个门控回归用例。
+- 编写本文时（2026-08-19）所在分支 `feature/coc7-rules-perf-optimization` 的最新提交（e2c522a）标志着 **COC 7th 规则书合规 + 工作流性能优化** 这一阶段的完成：36 个真实 LLM 测试用例全部通过，7 个改进点全部闭环，又新增了 7 个门控回归用例。此后项目经 ADR-0002（服务端权威单轨）等多轮架构演进，见 §3/§9。
 
 **git 历史时间线**（重要节点）：
 
@@ -47,7 +47,7 @@ af440a7 chore: 清理 mimosa hook 状态/死测试/字面量夹具，加路径�
 6cc0efd chore: v0.1.0，加 GitHub Actions CI + release 工作流
 c9c800e ci: release 工作流幂等化
 bb29e30 docs: 设备端测试（小程序自动化 + Android 模拟器）结果与工具
-e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 当前 HEAD
+e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 编写本文时 HEAD
 ```
 
 ---
@@ -60,17 +60,17 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 当前 
 |---|---|---|
 | FR-1 | 用户注册/登录，多用户数据隔离 | `server/src/routes/auth.routes.ts`，JWT 30 天 |
 | FR-2 | 导入剧本（txt/md/json/pdf/docx/epub/html），PDF 支持 OCR | `server/src/rag/storyParsers.ts` |
-| FR-3 | 剧本 RAG 索引（向量 + 图谱），供对话时检索知识 | `server/src/rag/*` |
-| FR-4 | 创建 COC 7th 角色（职业/属性投骰/技能/姓名） | `client/src/pages/character/*` + `logic/coc7Character.ts` |
-| FR-5 | 与 AI 守密人文字对话，流式输出（WS） | `client/src/stores/gameStore.ts` + `server/src/ws/index.ts` |
-| FR-6 | 工具链驱动规则：检定/战斗/SAN/幸运/医疗/场景/线索/结局等 18 个 COC 工具 | `shared/tools/cocTools.ts`（定义）+ `client/src/toolCalling/`（执行） |
+| FR-3 | 剧本知识索引：向量索引 + 档案预生成（双轨知识供给，ADR-0007；GraphRAG 已删除） | `server/src/rag/*`（`vectorStore.ts` + `dossier/`） |
+| FR-4 | 创建 COC 7th 角色（职业/属性投骰/技能/姓名） | `client/src/pages/character/*` + `shared/coc/coc7Character.ts` |
+| FR-5 | 与 AI 守密人文字对话（WS 房间事件流，叙事整段回灌） | `client/src/stores/roomStore.ts` + `server/src/services/roomService.ts`（`flushTurn`）+ `kpTurnService.ts` |
+| FR-6 | 工具链驱动规则：检定/战斗/SAN/幸运/医疗/场景/线索/结局等 24 个 COC 工具 | `shared/tools/cocTools.ts`（定义）+ `server/src/rule-engine/`（服务端图内执行） |
 | FR-7 | 确定性兜底：SAN 超阈值强制疯狂、结局表达强制 end_game、停滞强制推进 | `server/src/agent/kpGraph.ts` |
 | FR-8 | 线索门控：剧本结构化 `requiredClues` 程序化判定场景解锁 | `server/src/agent/scriptContext.ts` |
 | FR-9 | 存档/读档（全量快照：角色/线索/场景/消息/结局） | `server/src/services/saveService.ts` |
 | FR-10 | 结局结算 + 结局报告（含关键事实/回顾） | `client/src/pages/game/game-end/` |
 | FR-11 | AI 设置（provider/baseUrl/key/model）服务端持久化 | `server/src/services/settingsService.ts` |
 | FR-12 | 三端一致：H5 / 微信小程序 / App | `client/src/platform/bridge.ts` |
-| FR-13 | 调试面板（RAG 检索调试、KP trace 实时展示） | `client/src/pages/rag-inspector/` + `DebugPanel.vue` |
+| FR-13 | 调试观测（RAG 检索调试页、KP trace 随房间事件下发） | `client/src/pages/rag-inspector/`（H5 only）+ `client/src/stores/roomStore.ts`（trace 帧消费） |
 
 ### 2.2 Non-Functional Requirements（非功能需求）
 
@@ -95,18 +95,20 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 当前 
 | 状态机 | LangGraph（`@langchain/langgraph`） | 纯手写状态机（难维护）、LangChain 全量（重）——LangGraph 提供图式声明 + 条件边，且与原 Electron 版一脉相承 | 5 个 agent 变体共享 validate/forceTools |
 | WebSocket | `ws` | Socket.IO（协议重、小程序不友好）——原生 WS 协议 + 自定义 JSON 帧，小程序 `uni.connectSocket` 直接兼容 | 单连接多 streamId 并发 |
 | 认证 | JWT + bcrypt | Session（有状态、跨端难）——无状态、30 天有效期、WS 用 `?token=` 复用 | |
-| AI 协议 | 自研三适配器：OpenAI 兼容 / Anthropic SSE / Google SSE | 直接用 openai SDK 只覆盖一家——用 `shared/constants/providers.ts` 的 provider→protocol 映射，预设 6 家 + 自定义 4 种兼容协议 | 全部出站请求过 SSRF 防护 |
+| AI 协议 | 四协议一等公民（ADR-0003）：openai_chat / openai_responses / anthropic_messages / google_compatible | provider→protocol 两级模型已废除——`settings.ai.protocol` 是唯一协议真源，`shared/constants/providers.ts` 提供 4 协议定义与默认端点 | 全部出站请求过 SSRF 防护 |
 | 前端框架 | uni-app (Vue 3 + Pinia + Vite) | 原生小程序（三端三套代码）、Flutter（学习成本）——一套代码三端编译 | Tailwind → UnoCSS 保留 utility-first |
 | 向量检索 | 自研 TF-IDF + 字符 n-gram（中文分词） | Python rag-service（原仓库遗留，重）、向量数据库（部署成本）——纯 JS 实现，字符 1-3 gram + 英文单词 token，余弦相似度 | 详见 §7 |
-| 图谱检索 | 自研 GraphRAG（LLM 抽取 → union-find 社区 → LLM 社区摘要） | Microsoft GraphRAG（Python、重）——COC 领域定制 prompt，实体/关系/社区摘要 | |
+| 图谱检索 | ~~自研 GraphRAG~~（已按 ADR-0007 决策 3 删除） | 图与社区摘要在档案（dossier）落地后已无消费方，索引期 LLM 成本与查询期无上限扩展是负资产——图代码全部删除 | 档案取代了「关系情报块」角色，见 §7 |
 | Embedding | transformers.js 本地模型优先，OpenAI 兼容 API 回退 | 多用户后端本地推理是瓶颈（计划书 R2）——默认可切换 | |
 | 测试 | vitest + playwright-core + miniprogram-automator + 自研 test-agent | 见 §14 | |
 
-**核心架构决策：工具循环在客户端**（`docs/MIGRATION-PLAN.md` R1 风险 + task-3-brief decision）。原 Electron 版工具执行在主进程；新架构改为：**服务端每次 `kp:invoke` 只跑一次 LangGraph，返回 `{content, toolCalls}`；客户端拿到 toolCalls 后用本地 5 类 handler 执行（掷骰/改属性/加线索），把 `role:'tool'` 结果回传再发下一次 invoke，最多 8 轮**。这带来：
+**核心架构决策：服务端权威单轨（ADR-0002 现行）**。重构初期（e2c522a 时代）曾采用「工具循环在客户端」设计——服务端每次 invoke 只跑一次 LangGraph 返回 `{content, toolCalls}`，客户端本地执行工具后回传、最多 8 轮。**该设计已被 ADR-0002 整体反转**：上下文注入（提示词组装 / RAG / 记忆编排）与工具循环**全部服务端收口**，`kpTurnService.runKpTurn` 在服务端图内完成 ≤8 轮循环（LLM 调用与工具执行同进程，不再经网络往返，见 §9.2）。现行形态：
 
-- ✅ 服务端无状态（每 invoke 新图实例），天然可水平扩展；
-- ✅ 角色状态真源在客户端（gameStore），多端可各自持有；
-- ⚠️ 代价：长对话上下文在客户端反复上传，工具链轮次时延线性放大（§15）。
+- ✅ 规则与状态真源在服务端（RoomService 活跃实例 + DB 节流落库，ADR-0001）——防作弊、多端一致、重进即恢复；
+- ✅ 客户端零领域状态：RoomClient 纯视图模型（§9.1），不执行规则、不组装提示词；
+- ✅ 单人游戏 = 单成员房间（`kind='solo'`），与多人共用同一 wire 协议，**没有独立的回合协议**。
+
+> 旧「工具循环在客户端」叙述保留在 `docs/ARCHITECTURE-MULTIPLAYER.md` / `docs/MIGRATION-PLAN.md` 的历史章节中，仅作迁移史实。
 
 ---
 
@@ -116,48 +118,48 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 当前 
 AI-COC-KP/
 ├── server/                    # Node.js/Express + TypeScript 后端
 │   └── src/
-│       ├── app.ts             # Express 工厂：cors + json(1mb) → 8 组路由 → 404 → 错误处理；直跑时 listen + WS
-│       ├── config.ts          # 环境变量（PORT/JWT_SECRET/MOCK_AI/DATA_DIR/…）
-│       ├── db/index.ts        # node:sqlite 单例，懒建 6 张表
+│       ├── app.ts             # Express 工厂：cors + json(1mb) → 11 组路由 → 404 → 错误处理；直跑时 listen + WS
+│       ├── config.ts          # 环境变量（PORT/JWT_SECRET/MOCK_AI/DATA_DIR/KP_CHUNK_STREAM/…）
+│       ├── db/index.ts        # node:sqlite 单例，懒建 10 张表（见 §11）
 │       ├── middleware/auth.ts # JWT 签发/校验 + requireAuth
-│       ├── agent/             # ★ 智能核心
-│       │   ├── kpGraph.ts     #   LangGraph 状态机（1133 行，见 §5）
+│       ├── agent/             # ★ KP 状态机与门控
+│       │   ├── kpGraph.ts     #   LangGraph 状态机（1097 行，见 §5）
 │       │   └── scriptContext.ts # 剧本结构化加载 + 线索门控（见 §6）
-│       ├── routes/            # auth/settings/ai/kp/stories/scripts/saves/rag 8 组
-│       ├── services/          # aiService / kpAgentService / mockAi / settings / save / story / script / rag
-│       ├── rag/               # embedding / vectorStore / graphStore / graphExtractLLM / graphRag / storyParsers / prompts/
-│       ├── ws/                # /ws（token 鉴权、kp:invoke 流式、rag:progress 推送）
+│       ├── rule-engine/       # ★ COC 工具服务端执行：orchestrator + 6 handlers + toolContextFactory + characterMutators
+│       ├── routes/            # auth / settings / ai / stories / scripts / saves / rag / dossier / rooms / roomSettings / characters（11 组）
+│       ├── services/          # roomService（房间领域）/ roomStorage / roomStateCodec / startGate / kpTurnService（图内工具循环）/ kpAgentService / kpPromptService / turnKnowledge / roomMemory / wireSampleService / aiService + llm/（4 协议适配器）/ settings / save / story / script / mockAi
+│       ├── rag/               # chunker / embedding / reranker / supplementService / supplementAssembly / sceneAttribution / queryBuild / storyParsers / dossier/（档案域：dossierCore / dossierGenerate / originalLookup / dossierLookupTools / prefetch …）
+│       ├── ws/                # index（鉴权 + 帧分派）/ rooms（JSON 编解码 adapter）/ roomLedger（订阅簿 + 帧规划）/ progress（rag:progress）
 │       └── utils/             # errors / logging / crypto / outboundUrl(SSRF) / pathSafety / fileNames / fsSafe
 ├── client/                    # uni-app (Vue 3 + Pinia)
 │   └── src/
-│       ├── pages/             # home / scripts / settings / rag-inspector(H5 only) / game(+game-end) / character(occupation+create)
-│       ├── stores/            # gameStore(核心 857 行) / settingsStore / storyStore / debugStore
-│       ├── services/          # kpSessionService(工具循环) / kpPromptService(prompt 组装) / memory* / rag* / ai* / save* / tracing*
-│       ├── toolCalling/       # orchestrator + 6 handlers（18 工具执行）+ types
-│       ├── logic/             # coc7Character(角色生成) / coc7Rules(检定公式) / healingRules / environmentRules / growthRules
-│       ├── data/              # coc7.ts(静态规则数据) / insanityTables.ts(恐惧症/躁狂症发作表)
-│       ├── platform/          # bridge(三端抽象) / ws / config / token
-│       └── composables/       # useGameGuard / useToast
+│       ├── pages/             # home / scripts / settings / rag-inspector(H5 only) / game(+game-end + rooms) / character(occupation 三步建卡向导)
+│       ├── stores/            # roomStore(RoomClient 视图模型，§9.1) / settingsStore / storyStore —— 零领域状态
+│       ├── services/          # ai/（设置/模型列表）+ ragService（索引/查询）
+│       ├── platform/          # bridge(三端抽象 + 房间帧收发) / ws(单连接 + 房间帧路由) / config / token
+│       └── composables/       # useToast
 ├── shared/                    # 纯 TS 源码包（无构建），两端相对路径引用
-│   ├── types/                 # bridge / storyContext / ending / game / character / script / settings
-│   ├── tools/cocTools.ts      # 18 个 COC 工具 schema ★单一来源（433 行）
-│   └── constants/providers.ts # provider 清单（6 预设 + 4 自定义）
-├── e2e/                       # H5 端到端（playwright-core + MOCK_AI，无需真实 LLM）
+│   ├── coc/                   # 规则纯函数：coc7Rules / diceService / insanityTables / coc7Character / healingRules 等（客户端旧 logic/、data/ 已上收至此）
+│   ├── types/                 # bridge / room / storyContext / ending / game / character / script / settings
+│   ├── tools/cocTools.ts      # 24 个 COC 工具 schema ★单一来源 + kpValidation（校验规则单源）/ storyLookupTools（4 个档案查证工具定义）
+│   └── constants/providers.ts # LLM 协议清单（4 协议一等公民，ADR-0003）
+├── e2e/                       # 端到端旅程（h5 / rooms / multiroom / dossier，MOCK_AI）
+├── training/                  # KP 自训模型工作区（distill 数据管线 + eval 评测，ADR-0006）
 ├── test-agent/                # 独立 Agent 工作流测试（真实 LLM，不改项目代码）
 ├── tools/mp-test/             # 微信小程序自动化（miniprogram-automator）
-├── docs/                      # MIGRATION-PLAN / api-contract / PROJECT-ANALYSIS / 本报告
+├── docs/                      # ADR / api-contract / ONBOARDING-GUIDE / 本报告等
 └── original/                  # 原 Electron 项目（只读参考，禁止修改）
 ```
 
 **关键原则**：
-- **shared/ 是契约的单一来源**：工具定义（`cocTools.ts`）、provider 清单、全部跨端类型。服务端 tools 参数、客户端 handler 校验都从这里来（orchestrator 的 DEV 校验会警告「有定义无 handler」）。
-- **服务端无状态**：除内存缓存（graphCache / scriptContext cache / graphStore memoryCache）外，一切状态在 DB 或客户端。
+- **shared/ 是契约的单一来源**：工具定义（`cocTools.ts`）、档案查证工具定义（`storyLookupTools.ts`）、校验规则单源（`kpValidation.ts`，kpGraph validate 与训练评测共用）、规则纯函数（`coc/`）、全部跨端类型。服务端图内工具执行从这里取定义与校验。
+- **服务端权威单轨**（ADR-0001/0002）：房间状态真源 = RoomService 活跃实例（内存）+ DB 节流落库；客户端是纯视图模型，不持有领域状态、不组装提示词、不执行规则。
 
 ---
 
 ## 五、后端核心：KP Agent 工作流（LangGraph 状态机）
 
-文件：`server/src/agent/kpGraph.ts`（1133 行）。这是整个项目的心脏。每个节点职责分明，**只有 2 个节点调 LLM，其余全部是程序化逻辑**——这是性能与确定性的根基。
+文件：`server/src/agent/kpGraph.ts`（1097 行）。这是整个项目的心脏。每个节点职责分明，**只有 2 个节点调 LLM，其余全部是程序化逻辑**——这是性能与确定性的根基。
 
 ### 5.1 图拓扑
 
@@ -206,7 +208,7 @@ START → analyzeInput → routeByIntent ─条件边→ {generic|combat|sanity|
 
 - **图实例缓存**（`kpAgentService.getSharedGraph`）：`createKPGraph` 每次重建整个 StateGraph，而图本身无状态 → 10s TTL 缓存，key 含 invokeLLM 闭包（配置变更→新闭包→新缓存项，绝不串配置）。**流式路径永不缓存**（闭包捕获 per-request onChunk，复用会流向死连接）。
 - **120s 图超时**（`GRAPH_TIMEOUT_MS`）+ **60s 非流式 LLM 请求超时**（`LLM_REQUEST_TIMEOUT_MS`）：非流式调用共享图预算，单次挂死不会吃掉整个图；流式以 chunk 活跃度为存活信号，不设固定时钟。
-- **trace 事件**：每次 invoke 恰好 6 个 trace（intent_classified / agent_routed / tool_plan_created / llm_generate_start / llm_generate_end / validation_result），供前端 DebugPanel 与 test-agent 断言。
+- **trace 事件**：每次 invoke 恰好 6 个 trace（intent_classified / agent_routed / tool_plan_created / llm_generate_start / llm_generate_end / validation_result），随房间事件下发、由 RoomClient 消费（§9.2），并供 test-agent 断言。
 
 ---
 
@@ -248,51 +250,49 @@ START → analyzeInput → routeByIntent ─条件边→ {generic|combat|sanity|
 
 与停滞强制（≥2 强制 grant_clue）配合，形成了"探索回合必有线索产出"的闭环。
 
-**数据来源**：客户端每轮 invoke 经 WS 帧带 `storyContext`（`gameStore.buildStoryContext`：scriptId/openClues/sceneName/sanity/forceTransitionScene）。
+**数据来源**：服务端自持（ADR-0002 决策 2/4，客户端不上传任何状态）——`RoomService.flushTurn` 以房主账号解析剧本与角色状态，组装 storyContext（scriptId/openClues/sceneName/sanity 等均来自房间运行时状态与 session 角色快照）；知识块由 TurnKnowledge 装配（§9.2）。
 
 ---
 
-## 七、RAG 检索系统（剧本知识）
+## 七、知识供给：档案 + 检索补充双轨（ADR-0007）
 
-目录 `server/src/rag/`。剧本上传后建立**双索引**，运行时做**向量召回 + 图扩展 + 结构化摘要**。
+目录 `server/src/rag/`。知识供给分两轨（ADR-0007）：**档案（dossier）= 事实权威框架**——场景/线索/NPC/切换边/事件/真相/结局的结构化预生成摘要，运行时按当前场景整块注入；**检索补充（supplement）= 纹理层**——只供环境描写、原文措辞、具体数字，不承担事实权威。原 GraphRAG（LLM 抽图 + union-find 社区 + 2 跳扩展）在档案落地后已无消费方，随 ADR-0007 决策 3 **整体删除**。
 
 ### 7.1 文档解析（storyParsers.ts）
 
-txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 pdf-parse 提取文本层，扫描页（无文本层）走 tesseract.js OCR**（chi_sim+eng 语言包在 `server/assets/tesseract`）。分块 800 字符 / 重叠 100。
+txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 pdf-parse 提取文本层，扫描页（无文本层）走 tesseract.js OCR**（chi_sim+eng 语言包在 `server/assets/tesseract`）。
 
-### 7.2 向量索引（vectorStore.ts，587 行）
+### 7.2 向量索引（chunker.ts + vectorStore.ts，服务端切块）
 
+- **分块**：服务端递归语义切块（标题→段落→句末，~800 字符/重叠 100）——`POST /api/rag/index` 只报 scriptId，服务端自读自切（ADR-0007 决策 4，客户端切块器已删除）；
+- **块只存字符偏移**：场景归属在查询期用 `coverageGaps` 的场景锚点现算（`sceneAttribution.ts`）——索引与档案生成的先后解耦，档案重生成后归属自动跟随；
 - **分词**：中文按字符 1-3 gram + 英文按单词（`[a-z]{2,}`），停用字符表过滤标点；
 - **权重**：TF-IDF（`idf = ln((N+1)/(df+1)) + 1`）；
 - **混合检索**：TF-IDF 余弦 + 稠密向量（embedding，见 7.4），分数融合；
-- **防剧透**：候选分段策略（sceneId 过滤）——未来章节不提前进入检索视野；
-- **持久化**：`RAG_DATA_DIR/<userId>/rag_index/<scriptId>.json`，每用户隔离，内存缓存 keyed `userId:scriptId`。
+- **持久化**：`RAG_DATA_DIR/<userId>/rag_index/<scriptId>.json`，每用户隔离。
 
-### 7.3 图谱索引（graphStore.ts + graphExtractLLM.ts）
+### 7.3 档案域（`rag/dossier/`，按重量切两条 seam）
 
-Microsoft GraphRAG 风格本地管线，COC 领域定制：
-
-1. **LLM 抽取**（`extractGraphFromChunksLLM`）：按 2500 字符/3 分块一批，COC 实体类型 prompt（`prompts/cocExtractGraph.ts`）抽取实体与关系，temperature 0、maxTokens 2048，单批失败跳过不中断；
-2. **社区检测**：union-find 并查集 → `community_N`；
-3. **社区摘要**：每社区 LLM 生成摘要（≤5 个社区，temperature 0.3，失败置空）；
-4. **持久化**：`RAG_DATA_DIR/<userId>/graph_index/<scriptId>.json`。
+- **生成期**（`dossierGenerate.ts`，重生成器）：LLM 从剧本原文抽取结构化档案落盘；**质量门**（#55）：低覆盖（sceneText 覆盖率 < 30%，仅对 >5000 字符剧本，阈值 `DOSSIER_MIN_COVERAGE_PCT` 单源 schema.ts）或分节解析失败 → quality 快照随档案落盘，开局门闩（startRoom / createSoloRoom）据此 409 提示重新生成——**残档不再静默放行**；
+- **查询期**（`dossierCore.ts`，轻查询核）：当前场景整块渲染注入 + 纯函数 lookups，是查询期消费方动态 import 的目标；`storyDossierService.ts` 为纯 re-export 兼容门面；
+- **原文查证**（`originalLookup.ts` + `dossierLookupTools.ts`）：档案说不清时按当前场景锚点窗口取剧本原文片段（≤12k 字符）交一次全新上下文的子阅读器作答（`verify_original`），降级为「未取得」、永不阻断回合；scene_list / scene_dossier / lexical_search / verify_original 4 个查证工具是否挂载由 TurnKnowledge 的 workflow 门决定（§9.2）。
 
 ### 7.4 Embedding 双通道（embedding.ts）
 
-内置 `@huggingface/transformers` 本地模型（text2vec-base-chinese-sentence，模型缓存 `MODELS_DIR`）优先，失败回退 OpenAI 兼容 `/v1/embeddings`。
+内置 `@huggingface/transformers` 本地模型（text2vec-base-chinese-sentence，模型缓存 `MODELS_DIR`）优先，失败回退 OpenAI 兼容 `/v1/embeddings`；嵌入固定走 OpenAI 兼容端点，与主协议解耦（anthropic/google 无等价嵌入 API）。
 
-### 7.5 运行时检索（graphRag.ts）
+### 7.5 运行时检索与注入（supplementService.ts / supplementAssembly.ts）
 
-`buildContextWithGraph`：
+每回合固定检索（不做门控——P26/P27 已证 KP 不会主动索取；query = 场景名 + 玩家合并发言，规则清洗；仅当最高分低于阈值时做一次 LLM 改写并重检一次，有界成本）：
 
 ```
-向量召回（topK，sceneId 候选策略）
-  → 图 BFS 2 跳扩展（expandFromChunks：chunk→node→邻居→邻接 chunk）
-  → 结构化摘要（社区摘要 / 当前场景 / 关联节点(含"需XX后解锁") / 相关线索，边语义 CONTAIN/UNLOCK/TRANSITION）
-  → 拼 "## 故事情报（含关系）" + 详细片段
+递归切块索引 → query 检索 top10
+  → 本地 cross-encoder rerank（bge-reranker-base ONNX，logits.sigmoid() 手工打分；
+    模型索引时预取，检索时缺失则降级纯余弦）
+  → top3 注入（≤3 块 / ≤1.6k 字符）
 ```
 
-**关键设计**：上下文构建**不调 LLM**（否则每轮对话多一次推理）。LLM 综合检索（local/global search prompt）保留在 `prompts/` 但非默认路径。
+注入以独立小节 `## 原文片段（检索补充·仅作描写素材）` 追加在档案块之后；跨场景块至多 1 条并标注「未来场景片段·不得向玩家揭示」；与 `truths[].revealScene` 锚点相交的块**直接丢弃**（剧透硬闸）。装配入口 = TurnKnowledge（§9.2）：dossier workflow = 场景档案块 + 补充层（`supplement` 模式，档案重叠剔除 + 场景内优先）；无档案的 rag 房 = 标准检索情报块（`plain` 模式，相关性排序 + 条数/预算截断）。总开关 `rag.supplement`（默认开）。
 
 ---
 
@@ -323,7 +323,7 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 
 - 意图分类调用 → 关键词 → 意图词（词表与 kpGraph 的 `INTENT_RULES_ORDER` 一致）；
 - 新回合生成 → 关键词 → 工具链起点："战斗"→skill_check(格斗)、"侦查"→skill_check(侦查)→grant_clue(铜钥匙)、"撬锁"→skill_check(机械维修)；
-- **工具续接调用** → 按上轮工具结果推下一步（combat skill 检定成功→roll_dice→adjust_hp），让客户端 8 轮工具循环被端到端真实走一遍；
+- **工具续接调用** → 按上轮工具结果推下一步（combat skill 检定成功→roll_dice→adjust_hp），让服务端 8 轮图内工具循环被端到端真实走一遍；
 - force-tools → 每个请求的工具名一个 toolCall；
 - 流式 → 叙事拆两段 chunk，顺带验证 WS 流式路径；
 - listModels → 固定 `mock-model`。
@@ -399,41 +399,44 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 
 ### 10.1 PlatformBridge（`client/src/platform/bridge.ts`）
 
-用 `uni.request / uni.uploadFile / uni.connectSocket` 一套实现三端（H5 / mp-weixin / app），实现 shared `Bridge` 接口（约 40 个方法，1:1 对应 api-contract 端点）：
+用 `uni.request / uni.uploadFile / uni.connectSocket` 一套实现三端（H5 / mp-weixin / app），实现 shared `Bridge` 接口（1:1 对应 api-contract 端点）：
 
 - token 存 `aikp_token`（uni storage），每请求带 `Authorization: Bearer`；
 - **401 统一处理**：除 login/register（401=凭据错误）外，清 token + `emitUnauthorized` 事件，页面层决定跳转；
-- `kpInvokeStream`：惰性开共享 WS，生成 streamId，订阅帧后 fan-out 给所有 `onKpStream` 监听（调用方按 streamId 过滤）；
+- **KP 回合只走房间协议**（ADR-0002）：`sendRoomFrame` / `onRoomFrame` 收发 room:* 帧（join/leave/sync/action ↔ state/event/sync:done/error）——旧 `kpInvokeStream`/`onKpStream`/streamId 多路复用已随 kp:invoke 帧整体删除；
 - 上传走 `uni.uploadFile`（multipart 字段 `file`）；
 - `BridgeError`：统一错误类型（只带 message，不含栈）。
 
 ### 10.2 WSService（`client/src/platform/ws.ts`）
 
-- 单连接多流（streamId 复用一条 WS）；
-- 指数退避重连（1s→30s）+ 30s 心跳；
-- 帧路由 chunk/end/error/trace；error 后忽略同流后续帧（防超时竞态）。
+- 单连接复用：全部房间帧走同一条 WS；
+- 指数退避重连（1s→30s）+ 30s 心跳；重连成功后通知订阅者（roomStore 重新 room:join 补同步）；
+- 帧路由 `room:state` / `room:event` / `room:sync:done` / `room:error`，逐帧转发给 RoomFrameHandler 订阅者（roomStore）。
 
 ### 10.3 服务端 WS（`server/src/ws/index.ts`）
 
 - `ws://host/ws?token=<JWT>`，无效关 4001；心跳 ping→pong；
-- 客户端 `kp:invoke {streamId, messages, storyContext?}` → 服务端跑图 → 推 `chunk/trace/end/error`（同 streamId，一连接多流并发独立）；
-- `rag:progress` 服务端→客户端推送（索引进度，按 userId 注册表）；
-- 双保险错误兜底：`invokeKpStream` 内部 catch + `handleKpInvoke` 外层 catch，任何异常转 error 帧，绝不抛出到 socket handler。
+- 客户端帧仅 4 种：`room:join` / `room:leave` / `room:sync` / `room:action`（JSON 编解码 adapter 在 `ws/rooms.ts`，订阅注册与帧规划在 `ws/roomLedger.ts`）；服务端 → 客户端推 `room:state` / `room:event` / `room:sync:done` / `room:error`；
+- `rag:progress` 服务端→客户端推送（索引进度，按 userId 注册表）；未知客户端帧类型忽略。
 
 ---
 
 ## 十一、数据模型与持久化
 
-`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 6 张表（幂等）：
+`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 10 张表（幂等）：
 
 | 表 | 用途 |
 |---|---|
 | `users` | id / username(unique) / password_hash(bcrypt) / created_at |
-| `settings` | user_id 主键 + data(JSON 文档：ai 配置含加密 apiKey + rag 开关 + debugMode) |
+| `settings` | user_id 主键 + data(JSON 文档：ai 配置含 protocol + 加密 apiKey + rag 开关) |
 | `saves` | (user_id, save_id) + data(JSON 全量快照) + updated_at |
 | `scripts` | 剧本库（schema 遗留，当前路由为死代码，见 §16） |
-| `stories` | 故事元数据（schema 遗留，实际文件落盘） |
+| `stories` | 故事元数据（实际文件落盘） |
 | `rag_index` | 向量索引 JSON 文档（实际按文件落盘 `RAG_DATA_DIR`，此表为索引记录） |
+| `rooms` | 房间（room_id / owner_id / invite_code / story_id / kind='solo'\|'multi' / phase / state JSON 快照 / version）——DB 权威（ADR-0001） |
+| `characters` | 角色卡（id / user_id / name / sheet JSON） |
+| `room_members` | 成员资格（room_id + user_id 主键 / role='owner' / character_id 绑卡） |
+| `kp_wire_samples` | wire 采样日志（完整 wire 消息序列 + 工具调用 + RAG 注入原文，T1 / ADR-0006，KP_WIRE_SAMPLING=0 关闭） |
 
 **存储约定**：DB 存元数据与 JSON 文档；故事/剧本实体文件按 `UPLOADS_DIR/<userId>/stories|scripts/` 落盘（`pathSafety` 防护）。
 
@@ -447,9 +450,9 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 | API Key | AES-256-GCM 加密落库（密钥 = `sha256(JWT_SECRET)`），GET 设置不回传 | `utils/crypto.ts` + `settingsService` |
 | SSRF | `assertSafeOutboundUrl`：仅 http/https，拒绝 localhost/回环/私网/保留地址/IPv6 回环；**所有出站 AI 请求 + listModels fetch 前必经** | `utils/outboundUrl.ts` |
 | 路径安全 | `assertId` 消毒 + realpath 防符号链接逃逸 + 按 userId 隔离目录；上传/读取一律经 `pathSafety.ts` | `utils/pathSafety.ts` + `fsSafe.ts` |
-| 输入校验 | kp:invoke 消息严格校验（非数组 400、结构校验、坏 arguments JSON 降级 `'{}'`）；temperature/maxTokens 数值校验 | `kpAgentService.normalizeMessages` + `aiService.validateMessages` |
+| 输入校验 | 回合消息严格校验（非数组 400、结构校验、坏 arguments JSON 降级 `'{}'`）；temperature/maxTokens 数值校验 | `kpTurnService.runKpTurn` → `kpAgentService.normalizeMessages` + `aiService.validateMessages` |
 | 错误不泄栈 | 统一 `{error}` JSON，未知错误 500 通用文案；错误码映射 BadRequest 400 / Unauthorized 401 / NotFound 404 / Conflict 409 / Upstream 502 | `utils/errors.ts` + `app.ts` |
-| 工具参数 | 客户端 handler 对参数做数值钳制（clamp 0-99 等），越界不崩 | `toolCalling/handlers/*` |
+| 工具参数 | 服务端 handler 对参数做数值钳制（clamp 0-99 等），越界不崩 | `server/src/rule-engine/handlers/*` |
 
 ---
 
@@ -490,17 +493,22 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 
 ```
 ① 单元测试（vitest）
-   server 220 用例：路由（auth/ai/settings/rag/saves/scripts/stories + 上传限额）、
-   kpGraph 状态机（含 fixes）、scriptContext 门控、mockAi、aiService 超时、ws 流式、RAG 各件
-   client：logic 纯函数（137 用例零改动复用）、toolCalling handlers、store 集成（mock bridge）、
-   bridge/ws 平台层
-   → npm run test:server / test:client / test:all
+   server 804+1skip 用例：路由（auth/ai/settings/stories/saves/scripts/rag/dossier/rooms/roomSettings/characters + 上传限额）、
+   kpGraph 状态机（含 fixes）、scriptContext 门控、rule-engine（coc/ 与 rule-engine/ 用例）、kpTurnService、
+   mockAi、aiService 超时、ws 房间帧、RAG / 档案 各件
+   client：roomStore / settingsStore spec、ChatMessage / classifySystemMessage / parseActionOptions、
+   bridge/ws 平台层（规则纯函数用例随 shared/coc 上收，由 server/test/coc 承载）
+   training：distill / eval 工具链用例（独立工作区）
+   → npm run test:server / test:client / test:training / test:all
 
-② H5 端到端（playwright-core + MOCK_AI，无需真实 LLM、不下载浏览器）
-   e2e/h5.journey.mjs：自动起后端(3100) + H5 dev(5175) → 注册登录 → 设置 → 导入剧本 → RAG 索引 →
+② 端到端旅程（playwright-core + MOCK_AI，无需真实 LLM、不下载浏览器）
+   e2e/h5.journey.mjs：自动起后端(3100) + H5 dev(5175) → 注册登录 → 设置（协议卡 + mock 模型保存）→ 导入剧本 → RAG 索引 →
    选职业 → 创角色（投骰+兴趣技能+姓名）→ 开场 → 侦查消息（skill_check→grant_clue，线索+1）→
-   战斗消息（skill_check→roll_dice→adjust_hp，HP−2）→ 存档 → 读档 → 恢复断言 → 截图
-   → npm run test:e2e:h5（CI 中运行）
+   战斗消息（skill_check→roll_dice→adjust_hp，HP−2）→ 刷新页面 → 服务端快照续玩恢复断言 → 截图
+   （存/读档 UI 已由服务端房间快照 + 续玩取代）
+   另有：rooms.journey.mjs（多人房间 UI 全链）/ multiroom.journey.mjs（多人 WS 协议，双客户端）/
+   dossier.journey.mjs（档案旅程）/ room-stress.mjs（房间规模边界）
+   → npm run test:e2e:h5 + node e2e/multiroom.journey.mjs / rooms.journey.mjs（CI 中运行）
 
 ③ Agent 工作流测试（test-agent/，真实 LLM，独立套件不改项目代码）
    smoke / scenario-investigate(12) / scenario-combat(5) / scenario-sanity(5) / scenario-save(6) /
@@ -513,7 +521,8 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
      （首页渲染→按钮→设置页→返回）；踩坑：Tool.getInfo 结构变化需 patch-automator 修补
    - Android 模拟器：Pixel 5 / Android 14 加载 H5 构建，首页渲染 + 后端可达（10.0.2.2）
 
-⑤ CI（.github/workflows/ci.yml）：push/PR 到 main → npm ci → server 单测 → client 单测 → 构建 → e2e H5
+⑤ CI（.github/workflows/ci.yml）：push/PR 到 main → npm ci → server 单测 → client 单测 → client tsc → training 测试 →
+   构建（server / H5 / 微信小程序）→ e2e（h5 / multiroom / rooms / room-stress）
    发布（release.yml）：tag v* → 构建产物上传 GitHub Release（幂等：release 已存在时补传资产）
 ```
 
@@ -530,7 +539,7 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 | 多工具链长轮次 | 60-106s | 链长 × 推理时间线性放大（战斗链最坏） |
 | trace 事件 | 每次 invoke 恰好 6 个 | 供调试/断言 |
 
-**瓶颈本质**：LLM 推理主导，且工具循环在客户端 = 每轮工具链多次 HTTP/WS 往返 + 多次 LLM 调用。已做缓解：意图规则短路、图缓存、工具结果截断、摘要自适应、失败快速退出。**架构性约束**：长对话上下文反复上传、服务端无会话缓存——完整方案（服务端会话缓存/历史压缩）在待办（§16）。
+**瓶颈本质**：LLM 推理主导。工具循环已服务端收口（§9.2）：一轮内的多轮工具链在同进程完成，不再有客户端↔服务端的逐轮网络往返；上表 60-106s 长链轮次实测于 e2c522a（客户端循环时代），现行主要耗时 = 链长 × LLM 推理时间。已做缓解：意图规则短路、图缓存、工具结果截断、摘要自适应、失败快速退出；服务端记忆编排（roomMemory：记忆要点 + 摘要收缩）与近轮对话窗已落地（§9.2）。
 
 ---
 
@@ -538,9 +547,9 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 
 | 类别 | 项 | 现状/建议 |
 |---|---|---|
-| 🔴 性能 | 长工具链 60-106s；长对话劣化 | 已缓解（§13），完整方案待专项：服务端会话缓存、历史压缩 |
+| 🔴 性能 | 长工具链耗时 = 链长 × LLM 推理时间 | 已缓解（§13）；服务端记忆编排（roomMemory）+ 近轮对话窗已落地（§9.2） |
 | 🟡 确定性 | 弱结局表达（如"破坏仪式"）仍依赖 LLM 自觉 | 已修强意图词；可考虑「门控场景完结时服务端强制 end_game」 |
-| 🟡 协议 | storyContext 为可选字段，旧客户端不传则门控不生效 | 已标注；升级客户端即生效 |
+| 🟢 已消亡 | storyContext 由客户端上传的兼容性问题 | 客户端状态上传入口已随 ADR-0002 整体删除，上下文注入服务端收口（§9.2） |
 | 🟢 遗留 | `scripts` 路由/桥接为死代码（无调用方）；`stories`/`scripts` DB 表未使用 | 清理或按需启用（剧本库） |
 | 🟢 遗留 | 自由文本 obtainCondition/transitionCondition 无语义解析（维持双轨） | 结构化优先策略，有意为之 |
 | 🟢 遗留 | 无 DB 迁移机制（幂等建表） | 结构变更需手动处理，建议引入版本号 |
@@ -554,21 +563,22 @@ Microsoft GraphRAG 风格本地管线，COC 领域定制：
 
 1. **README.md** —— 全项目运行手册（30 分钟）；
 2. **docs/api-contract.md** —— 前后端唯一接口基准，所有端点/帧/错误码的定义；
-3. **shared/tools/cocTools.ts** —— 18 个工具的 schema（读完你就知道 KP 能做什么）；
+3. **shared/tools/cocTools.ts** —— 24 个工具的 schema（读完你就知道 KP 能做什么）；
 4. **server/src/agent/kpGraph.ts** —— 状态机（最难但最重要，配合 §5 逐节点读）；
 5. **server/src/services/kpAgentService.ts** —— 图如何被注入与调用（超时/缓存/校验）；
 6. **server/src/agent/scriptContext.ts** —— 门控判定；
-7. **server/src/services/aiService.ts** —— 三协议适配器 + SSRF + 超时；
+7. **server/src/services/aiService.ts** —— 4 协议适配器 + SSRF + 超时；
 8. **server/src/services/mockAi.ts** —— 确定性脚本（理解测试如何不依赖 LLM）；
-9. **client/src/stores/gameStore.ts** —— 客户端真源（配合 §9.1）；
-10. **client/src/services/kpSessionService.ts** —— 工具循环；
-11. **client/src/toolCalling/orchestrator.ts + handlers/** —— 规则执行；
-12. **client/src/platform/bridge.ts + ws.ts** —— 三端抽象；
-13. **e2e/h5.journey.mjs** —— 一次完整旅程的自动化视角；
-14. **test-agent/REPORT.md** —— 真实 LLM 下系统如何表现、修过什么。
+9. **client/src/stores/roomStore.ts** —— RoomClient 视图模型（配合 §9.1）；
+10. **server/src/services/kpTurnService.ts** —— 服务端图内工具循环（≤8 轮）；
+11. **server/src/rule-engine/orchestrator.ts + handlers/** —— 规则执行；
+12. **server/src/services/turnKnowledge.ts** —— 回合知识装配（档案/检索双轨入口）；
+13. **client/src/platform/bridge.ts + ws.ts** —— 三端抽象 + 房间帧收发；
+14. **e2e/h5.journey.mjs** —— 一次完整旅程的自动化视角；
+15. **test-agent/REPORT.md** —— 真实 LLM 下系统如何表现、修过什么。
 
 **动手建议**：
-- 改后端前先跑 `npm run test:server` 建立基线（220 用例）；
+- 改后端前先跑 `npm run test:server` 建立基线（804+1skip 用例）；
 - 改前端逻辑前跑 `npm run test:client` + `npx tsc --noEmit`（零错误基线）；
 - 本地体验全流程：`MOCK_AI=1 npm run dev:server` + `npm run dev:h5`（零配置，无需 API Key）；
 - 需要真实 LLM 验证时：`cd test-agent && node run-all.mjs`（需配置 AW_* 环境变量）；

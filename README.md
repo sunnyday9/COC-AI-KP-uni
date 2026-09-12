@@ -11,7 +11,7 @@ COC 7th 规则 AI 跑团助手，由原 Electron 单机应用重构而来。服�
 ### 🕯️ 单人调查（ADR-0002）
 - 导入剧本（txt / md / json / pdf OCR / docx / epub / html）→ 结构化 RAG 索引 → 首页故事卡启动；
 - 单页三步建卡向导：**选职业 → 投掷属性 + 职业技能 / 兴趣技能 → 姓名 + 档案预览**（COC 7th 全职业表，含 1920s / 现代双时代）；
-- 与 AI 守密人实时对话（WS 帧协议）：**18 个 COC 工具**（`skill_check / san_check / roll_dice / adjust_hp / first_aid / spend_luck / transition_scene / grant_clue / end_game / trigger_insanity / melee_attack / ranged_attack` …）驱动检定与叙事；
+- 与 AI 守密人实时对话（WS 帧协议）：**24 个 COC 工具**（`skill_check / san_check / roll_dice / adjust_hp / first_aid / spend_luck / transition_scene / grant_clue / end_game / trigger_insanity / melee_attack / ranged_attack` …，另有 4 个档案查证工具按需挂载）驱动检定与叙事；
 - **确定性规则兜底**：SAN 损失超阈值强制疯狂、结局表达强制结算、停滞轮次强制推进——不依赖 LLM 自觉；
 - 羊皮纸角色卡三处复用（建卡预览 / 游戏右栏 / 结局最终态）；进度服务端快照，随时续玩。
 
@@ -53,7 +53,7 @@ server (Express + TypeScript)
 
 - **规则与记忆全在服务端**（ADR-0002）：客户端无规则、无工具循环、无提示词组装——房间事件流是唯一事实源，重进 / 刷新即恢复；
 - **多端一码**：同一套 Vue 代码跑 H5 / 微信小程序 / App，条件编译处理平台差异；
-- 架构决策全程 ADR 记录（`docs/adr/0001–0005`），术语统一见 `CONTEXT.md`。
+- 架构决策全程 ADR 记录（`docs/adr/0001–0007`），术语统一见 `CONTEXT.md`。
 
 ## 目录结构
 
@@ -109,7 +109,7 @@ npm run dev:h5                 # 前端 :5175 → 打开 http://localhost:5175
 ## 测试与质量
 
 ```bash
-npm run test:all      # server 457 用例 + client 113 用例（vitest，全绿基线）
+npm run test:all      # server 804+1skip 用例 + client 107 用例 + training 50 用例（vitest，全绿基线）
 npm run test:e2e:h5   # H5 单人全旅程 14 步（真实浏览器，MOCK_AI 自启后端）
 node e2e/rooms.journey.mjs      # 多人房间 UI 全链 14 步（双浏览器）
 node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端）
@@ -124,7 +124,7 @@ node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端�
 
 | 文档 | 内容 |
 |---|---|
-| `docs/adr/` | 架构决策记录 0001–0005（房间域 / 单人=单成员房 / LLM 协议一等公民 / UI 重设计 / 多人房间流程） |
+| `docs/adr/` | 架构决策记录 0001–0007（房间域 / 单人=单成员房 / LLM 协议一等公民 / UI 重设计 / 多人房间流程 / KP 训练框架 / 档案+检索双轨） |
 | `CONTEXT.md` | 领域术语统一（等待室 / 开局门闩 / 就绪 / 房主转让 / RoomClient …） |
 | `docs/DEPLOYMENT.md` | 部署上线指南（含 BYOK 玩家引导、安全基线、回滚） |
 | `docs/api-contract.md` | 前后端 API 契约（唯一接口基准） |
@@ -133,7 +133,7 @@ node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端�
 
 ## 项目状态
 
-- **MVP 完成**：单人 + 多人全功能闭环落地 main；OPEN issue = 0；回归全绿（server 457 / client 113 / E2E 14×3）；
+- **MVP 完成**：单人 + 多人全功能闭环落地 main；回归全绿（server 804+1skip / client 107 / training 50 / E2E 14×3）；
 - 主要里程碑：Electron → 服务端重构（ADR-0002）→ LLM 协议化（ADR-0003）→ UI 全面重设计（ADR-0004）→ 多人房间（ADR-0005）→ BYOK / 依赖安全收口；
 - 路线图候选（未立项）：saves 迁移、流式输出、observer 观战、多人结局、故事共享。
 

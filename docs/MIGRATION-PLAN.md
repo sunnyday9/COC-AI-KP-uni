@@ -3,6 +3,8 @@
 > 来源仓库：https://github.com/sunnyday9/COC-AI-KP
 > 计划日期：2026-08-15
 > 状态：待审批执行
+>
+> **退役指针（2026-09-13）**：本文是 Electron 单机版 → monorepo 重构的**历史计划**（已在后续分支执行完毕）。文中描述的 Electron 旧架构、`gameStore`/`toolCalling`/客户端工具循环等均为**迁移前史实**；现行架构（服务端权威单轨、单人 = 单成员房间）以 `CONTEXT.md`、`docs/adr/0002-solo-room.md`、`docs/ONBOARDING-GUIDE.md` §9 为准。
 
 ---
 
