@@ -61,37 +61,21 @@ interface AppSettings {
 - AI 配置（protocol/baseUrl/model/apiKey/temperature/maxTokens）**由服务端从用户设置读取**，请求体中不需要传。
 - 模型列表：三协议（chat/responses/messages）统一 `GET {baseUrl}/models`（OpenAI 格式）按 purpose 过滤；anthropic 实时拉取失败回退静态 Claude 列表；google 走 `/v1beta/models`（ADR-0003 T4）。
 - 嵌入端点：固定 `POST {baseUrl}/v1/embeddings`（OpenAI 格式），与主协议解耦（anthropic/google 无等价嵌入 API）。
-- 流式：`stream=true` 时返回缓冲的 `chunks` 数组（与原 IPC 契约一致，真流式走 KP WebSocket 路径）。
+- 流式：`stream=true` 时返回缓冲的 `chunks` 数组（与原 IPC 契约一致；ADR-0002 后 KP 回复经房间协议整段 `message_appended` 到达，无独立流式通道）。
 - **安全约束**：服务端发起任何外部 URL 请求前必须校验 host —— 仅 http/https；拒绝 localhost、环回、私有（10/8、172.16/12、192.168/16、169.254/16）与保留地址（含 0.0.0.0、::、IPv6 映射）。实现于 `server/src/utils/outboundUrl.ts`。
 
 ## 4. KP Agent（Task 3）
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| POST | `/api/kp/invoke` | `{ messages: {role,content}[] }` | `{ content?: string, toolCalls?: { id, name, arguments }[] }` |
+- KP Agent 状态机（LangGraph）在服务端运行，配置读取与 AI 相同（服务端设置）。
+- **ADR-0002**：REST `POST /api/kp/invoke` 与 WS `kp:` 前缀帧（`kp:turn`/`kp:invoke`）已删除；KP 回合唯一入口是房间协议（`room:action` → 服务端图内工具循环 → `room:event` 广播，见 `docs/ARCHITECTURE-MULTIPLAYER.md`）。
+- 服务端 `invokeKp`/`invokeKpStream`（`kpAgentService.ts`）保留为测试 harness（零生产调用方），不在公网面。
 
-- 非流式单次调用；KP Agent 状态机（LangGraph，9 意图）在服务端运行。
-- 配置读取与 AI 相同（服务端设置）。
+### WebSocket（替代原 Electron `onKpStream` / `kp:stream`）
 
-### WebSocket（替代 `onKpStream` / `kp:stream`）
-
-- 端点：`ws://<host>/ws?token=<JWT>`（H5/App）；小程序走 `wss://`。
-- 客户端 → 服务端消息：
-
-```json
-{ "type": "kp:invoke", "streamId": "uuid", "messages": [ { "role": "user", "content": "..." } ] }
-```
-
-- 服务端 → 客户端消息（payload 结构镜像 `onKpStream`）：
-
-```json
-{ "type": "chunk", "streamId": "...", "chunk": "..." }
-{ "type": "end",   "streamId": "...", "content": "...", "toolCalls": [ { "id", "name", "arguments" } ] }
-{ "type": "error", "streamId": "...", "error": "..." }
-```
-
-- 另有通用消息 `{ "type": "pong" }`（心跳响应）与 `{ "type": "rag:progress", "payload": {...} }`（RAG 索引进度，Task 4）。
-- 单连接复用：客户端通过 `streamId` 区分多个并发请求；心跳 `{ "type": "ping" }` 每 30s。
+- 端点：`ws://<host>/ws?token=<JWT>`（H5/App）；小程序走 `wss://`；token 无效以 4001 关闭。
+- 心跳：客户端每 30s 发 `{ "type": "ping" }`，服务端回 `{ "type": "pong" }`。
+- 服务端 → 客户端推送：`{ "type": "rag:progress", "payload": {...} }`（RAG 索引进度，Task 4）。
+- 房间帧（`room:join` / `room:leave` / `room:sync` / `room:action`）与 `room:event` 广播见 `docs/ARCHITECTURE-MULTIPLAYER.md`；未知消息类型忽略。
 
 ## 5. 剧本 / 文件（Task 4）
 
@@ -145,7 +129,7 @@ interface AppSettings {
 
 ## 9. 客户端 Bridge 映射（Task 6）
 
-`client/src/platform/bridge.ts` 的 `Bridge` 接口逐方法对应上述端点：
+`shared/types/bridge.ts` 的 `Bridge` 接口（`client/src/platform/bridge.ts` 的 `PlatformBridge` 实现）逐方法对应上述端点：
 
 | Bridge 方法 | 后端调用 |
 |---|---|
@@ -153,12 +137,11 @@ interface AppSettings {
 | listStories / readStory / readStoryForRag / importStory / deleteStory | `/api/stories*` |
 | listScripts / readScript / saveScript / saveScriptToLibrary / deleteScript / importScript | `/api/scripts*` |
 | aiChat / aiListModels | POST `/api/ai/chat`、GET `/api/ai/models` |
-| kpInvoke | POST `/api/kp/invoke` |
-| kpInvokeStream / onKpStream | WebSocket `kp:invoke` + 消息分发 |
-| listSaves / readSave / writeSave | `/api/saves*` |
 | ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragStoryOverview / ragGetIndex / ragTestEmbedding | `/api/rag*` |
 | login / register / logout / me（新增） | `/api/auth*` |
 | platform | `'h5' \| 'mp-weixin' \| 'app'` |
+
+> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002），存档走页面 → `/api/saves*`（§7，#60 删除 listSaves/readSave/writeSave bridge 方法）。
 
 ## 10. 通用约定
 

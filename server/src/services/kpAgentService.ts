@@ -16,9 +16,12 @@ import { logger } from '../utils/logging.js'
  * KP Agent service (api-contract §4) — migrated from
  * `original/ai-trpg-web/electron/ipc/kpAgentHandlers.cjs`.
  *
- * Single-shot invoke (REST) and streamed invoke (WS) both run the LangGraph
- * state machine once and return `{ content?, toolCalls? }`; the multi-turn
- * tool-execution loop stays client-side (ledger Ruling, task-3-brief).
+ * invokeKp/invokeKpStream are service-level single-shot entries that run the
+ * LangGraph state machine once and return `{ content?, toolCalls? }`. Their
+ * REST/WS routes were removed by ADR-0002 — zero production callers, retained
+ * only as a test harness (mockAi / messages specs). The multi-turn
+ * tool-execution loop runs server-side in the room turn pipeline
+ * (kpTurnService, Phase A2; see ADR-0002).
  *
  * Deviations from the original (per task-3-brief decision 8):
  *  - The original's directFallback (raw chat when the graph fails or returns
