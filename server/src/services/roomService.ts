@@ -84,7 +84,7 @@ const LONG_TERM_SUMMARY_EVERY_TURNS = 10
 
 /**
  * 房间侧故事上下文（#73）：runKpTurnForRoom 的 storyContext 通道。房间路径唯一
- * 构造点 = flushTurn / runOpeningTurn 的三键字面量（未绑定剧本传 null）。KP 图
+ * 构造点 = 私有 buildStoryContext()（未绑定剧本传 null）。KP 图
  * （kpGraph）按 scriptId/sceneId 做脚本门控（loadScriptContext）；workflow 目前
  * 仅透传（图内未读，留作知识分派的显式通道）。图内还消费宽键集（sanity/openClues/
  * act/activeNPCs/forceTransitionScene——shared StoryContext 的 Electron 遗产形状），
@@ -475,12 +475,9 @@ export class RoomService {
       await this.runKpTurnForRoom(
         this.ownerId,
         chatMessages,
-        this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined, workflow: this.workflow } : null,
+        this.buildStoryContext(),
         activeCharacterId,
-        (chunk) => {
-          // 实验（KP_CHUNK_STREAM=1）：KP 回复流式增量帧（TTFT 测量；客户端未消费，整段 message_appended 仍为准）
-          if (isKpChunkStreamEnabled() && chunk) this.emit({ type: 'kp_chunk', payload: { content: chunk } })
-        },
+        (chunk) => this.emitKpChunk(chunk),
         allowedCharacterIds,
         // wire 采样注入列：口径单源在 TurnKnowledge（场景块 + 补充小节；rag 房回退情报块）
         knowledge.wireInjectionText,
@@ -515,6 +512,22 @@ export class RoomService {
       this.turnTimer = null
     }
     this.turnBuffer = []
+  }
+
+  /**
+   * 房间故事上下文唯一构造点（#77 收编 flushTurn / runOpeningTurn 的重复字面量）：
+   * 未绑定剧本（storyId 为空）传 null，KP 图据此跳过脚本门控。
+   */
+  private buildStoryContext(): RoomStoryContext | null {
+    return this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined, workflow: this.workflow } : null
+  }
+
+  /**
+   * KP 回复流式增量帧（实验 KP_CHUNK_STREAM=1，TTFT 测量；客户端未消费，
+   * 整段 message_appended 仍为准）。flushTurn / runOpeningTurn 的 onChunk 回调共用。
+   */
+  private emitKpChunk(chunk: string): void {
+    if (isKpChunkStreamEnabled() && chunk) this.emit({ type: 'kp_chunk', payload: { content: chunk } })
   }
 
   /**
@@ -689,12 +702,9 @@ export class RoomService {
         this.runKpTurnForRoom(
           this.ownerId,
           chatMessages,
-          this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined, workflow: this.workflow } : null,
+          this.buildStoryContext(),
           firstCharacterId,
-          (chunk) => {
-            // 实验（KP_CHUNK_STREAM=1）：同 flushTurn 的流式增量帧（TTFT 测量）
-            if (isKpChunkStreamEnabled() && chunk) this.emit({ type: 'kp_chunk', payload: { content: chunk } })
-          },
+          (chunk) => this.emitKpChunk(chunk),
           undefined,
           // wire 采样注入列：与 flushTurn 同口径（单源在 TurnKnowledge）
           knowledge.wireInjectionText,
