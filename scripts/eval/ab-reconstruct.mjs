@@ -28,6 +28,8 @@ import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { Agent } from 'undici'
+// parseJudgeJson/sleep/cleanup 收编共享单源（#64）。
+import { parseJudgeJson, sleep, createCleanup } from './lib/harness.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
@@ -45,26 +47,12 @@ const dispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 })
 const origFetch = globalThis.fetch
 globalThis.fetch = (url, opts = {}) => origFetch(url, { ...opts, dispatcher })
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const arg = (name, dflt) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? dflt
 const sanitize = (s) => String(s).replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_')
-const estTokens = (t) => {
-  const s = String(t ?? '')
-  const cjk = (s.match(/[\u4e00-\u9fff]/g) || []).length
-  return Math.round(cjk * 0.9 + (s.length - cjk) / 3.5)
-}
 
 const children = []
 let serverLogs = ''
-async function cleanup() {
-  for (const c of children) {
-    try {
-      if (process.platform === 'win32') spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore' })
-      else c.kill('SIGTERM')
-    } catch { /* ignore */ }
-  }
-  await sleep(800)
-}
+const cleanup = createCleanup(children)
 
 /* ── 直连 LLM（档案问答 + judge）── */
 async function callLLM(messages, maxTokens = 800) {
@@ -83,14 +71,6 @@ async function callLLM(messages, maxTokens = 800) {
   // 推理模型偶发把 output budget 全耗在 reasoning → content 空：按失败重试
   if (!content?.trim()) throw new Error('LLM empty content (reasoning consumed budget)')
   return content
-}
-
-function parseJudgeJson(raw) {
-  const s = String(raw ?? '')
-  const start = s.indexOf('{')
-  const end = s.lastIndexOf('}')
-  if (start < 0 || end <= start) return null
-  try { return JSON.parse(s.slice(start, end + 1)) } catch { return null }
 }
 
 async function withRetry(fn, label, attempts = 3) {

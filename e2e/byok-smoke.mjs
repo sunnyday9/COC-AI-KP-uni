@@ -23,6 +23,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// 逐字节相同的 harness 帮助函数收编共享单源（#64）；有行为差异的副本仍留本文件。
+import { createApi } from './lib/harness.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const API_BASE = (process.env.E2E_API_BASE || 'http://localhost:3100').replace(/\/+$/, '')
@@ -52,18 +54,7 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg)
 }
 
-async function api(method, p, body, token) {
-  const res = await fetch(`${API_BASE}${p}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const data = await res.json().catch(() => ({}))
-  return { status: res.status, data }
-}
+const api = createApi(API_BASE)
 
 async function registerUser() {
   const username = `byok_${Date.now()}`

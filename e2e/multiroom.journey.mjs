@@ -26,6 +26,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+// 逐字节相同的 harness 帮助函数收编共享单源（#64）；有行为差异的副本仍留本文件。
+import { createApi, createStep } from './lib/harness.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 // Node 24 原生 WebSocket 在 Windows 上连 ws:// 有兼容问题（1006）→ 用 ws 库（server 依赖）。
@@ -37,36 +39,13 @@ const SELF_START_API = !process.env.E2E_API_BASE
 const WS_URL = (API_BASE.replace(/^http/, 'ws')).replace('localhost', '127.0.0.1')
 
 const results = []
-function step(name, fn) {
-  const start = Date.now()
-  return fn()
-    .then(() => {
-      results.push({ name, pass: true, ms: Date.now() - start })
-      console.log(`  [PASS] ${name} (${Date.now() - start}ms)`)
-    })
-    .catch((err) => {
-      results.push({ name, pass: false, ms: Date.now() - start, error: err.message })
-      console.error(`  [FAIL] ${name} (${Date.now() - start}ms): ${err.message}`)
-      throw err
-    })
-}
+const step = createStep(results)
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'Assertion failed')
 }
 
-async function api(method, p, body, token) {
-  const res = await fetch(`${API_BASE}${p}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const data = await res.json().catch(() => ({}))
-  return { status: res.status, data }
-}
+const api = createApi(API_BASE)
 
 async function registerUser(tag) {
   const username = `mr_${tag}_${Date.now()}`

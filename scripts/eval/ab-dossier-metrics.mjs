@@ -24,6 +24,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { Agent } from 'undici'
+// estTokens/sleep/cleanup 收编共享单源（#64）：三份 estTokens 口径漂移会让跨报告 token 对比失效。
+import { estTokens, sleep, createCleanup } from './lib/harness.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
@@ -44,26 +46,11 @@ const inPath = path.join(ROOT, process.argv.find((a) => a.startsWith('--in='))?.
 
 const children = []
 let logs = ''
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-const estTokens = (text) => {
-  const s = String(text ?? '')
-  const cjk = (s.match(/[\u4e00-\u9fff]/g) || []).length
-  return Math.round(cjk * 0.9 + (s.length - cjk) / 3.5)
-}
+const cleanup = createCleanup(children)
 
 function arg(name, dflt) {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`))
   return hit ? hit.slice(name.length + 3) : dflt
-}
-
-async function cleanup() {
-  for (const c of children) {
-    try {
-      if (process.platform === 'win32') spawn('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore' })
-      else c.kill('SIGTERM')
-    } catch { /* ignore */ }
-  }
-  await sleep(800)
 }
 
 async function main() {

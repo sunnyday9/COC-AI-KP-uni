@@ -26,6 +26,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// 逐字节相同的 harness 帮助函数收编共享单源（#64）；有行为差异的副本仍留本文件。
+import { assert, tail, waitText, clickBtn, clickText, pickUniOption } from './lib/harness.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const E2E_DIR = path.join(ROOT, 'e2e')
@@ -38,10 +40,6 @@ const SELF_START_API = !process.env.E2E_API_BASE
 const SELF_START_WEB = !process.env.E2E_WEB_BASE
 
 const apiPort = new URL(API_BASE).port || '80'
-
-function assert(condition, message) {
-  if (!condition) throw new Error(message || 'Assertion failed')
-}
 
 /* ═══════════════════ Logging / step runner ═══════════════════ */
 
@@ -64,24 +62,8 @@ function step(name, fn) {
 
 let pageA, pageB
 
-async function waitText(p, text, timeout = 25_000) {
-  await p.getByText(text, { exact: false }).first().waitFor({ timeout, state: 'visible' })
-}
-
 async function waitTextGone(p, text, timeout = 15_000) {
   await p.getByText(text, { exact: false }).first().waitFor({ timeout, state: 'hidden' })
-}
-
-async function clickBtn(p, text, opts = {}) {
-  const loc = p.locator('uni-button').filter({ hasText: text }).first()
-  await loc.waitFor({ state: 'visible', timeout: opts.timeout ?? 20_000 })
-  await loc.click()
-}
-
-async function clickText(p, text, opts = {}) {
-  const loc = p.getByText(text, { exact: false }).first()
-  await loc.waitFor({ state: 'visible', timeout: opts.timeout ?? 20_000 })
-  await loc.click()
 }
 
 async function fillInput(p, placeholder, value) {
@@ -123,10 +105,6 @@ async function captureFailure(p, name) {
 
 const children = []
 const logs = { server: [], web: [] }
-
-function tail(arr, n = 25) {
-  return arr.slice(-n).join('')
-}
 
 function spawnServer(tmpRoot) {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/app.ts'], {
@@ -309,38 +287,6 @@ async function waitMemberReady(roomId, token, username, timeoutMs = 25_000) {
     if (Date.now() > deadline) throw new Error(`timeout waiting member ready: ${JSON.stringify(d.data?.members ?? d.data)}`)
     await new Promise((r) => setTimeout(r, 600))
   }
-}
-
-/**
- * Fill a uni-app H5 <picker> (selector mode): click the trigger view, then
- * click the option matching the label pattern inside the OPEN popup.
- *
- * uni-h5 renders every picker's popup in the DOM (hidden); only the open one
- * has display ≠ none. Items exist in two lists — `uni-picker-content`
- * (scrollable, no click handler) and `.uni-picker-select` (real items whose
- * click commits the value) — so the click is scoped to the select list and
- * dispatched as a DOM click (the popup mask would otherwise intercept a
- * Playwright hit-test).
- */
-async function pickUniOption(p, pickerViewSelector, labelPattern, index = 0) {
-  await p.locator(pickerViewSelector).nth(index).click()
-  await p.waitForTimeout(400)
-  const result = await p.evaluate((label) => {
-    const container = [...document.querySelectorAll('.uni-picker-container')].find(
-      (el) => getComputedStyle(el).display !== 'none',
-    )
-    if (!container) return 'no-open-container'
-    const item = [...container.querySelectorAll('.uni-picker-select .uni-picker-item')].find((el) =>
-      el.textContent.includes(label),
-    )
-    if (!item) return 'no-item'
-    item.click()
-    return 'clicked'
-  }, labelPattern)
-  if (result !== 'clicked') {
-    throw new Error(`pickUniOption failed (${result}) for label "${labelPattern}"`)
-  }
-  await p.waitForTimeout(300)
 }
 
 /** 最小合法 COCCharacterSheet（服务端只校验 derived 存在）。 */

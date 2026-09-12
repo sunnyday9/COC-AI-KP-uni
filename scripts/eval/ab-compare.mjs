@@ -48,6 +48,8 @@ import { Agent } from 'undici'
 // TS 常量模块（Node ≥23.6 type stripping，先例 ab-verify-runtime.mjs）——改标题 =
 // 改接口，#42 gate 报告的统计会静默归零。
 import { SUPPLEMENT_HEADING, VERIFY_CONTENT_MARKER, VERIFY_SECTION_HEADING } from '../../server/src/rag/promptMarkers.ts'
+// estTokens/parseJudgeJson 收编共享单源（#64）：三份 estTokens 口径漂移会让跨报告 token 对比失效。
+import { estTokens, parseJudgeJson } from './lib/harness.mjs'
 
 /**
  * 长请求（dossier 生成可达 10-30 分钟）：undici 默认 headersTimeout/bodyTimeout
@@ -130,12 +132,6 @@ function pctRow(values) {
   for (const p of PERCENTILES) row[`p${p}`] = pct(sorted, p)
   row.mean = sorted.length ? Math.round(sorted.reduce((a, b) => a + b, 0) / sorted.length) : null
   return row
-}
-function estTokens(text) {
-  const s = String(text ?? '')
-  const cjk = (s.match(/[\u4e00-\u9fff]/g) || []).length
-  const other = s.length - cjk
-  return Math.round(cjk * 0.9 + other / 3.5)
 }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
 
@@ -489,14 +485,6 @@ async function callRealLLM(messages, { maxTokens = 500, temperature = 0 } = {}) 
   if (!res.ok) throw new Error(`judge LLM ${res.status}: ${(await res.text()).slice(0, 200)}`)
   const data = await res.json()
   return data.choices?.[0]?.message?.content ?? ''
-}
-
-function parseJudgeJson(raw) {
-  const s = String(raw ?? '')
-  const start = s.indexOf('{')
-  const end = s.lastIndexOf('}')
-  if (start < 0 || end <= start) return null
-  try { return JSON.parse(s.slice(start, end + 1)) } catch { return null }
 }
 
 /** Judge both rooms' answers for one fact question (retry once on empty/garbled). */
