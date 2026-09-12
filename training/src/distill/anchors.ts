@@ -23,6 +23,7 @@ import { judgeSample } from '../../eval/lib/judge.js'
 import { buildTurnRequest, type KpWireMessage } from '../../eval/lib/request.js'
 import { loadSamples } from '../../eval/lib/runner.js'
 import type { GoldenSample, ModelResponse } from '../../eval/lib/types.js'
+import { buildRagContext } from './corpus.js'
 import { toOpenAiToolCall } from './sample.js'
 import type { DistillSample } from './types.js'
 
@@ -103,10 +104,11 @@ export interface MockAnchorSeed {
   ragContext: string
 }
 
-/** 从 demo-story 文本构造 3 条 mockAi/e2e 锚种子（旧图书馆场景——journey 断言同源）。 */
+/** 从 demo-story 文本构造 3 条 mockAi/e2e 锚种子（旧图书馆场景——journey 断言同源）。
+ *  RAG 串走 buildRagContext（线上 rag 房同形，票 #65）：单块取原文前 700 字，无标题无分节。 */
 export function buildMockAnchorSeeds(demoStoryText: string): MockAnchorSeed[] {
   const rag = demoStoryText
-    ? `## 剧本相关情报\n### [1] rule\n${demoStoryText.slice(0, 700)}\n`
+    ? buildRagContext([{ storyId: 'anchor:demo', storyName: 'demo', index: 0, content: demoStoryText.slice(0, 700) }])
     : ''
   return [
     {

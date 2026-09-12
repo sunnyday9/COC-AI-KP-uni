@@ -7,16 +7,21 @@
  *
  * 复用面：
  *  - 切块 = server/src/rag/chunker.chunkStoryText（M1-T3 起产品索引的真实切块器：递归
- *    语义分块、带字符偏移，纯函数且对 vectorStore 仅 type-import——training 工作区
- *    跨工作区 import 的唯一扩展点。旧 client storyService.textToChunks 已随 M1-T3
- *    客户端断代删除，import 契约随之改指向服务端）；
- *  - 注入串格式 = server/src/rag/vectorStore.buildContext 的 8 行组装（## 剧本相关情报 /
- *    ### [n] type 分节）。vectorStore 拖 server 运行时栈不可离线 import，按
- *    training/eval/lib/request.ts「最小复制 + 来源锚定注释」先例逐字镜像。
+ *    语义分块、带字符偏移，纯函数且对 vectorStore 仅 type-import。旧 client
+ *    storyService.textToChunks 已随 M1-T3 客户端断代删除，import 契约随之改指向服务端；
+ *    注入串格式侧另引 supplementAssembly / promptMarkers 纯模块常量，见下条）；
+ *  - 注入串格式 = 线上 rag 房注入现口径（票 #65；旧镜像对象 vectorStore.buildContext
+ *    已随 1d83408 退役）：turnKnowledge.fetchRagContext = buildSupplement(plain) 的
+ *    blocks → renderBlock（trim）→ join('\n\n')，无标题、无 `### [n]` 分节标记，块数
+ *    与字符预算由线上装配常量封顶。装配常量直接 import server/src/rag/supplementAssembly
+ *    与 promptMarkers（纯模块，可离线 import；promptMarkers 本就是零依赖叶子）——
+ *    单源引用，杜绝再次漂移。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { chunkStoryText } from '../../../server/src/rag/chunker.js'
+import { MAX_SUPPLEMENT_CHUNKS, SUPPLEMENT_BUDGET_CHARS } from '../../../server/src/rag/supplementAssembly.js'
+import { SUPPLEMENT_HEADING } from '../../../server/src/rag/promptMarkers.js'
 
 export interface StoryDoc {
   storyId: string
@@ -147,28 +152,24 @@ export class LexicalIndex {
 }
 
 /**
- * chunk 列表 → 注入原文。格式逐字镜像 vectorStore.buildContext（`## 剧本相关情报`
- * + `### [n] type` 分节）——线上 rag_context 列存的就是这个形态，教师看到的
- * 「故事情报」块与线上一比一。
+ * chunk 列表 → 注入原文。与线上 rag 房 `rag_context` 列逐块同构（票 #65）：
+ * turnKnowledge.fetchRagContext = `blocks.map(renderBlock).join('\n\n')`——无标题、
+ * 无 `### [n]` 分节标记，块 trim 后以空行相连；块数 ≤MAX_SUPPLEMENT_CHUNKS、
+ * 整块试放不超 SUPPLEMENT_BUDGET_CHARS（线上 assembleSupplement 同口径——计量按
+ * 含标题的 renderSupplement 长度，输出则按 rag 房口径不含标题）。
+ * 块顺序（BM25 分数序）与块来源（词面检索，非 embedding+rerank）仍属离线近似，
+ * 由 caveat rag_lexical_approximation_offline 标注，不属于格式漂移。
  */
 export function buildRagContext(chunks: CorpusChunk[]): string {
-  if (chunks.length === 0) return ''
-  const lines = ['## 剧本相关情报']
-  for (let i = 0; i < chunks.length; i++) {
-    lines.push(`### [${i + 1}] rule`)
-    lines.push(chunks[i]!.content)
-    lines.push('')
+  const picked: string[] = []
+  for (const chunk of chunks) {
+    if (picked.length >= MAX_SUPPLEMENT_CHUNKS) break
+    const text = chunk.content.trim()
+    if (!text) continue
+    // 预算计量与线上一致：renderSupplement(trial) = [标题, ...块] 按 '\n' 连接
+    const trial = [SUPPLEMENT_HEADING, ...picked, text].join('\n')
+    if (trial.length > SUPPLEMENT_BUDGET_CHARS) continue
+    picked.push(text)
   }
-  return lines.join('\n')
-}
-
-/** 瘦身裁剪：线上 top8 注入串取前 keepSections 节（分节按 `### [n]` 头切分）。 */
-export function slimRagContext(ragContext: string, keepSections: number): string {
-  if (!ragContext) return ''
-  const sections = ragContext.split(/(?=^### \[\d+\])/m)
-  const head = sections[0] ?? ''
-  const body = sections.slice(1, keepSections + 1)
-  const kept = [head, ...body].join('')
-  // 去掉因截断产生的尾随空行差异，保持「节间一个空行」的线上形态
-  return kept.replace(/\n+$/, '\n')
+  return picked.join('\n\n')
 }

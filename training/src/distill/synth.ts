@@ -17,7 +17,7 @@ import {
 } from '../../../server/src/services/kpPromptService.js'
 import type { Message } from '../../../shared/types/game.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
-import { buildRagContext, slimRagContext, type CorpusChunk, type LexicalIndex } from './corpus.js'
+import { buildRagContext, type CorpusChunk, type LexicalIndex } from './corpus.js'
 import { SLIM_MEMORY_ENTRIES, SLIM_RAG_SECTIONS, type DistillSkeleton, type SynthBatch, type TurnType } from './types.js'
 import { TURN_TYPE_SPECS } from './turnTypes.js'
 import type { RolloutPlan } from './pool.js'

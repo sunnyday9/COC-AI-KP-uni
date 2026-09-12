@@ -8,11 +8,13 @@
  *     教师按项目提示词重放 KP 回复（Phase B），多步链的工具结果由离线 rule-engine
  *     真实执行回填（与线上一致，票 #40 开工对齐结论）。
  * 变量块瘦身在数据侧完成（ADR-0006 决策 3「训练集构建时」；票 #40 开工对齐结论）：
- *   对话窗 18→8、记忆 30→12、RAG 取前 4 节（线上 top8 的瘦形态）、序列 cap ~6k。
+ *   对话窗 18→8、记忆 30→12、RAG 取前 3 块（与线上 rag 房装配上限同值——ADR 原锚
+ *   「线上 top8」已被 M1-T6 替换，票 #65）、序列 cap ~6k。
  */
 
-/** 瘦身后的变量块参数（ADR-0006 决策 3：RAG top8→4、近窗 18→8、记忆 30→12）。 */
-export const SLIM_RAG_SECTIONS = 4
+/** 瘦身后的变量块参数（ADR-0006 决策 3：近窗 18→8、记忆 30→12；RAG 值随线上
+ *  装配口径更新，票 #65）。 */
+export const SLIM_RAG_SECTIONS = 3
 export const SLIM_CONVERSATION_WINDOW = 8
 export const SLIM_MEMORY_ENTRIES = 12
 /** 序列上限（粗估 token ≈ chars / 1.6，中文为主）。 */
@@ -98,7 +100,8 @@ export interface DistillSkeleton {
     kpMemory: string[]
     longTermSummary: string
   }
-  /** 离线 RAG 注入原文（线上 buildContext 同形；'' = 无注入）。 */
+  /** 离线 RAG 注入原文（与线上 rag 房 rag_context 列同形——renderBlock 后 '\n\n'
+   *  连接，无标题无分节标记，票 #65；'' = 无注入）。 */
   ragContext: string
   /** 离线重建限制如实标注（沿用 #38 caveat 词汇 + 本票新增词）。 */
   caveats: string[]

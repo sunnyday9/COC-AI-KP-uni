@@ -2,7 +2,7 @@
  * T4 蒸馏管线单元测试（票 #40）。
  *
  * 只测外部行为（spec #36 Testing Decisions）：
- *  - 语料检索：注入串与线上 buildContext 同形、top-k 瘦身裁剪；
+ *  - 语料检索：注入串与线上 rag 房同构（renderBlock join 口径，票 #65）、块数/预算封顶；
  *  - 过滤器：validate 规则单源行为（文字骰点/未知工具/参数/工具错误/required/
  *    纯叙事禁工具/上限未收口）——melee 等价展开走 kpValidation 真实判定；
  *  - 切分：rollout/房间级整体归属 + contextHash 跨侧零重叠 + 冲突自检；
@@ -12,7 +12,9 @@
  *    带【结果摘要】头。
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { buildRagContext, LexicalIndex, slimRagContext, tokenizeForRetrieval, type CorpusChunk } from '../src/distill/corpus.js'
+import { buildRagContext, LexicalIndex, tokenizeForRetrieval, type CorpusChunk } from '../src/distill/corpus.js'
+import { MAX_SUPPLEMENT_CHUNKS, SUPPLEMENT_BUDGET_CHARS } from '../../server/src/rag/supplementAssembly.js'
+import { SUPPLEMENT_HEADING } from '../../server/src/rag/promptMarkers.js'
 import { filterTurn } from '../src/distill/filter.js'
 import { packSplit, contextHash, stratifyAudit, buildAuditPack, provenanceKey } from '../src/distill/pack.js'
 import { buildWireSequence, buildSample } from '../src/distill/sample.js'
@@ -91,18 +93,45 @@ describe('corpus 检索', () => {
     expect(idx.search('完全不相关的查询词汇表', 2)).toEqual([])
   })
 
-  it('buildRagContext：线上 buildContext 同形（## 剧本相关情报 + ### [n] 分节）', () => {
+  it('buildRagContext：线上 rag 房同构——trim 后 \\n\\n 连接，无标题无分节（票 #65）', () => {
     const ctx = buildRagContext(chunks.slice(0, 2))
-    expect(ctx.startsWith('## 剧本相关情报\n### [1] rule\n')).toBe(true)
-    expect(ctx).toContain('### [2] rule\n码头仓库')
+    // 对照线上口径：turnKnowledge.fetchRagContext = blocks.map(renderBlock).join('\n\n')
+    expect(ctx).toBe(`${chunks[0]!.content}\n\n${chunks[1]!.content}`)
+    expect(ctx).not.toContain('##')
+    expect(ctx).not.toContain('###')
   })
 
-  it('slimRagContext：top8 串裁剪为前 N 节', () => {
-    const eight = buildRagContext(Array.from({ length: 8 }, (_, i) => ({ storyId: 's', storyName: 's', index: i, content: `片段${i}` })))
-    const slim = slimRagContext(eight, 4)
-    expect(slim).toContain('片段3')
-    expect(slim).not.toContain('片段4')
-    expect(slimRagContext('', 4)).toBe('')
+  it('buildRagContext：块数封顶 MAX_SUPPLEMENT_CHUNKS（线上装配常量直引）', () => {
+    const many = Array.from({ length: MAX_SUPPLEMENT_CHUNKS + 2 }, (_, i) => ({
+      storyId: 's',
+      storyName: 's',
+      index: i,
+      content: `片段${i}`,
+    }))
+    const ctx = buildRagContext(many)
+    expect(ctx.split('\n\n')).toHaveLength(MAX_SUPPLEMENT_CHUNKS)
+    expect(ctx).toContain(`片段${MAX_SUPPLEMENT_CHUNKS - 1}`)
+    expect(ctx).not.toContain(`片段${MAX_SUPPLEMENT_CHUNKS}`)
+  })
+
+  it('buildRagContext：整块试放不超线上 1.6k 预算（计量含标题，与 assembleSupplement 同口径）', () => {
+    // 首块恰好压线入选（trial = BUDGET，不大于），次块试放必超 → 整块跳过
+    const near = '很'.repeat(SUPPLEMENT_BUDGET_CHARS - SUPPLEMENT_HEADING.length - 1)
+    const ctx = buildRagContext([
+      { storyId: 's', storyName: 's', index: 0, content: near },
+      { storyId: 's', storyName: 's', index: 1, content: '短片段' },
+    ])
+    expect(ctx).toBe(near)
+    expect(ctx).not.toContain('短片段')
+  })
+
+  it('buildRagContext：空白块剔除；空列表返回空串', () => {
+    const ctx = buildRagContext([
+      { storyId: 's', storyName: 's', index: 0, content: '  有料  ' },
+      { storyId: 's', storyName: 's', index: 1, content: '   \n  ' },
+    ])
+    expect(ctx).toBe('有料')
+    expect(buildRagContext([])).toBe('')
   })
 })
 
@@ -454,10 +483,13 @@ describe('planRollouts / RNG', () => {
 
 describe('mock/e2e 锚种子', () => {
   it('3 条种子：类型覆盖侦查/战斗/SAN，RAG 注入串为线上同形', () => {
-    const seeds = buildMockAnchorSeeds('旧图书馆的铜钥匙藏在书架后的暗格里。'.repeat(20))
+    const demo = '旧图书馆的铜钥匙藏在书架后的暗格里。'.repeat(20)
+    const seeds = buildMockAnchorSeeds(demo)
     expect(seeds.map((s) => s.turnType).sort()).toEqual(['combat_melee', 'investigate_check', 'san_encounter'])
     for (const s of seeds) {
-      expect(s.ragContext.startsWith('## 剧本相关情报\n### [1] rule\n')).toBe(true)
+      // 线上 rag 房同形（票 #65）：无标题无分节，单块 = demo 原文前 700 字 trim
+      expect(s.ragContext).toBe(demo.slice(0, 700).trim())
+      expect(s.ragContext).not.toContain('##')
     }
   })
 
