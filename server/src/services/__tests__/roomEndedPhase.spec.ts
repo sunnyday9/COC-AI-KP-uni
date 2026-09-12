@@ -17,23 +17,26 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 vi.mock('../kpTurnService.js', () => ({
   runKpTurn: vi.fn(async () => ({ ok: true })),
 }))
+// 知识注入整个面用 TurnKnowledge 单模块桩（架构走查候选 1 的收益证明）：本 spec
+// 只验结束态语义，「KP 看到什么知识」无关紧要——此前要桩 ragService（检索/清单）、
+// supplementService（检索补充层）、settingsService（补充层开关）三个知识层模块。
+vi.mock('../turnKnowledge.js', () => ({
+  assembleTurnKnowledge: vi.fn(async () => ({
+    ragContext: '',
+    sceneBlock: '',
+    verifyBlock: '',
+    supplement: '',
+    coverage: null,
+    storyName: '',
+    wireInjectionText: '',
+  })),
+  buildStoryLookup: vi.fn(() => undefined),
+}))
 // 上下文注入层的 IO 也桩掉：rag 检索会懒加载本地嵌入模型（测试环境无缓存 →
 // 网络等待拖过 waitFor 超时，正对照就永远等不到 runKpTurn）。
-vi.mock('../ragService.js', () => ({
-  buildGetEmbeddingForUser: vi.fn(async () => null),
-  listStories: vi.fn(() => []),
-}))
-vi.mock('../../rag/supplementService.js', () => ({
-  buildSupplement: vi.fn(async () => ({ section: '', blocks: [], chars: 0, degraded: false, error: undefined })),
-  defaultRewrite: () => undefined,
-}))
 vi.mock('../roomMemory.js', () => ({
   extractMemoryPoints: vi.fn(async () => []),
   summarizeLongTerm: vi.fn(async () => ''),
-}))
-vi.mock('../settingsService.js', () => ({
-  getAiConfig: vi.fn(() => ({ protocol: 'openai_chat' })),
-  getSettings: vi.fn(() => ({ rag: { supplement: true } })),
 }))
 
 import {

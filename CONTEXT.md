@@ -93,6 +93,9 @@ RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、
 
 装配有两种模式（检索同一套，闸门不同）：**`supplement`** = 档案房的纹理补充，走"档案重叠剔除 + 场景内优先 + 跨场景限额/前缀"；**`plain`** = rag 房的标准情报块，因没有档案块（按重叠剔除会清空它唯一的知识来源）而只做相关性排序 + 条数/预算截断。**剧透硬闸两模式共有**。
 
+### 回合知识装配（TurnKnowledge）
+「KP 本回合看到什么知识」的唯一 interface（deep module）：workflow 分派（rag = 玩家发言当 query 的标准检索情报块 `plain` 模式；dossier = 当前场景档案块——含「场景未覆盖」分支——+ 检索补充层 `supplement` 模式）、P27 预取触发（仅玩家回合；opening 不触发）、PREFETCH_TRACE/SUPPLEMENT_TRACE JSONL 落盘、dossier 查证工具执行器（scene_list/scene_dossier/lexical_search/verify_original）、wire 采样「注入列」拼装（`[sceneBlock, supplement].filter(nonEmpty).join('\n\n') || ragContext`——**全仓唯一口径**，ab-compare 报告按此格式统计注入量）。无状态：房间运行时状态（roomId/ownerId/storyId/scene/玩家合并发言）由 RoomService 在 flushTurn 与 opening 两个回合入口以参数传入（opening 走 `stage:'opening'`：rag query 退化为开场固定 query、补充层 query 退化为纯场景名）。任何失败静默降级为空串，回合不中断。落点 `server/src/services/turnKnowledge.ts`；对知识层实现保持动态 import（Mimosa 门禁安全边界），测「KP 本轮看到什么」只需桩这一个模块。
+
 ### 场景归属（scene attribution）
 检索块"属于哪个场景"的判定：块只落盘**字符偏移**，查询期用 `coverageGaps` 的场景锚点现算——索引与档案生成的先后解耦，档案重生成后归属自动跟随。区域 = `[首锚点-300, 末锚点+2500)`（与 coveragePct 同口径）。**场景内**另收窄到"末锚点+300 之内"：信封尾巴的 2500 字符有 2.5–8 个块宽，常已是下一场景的正文，按眼前景象喂出去会把未来场景的描写当成现况（安全侧收窄）。
 
