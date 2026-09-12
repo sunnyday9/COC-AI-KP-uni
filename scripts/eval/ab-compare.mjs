@@ -44,6 +44,10 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 import { Agent } from 'undici'
+// 注入小节标记单源（#63）：server 注入端与本项目嗅探端的显式接口。直引 server 的
+// TS 常量模块（Node ≥23.6 type stripping，先例 ab-verify-runtime.mjs）——改标题 =
+// 改接口，#42 gate 报告的统计会静默归零。
+import { SUPPLEMENT_HEADING, VERIFY_CONTENT_MARKER, VERIFY_SECTION_HEADING } from '../../server/src/rag/promptMarkers.ts'
 
 /**
  * 长请求（dossier 生成可达 10-30 分钟）：undici 默认 headersTimeout/bodyTimeout
@@ -408,26 +412,26 @@ async function driveRoom(token, roomId, ws, turns, dbPath, roomLabel) {
       // 截断线内即工具原文），取出来供报告核对命中率与直答质量；其余工具不落内容。
       rec.verifyResults = added
         .flatMap((r) => r.wireMessages ?? [])
-        .filter((m) => m?.role === 'tool' && typeof m.content === 'string' && m.content.includes('【原文查证'))
+        .filter((m) => m?.role === 'tool' && typeof m.content === 'string' && m.content.includes(VERIFY_CONTENT_MARKER))
         .map((m) => String(m.content).slice(0, 700))
       // P27：服务端预取的查证块进 system（对玩家不可见）——从 wire 的 system 消息里
       // 抠出该小节，供报告统计预取触发率与内容。
       rec.prefetched = added
         .flatMap((r) => r.wireMessages ?? [])
-        .filter((m) => m?.role === 'system' && typeof m.content === 'string' && m.content.includes('## 原文查证（服务端已自动检索'))
+        .filter((m) => m?.role === 'system' && typeof m.content === 'string' && m.content.includes(VERIFY_SECTION_HEADING))
         .map((m) => {
           const s = String(m.content)
-          const i = s.indexOf('## 原文查证（服务端已自动检索')
+          const i = s.indexOf(VERIFY_SECTION_HEADING)
           return s.slice(i, i + 600)
         })
       // M1-T8：检索补充小节（ADR-0007）——当轮注入的补充块原文逐字留在 wire 的 system 里，
       // 抠出来供报告统计注入量、场景归属与"KP 是否真引用了原文细节"的抽样核对。
       rec.supplementBlocks = added
         .flatMap((r) => r.wireMessages ?? [])
-        .filter((m) => m?.role === 'system' && typeof m.content === 'string' && m.content.includes('## 原文片段（检索补充'))
+        .filter((m) => m?.role === 'system' && typeof m.content === 'string' && m.content.includes(SUPPLEMENT_HEADING))
         .map((m) => {
           const s = String(m.content)
-          const i = s.indexOf('## 原文片段（检索补充')
+          const i = s.indexOf(SUPPLEMENT_HEADING)
           return s.slice(i, i + 2000)
         })
       rec.supplementChars = rec.supplementBlocks.reduce((s, b) => s + b.length, 0)

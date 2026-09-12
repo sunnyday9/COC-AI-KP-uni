@@ -7,6 +7,7 @@
 import type { Message } from '../../../shared/types/game.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import { getSkillName } from '../../../shared/coc/coc7.js'
+import { VERIFY_SECTION_HEADING } from '../rag/promptMarkers.js'
 
 /** 记忆条目上限（与旧客户端编排同值，语义不变）。 */
 export const MAX_MEMORY_ENTRIES = 30
@@ -175,8 +176,10 @@ export function buildKnowledgeBlock(
   supplement = '',
 ): string {
   const verify = workflow === 'dossier' ? String(verifyBlock ?? '').trim() : ''
+  // 小节标题单源 promptMarkers.ts（#63）：ab-compare 等评测脚本按它嗅探 wire，
+  // 改标题 = 改接口，评测统计会静默归零。
   const verifySection = verify
-    ? `\n## 原文查证（服务端已自动检索，供你对齐事实）\n${verify}\n`
+    ? `\n${VERIFY_SECTION_HEADING}\n${verify}\n`
     : ''
   // 补充小节：只对 dossier 生效（rag 房没有档案块，其情报块本身就是检索产物）
   const supplementSection =

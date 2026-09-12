@@ -22,9 +22,11 @@ import { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './dossier/r
 import type { CoverageGaps } from './dossier/coverageGaps.js'
 import { findScene } from './dossier/sceneLookup.js'
 import type { StoryDossier } from './dossier/schema.js'
+import { SUPPLEMENT_HEADING } from './promptMarkers.js'
 
-/** 补充小节标题（spec 固定文案，客户端/测试按字面断言）。 */
-export const SUPPLEMENT_HEADING = '## 原文片段（检索补充·仅作描写素材）'
+/** 补充小节标题（spec 固定文案，客户端/测试按字面断言）——值单源在 promptMarkers.ts
+ *  （#63 注入小节标记显式接口），此处转出保持既有 import 面不变。 */
+export { SUPPLEMENT_HEADING }
 /** 注入字符预算（硬约束：≤1.6k 字符，含标题与全部修饰）。 */
 export const SUPPLEMENT_BUDGET_CHARS = 1_600
 /** 至多注入条数。 */

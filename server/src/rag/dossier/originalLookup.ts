@@ -26,6 +26,7 @@ import { chatForRag } from '../../services/aiService.js'
 import { readStoryForRag } from '../../services/storyService.js'
 import { loadGaps, SCENE_REGION_LEAD, SCENE_REGION_SPAN, type CoverageGaps } from './coverageGaps.js'
 import { loadDossier, findScene } from './dossierCore.js'
+import { VERIFY_CONTENT_MARKER, VERIFY_SPOILER_MARKER } from '../promptMarkers.js'
 import { assertNonProModel } from '../modelGuard.js'
 import { BadRequestError } from '../../utils/errors.js'
 import type { ChatMessage } from '../../services/llm/types.js'
@@ -284,11 +285,13 @@ function clip(s: string, max: number): { text: string; clipped: boolean } {
   return { text: str.slice(0, max), clipped: true }
 }
 
-/** 渲染工具回填内容：结论 + 逐字引用；剧透层加标注；总长 ≤ MAX_CONTENT_CHARS。 */
+/** 渲染工具回填内容：结论 + 逐字引用；剧透层加标注；总长 ≤ MAX_CONTENT_CHARS。
+ *  标记前缀单源 promptMarkers.ts（#63）——ab-compare 按 `VERIFY_CONTENT_MARKER`
+ *  在 wire 里嗅探查证结果，改标记 = 改接口。 */
 export function renderVerifyContent(input: VerifyRenderInput): string {
   const prefix =
-    (input.spoiler === 'kp_only' ? '【剧透层·仅限 KP 内部裁定，禁止向玩家复述】' : '') +
-    `【原文查证${input.sceneName ? `·${input.sceneName}` : ''}】`
+    (input.spoiler === 'kp_only' ? VERIFY_SPOILER_MARKER : '') +
+    `${VERIFY_CONTENT_MARKER}${input.sceneName ? `·${input.sceneName}` : ''}】`
   const answer = clip(input.answer, ANSWER_MAX_CHARS)
   const quote = clip(input.quote ?? '', QUOTE_MAX_CHARS)
   let out = `${prefix}${answer.text}${answer.clipped ? '…' : ''}`
@@ -299,7 +302,7 @@ export function renderVerifyContent(input: VerifyRenderInput): string {
 
 /** 无定位/失败时的显式降级文本（KP 据此叙事"原文未载"，不阻断回合）。 */
 export function renderUnavailable(reason: string): string {
-  return `【原文查证】未取得：${reason}。请不要编造该信息，改为基于已知档案与当前场景叙事，或让调查员以行动获取。`
+  return `${VERIFY_CONTENT_MARKER}】未取得：${reason}。请不要编造该信息，改为基于已知档案与当前场景叙事，或让调查员以行动获取。`
 }
 
 /* ═══════════════════ 原文读取缓存 ═══════════════════ */
