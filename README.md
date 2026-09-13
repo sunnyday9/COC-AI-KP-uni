@@ -110,7 +110,7 @@ npm run dev:h5                 # 前端 :5175 → 打开 http://localhost:5175
 ## 测试与质量
 
 ```bash
-npm run test:all      # server 816+1skip 用例 + client 112 用例 + training 49 用例（vitest，全绿基线）
+npm run test:all      # server 811+1skip 用例 + client 106 用例 + training 49 用例（vitest，全绿基线）
 npm run test:e2e:h5   # H5 单人全旅程 14 步（真实浏览器，MOCK_AI 自启后端）
 node e2e/rooms.journey.mjs      # 多人房间 UI 全链 14 步（双浏览器）
 node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端）
@@ -135,7 +135,7 @@ node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 
 ## 项目状态
 
-- **MVP 完成**：单人 + 多人全功能闭环落地 main；回归全绿（server 816+1skip / client 112 / training 49 / E2E 14×3）；
+- **MVP 完成**：单人 + 多人全功能闭环落地 main；回归全绿（server 811+1skip / client 106 / training 49 / E2E 14×3）；
 - 主要里程碑：Electron → 服务端重构（ADR-0002）→ LLM 协议化（ADR-0003）→ UI 全面重设计（ADR-0004）→ 多人房间（ADR-0005）→ BYOK / 依赖安全收口；
 - 路线图候选（未立项）：流式输出、observer 观战、多人结局、故事共享。
 

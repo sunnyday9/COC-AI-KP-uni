@@ -120,14 +120,14 @@ AI-COC-KP/
 │   └── src/
 │       ├── app.ts             # Express 工厂：cors + json(1mb) → 11 组路由 → 404 → 错误处理；直跑时 listen + WS
 │       ├── config.ts          # 环境变量（PORT/JWT_SECRET/MOCK_AI/DATA_DIR/KP_CHUNK_STREAM/…）
-│       ├── db/index.ts        # node:sqlite 单例，懒建 10 张表（见 §11）
+│       ├── db/index.ts        # node:sqlite 单例，懒建 8 张表（见 §11）
 │       ├── middleware/auth.ts # JWT 签发/校验 + requireAuth
 │       ├── agent/             # ★ KP 状态机与门控
 │       │   ├── kpGraph.ts     #   LangGraph 状态机（1097 行，见 §5）
 │       │   └── scriptContext.ts # 剧本结构化加载 + 线索门控（见 §6）
 │       ├── rule-engine/       # ★ COC 工具服务端执行：orchestrator + 6 handlers + toolContextFactory + characterMutators
-│       ├── routes/            # auth / settings / ai / stories / scripts / rag / dossier / rooms / roomSettings / characters（10 组）
-│       ├── services/          # roomService（房间领域）/ roomStorage / roomStateCodec / startGate / kpTurnService（图内工具循环）/ kpAgentService（getSharedGraph/normalizeMessages 由 kpTurnService 生产复用；invokeKp/invokeKpStream 单发入口 = 零生产调用方的测试 harness，DEVELOPMENT-LOG D-35 T4）/ kpPromptService / turnKnowledge / roomMemory / wireSampleService / aiService + llm/（4 协议适配器）/ settings / story / script / mockAi
+│       ├── routes/            # auth / settings / ai / stories / rag / dossier / rooms / roomSettings / characters（9 组；/api/scripts 已随 #97 退役）
+│       ├── services/          # roomService（房间领域）/ roomStorage / roomStateCodec / startGate / kpTurnService（图内工具循环）/ kpAgentService（getSharedGraph/normalizeMessages 由 kpTurnService 生产复用；invokeKp/invokeKpStream 单发入口 = 零生产调用方的测试 harness，DEVELOPMENT-LOG D-35 T4）/ kpPromptService / turnKnowledge / roomMemory / wireSampleService / aiService + llm/（4 协议适配器）/ settings / story / mockAi（script 服务已随 #97 退役）
 │       ├── rag/               # chunker / embedding / reranker / supplementService / supplementAssembly / sceneAttribution / queryBuild / storyParsers / dossier/（档案域：dossierCore / dossierGenerate / originalLookup / dossierLookupTools / prefetch …）
 │       ├── ws/                # index（鉴权 + 帧分派）/ rooms（JSON 编解码 adapter）/ roomLedger（订阅簿 + 帧规划）/ progress（rag:progress）
 │       └── utils/             # errors / logging / crypto / outboundUrl(SSRF) / pathSafety / fileNames / fsSafe
@@ -423,13 +423,12 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ## 十一、数据模型与持久化
 
-`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 9 张表（幂等）：
+`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 8 张表（幂等；saves 表 #92、scripts 表 #97 退役摘除，存量死表不迁移）：
 
 | 表 | 用途 |
 |---|---|
 | `users` | id / username(unique) / password_hash(bcrypt) / created_at |
 | `settings` | user_id 主键 + data(JSON 文档：ai 配置含 protocol + 加密 apiKey + rag 开关) |
-| `scripts` | 剧本库（schema 遗留，当前路由为死代码，见 §16） |
 | `stories` | 故事元数据（实际文件落盘） |
 | `rag_index` | 向量索引 JSON 文档（实际按文件落盘 `RAG_DATA_DIR`，此表为索引记录） |
 | `rooms` | 房间（room_id / owner_id / invite_code / story_id / kind='solo'\|'multi' / phase / state JSON 快照 / version）——DB 权威（ADR-0001） |
@@ -437,7 +436,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 | `room_members` | 成员资格（room_id + user_id 主键 / role='owner' / character_id 绑卡） |
 | `kp_wire_samples` | wire 采样日志（完整 wire 消息序列 + 工具调用 + RAG 注入原文，T1 / ADR-0006，KP_WIRE_SAMPLING=0 关闭） |
 
-**存储约定**：DB 存元数据与 JSON 文档；故事/剧本实体文件按 `UPLOADS_DIR/<userId>/stories|scripts/` 落盘（`pathSafety` 防护）。
+**存储约定**：DB 存元数据与 JSON 文档；故事实体文件按 `UPLOADS_DIR/<userId>/stories/` 落盘（`pathSafety` 防护；scripts 目录随 #97 退役不再新增）。
 
 ---
 
@@ -492,7 +491,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ```
 ① 单元测试（vitest）
-   server 816+1skip 用例：路由（auth/ai/settings/stories/scripts/rag/dossier/rooms/roomSettings/characters + 上传限额）、
+   server 811+1skip 用例：路由（auth/ai/settings/stories/rag/dossier/rooms/roomSettings/characters + 上传限额）、
    kpGraph 状态机（含 fixes）、scriptContext 门控、rule-engine（coc/ 与 rule-engine/ 用例）、kpTurnService、
    mockAi、aiService 超时、ws 房间帧、RAG / 档案 各件
    client：roomStore / settingsStore spec、ChatMessage / classifySystemMessage / parseActionOptions、
@@ -549,7 +548,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 | 🔴 性能 | 长工具链耗时 = 链长 × LLM 推理时间 | 已缓解（§13）；服务端记忆编排（roomMemory）+ 近轮对话窗已落地（§9.2） |
 | 🟡 确定性 | 弱结局表达（如"破坏仪式"）仍依赖 LLM 自觉 | 已修强意图词；可考虑「门控场景完结时服务端强制 end_game」 |
 | 🟢 已消亡 | storyContext 由客户端上传的兼容性问题 | 客户端状态上传入口已随 ADR-0002 整体删除，上下文注入服务端收口（§9.2） |
-| 🟢 遗留 | `scripts` 路由/桥接为死代码（无调用方）；`stories`/`scripts` DB 表未使用 | 清理或按需启用（剧本库） |
+| ✅ 已退役 | `scripts` 路由/桥接/scriptService/建表语句已于 2026-09-13 随 #97 全链退役（ADR-0008）；剧本库语义由 stories 面承载 | 无 |
 | 🟢 遗留 | 自由文本 obtainCondition/transitionCondition 无语义解析（维持双轨） | 结构化优先策略，有意为之 |
 | 🟢 遗留 | 无 DB 迁移机制（幂等建表） | 结构变更需手动处理，建议引入版本号 |
 | 🟢 测试 | test-agent 真实 LLM 用例偶发超时（120s step 上限） | 已放宽 240s；CI 不跑 test-agent（需 API Key） |

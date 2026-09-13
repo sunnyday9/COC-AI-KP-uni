@@ -90,15 +90,11 @@ interface AppSettings {
 - 支持格式：PDF（pdf-parse + tesseract.js OCR）、TXT、MD、DOCX（mammoth）、EPUB（epub2）。
 - 大文件：上传大小上限 50MB；解析在异步队列中执行（Task 4 简易内存队列），完成后可索引。
 
-## 6. 剧本库脚本（Task 4，原 scripts 库）
+> 桥接死包装 readStory / readStoryForRag 已于 2026-09-13 退役（#97）：客户端零页面调用方（仅 bridge.test 自引用）。端点现行保留——GET /api/stories/:id/rag 由 e2e dossier journey 直接消费；GET /api/stories/:id 现零非自测消费方（存疑待拍板，#97 票面留档）。
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| GET | `/api/scripts/:id` | — | `{ name, content }` |
-| PUT | `/api/scripts/:id` | `{ content }` | `{ ok }` |
-| DELETE | `/api/scripts/:id` | — | `{ ok }` |
+## 6. 剧本库脚本（Task 4，原 scripts 库）（已退役，#97）
 
-> `GET /api/scripts`（列表）与 `POST /api/scripts/upload` 已于 2026-09-13 退役（#91 C 桶「全链退役」拍板，#94）：服务端路由 / `scriptService.listScripts` / `scriptService.importScript`（含存量文件系统自动导入链）与路由自测一并删除；客户端 bridge 方法（listScripts / importScript）已同步删除。e2e journey 的 `uploadScript` 帮助函数与剧本页上传实际走 `POST /api/stories/upload`（§5），不受影响。本节编号保留不重排。
+> `/api/scripts*` 全链已于 2026-09-13 退役（#91 C 桶「全链退役」拍板延伸，#94 + #97）：#94 先退 `GET /api/scripts`（列表）与 `POST /api/scripts/upload`（scriptService.listScripts / importScript / importLegacyFile 与 multer 接线）；#97 退剩余 `GET / PUT / DELETE /api/scripts/:id` 三端点——服务端路由 / scriptService / `scripts` 建表语句（fresh 安装不再建表，存量死表不迁移，同 #92 取舍）与路由自测一并删除。客户端 bridge 方法（readScript / saveScript / saveScriptToLibrary / deleteScript，#94 前的 listScripts / importScript 亦然）全零页面调用方、仅 bridge.test 自引用续命。剧本库语义由 §5 stories 面承载（e2e journey 的 `uploadScript` 帮助函数与剧本页上传实际走 `POST /api/stories/upload`）。本节编号保留不重排。
 
 ## 7. 存档（已退役，#92）
 
@@ -128,14 +124,13 @@ interface AppSettings {
 | Bridge 方法 | 后端调用 |
 |---|---|
 | getSettings / setSettings | GET/PUT `/api/settings` |
-| listStories / readStory / readStoryForRag / importStory / deleteStory | `/api/stories*` |
-| readScript / saveScript / saveScriptToLibrary / deleteScript | `/api/scripts*` |
+| listStories / importStory / deleteStory | `/api/stories*` |
 | aiChat / aiListModels | POST `/api/ai/chat`、GET `/api/ai/models` |
 | ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragGetIndex / ragTestEmbedding | `/api/rag*` |
 | login / register / logout / me（新增） | `/api/auth*` |
 | platform | `'h5' \| 'mp-weixin' \| 'app'` |
 
-> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002），存档走页面 → `/api/saves*`（§7，#60 删除 listSaves/readSave/writeSave bridge 方法）。
+> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002），存档走页面 → `/api/saves*`（§7，#60 删除 listSaves/readSave/writeSave bridge 方法）。scripts 与 story 读取的桥接死包装（readScript / saveScript / saveScriptToLibrary / deleteScript / readStory / readStoryForRag）与 setImportFilePath 已于 #97 删除（readStoryForRag 对应端点 §5 现行保留，e2e 直接消费）。
 
 ## 10. 通用约定
 

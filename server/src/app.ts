@@ -11,7 +11,6 @@ import authRoutes from './routes/auth.routes.js'
 import settingsRoutes from './routes/settings.routes.js'
 import aiRoutes from './routes/ai.routes.js'
 import storiesRoutes from './routes/stories.routes.js'
-import scriptsRoutes from './routes/scripts.routes.js'
 import ragRoutes from './routes/rag.routes.js'
 import dossierRoutes from './routes/dossier.routes.js'
 import roomsRoutes from './routes/rooms.routes.js'
@@ -22,8 +21,8 @@ import charactersRoutes from './routes/characters.routes.js'
  * Express application factory.
  *
  * Route mounting: /api/auth, /api/settings, /api/ai, /api/stories,
- * /api/scripts, /api/rag, /api/rooms, /api/characters.
- * KP 回合只走房间协议（ADR-0002），无独立 kp 路由。
+ * /api/rag, /api/rooms, /api/characters.
+ * KP 回合只走房间协议（ADR-0002），无独立 kp 路由；/api/scripts 已随 #97 退役。
  */
 export function createApp(): Express {
   const app = express()
@@ -35,7 +34,6 @@ export function createApp(): Express {
   app.use('/api/settings', settingsRoutes)
   app.use('/api/ai', aiRoutes)
   app.use('/api/stories', storiesRoutes)
-  app.use('/api/scripts', scriptsRoutes)
   app.use('/api/rag', ragRoutes)
   app.use('/api/dossier', dossierRoutes) // 实验分支：剧本档案 workflow（与 rag 并行）
   app.use('/api/rooms', roomsRoutes)

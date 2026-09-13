@@ -35,8 +35,7 @@ export const useStoryStore = defineStore('story', () => {
 
   /**
    * 差异说明：原实现由 Electron 打开文件对话框（无参数）。新架构文件选择在
-   * 页面层（Task 8）—— 页面选择后调用 `importStory(filePath)`，或先
-   * `getBridge().setImportFilePath(path)` 再无参调用（保持原 API 形状）。
+   * 页面层（Task 8）—— 页面选择后调用 `importStory(filePath)` 显式传参。
    */
   async function importStory(filePath?: string): Promise<{ ok: boolean; error?: string; id?: string; name?: string }> {
     const result = await getBridge().importStory(filePath)

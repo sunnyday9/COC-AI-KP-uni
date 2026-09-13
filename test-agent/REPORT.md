@@ -21,7 +21,7 @@ test-agent/
   scenario-investigate.mjs      # 调查链（12 用例）
   scenario-combat.mjs           # 战斗链（5 用例）
   scenario-sanity.mjs           # SAN/恐怖链（5 用例）
-  scenario-save.mjs             # 存档/读档（6 用例）
+  scenario-save.mjs             # 存档/读档（6 用例；已随 /api/saves* 全链退役删除，#92——下文为史实快照）
   robustness.mjs                # 鲁棒性（8 用例）
   performance.mjs               # 性能测量（5 项）
   run-all.mjs                   # 统一入口
@@ -78,6 +78,8 @@ test-agent/
 **SAN 链结论**：san_check 检定、SAN 扣减（adjust_san）、场景切换全部正常。**弱点：trigger_insanity（永久疯狂）从不触发**——即使玩家明确表达"尖叫、幻觉、崩溃"，LLM 仍用 adjust_san 而非触发疯狂状态。
 
 ### 存档/读档 `scenario-save.mjs` — 6/6 PASS
+
+> 追记（2026-09-13，#97）：scenario-save.mjs 已随 /api/saves* 全链退役删除（#92，ADR-0008）；本节为 e2c522a 时代实测快照，史实保留不改写。
 
 | # | 用例 | 描述 | 结果 | 耗时 | 分析 |
 |---|---|---|---|---|---|

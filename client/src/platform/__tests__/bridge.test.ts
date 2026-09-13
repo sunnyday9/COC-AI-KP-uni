@@ -161,20 +161,6 @@ describe('PlatformBridge', () => {
       expect(state.requests[0].url).toBe('/api/stories')
     })
 
-    it('readStory unwraps { name, content } and encodes the id', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { name: 's.md', content: '第一章\n第二章' } })
-      const bridge = new PlatformBridge()
-      await expect(bridge.readStory('s.md')).resolves.toBe('第一章\n第二章')
-      expect(state.requests[0].url).toBe('/api/stories/s.md')
-    })
-
-    it('readStoryForRag hits the /rag endpoint', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { name: 's.pdf', content: 'OCR 文本' } })
-      const bridge = new PlatformBridge()
-      await expect(bridge.readStoryForRag('s.pdf')).resolves.toBe('OCR 文本')
-      expect(state.requests[0].url).toBe('/api/stories/s.pdf/rag')
-    })
-
     it('deleteStory DELETEs and resolves void', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
       const bridge = new PlatformBridge()
@@ -188,15 +174,14 @@ describe('PlatformBridge', () => {
       state.uploadResponder = () => ({ statusCode: 200, data: '{"ok":true,"id":"a.pdf","name":"a.pdf"}' })
       setToken('tok')
       const bridge = new PlatformBridge()
-      bridge.setImportFilePath('/tmp/a.pdf')
-      const result = await bridge.importStory()
+      const result = await bridge.importStory('/tmp/a.pdf')
       expect(result).toEqual({ ok: true, id: 'a.pdf', name: 'a.pdf' })
       expect(state.uploads).toHaveLength(1)
       expect(state.uploads[0]).toMatchObject({ url: '/api/stories/upload', filePath: '/tmp/a.pdf', name: 'file' })
       expect(state.uploads[0].header.Authorization).toBe('Bearer tok')
     })
 
-    it('importStory without a pending file resolves { ok:false } without calling upload', async () => {
+    it('importStory without a file resolves { ok:false } without calling upload', async () => {
       const bridge = new PlatformBridge()
       await expect(bridge.importStory()).resolves.toEqual({ ok: false, error: 'no file selected' })
       expect(state.uploads).toHaveLength(0)
@@ -215,8 +200,7 @@ describe('PlatformBridge', () => {
       setToken('expired')
       state.uploadResponder = () => ({ statusCode: 401, data: '{"error":"jwt expired"}' })
       const bridge = new PlatformBridge()
-      bridge.setImportFilePath('/tmp/a.pdf')
-      await expect(bridge.importStory()).rejects.toThrow('未登录或登录已过期')
+      await expect(bridge.importStory('/tmp/a.pdf')).rejects.toThrow('未登录或登录已过期')
       expect(fired).toHaveLength(1)
       expect(state.storage.get('aikp_token')).toBeUndefined()
       off()
@@ -225,38 +209,7 @@ describe('PlatformBridge', () => {
     it('upload business failure returns { ok:false, error } from the body (200)', async () => {
       state.uploadResponder = () => ({ statusCode: 200, data: '{"ok":false,"error":"Invalid script format"}' })
       const bridge = new PlatformBridge()
-      bridge.setImportFilePath('/tmp/bad.json')
-      await expect(bridge.importStory()).resolves.toEqual({ ok: false, error: 'Invalid script format' })
-    })
-  })
-
-  describe('scripts', () => {
-    it('readScript unwraps content', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { name: 'x.json', content: '{"meta":{}}' } })
-      const bridge = new PlatformBridge()
-      await expect(bridge.readScript('x.json')).resolves.toBe('{"meta":{}}')
-    })
-
-    it('saveScript PUTs content to /api/scripts/:id', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
-      const bridge = new PlatformBridge()
-      await expect(bridge.saveScript('x.json', 'new body')).resolves.toEqual({ ok: true })
-      expect(state.requests[0]).toMatchObject({ url: '/api/scripts/x.json', method: 'PUT', data: { content: 'new body' } })
-    })
-
-    it('saveScriptToLibrary PUTs to the name id (upsert)', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
-      const bridge = new PlatformBridge()
-      const result = await bridge.saveScriptToLibrary('My Script', 'body')
-      expect(result).toEqual({ ok: true })
-      expect(state.requests[0]).toMatchObject({ url: '/api/scripts/My%20Script', method: 'PUT', data: { content: 'body' } })
-    })
-
-    it('deleteScript DELETEs', async () => {
-      state.requestResponder = () => ({ statusCode: 200, data: { ok: true } })
-      const bridge = new PlatformBridge()
-      await expect(bridge.deleteScript('x.json')).resolves.toBeUndefined()
-      expect(state.requests[0]).toMatchObject({ url: '/api/scripts/x.json', method: 'DELETE' })
+      await expect(bridge.importStory('/tmp/bad.json')).resolves.toEqual({ ok: false, error: 'Invalid script format' })
     })
   })
 

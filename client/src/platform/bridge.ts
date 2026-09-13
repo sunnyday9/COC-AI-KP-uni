@@ -147,33 +147,13 @@ function uploadFile(path: string, filePath: string): Promise<UploadResult> {
   })
 }
 
-/** Unwrap `{ name, content }` responses into the raw content string. */
-function unwrapContent(data: unknown): string {
-  if (typeof data === 'string') return data
-  if (data && typeof data === 'object' && typeof (data as { content?: unknown }).content === 'string') {
-    return (data as { content: string }).content
-  }
-  return ''
-}
-
 export class PlatformBridge {
   readonly platform: Platform = getPlatform()
 
   private readonly ws: WSService
-  private pendingImportPath: string | null = null
 
   constructor(ws?: WSService) {
     this.ws = ws ?? new WSService()
-  }
-
-  /**
-   * Set the temp file path for the NEXT importStory() call
-   * (file picking is platform-specific and owned by the page layer, Task 8+).
-   * The interface methods themselves take no params (mirroring the original
-   * Electron file dialog); passing a path directly also works.
-   */
-  setImportFilePath(filePath: string): void {
-    this.pendingImportPath = filePath
   }
 
   /** Explicit WS open (preconnect / warm-up). Idempotent. */
@@ -226,51 +206,13 @@ export class PlatformBridge {
     return request<{ name: string; id: string }[]>('GET', '/api/stories')
   }
 
-  async readStory(id: string): Promise<string> {
-    const data = await request<unknown>('GET', `/api/stories/${encodeURIComponent(id)}`)
-    return unwrapContent(data)
-  }
-
-  async readStoryForRag(id: string): Promise<string> {
-    const data = await request<unknown>('GET', `/api/stories/${encodeURIComponent(id)}/rag`)
-    return unwrapContent(data)
-  }
-
   importStory(filePath?: string): Promise<UploadResult> {
-    const fp = filePath ?? this.pendingImportPath
-    this.pendingImportPath = null
-    if (!fp) return Promise.resolve({ ok: false, error: 'no file selected' })
-    return uploadFile('/api/stories/upload', fp)
+    if (!filePath) return Promise.resolve({ ok: false, error: 'no file selected' })
+    return uploadFile('/api/stories/upload', filePath)
   }
 
   async deleteStory(id: string): Promise<void> {
     await request<{ ok: boolean }>('DELETE', `/api/stories/${encodeURIComponent(id)}`)
-  }
-
-  // ── Scripts ──────────────────────────────────────────────────────────────
-
-  async readScript(id: string): Promise<string> {
-    const data = await request<unknown>('GET', `/api/scripts/${encodeURIComponent(id)}`)
-    return unwrapContent(data)
-  }
-
-  /** Threads the server's actual response through (task-7 minor fix ③). */
-  async saveScript(id: string, content: string): Promise<{ ok: boolean }> {
-    return request<{ ok: boolean }>('PUT', `/api/scripts/${encodeURIComponent(id)}`, { content })
-  }
-
-  /**
-   * PUT /api/scripts/:id is an upsert — the server sanitizes the id
-   * (fileNames.sanitizeFilename); the stored id is not guaranteed to equal
-   * `name` verbatim, so it may be omitted here.
-   * The server response (currently `{ ok: true }`) is returned as-is.
-   */
-  async saveScriptToLibrary(name: string, content: string): Promise<{ ok: boolean; id?: string }> {
-    return request<{ ok: boolean; id?: string }>('PUT', `/api/scripts/${encodeURIComponent(name)}`, { content })
-  }
-
-  async deleteScript(id: string): Promise<void> {
-    await request<{ ok: boolean }>('DELETE', `/api/scripts/${encodeURIComponent(id)}`)
   }
 
   // ── AI ───────────────────────────────────────────────────────────────────

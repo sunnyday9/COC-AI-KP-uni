@@ -35,3 +35,7 @@ ADR-0002 把回合上下文注入收口到服务端并删除 gameStore 后，一
 - **multer 依赖保留**：stories 上传（POST /api/stories/upload）仍是 multer 接线，scripts 上传面退役只拆 scripts 侧接线。
 - **测试基线**：server 820+1skip → 816+1skip、client 113 → 112（#94 记录）；training 49。三票合计 30 个文件次、+83/−1060。
 - **文档**：叙述性文档 sweep（README / ONBOARDING-GUIDE / PROJECT-ANALYSIS）随本 ADR 同票落地；DEVELOPMENT-LOG / MIGRATION-PLAN / ADR 0001-0007 史实段落不改写，仅在直接引用退役面处补退役指针（#66/#68 先例）。
+
+## 追加（2026-09-13，#97）
+
+全量盘点（bridge 46 方法 + 契约现存全部 REST 端点逐个 grep 消费面）后按同一标准退役 **D 桶 scripts `:id` 链与桥接死包装**（#97）：GET/PUT/DELETE /api/scripts/:id 三端点 + scriptService（服务整体删除）+ `scripts` 建表语句与 file_path 迁移块（9→8 张表，存量死表不迁移）+ bridge 七方法（readScript / saveScript / saveScriptToLibrary / deleteScript / readStory / readStoryForRag / setImportFilePath——全零页面调用方、仅 bridge.test 自引用）+ unwrapContent 孤儿助手。GET /api/stories/:id/rag 端点保留（e2e dossier 直接消费）；GET /api/stories/:id 与 PUT /api/rooms/:id/settings（roomSetTurnWindow）虽零非自测消费方，但属拍板参考中的「stories/rooms 全家」活面，列 #97 存疑留档待拍板。测试基线：server 816+1skip → 811+1skip（77→76 文件）、client 112 → 106、training 49。

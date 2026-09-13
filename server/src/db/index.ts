@@ -37,15 +37,8 @@ function initSchema(database: DatabaseSync): void {
     );
     -- saves 表退役（#92，A 桶 /api/saves* 全链退役）：fresh 安装不再建表；
     -- 存量库中的死表不迁移（写入链已断于 #59/#60，恒空，与 #67 user_graphs 同款取舍）。
-    CREATE TABLE IF NOT EXISTS scripts (
-      user_id INTEGER NOT NULL,
-      script_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      content TEXT NOT NULL,
-      file_path TEXT NOT NULL DEFAULT '',
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (user_id, script_id)
-    );
+    -- scripts 表退役（#97，scripts :id 链全链退役）：fresh 安装不再建表；
+    -- 存量库中的死表不迁移（唯一读写方 scriptService 已随端点删除，同 #92 取舍）。
     CREATE TABLE IF NOT EXISTS stories (
       user_id INTEGER NOT NULL,
       story_id TEXT NOT NULL,
@@ -104,10 +97,6 @@ function initSchema(database: DatabaseSync): void {
   const storyCols = database.prepare(`PRAGMA table_info(stories)`).all() as { name: string }[]
   if (!storyCols.some((c) => c.name === 'file_path')) {
     database.exec(`ALTER TABLE stories ADD COLUMN file_path TEXT NOT NULL DEFAULT ''`)
-  }
-  const scriptCols = database.prepare(`PRAGMA table_info(scripts)`).all() as { name: string }[]
-  if (!scriptCols.some((c) => c.name === 'file_path')) {
-    database.exec(`ALTER TABLE scripts ADD COLUMN file_path TEXT NOT NULL DEFAULT ''`)
   }
   // 幂等迁移：旧库的 rooms 表没有 kind 列（ADR-0002 单人=单成员房间）。
   const roomCols = database.prepare(`PRAGMA table_info(rooms)`).all() as { name: string }[]

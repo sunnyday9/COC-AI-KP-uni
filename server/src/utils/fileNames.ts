@@ -1,8 +1,8 @@
 /**
  * User-input → safe id/filename helpers (task-5-brief decision 1/2).
  *
- * Every id derived from user input (upload originalname, PUT /api/scripts/:id)
- * is normalized by `sanitizeFilename` and every id read back from a request
+ * Every id derived from user input (upload originalname 等) is normalized by
+ * `sanitizeFilename` and every id read back from a request
  * passes `assertId` (assertSafeId + BadRequestError mapping). This is the
  * security red line for path traversal — see docs/api-contract.md §10.
  *
