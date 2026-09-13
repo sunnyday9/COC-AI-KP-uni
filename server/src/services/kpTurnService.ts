@@ -24,10 +24,10 @@ import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import type { Message } from '../../../shared/types/game.js'
 import { logger } from '../utils/logging.js'
 import { errorMessage } from '../utils/errors.js'
-import { recordKpWireSample, toOpenAiToolCall, type KpWireSampleIteration, type KpWireSamplingMeta } from './wireSampleService.js'
+import { recordKpWireSample, type KpWireSampleIteration, type KpWireSamplingMeta } from './wireSampleService.js'
 import { injectCharacterRoster } from './kpPromptService.js'
-// 工具循环上限 + 结果回填形态（【结果摘要】头 + 截断 JSON）单源：离线 distill replay 直引同一实现（票 #75）
-import { MAX_TOOL_ITERATIONS, summarizeToolResult, truncateToolResult } from './kpTurnWireShape.js'
+// 工具循环上限 + 结果回填/工具调用 wire 形态单源：离线 distill replay 直引同一实现（票 #75/#83）
+import { MAX_TOOL_ITERATIONS, summarizeToolResult, toOpenAiToolCall, truncateToolResult } from './kpTurnWireShape.js'
 
 /** 把角色花名册注入 messages 的 system 消息（B5）——实现随花名册块迁入 kpPromptService，此处再导出保持原导入面。 */
 export { buildCharacterRosterPrompt, injectCharacterRoster } from './kpPromptService.js'

@@ -24,7 +24,7 @@ import { buildTurnRequest, type KpWireMessage } from '../../eval/lib/request.js'
 import { loadSamples } from '../../eval/lib/runner.js'
 import type { GoldenSample, ModelResponse } from '../../eval/lib/types.js'
 import { buildRagContext } from './corpus.js'
-import { toOpenAiToolCall } from './sample.js'
+import { toOpenAiToolCall } from '../../../server/src/services/kpTurnWireShape.js'
 import type { DistillSample } from './types.js'
 
 const EVAL_DIR = fileURLToPath(new URL('../../eval', import.meta.url))

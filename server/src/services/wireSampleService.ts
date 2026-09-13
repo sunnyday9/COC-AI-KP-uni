@@ -17,6 +17,7 @@ import { getDb } from '../db/index.js'
 import { isMockAiMode, isKpWireSamplingEnabled } from '../config.js'
 import { logger } from '../utils/logging.js'
 import { errorMessage } from '../utils/errors.js'
+import { toOpenAiToolCall } from './kpTurnWireShape.js'
 
 /** 一个工具循环轮的 wire 片段：assistant 原文 + 原始 tool_calls（参数 JSON 字符串）+ 回填的 tool 消息。 */
 export interface KpWireSampleIteration {
@@ -31,15 +32,6 @@ export interface KpWireSamplingMeta {
   storyId: string | null
   /** 当轮 RAG 注入原文（flushTurn / opening 检索结果；空串 = 无注入）。 */
   ragContext: string
-}
-
-/** 原始 tool_call → OpenAI wire 形态（msgs 追加与采样重建共用，格式单点）。 */
-export function toOpenAiToolCall(t: { id: string; name: string; arguments: string }): {
-  id: string
-  type: 'function'
-  function: { name: string; arguments: string }
-} {
-  return { id: t.id, type: 'function', function: { name: t.name, arguments: t.arguments } }
 }
 
 /** runKpTurn 收口传给采样服务的回合数据（ownerId 即 KP 回合的解析账号 = 现任房主）。 */

@@ -7,17 +7,9 @@
  * 保持同一训练分布）。
  */
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
+import { toOpenAiToolCall } from '../../../server/src/services/kpTurnWireShape.js'
 import { buildSlimTurnMessages } from './replay.js'
 import type { DistillSample, DistillSkeleton, ReplayedTurn, SampleSource } from './types.js'
-
-/** 原始 tool_call → OpenAI wire 形态（replay 组装与样本组装共用，格式单点）。 */
-export function toOpenAiToolCall(t: { id: string; name: string; arguments: string }): {
-  id: string
-  type: 'function'
-  function: { name: string; arguments: string }
-} {
-  return { id: t.id, type: 'function', function: { name: t.name, arguments: t.arguments } }
-}
 
 /** wire 序列（与 #37 buildWireMessages 同形；最终 assistant = 累计叙事）。 */
 export function buildWireSequence(turn: ReplayedTurn): unknown[] {

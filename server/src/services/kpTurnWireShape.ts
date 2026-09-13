@@ -1,5 +1,5 @@
 /**
- * kpTurnWireShape — KP 回合工具循环上限 + 工具结果 wire 回填形态的单源（票 #75）。
+ * kpTurnWireShape — KP 回合工具循环上限 + 工具结果回填/工具调用 wire 形态的单源（票 #75、#83）。
  *
  * 只含常量与纯函数，零 fs/db/运行时服务依赖：
  *   - 线上 kpTurnService.runKpTurn 以此限制工具循环轮数、回填 tool 结果
@@ -48,4 +48,13 @@ export function summarizeToolResult(content: string): string {
   } catch {
     return ''
   }
+}
+
+/** 原始 tool_call → OpenAI wire 形态（msgs 追加、采样重建、replay/样本组装共用，格式单点）。 */
+export function toOpenAiToolCall(t: { id: string; name: string; arguments: string }): {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+} {
+  return { id: t.id, type: 'function', function: { name: t.name, arguments: t.arguments } }
 }

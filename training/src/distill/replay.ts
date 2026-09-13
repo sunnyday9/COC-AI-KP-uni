@@ -19,7 +19,7 @@ import {
   buildRoomTurnMessages,
   injectCharacterRoster,
 } from '../../../server/src/services/kpPromptService.js'
-import { summarizeToolResult, truncateToolResult } from '../../../server/src/services/kpTurnWireShape.js'
+import { summarizeToolResult, toOpenAiToolCall, truncateToolResult } from '../../../server/src/services/kpTurnWireShape.js'
 import { processToolCalls } from '../../../server/src/rule-engine/orchestrator.js'
 import { buildToolContext } from '../../../server/src/rule-engine/toolContextFactory.js'
 import { createCharacterMutatorFactory } from '../../../server/src/rule-engine/characterMutators.js'
@@ -33,7 +33,6 @@ import {
   type ReplayedTurn,
   type WorldDeltas,
 } from './types.js'
-import { toOpenAiToolCall } from './sample.js'
 
 /* ── 组装与循环 ─────────────────────────────────────────────── */
 
