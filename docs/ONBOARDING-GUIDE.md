@@ -118,9 +118,9 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 编写�
 AI-COC-KP/
 ├── server/                    # Node.js/Express + TypeScript 后端
 │   └── src/
-│       ├── app.ts             # Express 工厂：cors + json(1mb) → 11 组路由 → 404 → 错误处理；直跑时 listen + WS
+│       ├── app.ts             # Express 工厂：cors + json(1mb) → 9 组路由 → 404 → 错误处理；直跑时 listen + WS
 │       ├── config.ts          # 环境变量（PORT/JWT_SECRET/MOCK_AI/DATA_DIR/KP_CHUNK_STREAM/…）
-│       ├── db/index.ts        # node:sqlite 单例，懒建 8 张表（见 §11）
+│       ├── db/index.ts        # node:sqlite 单例，懒建 7 张表（见 §11）
 │       ├── middleware/auth.ts # JWT 签发/校验 + requireAuth
 │       ├── agent/             # ★ KP 状态机与门控
 │       │   ├── kpGraph.ts     #   LangGraph 状态机（1097 行，见 §5）
@@ -508,8 +508,9 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
    → npm run test:e2e:h5 + node e2e/multiroom.journey.mjs / rooms.journey.mjs（CI 中运行）
 
 ③ Agent 工作流测试（test-agent/，真实 LLM，独立套件不改项目代码）
-   smoke / scenario-investigate(12) / scenario-combat(5) / scenario-sanity(5) / scenario-save(6) /
-   scenario-gating(7) / robustness(8) / performance(5) = 36 用例 + 门控回归 7 = 43 全过
+   现行套件（run-all.mjs）：scenario-investigate(12) / scenario-combat(5) / scenario-sanity(5) /
+   scenario-gating(7) / scenario-rules(6) / robustness(8) / performance(5) = 48 用例，smoke.mjs 为独立连通性冒烟
+   （scenario-save(6) 已随 /api/saves* 全链退役删除 #92；REPORT.md「36 用例 + 门控回归 7 = 43 全过」为 e2c522a 时代史实快照）
    需 OpenAI 兼容端点（自动读本机 ZCode opencode/mimo-v2.5 配置或 AW_* 环境变量）
    → 报告在 test-agent/REPORT.md，性能数据在 perf-results.json
 
@@ -575,7 +576,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 15. **test-agent/REPORT.md** —— 真实 LLM 下系统如何表现、修过什么。
 
 **动手建议**：
-- 改后端前先跑 `npm run test:server` 建立基线（829+1skip 用例）；
+- 改后端前先跑 `npm run test:server` 建立基线（811+1skip 用例）；
 - 改前端逻辑前跑 `npm run test:client` + `npx tsc --noEmit`（零错误基线）；
 - 本地体验全流程：`MOCK_AI=1 npm run dev:server` + `npm run dev:h5`（零配置，无需 API Key）；
 - 需要真实 LLM 验证时：`cd test-agent && node run-all.mjs`（需配置 AW_* 环境变量）；

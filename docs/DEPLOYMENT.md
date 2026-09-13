@@ -1,6 +1,6 @@
 # 部署与上线指南（AI-COC-KP 多人版）
 
-> 版本：v0.2.0（2026-08-20）· 分支：feature/multiplayer-rooms
+> 版本：v0.2.0（2026-09-04 tag）· 分支：main
 > 本文档覆盖：环境要求、构建、部署拓扑、环境变量、数据库迁移、上线检查清单、回滚。
 
 ---
@@ -79,9 +79,9 @@ Nginx（TLS / WebSocket 升级）
 
 ## 5. 数据库
 
-- 首次启动自动建表 + 幂等迁移（`stories.file_path` / `scripts.file_path` 列自动 ALTER）。
+- 首次启动自动建表 + 幂等迁移（`stories.file_path` 列自动 ALTER；`scripts` 表及其迁移已随 #97 / ADR-0008 退役摘除）。
 - 备份：停止服务后复制 `<DATA_DIR>/ai-kp.db` + `uploads/` + `rag/` 目录。
-- **无需手动迁移**：存量文件系统剧本/脚本首次 list 时自动导入 DB 映射。
+- **无需手动迁移**：存量文件系统剧本首次 list 时自动导入 DB 映射（脚本导入已随 #97 / ADR-0008 scripts 退役摘除）。
 
 ## 6. 启动
 
@@ -98,11 +98,11 @@ npm run dev:h5       # :5175（vite dev）
 
 - [ ] `MOCK_AI` 未设置（或显式 `0`）
 - [ ] `JWT_SECRET` 设为强随机值
-- [ ] `npm run test:server` 全绿（365）
-- [ ] `npm run test:client` 全绿（97）
+- [ ] `npm run test:server` 全绿（811+1skip）
+- [ ] `npm run test:client` 全绿（106）
 - [ ] `node e2e/h5.journey.mjs` 14/14（真实浏览器）
-- [ ] `node e2e/multiroom.journey.mjs` 9/9（双客户端房间链路）
-- [ ] `node e2e/rooms.journey.mjs` 8/8（双浏览器多人房间 UI 链路）
+- [ ] `node e2e/multiroom.journey.mjs` 14/14（双客户端房间链路）
+- [ ] `node e2e/rooms.journey.mjs` 14/14（双浏览器多人房间 UI 链路）
 - [ ] H5 构建 + 小程序构建成功
 - [ ] 出网策略放行 LLM 提供商域名（SSRF 守卫会拒绝内网/保留地址）
 - [ ] 反向代理配置 WebSocket 升级（`/ws`）

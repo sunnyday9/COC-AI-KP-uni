@@ -12,9 +12,9 @@
 |---|---|---|
 | Phase A1 | 规则引擎下沉（shared/coc + server/src/rule-engine） | ✅ 完成（单测全绿） |
 | Phase A2 | 服务端图内工具循环（kp:turn） | ✅ 完成（E2E 14/14） |
-| Phase A3-A5 | 会话自持 / 视图模型 / 存档快照 | ⏳ 未开始 |
-| Phase B/C | 房间多人 / 同步增强 | ⏳ 未开始 |
-| 收尾 | CI/CD 上线文档 | ⏳ 未开始 |
+| Phase A3-A5 | 会话自持 / 视图模型 / 存档快照 | ✅ 完成（D-10~D-14/D-35，随 ADR-0002 房间化落地；A5 存档迁移已随 #92 / ADR-0008 退役作废） |
+| Phase B/C | 房间多人 / 同步增强 | ✅ 完成（D-10~D-27：B1-B7 全链 + C1/C2/C5 压测；C3 存档工具随 #92 / ADR-0008 退役作废；观战模式 P2 未实现） |
+| 收尾 | CI/CD 上线文档 | ✅ 完成（.github/workflows ci.yml / release.yml + docs/DEPLOYMENT.md） |
 
 ---
 

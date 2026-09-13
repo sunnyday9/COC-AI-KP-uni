@@ -9,7 +9,7 @@
 
 ## 一、项目概览
 
-**定位**：COC 7th 规则 AI 跑团助手——玩家导入剧本，与 AI 守秘人（KP）文字互动，KP 以 LangGraph 状态机 + 24 个规则工具（另有 4 个档案查证工具按需挂载）驱动剧情（探索/战斗/SAN 检定/线索/结局），知识供给走档案 + 检索补充双轨（ADR-0007），配存档读档。
+**定位**：COC 7th 规则 AI 跑团助手——玩家导入剧本，与 AI 守秘人（KP）文字互动，KP 以 LangGraph 状态机 + 24 个规则工具（另有 4 个档案查证工具按需挂载）驱动剧情（探索/战斗/SAN 检定/线索/结局），知识供给走档案 + 检索补充双轨（ADR-0007），进度服务端房间快照节流落库、重进即续玩（显式存读档 REST 已随 #92 / ADR-0008 退役）。
 
 **形态**：npm workspaces monorepo（`server` / `client` / `shared`），H5 + 微信小程序 + App 三端（uni-app），后端 Express + TypeScript + node:sqlite（Node ≥24，零原生依赖）。
 
@@ -39,7 +39,7 @@ AI-COC-KP/
 │   ├── routes/             # 9 组路由：auth/settings/ai/stories/rag/dossier/rooms/roomSettings/characters（scripts 已随 #97 退役）
 │   ├── services/           # roomService/roomStorage/roomStateCodec/startGate/kpTurnService/kpAgentService/kpPromptService/turnKnowledge/roomMemory/wireSampleService/aiService+llm（4 适配器）/settings/story/script/mockAi
 │   ├── rag/                # chunker/embedding/reranker/supplementService/supplementAssembly/sceneAttribution/queryBuild/storyParsers/dossier/
-│   ├── db/index.ts         # node:sqlite 单例 + 8 张表（saves #92 / scripts #97 退役摘除）
+│   ├── db/index.ts         # node:sqlite 单例 + 7 张表（saves #92 / scripts #97 / rag_index #98 退役摘除）
 │   ├── middleware/auth.ts  # JWT 签发/校验 + requireAuth
 │   ├── ws/                 # index（鉴权+帧分派）/ rooms（编解码 adapter）/ roomLedger（订阅簿+帧规划）/ progress（rag:progress）
 │   └── utils/              # errors/logging/crypto/outboundUrl(SSRF)/pathSafety/fileNames/fsSafe
