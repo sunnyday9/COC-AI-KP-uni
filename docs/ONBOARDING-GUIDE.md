@@ -334,7 +334,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ## 九、前端核心：RoomClient 与服务端回合链路（ADR-0002 现行架构）
 
-> 本节描述 **ADR-0002 之后的形态**：上下文注入（提示词组装 / RAG / 记忆编排）与工具循环已**整体服务端收口**，旧客户端架构的 gameStore、kpSessionService、客户端 toolCalling 均已删除；单人游戏 = 单成员房间，与多人共用同一 wire 协议。
+> 本节描述现行形态（ADR-0002 之后）；决策原文与删除面清单见 `docs/adr/0002-solo-room.md`。
 
 ### 9.1 RoomClient（`client/src/stores/roomStore.ts`）——客户端唯一的房间视图模型
 
@@ -372,7 +372,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 **性能保护原样保留**：工具结果回传先加摘要头（前 6 个字段各 40 字符），再截断 600 字符（`MAX_TOOL_RESULT_SUMMARY_CHARS` / `MAX_TOOL_RESULT_CHARS`）——长工具链历史不再无限膨胀。
 
-**单人模式**（ADR-0002）：不出现在房间列表、出生即 playing；「确认角色卡」是一体领域动作（落角色卡 + 建 `kind='solo'` 单成员房间 + 绑卡 + start）。solo 免费获得 seq 全序、断线重连、服务端持久化——**单人没有独立的回合协议**。
+**单人模式**：solo = `kind='solo'` 单成员房间——设计决策、删除面与后果原文见 `docs/adr/0002-solo-room.md`。
 
 ### 9.3 规则引擎（`server/src/rule-engine/`）——COC 工具的服务端执行
 

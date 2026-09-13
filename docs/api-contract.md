@@ -1,8 +1,13 @@
-# API 契约（前后端唯一接口基准）
+# API 契约（以代码为准的导览）
 
-> 本契约镜像原 Electron `window.electronAPI`（见 `original/ai-trpg-web/src/env.d.ts`）的方法签名，
-> 由 REST + WebSocket 实现。server（Task 2-5）与 client（Task 6-10）都以此文档为基准，禁止单边改动。
-> 所有 `/api/*` 端点（除 `/api/auth/*` 外）需要 `Authorization: Bearer <JWT>`。
+> 定位：本文只做「面」级导览——模块分组 + 端点存在性 + 指向实现的阅读入口；各端点的
+> 请求/响应形状、校验与语义以 `server/src/routes/*.ts` 及对应 service 实码为唯一权威，
+> 本文与代码不一致时以代码为准（发现漂移请改文档或提票，勿照文档改代码）。
+> 沿革：原 Electron `window.electronAPI`（见 `original/ai-trpg-web/src/env.d.ts`）的 IPC 面
+> 由 REST + WebSocket 实现，本文节编号沿用至今（§6/§7/§8 等退役节保留注记不重排）。
+> §10 安全约束是 D-09 红线文档：`pathSafety.ts` / `fileNames.ts` 等代码注释引用它，原文逐字节保留。
+> 所有 `/api/*` 端点（除 `/api/auth/*` 外）需要 `Authorization: Bearer <JWT>`；
+> 实挂路由组以 `server/src/app.ts` 为准（9 组，完整清单见 §11）。
 
 ## 约定
 
@@ -14,55 +19,34 @@
 
 ## 1. Auth（新增，Task 2）
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| POST | `/api/auth/register` | `{ username, password }` | `{ token, user: { id, username } }` |
-| POST | `/api/auth/login` | `{ username, password }` | `{ token, user: { id, username } }` |
-| GET | `/api/auth/me` | — | `{ user: { id, username } }` |
+| Method | Path | 说明 |
+|---|---|---|
+| POST | `/api/auth/register` | 注册，返回 token + 用户 |
+| POST | `/api/auth/login` | 登录，返回 token + 用户 |
+| GET | `/api/auth/me` | 当前用户 |
 
-- 密码 bcrypt 哈希；JWT 有效期 30 天；用户名 3-32 字符，密码 ≥6 字符。
+- JWT 鉴权（30 天有效期）；实现：`server/src/routes/auth.routes.ts` + `services/authService.ts` + `middleware/auth.ts`。
 
 ## 2. Settings（Task 2）— 替代 electron-store
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| GET | `/api/settings` | — | `AppSettings`（**不含 apiKey**，字段省略） |
-| PUT | `/api/settings` | `AppSettings`（apiKey 仅在变更时传） | `{ ok: true }` |
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/settings` | 读当前用户设置（**不含 apiKey**） |
+| PUT | `/api/settings` | 保存设置（apiKey 仅在变更时传） |
 
-```ts
-// ADR-0003（2026-09-02）：protocol 一等公民取代 provider 两级模型。
-interface AIProviderConfig {
-  protocol: 'openai_chat' | 'openai_responses' | 'anthropic_messages' | 'google_compatible'
-  baseUrl: string            // 留空用协议默认值（见 PROTOCOL_DEFAULT_BASE_URL）
-  model: string
-  apiKey?: string           // 服务端 AES-256 加密存储；GET 不回传
-  temperature: number
-  maxTokens: number
-}
-interface RAGSettings {
-  useEmbeddings: boolean
-  provider: 'builtin' | 'api'
-  model: string             // 默认 'text-embedding-3-small'
-  supplement?: boolean      // 检索补充层总开关（ADR-0007 决策 5/6）；默认 true
-}
-interface AppSettings {
-  ai: AIProviderConfig
-  rag?: RAGSettings
-}
-```
+- 字段形状以 `shared/types/settings.ts` 为准（该文件注释声明镜像本节）；协议一等公民设计（protocol 取代 provider 两级模型）见 ADR-0003。
+- 实现：`server/src/routes/settings.routes.ts` + `services/settingsService.ts`（apiKey 服务端 AES-256 加密存储，GET 不回传）。
 
 ## 3. AI（Task 2）
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| POST | `/api/ai/chat` | `{ messages: {role,content}[], temperature?, maxTokens?, stream? }` | `{ stream: boolean, content?: string, chunks?: string[] }` |
-| GET | `/api/ai/models` | `?purpose=chat\|embeddings` | `{ value, label }[]` |
+| Method | Path | 说明 |
+|---|---|---|
+| POST | `/api/ai/chat` | 单发对话（MOCK_AI 短接入口之一） |
+| GET | `/api/ai/models` | 按用途拉模型列表（`?purpose=chat\|embeddings`） |
 
 - AI 配置（protocol/baseUrl/model/apiKey/temperature/maxTokens）**由服务端从用户设置读取**，请求体中不需要传。
-- 模型列表：三协议（chat/responses/messages）统一 `GET {baseUrl}/models`（OpenAI 格式）按 purpose 过滤；anthropic 实时拉取失败回退静态 Claude 列表；google 走 `/v1beta/models`（ADR-0003 T4）。
-- 嵌入端点：固定 `POST {baseUrl}/v1/embeddings`（OpenAI 格式），与主协议解耦（anthropic/google 无等价嵌入 API）。
-- 流式：`stream=true` 时返回缓冲的 `chunks` 数组（与原 IPC 契约一致；ADR-0002 后 KP 回复经房间协议整段 `message_appended` 到达，无独立流式通道）。
 - **安全约束**：服务端发起任何外部 URL 请求前必须校验 host —— 仅 http/https；拒绝 localhost、环回、私有（10/8、172.16/12、192.168/16、169.254/16）与保留地址（含 0.0.0.0、::、IPv6 映射）。实现于 `server/src/utils/outboundUrl.ts`。
+- 模型列表/嵌入端点/流式等协议适配细节以 `server/src/routes/ai.routes.ts` + `services/aiService.ts` + `services/llm/` 实码为准（叙述见 ONBOARDING-GUIDE §八）。
 
 ## 4. KP Agent（Task 3）
 
@@ -79,16 +63,15 @@ interface AppSettings {
 
 ## 5. 剧本 / 文件（Task 4）
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| GET | `/api/stories` | — | `{ name, id }[]`（id 替代原 path） |
-| GET | `/api/stories/:id` | — | `{ name, content }`（readStory） |
-| GET | `/api/stories/:id/rag` | — | `{ name, content }`（readStoryForRag：服务端解析，含 OCR） |
-| POST | `/api/stories/upload` | multipart `file` | `{ ok, name?, id?, error? }`（importStory） |
-| DELETE | `/api/stories/:id` | — | `{ ok }` |
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/stories` | 剧本列表（id 替代原 path） |
+| GET | `/api/stories/:id` | 读取剧本 |
+| GET | `/api/stories/:id/rag` | 读取供 RAG 解析的原文（服务端解析，含 OCR） |
+| POST | `/api/stories/upload` | 上传导入（multipart `file`） |
+| DELETE | `/api/stories/:id` | 删除剧本 |
 
-- 支持格式：PDF（pdf-parse + tesseract.js OCR）、TXT、MD、DOCX（mammoth）、EPUB（epub2）。
-- 大文件：上传大小上限 50MB；解析在异步队列中执行（Task 4 简易内存队列），完成后可索引。
+- 支持格式、上传上限（见 §10）与异步解析队列等实现细节以 `server/src/routes/stories.routes.ts` + `services/storyService.ts` + `rag/storyParsers.ts` 实码为准。
 
 > 桥接死包装 readStory / readStoryForRag 已于 2026-09-13 退役（#97）：客户端零页面调用方（仅 bridge.test 自引用）。端点现行保留——GET /api/stories/:id/rag 由 e2e dossier journey 直接消费；GET /api/stories/:id 现零非自测消费方（存疑待拍板，#97 票面留档）。
 
@@ -102,20 +85,20 @@ interface AppSettings {
 
 ## 8. RAG（Task 3，与 ragHandlers.cjs 一致）
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| GET | `/api/rag/health` | — | `{ status, service }` |
-| POST | `/api/rag/test-embedding` | — | `{ ok, vectorLength?, error? }` |
-| POST | `/api/rag/index` | `{ scriptId, storyMeta? }`（M1-T3：切块在服务端，不再收 chunks；带 chunks 明确 400 语义拒绝） | `{ ok, indexed, error?, warning? }` |
-| DELETE | `/api/rag/index/:scriptId` | — | `{ ok, deleted }` |
-| POST | `/api/rag/query` | `{ query, scriptId?, sceneId?, type?, topK? }` | `{ chunks: { content, metadata, distance }[] }` |
-| POST | `/api/rag/context` | `{ query, scriptId?, sceneId?, topK? }` | `{ context, chunkCount? }`（标准管线，无图扩展） |
-| GET | `/api/rag/stories` | — | `{ storyId, name, chunkCount, indexedAt }[]` |
-| GET | `/api/rag/index/:scriptId` | — | `{ scriptId, storyName, chunkCount, chunks: {id,content,type,metadata,hasVector}[] }` |
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/rag/health` | 服务健康检查 |
+| POST | `/api/rag/test-embedding` | 嵌入连通性自测 |
+| POST | `/api/rag/index` | 建/重建索引（只报 scriptId，服务端自读自切块，ADR-0007） |
+| DELETE | `/api/rag/index/:scriptId` | 删除索引 |
+| POST | `/api/rag/query` | 检索查询 |
+| POST | `/api/rag/context` | 组装检索上下文（标准管线，无图扩展） |
+| GET | `/api/rag/stories` | 已索引剧本列表 |
+| GET | `/api/rag/index/:scriptId` | 索引详情 |
 
 > `/api/rag/story-overview` 已于 2026-09-13 退役（#91 B 桶「全链退役」拍板，#93）：服务端路由 / `ragService.storyOverview` / `vectorStore.getStoryOverview` 与路由自测段一并删除；客户端 bridge 方法已于 #85 删除。本节编号保留不重排（§8 被 server 路由注释引用）。
 
-- 数据按 `userId + storyId` 隔离。嵌入：`builtin`（@huggingface/transformers 本地模型，服务端加载）或 `api`（用用户 AI 设置中的 embedding 模型，同样受 outbound URL 校验约束）。
+- 数据按 `userId + storyId` 隔离；嵌入双通道（本地模型 / 用户 AI 设置中的 API）与检索、切块细节以 `services/ragService.ts` + `rag/` 实码为准（叙述见 ONBOARDING-GUIDE §7）；API 出站同样受 §3 安全约束。
 
 ## 9. 客户端 Bridge 映射（Task 6）
 
@@ -138,3 +121,22 @@ interface AppSettings {
 - JWT 过期返回 401，前端 bridge 统一跳转登录页。
 - 所有服务端日志走 `server/src/utils/logging.ts`（迁移自 logging.cjs，traceId 上下文）。
 - 路径安全：任何基于用户输入的路径拼接前必须过 `server/src/utils/pathSafety.ts`（迁移自 pathSafety.cjs）。
+
+## 11. 实挂路由组一览（与 `server/src/app.ts` 对齐，9 组）
+
+`createApp()` 实际挂载的 9 组路由如下；每组只给「端点存在性 + 代码入口」，请求/响应形状一律以对应 `routes/*.ts` 与 service 实码为准：
+
+| # | 挂载路径 | 路由文件 | 端点（Path 级） | 导览 |
+|---|---|---|---|---|
+| 1 | `/api/auth` | `auth.routes.ts` | POST `/register`、POST `/login`、GET `/me` | §1 |
+| 2 | `/api/settings` | `settings.routes.ts` | GET `/`、PUT `/` | §2 |
+| 3 | `/api/ai` | `ai.routes.ts` | POST `/chat`、GET `/models` | §3 |
+| 4 | `/api/stories` | `stories.routes.ts` | GET `/`、POST `/upload`、GET `/:id`、GET `/:id/rag`、DELETE `/:id` | §5 |
+| 5 | `/api/rag` | `rag.routes.ts` | GET `/health`、POST `/test-embedding`、POST `/index`、DELETE `/index/:scriptId`、POST `/query`、POST `/context`、GET `/stories`、GET `/index/:scriptId` | §8 |
+| 6 | `/api/dossier` | `dossier.routes.ts` | GET `/`、POST `/:scriptId/generate` | 档案 workflow（与 rag 并行）；叙述见 ONBOARDING-GUIDE §7 |
+| 7 | `/api/rooms` | `rooms.routes.ts` | POST `/`、GET `/`、POST `/solo`、GET `/solo`、POST `/join`、GET `/:id`、POST `/:id/start`・`/:id/character`・`/:id/ready`・`/:id/leave`・`/:id/transfer`、DELETE `/:id`、DELETE `/:id/members/:userId` | 房间治理 REST（帧协议见 §4） |
+| 8 | `/api/rooms` | `roomSettings.routes.ts` | PUT `/:id/settings` | 房间设置（turnWindowMs） |
+| 9 | `/api/characters` | `characters.routes.ts` | GET `/`、POST `/` | 角色卡存取 |
+
+- KP 回合不占路由组：唯一入口为房间协议（ADR-0002，帧协议细节见 §4）。
+- §6/§7 为退役节：`/api/scripts*`、`/api/saves*` 已不在挂载面。
