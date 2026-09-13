@@ -53,7 +53,7 @@ server (Express + TypeScript)
 
 - **规则与记忆全在服务端**（ADR-0002）：客户端无规则、无工具循环、无提示词组装——房间事件流是唯一事实源，重进 / 刷新即恢复；
 - **多端一码**：同一套 Vue 代码跑 H5 / 微信小程序 / App，条件编译处理平台差异；
-- 架构决策全程 ADR 记录（`docs/adr/0001–0007`），术语统一见 `CONTEXT.md`。
+- 架构决策全程 ADR 记录（`docs/adr/0001–0008`），术语统一见 `CONTEXT.md`。
 
 ## 目录结构
 
@@ -110,7 +110,7 @@ npm run dev:h5                 # 前端 :5175 → 打开 http://localhost:5175
 ## 测试与质量
 
 ```bash
-npm run test:all      # server 829+1skip 用例 + client 107 用例 + training 50 用例（vitest，全绿基线）
+npm run test:all      # server 816+1skip 用例 + client 112 用例 + training 49 用例（vitest，全绿基线）
 npm run test:e2e:h5   # H5 单人全旅程 14 步（真实浏览器，MOCK_AI 自启后端）
 node e2e/rooms.journey.mjs      # 多人房间 UI 全链 14 步（双浏览器）
 node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端）
@@ -119,14 +119,14 @@ node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 
 - **E2E 旅程**覆盖：注册登录 → 导入/索引 → 建卡（选职业/投骰/兴趣）→ 开局 → 侦查（skill_check → grant_clue）/ 战斗（roll_dice → adjust_hp，HP 精确断言）→ 读档恢复；多人全链（建房 → 等待室绑卡/就绪 → 门闩 409 → 开局 → 队友档案切换 → 聊天）；
 - **真实 LLM 冒烟**：`e2e/byok-smoke.mjs`（需自备 Key：`E2E_REAL_API_KEY=sk-... node e2e/byok-smoke.mjs`，验证 settings 加密存储 → 不回传 → models → chat）；
-- **Agent 工作流套件**：`test-agent/`（真实 LLM 驱动，不改项目代码）——调查 / 战斗 / SAN / 存档 / 门控 / 鲁棒性 / 性能；
+- **Agent 工作流套件**：`test-agent/`（真实 LLM 驱动，不改项目代码）——调查 / 战斗 / SAN / 门控 / 鲁棒性 / 性能；
 - 依赖安全：npm audit 实时核对，server 运行时 high 漏洞 = 0（express 5 + overrides 强升，见 `docs/DEPENDENCY-AUDIT-2026-09-04.md`）。
 
 ## 文档索引
 
 | 文档 | 内容 |
 |---|---|
-| `docs/adr/` | 架构决策记录 0001–0007（房间域 / 单人=单成员房 / LLM 协议一等公民 / UI 重设计 / 多人房间流程 / KP 训练框架 / 档案+检索双轨） |
+| `docs/adr/` | 架构决策记录 0001–0008（房间域 / 单人=单成员房 / LLM 协议一等公民 / UI 重设计 / 多人房间流程 / KP 训练框架 / 档案+检索双轨 / 无消费方 REST 面全链退役） |
 | `CONTEXT.md` | 领域术语统一（等待室 / 开局门闩 / 就绪 / 房主转让 / RoomClient …） |
 | `docs/DEPLOYMENT.md` | 部署上线指南（含 BYOK 玩家引导、安全基线、回滚） |
 | `docs/api-contract.md` | 前后端 API 契约（唯一接口基准） |
@@ -135,7 +135,7 @@ node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 
 ## 项目状态
 
-- **MVP 完成**：单人 + 多人全功能闭环落地 main；回归全绿（server 829+1skip / client 107 / training 50 / E2E 14×3）；
+- **MVP 完成**：单人 + 多人全功能闭环落地 main；回归全绿（server 816+1skip / client 112 / training 49 / E2E 14×3）；
 - 主要里程碑：Electron → 服务端重构（ADR-0002）→ LLM 协议化（ADR-0003）→ UI 全面重设计（ADR-0004）→ 多人房间（ADR-0005）→ BYOK / 依赖安全收口；
 - 路线图候选（未立项）：流式输出、observer 观战、多人结局、故事共享。
 

@@ -21,7 +21,7 @@
 | AI 协议 | 四协议一等公民（ADR-0003）：openai_chat / openai_responses / anthropic_messages / google_compatible + MOCK_AI 确定性脚本 |
 | 知识供给 | 档案（dossier）为事实权威 + 标准检索补充（递归切块 → TF-IDF/稠密混合召回 → 本地 cross-encoder rerank，ADR-0007；GraphRAG 已删除）、tesseract.js PDF OCR |
 | 前端 | uni-app Vue 3、Pinia、vue-i18n、vite 5 |
-| 测试 | vitest（server 804+1skip / client 107 / training 50）、playwright-core（e2e 旅程）、miniprogram-automator（小程序）、test-agent 真实 LLM 套件 |
+| 测试 | vitest（server 816+1skip / client 112 / training 49）、playwright-core（e2e 旅程）、miniprogram-automator（小程序）、test-agent 真实 LLM 套件 |
 
 ---
 
@@ -201,7 +201,7 @@ START → analyzeInput → routeByIntent ─(条件边)→ {generic|combat|sanit
 | 🔴 性能 | 长工具链轮次耗时（LLM 推理 × 链长） | 已缓解：服务端图内循环（无逐轮网络往返）+ 工具结果 600 字符截断 + 单轮失败退出；服务端记忆编排（roomMemory）+ 近轮对话窗已落地。剩余瓶颈 = LLM 推理 |
 | 🟡 确定性 | 结局/线索/疯狂依赖 LLM 自觉的残余场景（如"破坏仪式"弱表达未触发 end_game） | 已修复强意图词；弱表达场景可考虑「门控场景完结时服务端强制 end_game」 |
 | 🟢 已消亡 | storyContext 由客户端上传的兼容性问题 | 客户端状态上传入口已随 ADR-0002 整体删除（上下文注入服务端收口） |
-| 🟢 遗留 | `scripts` 路由/桥接为死代码（无调用方）；`stories`/`scripts` DB 表未使用 | 清理或按需启用（剧本库） |
+| 🟢 遗留 | `scripts` :id 三端点（GET/PUT/DELETE，契约 §6 现行保留）+ bridge 四方法（readScript/saveScript/saveScriptToLibrary/deleteScript）仅 bridge.test 自引用、零页面调用方——死包装部分（listScripts/importScript + GET 列表/POST 上传端点）已于 2026-09-13 随 #94 全链退役（ADR-0008）；`stories` 表在用（storyService），`scripts` 表仅剩该链引用 | 清理或按需启用（剧本库） |
 | 🟢 遗留 | 自由文本 `obtainCondition`/`transitionCondition` 无语义解析（维持双轨） | 结构化优先策略，有意为之 |
 | 🟢 遗留 | 无 DB 迁移机制（幂等建表） | 结构变更需手动处理，建议引入版本号 |
 | 🟢 测试 | test-agent 真实 LLM 用例偶发超时（120s step 上限，长链波动） | 已放宽至 240s；CI 不跑 test-agent（需 API Key） |
