@@ -21,10 +21,10 @@ import type { AppSettings } from '../../../shared/types/settings'
 import type { RoomServerFrame, RoomSnapshot, RoomAction, RoomListItem, RoomDetail, CharacterListItem, SoloRoomListItem } from '../../../shared/types/room'
 import type {
   AuthResult,
-  Bridge,
   BridgeUser,
   IndexedStory,
   Platform,
+  RagGetIndexResult,
   RAGContextParams,
   RAGIndexParams,
   RAGQueryParams,
@@ -69,9 +69,6 @@ function extractError(data: unknown, fallback: string): string {
   if (typeof data === 'string' && data) return data.slice(0, 200)
   return fallback
 }
-
-// Return types derived from the Bridge contract (avoids drift with shared/).
-type RagGetIndexResult = Awaited<ReturnType<Bridge['ragGetIndex']>>
 
 /** Generic JSON request with bearer-token attachment and 401 handling. */
 function request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
@@ -159,7 +156,7 @@ function unwrapContent(data: unknown): string {
   return ''
 }
 
-export class PlatformBridge implements Bridge {
+export class PlatformBridge {
   readonly platform: Platform = getPlatform()
 
   private readonly ws: WSService

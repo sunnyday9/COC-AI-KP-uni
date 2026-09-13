@@ -129,7 +129,7 @@ interface AppSettings {
 
 ## 9. 客户端 Bridge 映射（Task 6）
 
-`shared/types/bridge.ts` 的 `Bridge` 接口（`client/src/platform/bridge.ts` 的 `PlatformBridge` 实现）逐方法对应上述端点：
+客户端 Bridge 以 `client/src/platform/bridge.ts` 的 `PlatformBridge` 实现为准（页面经 `getBridge()` 取具体类；#80 退役了装饰化且已漂移的 `Bridge` 接口），逐方法对应上述端点；`shared/types/bridge.ts` 仅保留跨端共享的 wire payload 类型（`AuthResult`/`IndexedStory`/`RAG*Params`/`RagGetIndexResult` 等）：
 
 | Bridge 方法 | 后端调用 |
 |---|---|
