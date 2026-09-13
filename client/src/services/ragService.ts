@@ -43,11 +43,6 @@ export async function listIndexedStories(): Promise<IndexedStory[]> {
   return getBridge().ragListStories()
 }
 
-/** Get story overview (initial context for game start) */
-export async function getStoryOverview(storyId: string, topK = 15): Promise<{ overview: string; storyName: string }> {
-  return getBridge().ragStoryOverview({ storyId, topK })
-}
-
 /** Query relevant chunks */
 export async function queryChunks(params: {
   query: string

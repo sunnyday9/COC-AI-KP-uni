@@ -407,10 +407,6 @@ export class PlatformBridge {
     return request<IndexedStory[]>('GET', '/api/rag/stories')
   }
 
-  ragStoryOverview(params: { storyId: string; topK?: number }): Promise<{ overview: string; storyName: string }> {
-    return request('POST', '/api/rag/story-overview', params)
-  }
-
   ragGetIndex(params: { scriptId: string }): Promise<RagGetIndexResult> {
     return request<RagGetIndexResult>('GET', `/api/rag/index/${encodeURIComponent(params.scriptId)}`)
   }
