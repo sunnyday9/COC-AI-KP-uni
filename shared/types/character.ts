@@ -77,10 +77,3 @@ export interface COCCharacterSheet {
   /** 克苏鲁神话技能值（0-99；规则书：最大理智 = 99 - 神话值） */
   cthulhuMythos?: number
 }
-
-export type GamePhase =
-  | 'story_selected'      // 已选故事，未选职业
-  | 'occupation_selected'  // 已选职业，未完成角色卡
-  | 'character_ready'      // 角色卡完成，未进入游戏
-  | 'playing'              // 游戏中，AI KP 已启动
-  | 'ended'                // 游戏已结束，进入结局总结

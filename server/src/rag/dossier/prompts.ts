@@ -24,8 +24,6 @@ export interface DossierBatchInput {
   seenClueDescriptions: string[]
 }
 
-export const DOSSIER_MAX_CHARS_PER_CALL = 12_000
-
 /** How much raw story text the generator sees per batch (characters). */
 export const DOSSIER_BATCH_CHARS = 10_000
 

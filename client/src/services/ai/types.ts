@@ -34,7 +34,3 @@ export interface ChatResponse {
 }
 
 export type ChatStream = AsyncIterable<string>
-
-export interface AIAdapter {
-  chat(request: ChatRequest): Promise<ChatResponse | ChatStream>
-}

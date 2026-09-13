@@ -39,10 +39,6 @@ export function ipv4FromIpv6Suffix(ipv6: string): string | null {
   return null
 }
 
-export function isIpv4Literal(host: string): boolean {
-  return IPV4_RE.test(host)
-}
-
 /**
  * Returns a human-readable reason when the IPv4 literal is unsafe, else null.
  */

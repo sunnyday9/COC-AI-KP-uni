@@ -4,7 +4,6 @@
  * Any path built from user input MUST pass through these helpers first
  * (see docs/api-contract.md §10).
  */
-import fs from 'node:fs/promises'
 import path from 'node:path'
 
 function isNonEmptyString(v: unknown): v is string {
@@ -41,27 +40,4 @@ export function resolveFileInDir(rootDir: string, fileName: string, label = 'fil
   if (!isNonEmptyString(fileName)) throw new Error(`${label} must be a non-empty string`)
   const full = path.resolve(rootDir, fileName)
   return assertPathInDir(rootDir, full, label)
-}
-
-export async function assertRealPathInDir(rootDir: string, candidatePath: string, label = 'path'): Promise<string> {
-  const cand = assertPathInDir(rootDir, candidatePath, label)
-  try {
-    const real = await fs.realpath(cand)
-    assertPathInDir(rootDir, real, `${label} (realpath)`)
-  } catch {
-    // If the path doesn't exist yet (e.g. before write) or realpath fails, fall back to string check.
-  }
-  return cand
-}
-
-export async function assertParentRealPathInDir(rootDir: string, candidatePath: string, label = 'path'): Promise<string> {
-  const cand = assertPathInDir(rootDir, candidatePath, label)
-  const parent = path.dirname(cand)
-  try {
-    const realParent = await fs.realpath(parent)
-    assertPathInDir(rootDir, realParent, `${label} directory (realpath)`)
-  } catch {
-    // Parent may not exist yet; creation will still be constrained by the resolved path check above.
-  }
-  return cand
 }

@@ -1,5 +1,3 @@
-export type MessageRole = 'kp' | 'player' | 'system'
-
 export interface BaseMessage {
   id: string
   timestamp: number

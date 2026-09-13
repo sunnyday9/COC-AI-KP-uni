@@ -14,7 +14,5 @@ export function getBridge(): PlatformBridge {
   return instance
 }
 
-export type { UploadResult } from './bridge'
-export { BridgeError } from './bridge'
 export { getBaseUrl, getWsBaseUrl, getPlatform } from './config'
 export { getToken, setToken, clearToken, onUnauthorized } from './token'

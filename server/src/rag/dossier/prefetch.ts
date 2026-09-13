@@ -52,8 +52,6 @@ export const INLINE_TIMEOUT_MS = (() => {
   const n = Number(process.env.PREFETCH_INLINE_MS)
   return Number.isFinite(n) && n >= 1_000 && n <= 60_000 ? n : 15_000
 })()
-/** 兜底总超时（毫秒）：内联等待之上的硬上限（保留给测试注入与未来的后台模式）。 */
-export const PREFETCH_TIMEOUT_MS = 60_000
 
 export interface PrefetchInput {
   /** 本轮玩家发言（多人局 = 已合并的批次文本）。 */

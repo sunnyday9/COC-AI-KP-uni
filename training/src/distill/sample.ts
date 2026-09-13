@@ -9,7 +9,7 @@
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
 import { toOpenAiToolCall } from '../../../server/src/services/kpTurnWireShape.js'
 import { buildSlimTurnMessages } from './replay.js'
-import type { DistillSample, DistillSkeleton, ReplayedTurn, SampleSource } from './types.js'
+import type { DistillSample, ReplayedTurn, SampleSource } from './types.js'
 
 /** wire 序列（与 #37 buildWireMessages 同形；最终 assistant = 累计叙事）。 */
 export function buildWireSequence(turn: ReplayedTurn): unknown[] {
@@ -49,22 +49,5 @@ export function buildSample(turn: ReplayedTurn, source: SampleSource, teacher?: 
     },
     messages: buildWireSequence(turn),
     tools: COC_KP_TOOLS,
-  }
-}
-
-/** 骨架直接可见性（抽检包展示 context 侧时用）。 */
-export function skeletonSummary(skeleton: DistillSkeleton): {
-  id: string
-  turnType: string
-  storyName: string
-  batchContent: string
-  players: string[]
-} {
-  return {
-    id: skeleton.id,
-    turnType: skeleton.turnType,
-    storyName: skeleton.storyName,
-    batchContent: skeleton.batchContent,
-    players: skeleton.batchPlayers,
   }
 }

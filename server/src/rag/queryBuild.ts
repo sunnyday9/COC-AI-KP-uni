@@ -331,8 +331,3 @@ export async function retrieveWithRewrite<T extends ScoredChunk = ScoredChunk>(
   }
   return done({ query: newQuery, chunks: second.chunks, topScore: newTop, rewritten: true })
 }
-
-/** 模型守卫复述（铁律 1）：本模块不接受 -pro 变体。 */
-export function assertQueryBuildModel(model: string | undefined): string | undefined {
-  return assertNonProModel(model, '检索 query 改写')
-}

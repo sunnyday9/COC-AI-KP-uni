@@ -247,12 +247,6 @@ export function insertCharacter(characterId: string, userId: number, name: strin
   getDb().prepare(`INSERT INTO characters (id, user_id, name, sheet, updated_at) VALUES (?, ?, ?, ?, ?)`).run(characterId, userId, name, sheetJson, Date.now())
 }
 
-/** 单张角色卡 sheet（bind 后同步活跃实例用）。 */
-export function characterSheetJson(characterId: string): string | null {
-  const rows = getDb().prepare(`SELECT sheet FROM characters WHERE id = ?`).all(characterId) as unknown as { sheet: string }[]
-  return rows[0]?.sheet ?? null
-}
-
 /** 房间角色组绑定（sheet 从 characters 表加载——syncFromDb 用）。 */
 export function boundCharacterSheets(roomId: string): { characterId: string; userId: number; sheet: string }[] {
   const rows = getDb()
