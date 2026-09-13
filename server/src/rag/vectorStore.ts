@@ -477,29 +477,6 @@ export async function queryChunks(params: {
 }
 
 /**
- * Get chunk content by ids (for graph expansion).
- */
-export function getChunksByIds(
-  userId: number,
-  scriptId: string,
-  chunkIds: string[],
-): { id: string; content: string; type: string; metadata: Record<string, unknown> }[] {
-  const idx = getOrLoadIndex(userId, scriptId)
-  if (!idx || !chunkIds?.length) return []
-  const idSet = new Set(chunkIds)
-  return idx.docs
-    .filter(function (d) { return idSet.has(d.id) })
-    .map(function (d) {
-      return {
-        id: d.id,
-        content: d.content,
-        type: d.type,
-        metadata: d.metadata || {},
-      }
-    })
-}
-
-/**
  * Health check - always available since this is in-process.
  */
 export function checkHealth(userId: number): { status: string; service: string; indexedStoryCount: number } {
