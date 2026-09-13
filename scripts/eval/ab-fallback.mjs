@@ -15,20 +15,19 @@
  *
  * 输出：--out JSON（每问基线/回退/触发原因/delta）；stdout 打 pooled 对比。
  * env：真实 LLM（AB_AI_BASE_URL/AB_AI_API_KEY/OPENCODE_SESSION；llm-env.sh 装载）。
- * 用法：. scripts/eval/llm-env.sh && node scripts/eval/ab-fallback.mjs
+ * 用法：. scripts/eval/llm-env.sh && node --import tsx scripts/eval/ab-fallback.mjs
  *   [--dir=training/eval/reports] [--out=training/eval/reports/ab-fallback-<ts>.json]
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Agent } from 'undici'
-import { parseJudgeJson } from './lib/harness.mjs'
+import { parseJudgeJson, pdfText, loadFactsProbes, buildJudgePrompt } from './lib/harness.mjs'
 import { computeCoverageGaps } from '../../server/src/rag/dossier/coverageGaps.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
 const STORY_DIR = path.join(ROOT, 'AI-COC-KP Story Document', 'stories')
-const FACTS_DIR = path.join(ROOT, 'scripts', 'eval', 'ab-facts')
 const CACHE_DIR = path.join(ROOT, 'training', 'eval', 'dossier-cache')
 const REAL = {
   baseUrl: process.env.AB_AI_BASE_URL ?? '',
@@ -51,14 +50,7 @@ const ANCHOR_WINDOW = 2_500 // gaps 定位：场景锚点后的取文长度
 const ANCHOR_LEAD = 300 // gaps 定位：锚点前的衔接语余量
 const GAP_CHUNK = 2_000 // gaps 定位：大 gap 再切块
 
-/* ── 原文读取（pdf-parse，与 readStory 的 pdf 分支同 API）── */
-async function pdfText(buffer) {
-  const { PDFParse } = await import('pdf-parse')
-  const uint8Array = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
-  const parser = new PDFParse({ data: uint8Array })
-  const data = await parser.getText()
-  return String(data?.text ?? data ?? '')
-}
+/* ── 原文读取/探针读取：pdfText / loadFactsProbes 用 harness 单源（#87 收编）── */
 
 /** 从 dossier-cache 找该剧本档案 JSON（scenes 供 gaps 计算）。 */
 function loadCachedDossier(key) {
@@ -187,34 +179,9 @@ async function answerFromOriginal(textPayload, q) {
   return typeof raw === 'object' && raw?.error ? raw : { content: raw }
 }
 
-/** 从 ab-facts 原文件取探针元数据（refQuote/ref/story——报告 JSON 未存原文引证）。 */
-function loadFactsProbes(key) {
-  const out = new Map()
-  for (const dir of ['', 'v2']) {
-    const f = path.join(FACTS_DIR, dir, `${key}.json`)
-    if (!fs.existsSync(f)) continue
-    const data = JSON.parse(fs.readFileSync(f, 'utf8'))
-    for (const x of data.facts ?? []) {
-      if (typeof x.q !== 'string' || !x.q) continue
-      out.set(x.q.trim(), { q: x.q.trim(), refQuote: String(x.refQuote ?? ''), ref: String(x.ref ?? ''), story: data.story ?? key, cat: x.cat ?? 'fact' })
-    }
-  }
-  return out
-}
-
-/** 与 ab-reconstruct 同口径的 judge（对照 probe.refQuote 打 1-5 + fab）。 */
+/** 与 ab-reconstruct 同口径的 judge（对照 probe.refQuote 打 1-5 + fab；提示词单源见 harness.buildJudgePrompt）。 */
 async function judgeAnswer(storyTitle, probe, answer) {
-  const ask =
-    `你是剧本事实一致性评审。剧本《${storyTitle}》。一个"原文问答器"只凭剧本原文（可能只截取相关段落）回答了下面的问题，` +
-    `请对照剧本原文依据判断它的回答是否忠于剧本。\n\n` +
-    `【问题】${probe.q}\n` +
-    `【剧本原文依据】${probe.refQuote}\n` +
-    `【要点】${probe.ref}\n\n` +
-    `【原文问答器回答】\n${String(answer ?? '（无回答）').slice(0, 1000)}\n\n` +
-    `按 1-5 打忠实度分（5=要点全中且准确；3=大体正确但有含糊/细节偏离；1=答非所问、与依据矛盾、或原文缺该信息而未能回答）。` +
-    `fabrication=true 仅当回答与上述摘录直接冲突或明显超出剧本范围（编造 NPC/地点/真相）；摘录片段未覆盖、但可能属剧本其他部分的细节，不算 fabrication（可在 note 说明存疑）。` +
-    `原文缺少该信息导致"原文中无此信息"式的如实回答时，打 1 分且 fabrication=false（这暴露的正是原文截取窗口的覆盖缺口）。` +
-    `只输出 JSON：{"score":1-5,"fabrication":true/false,"note":"≤60字"}`
+  const ask = buildJudgePrompt(storyTitle, probe, answer)
   const raw = await withRetry(() => callLLM([{ role: 'user', content: ask }], 4000), 'judge', 3)
   if (raw && typeof raw === 'object' && raw?.error) return raw
   const j = parseJudgeJson(raw)

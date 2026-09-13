@@ -15,7 +15,7 @@
  * none = 不给场景（走全篇词面兜底 tier=global），显式名字 = 钉死某场景。
  *
  * 用法：
- *   . scripts/eval/llm-env.sh && node scripts/eval/ab-verify-runtime.mjs \
+ *   . scripts/eval/llm-env.sh && node --import tsx scripts/eval/ab-verify-runtime.mjs \
  *     --keys=火焰交织的盛夏_220819_compressed,-营一日的恐怖_20231103 \
  *     [--scene=auto|none|<名>] [--out=training/eval/reports/ab-verify-runtime-<tag>.json]
  */
@@ -23,11 +23,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Agent } from 'undici'
+import { parseJudgeJson, sleep, pdfText, loadFactsProbes, buildJudgePrompt } from './lib/harness.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
 const STORY_DIR = path.join(ROOT, 'AI-COC-KP Story Document', 'stories')
-const FACTS_DIR = path.join(ROOT, 'scripts', 'eval', 'ab-facts')
 const CACHE_DIR = path.join(ROOT, 'training', 'eval', 'dossier-cache')
 const REAL = {
   baseUrl: process.env.AB_AI_BASE_URL ?? '',
@@ -38,7 +38,6 @@ const dispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 })
 const origFetch = globalThis.fetch
 globalThis.fetch = (url, opts = {}) => origFetch(url, { ...opts, dispatcher })
 const arg = (name, dflt) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? dflt
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 铁律 1：模型守卫——-pro 变体拒绝（无视觉/上游 404）。 */
 function assertNonPro(model) {
@@ -52,14 +51,7 @@ function assertNonPro(model) {
 const { verifyOriginal, clearVerifyCaches } = await import('../../server/src/rag/dossier/originalLookup.ts')
 const { lexicalSearch } = await import('../../server/src/rag/dossier/storyDossierService.ts')
 
-/* ── 原文/缓存读取（与 ab-fallback 同口径）── */
-async function pdfText(buffer) {
-  const { PDFParse } = await import('pdf-parse')
-  const uint8Array = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
-  const parser = new PDFParse({ data: uint8Array })
-  const data = await parser.getText()
-  return String(data?.text ?? data ?? '')
-}
+/* ── 原文/探针读取用 harness 单源（pdfText / loadFactsProbes，与 ab-fallback 同口径）── */
 
 function cacheFiles(key) {
   const dir = path.join(CACHE_DIR, '1')
@@ -72,20 +64,6 @@ function cacheFiles(key) {
     try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) } catch { return null }
   }
   return { dossier: read(d), gaps: read(g) }
-}
-
-function loadFactsProbes(key) {
-  const out = new Map()
-  for (const dir of ['', 'v2']) {
-    const f = path.join(FACTS_DIR, dir, `${key}.json`)
-    if (!fs.existsSync(f)) continue
-    const data = JSON.parse(fs.readFileSync(f, 'utf8'))
-    for (const x of data.facts ?? []) {
-      if (typeof x.q !== 'string' || !x.q) continue
-      out.set(x.q.trim(), { q: x.q.trim(), refQuote: String(x.refQuote ?? ''), ref: String(x.ref ?? ''), story: data.story ?? key, cat: x.cat ?? 'fact' })
-    }
-  }
-  return out
 }
 
 /* ── LLM（直连；重试 ≥3 指数退避；空内容按失败）── */
@@ -123,27 +101,9 @@ async function withRetry(fn, label, attempts = 3) {
   throw new Error(`after ${attempts} attempts: ${lastErr}`)
 }
 
-function parseJudgeJson(raw) {
-  const s = String(raw ?? '')
-  const start = s.indexOf('{')
-  const end = s.lastIndexOf('}')
-  if (start < 0 || end <= start) return null
-  try { return JSON.parse(s.slice(start, end + 1)) } catch { return null }
-}
-
-/** 与 ab-reconstruct / ab-fallback 同口径的 judge（对照 probe.refQuote）。 */
+/** 与 ab-reconstruct / ab-fallback 同口径的 judge（对照 probe.refQuote；提示词单源见 harness.buildJudgePrompt）。 */
 async function judgeAnswer(storyTitle, probe, answer) {
-  const ask =
-    `你是剧本事实一致性评审。剧本《${storyTitle}》。一个"原文问答器"只凭剧本原文（可能只截取相关段落）回答了下面的问题，` +
-    `请对照剧本原文依据判断它的回答是否忠于剧本。\n\n` +
-    `【问题】${probe.q}\n` +
-    `【剧本原文依据】${probe.refQuote}\n` +
-    `【要点】${probe.ref}\n\n` +
-    `【原文问答器回答】\n${String(answer ?? '（无回答）').slice(0, 1000)}\n\n` +
-    `按 1-5 打忠实度分（5=要点全中且准确；3=大体正确但有含糊/细节偏离；1=答非所问、与依据矛盾、或原文缺该信息而未能回答）。` +
-    `fabrication=true 仅当回答与上述摘录直接冲突或明显超出剧本范围（编造 NPC/地点/真相）；摘录片段未覆盖、但可能属剧本其他部分的细节，不算 fabrication（可在 note 说明存疑）。` +
-    `原文缺少该信息导致"原文中无此信息"式的如实回答时，打 1 分且 fabrication=false（这暴露的正是原文截取窗口的覆盖缺口）。` +
-    `只输出 JSON：{"score":1-5,"fabrication":true/false,"note":"≤60字"}`
+  const ask = buildJudgePrompt(storyTitle, probe, answer)
   const raw = await withRetry(() => callLLM([{ role: 'user', content: ask }], 4000), 'judge', 3)
   const j = parseJudgeJson(raw)
   if (j && j.score != null) return j
