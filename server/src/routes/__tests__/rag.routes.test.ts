@@ -145,7 +145,7 @@ describe('rag routes', () => {
     expect(res.body.chunkCount).toBeGreaterThanOrEqual(1)
   })
 
-  it('stories / story-overview / getIndex report the indexed story', async () => {
+  it('stories / getIndex report the indexed story', async () => {
     const token = await registerToken('rag_list')
     const scriptId = await uploadStory(token, 'list.md')
     await request(createApp())
@@ -159,11 +159,6 @@ describe('rag routes', () => {
     expect(stories.body).toHaveLength(1)
     expect(stories.body[0]).toMatchObject({ storyId: scriptId, name: '雾都疑云', chunkCount: 2 })
     expect(typeof stories.body[0].indexedAt).toBe('number')
-
-    const ov = await request(createApp()).post('/api/rag/story-overview').set(auth(token)).send({ storyId: scriptId })
-    expect(ov.status).toBe(200)
-    expect(ov.body.storyName).toBe('雾都疑云')
-    expect(ov.body.overview).toContain('图书馆')
 
     const idx = await request(createApp()).get(`/api/rag/index/${encodeURIComponent(scriptId)}`).set(auth(token))
     expect(idx.status).toBe(200)

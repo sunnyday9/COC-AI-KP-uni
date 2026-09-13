@@ -364,24 +364,6 @@ export function listIndexedStories(userId: number): { storyId: string; name: str
 }
 
 /**
- * Get a story overview: retrieves the top chunks for general story context.
- */
-export function getStoryOverview(userId: number, storyId: string, topK?: number): { overview: string; storyName: string } {
-  if (topK === undefined) topK = 15
-  const idx = getOrLoadIndex(userId, storyId)
-  if (!idx || !idx.docs.length) return { overview: '', storyName: storyId }
-
-  const limit = Math.min(topK, idx.docs.length)
-  const chunks = idx.docs.slice(0, limit)
-  const lines: string[] = []
-  for (let i = 0; i < chunks.length; i++) {
-    const label = (chunks[i] as IndexDoc).type || 'info'
-    lines.push('[' + label + '] ' + (chunks[i] as IndexDoc).content)
-  }
-  return { overview: lines.join('\n\n'), storyName: idx.storyName || storyId }
-}
-
-/**
  * Delete all chunks for a script.
  */
 export function deleteChunks(userId: number, scriptId: string): { ok: boolean; deleted: number } {

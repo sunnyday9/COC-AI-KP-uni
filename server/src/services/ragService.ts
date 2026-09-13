@@ -155,16 +155,6 @@ export function listStories(userId: number): {
   return vectorStore.listIndexedStories(userId)
 }
 
-/** POST /api/rag/story-overview — rag:storyOverview. */
-export function storyOverview(
-  userId: number,
-  params: { storyId?: string; topK?: number } | undefined,
-): { overview: string; storyName: string } {
-  const { storyId, topK } = params || {}
-  if (!storyId) return { overview: '', storyName: '' }
-  return vectorStore.getStoryOverview(userId, storyId, topK ?? 15)
-}
-
 /** DELETE /api/rag/index/:scriptId — rag:delete (vectors only；M1-T7 起无图)。 */
 export function deleteIndex(userId: number, scriptId: string): { ok: boolean; deleted: number } {
   return vectorStore.deleteChunks(userId, scriptId)

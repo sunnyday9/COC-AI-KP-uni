@@ -72,15 +72,6 @@ router.get('/stories', (req: AuthRequest, res) => {
   }
 })
 
-/** POST /api/rag/story-overview — rag:storyOverview. */
-router.post('/story-overview', (req: AuthRequest, res) => {
-  try {
-    res.json(ragService.storyOverview(req.userId as number, req.body))
-  } catch (err) {
-    sendError(res, err)
-  }
-})
-
 /** GET /api/rag/index/:scriptId — rag:getIndex. */
 router.get('/index/:scriptId', (req: AuthRequest, res) => {
   try {

@@ -115,8 +115,9 @@ interface AppSettings {
 | POST | `/api/rag/query` | `{ query, scriptId?, sceneId?, type?, topK? }` | `{ chunks: { content, metadata, distance }[] }` |
 | POST | `/api/rag/context` | `{ query, scriptId?, sceneId?, topK? }` | `{ context, chunkCount? }`（标准管线，无图扩展） |
 | GET | `/api/rag/stories` | — | `{ storyId, name, chunkCount, indexedAt }[]` |
-| POST | `/api/rag/story-overview` | `{ storyId, topK? }` | `{ overview, storyName }` |
 | GET | `/api/rag/index/:scriptId` | — | `{ scriptId, storyName, chunkCount, chunks: {id,content,type,metadata,hasVector}[] }` |
+
+> `/api/rag/story-overview` 已于 2026-09-13 退役（#91 B 桶「全链退役」拍板，#93）：服务端路由 / `ragService.storyOverview` / `vectorStore.getStoryOverview` 与路由自测段一并删除；客户端 bridge 方法已于 #85 删除。本节编号保留不重排（§8 被 server 路由注释引用）。
 
 - 数据按 `userId + storyId` 隔离。嵌入：`builtin`（@huggingface/transformers 本地模型，服务端加载）或 `api`（用用户 AI 设置中的 embedding 模型，同样受 outbound URL 校验约束）。
 
@@ -130,7 +131,7 @@ interface AppSettings {
 | listStories / readStory / readStoryForRag / importStory / deleteStory | `/api/stories*` |
 | listScripts / readScript / saveScript / saveScriptToLibrary / deleteScript / importScript | `/api/scripts*` |
 | aiChat / aiListModels | POST `/api/ai/chat`、GET `/api/ai/models` |
-| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragStoryOverview / ragGetIndex / ragTestEmbedding | `/api/rag*` |
+| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragGetIndex / ragTestEmbedding | `/api/rag*` |
 | login / register / logout / me（新增） | `/api/auth*` |
 | platform | `'h5' \| 'mp-weixin' \| 'app'` |
 
