@@ -1,7 +1,7 @@
 # ADR-0005：多人房间游戏流程 — 等待室/开局门闩/房主治理（等待室形态）
 
 - 状态：已接受（2026-09-03）
-- 关联：#26（Feature 多人房间游戏流程）、ADR-0001/0002/0004、docs/ARCHITECTURE-MULTIPLAYER.md
+- 关联：#26（Feature 多人房间游戏流程）、ADR-0001/0002/0004、docs/history/ARCHITECTURE-MULTIPLAYER.md（路径已随 #99 归档调整）
 
 ## 背景
 

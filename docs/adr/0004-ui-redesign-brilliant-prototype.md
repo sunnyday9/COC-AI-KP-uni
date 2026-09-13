@@ -14,7 +14,7 @@
 2. **风格**：保留克苏鲁哥特·暗色档案识别度（墨黑+羊皮纸+eldritch 辉光），专业化升级 = 系统化层级/组件/布局。
 3. **断点**：每页 Desktop 1440×900 + Mobile 390×844（Auto Layout 组件两断点复用）。
 4. **文件结构**：单项目分区画布：`COC-KP-UI/01-design-system`（令牌面板 + 组件库 master）→ `02-pages-desktop`（P1–P10，跨画布 `inst()` 引用 master）→ `03-pages-mobile`（M1–M6）。brilliant 组件即项目内 master/instance，无需 library publish。
-5. **令牌落地**：author 品牌 DS `gothic-eldritch`：色板逐档对齐 uni.scss（命名 `ink-*`/`paper-*`/`eld-*`/`blood-*`/`sanity-*`/`ritual-*`/`mana-*` + `.mid` 单点，元素行只用语义 alias），字体同款（Cinzel Decorative/Crimson Text/Fira Sans + Fira Code），字号系统化阶（display 40/32、h1 28/24、h2 20、body 16/14、caption 12、micro 10）；间距/圆角沿用 4pt 刻度。映射表见 `docs/design/uni-scss-to-brilliant-token-map.md`。
+5. **令牌落地**：author 品牌 DS `gothic-eldritch`：色板逐档对齐 uni.scss（命名 `ink-*`/`paper-*`/`eld-*`/`blood-*`/`sanity-*`/`ritual-*`/`mana-*` + `.mid` 单点，元素行只用语义 alias），字体同款（Cinzel Decorative/Crimson Text/Fira Sans + Fira Code），字号系统化阶（display 40/32、h1 28/24、h2 20、body 16/14、caption 12、micro 10）；间距/圆角沿用 4pt 刻度。映射表见 `docs/history/design/uni-scss-to-brilliant-token-map.md`（路径已随 #99 归档调整）。
 6. **信息架构**：
    - 导航 4 tab 重组：首页(调查局)/故事(档案室)/游戏(调查)/设置；「游戏」页收编「进行中的调查」列表（solo 续玩 + 多人房统一入口），首页回归纯「新调查启动台」（删继续游戏区块）。
    - 登录/注册保持嵌设置页首屏「档案卡」（不拆独立登录页）。
@@ -43,7 +43,7 @@
 ## 后果
 
 - 本 ADR 交付 = brilliant.design 项目画布（`Untitled Project` 下 `COC-KP-UI/`），不直接改代码；审阅后挑页落 Vue（design tokens → CSS 变量对照 uni.scss 落地）。
-- uni.scss 令牌 → brilliant token 全量映射表（`docs/design/uni-scss-to-brilliant-token-map.md`）是落码时改 CSS 的基准。
+- uni.scss 令牌 → brilliant token 全量映射表（`docs/history/design/uni-scss-to-brilliant-token-map.md`，路径已随 #99 归档调整）是落码时改 CSS 的基准。
 - 页面 DOM 结构会随新布局变化（如 game 三栏、向导合并），落码时以画布 + 组件库为准。
 - e2e 选择器依赖现状 DOM，落码后需同步更新（后续票）。
 - brilliant 能力边界：无 Figma 式 prototype 连线 / Color Variables（以 DS token 系统替代）/ 团队库（master 同项目引用替代）；导出用 `export` 渲染 png/svg/html。

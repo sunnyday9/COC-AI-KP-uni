@@ -1,7 +1,7 @@
 # ADR-0002：单人游戏 = 单成员房间（无独立回合协议）
 
 - 状态：已接受（2026-08-29）
-- 关联：docs/ARCHITECTURE-MULTIPLAYER.md §五/§七 A4、FR-M9、D12；架构评审候选 7；ADR-0001
+- 关联：docs/history/ARCHITECTURE-MULTIPLAYER.md（路径已随 #99 归档调整）§五/§七 A4、FR-M9、D12；架构评审候选 7；ADR-0001
 
 ## 背景
 

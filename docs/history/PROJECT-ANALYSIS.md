@@ -3,6 +3,7 @@
 > 版本：0.1.0 · 分析日期：2026-08-18 · 配套文档：`README.md`（运行/测试）、`docs/api-contract.md`（接口契约）、`docs/MIGRATION-PLAN.md`（重构计划）
 >
 > 本分析基于对全部源码的通读 + `test-agent/REPORT.md` 的实测结论（36 用例 + 门控回归 7 用例）。
+> **归档指针（#99 票③）**：本文已被 `docs/ONBOARDING-GUIDE.md` 取代（#99），随 docs 结构归档移入 `docs/history/`，仅作模块级分析史实参考。
 > **2026-09-13 更新**：模块地图 / RAG / WS / 前端详解 / 数据流各节已按 **ADR-0002 之后的现行架构**（服务端权威单轨）改写；原文描述的是 ADR-0002 之前的客户端权威旧架构，旧形态仅存于本文件 git 历史与 `docs/ARCHITECTURE-MULTIPLAYER.md` / `docs/MIGRATION-PLAN.md` 的史实章节。
 
 ---

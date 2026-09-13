@@ -2,8 +2,8 @@
 
 > 编写日期：2026-08-19 · 版本：0.1.0（feature/coc7-rules-perf-optimization）
 > 阅读对象：新入职工程师。本文基于对当前代码库的完整通读 + `test-agent/REPORT.md` 实测结论编写，
-> 与 `README.md`（运行）、`docs/api-contract.md`（接口契约）、`docs/MIGRATION-PLAN.md`（重构计划）、
-> `docs/PROJECT-ANALYSIS.md`（模块级分析）互为补充。本文按「为什么做 → 怎么做 → 现在长什么样 → 怎么调 → 怎么测 → 坑在哪」的顺序组织。
+> 与 `README.md`（运行）、`docs/api-contract.md`（接口契约）、`docs/history/MIGRATION-PLAN.md`（重构计划）、
+> `docs/history/PROJECT-ANALYSIS.md`（模块级分析）互为补充。本文按「为什么做 → 怎么做 → 现在长什么样 → 怎么调 → 怎么测 → 坑在哪」的顺序组织。
 
 ---
 
@@ -33,7 +33,7 @@
 
 **一句话定位**：这是一个「克苏鲁的呼唤第七版（COC 7th）」规则 AI 跑团助手——玩家导入剧本（模组），与一个由大语言模型驱动的 AI 守密人（Keeper，简称 KP）进行文字冒险。KP 不只是聊天，它用一套 **LangGraph 状态机 + 24 个 COC 规则工具**（另有 4 个档案查证工具按需挂载）驱动探索、战斗、理智检定、线索收集与结局结算，知识供给走 **档案 + 检索补充双轨**（ADR-0007：档案为事实权威，RAG 只作纹理补充）并做剧透防护。
 
-**立项背景**（从 `docs/MIGRATION-PLAN.md` 与 git 历史还原）：
+**立项背景**（从 `docs/history/MIGRATION-PLAN.md` 与 git 历史还原）：
 
 - 项目最初是一个 **Electron 单机桌面应用**（Vue 3 + Vite + Electron），仓库 `sunnyday9/COC-AI-KP`。渲染进程通过 `window.electronAPI`（约 40 个 IPC 方法）与主进程通信，主进程承载 AI 对话（OpenAI SDK）、KP Agent（LangGraph 状态机）、三层 RAG、文档解析（PDF/OCR/DOCX/EPUB）等全部逻辑。
 - 重构动机：**Electron 单机形态无法支持多端、多用户与云端化**。settingsStore 里预留的 `syncServerUrl` 字段证明团队早有「同步服务器」的伏笔。
@@ -108,7 +108,7 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 编写�
 - ✅ 客户端零领域状态：RoomClient 纯视图模型（§9.1），不执行规则、不组装提示词；
 - ✅ 单人游戏 = 单成员房间（`kind='solo'`），与多人共用同一 wire 协议，**没有独立的回合协议**。
 
-> 旧「工具循环在客户端」叙述保留在 `docs/ARCHITECTURE-MULTIPLAYER.md` / `docs/MIGRATION-PLAN.md` 的历史章节中，仅作迁移史实。
+> 旧「工具循环在客户端」叙述保留在 `docs/history/ARCHITECTURE-MULTIPLAYER.md` / `docs/history/MIGRATION-PLAN.md` 的历史章节中，仅作迁移史实。
 
 ---
 

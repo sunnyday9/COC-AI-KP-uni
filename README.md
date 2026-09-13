@@ -53,7 +53,7 @@ server (Express + TypeScript)
 
 - **规则与记忆全在服务端**（ADR-0002）：客户端无规则、无工具循环、无提示词组装——房间事件流是唯一事实源，重进 / 刷新即恢复；
 - **多端一码**：同一套 Vue 代码跑 H5 / 微信小程序 / App，条件编译处理平台差异；
-- 架构决策全程 ADR 记录（`docs/adr/0001–0008`），术语统一见 `CONTEXT.md`。
+- 架构决策全程 ADR 记录（`docs/adr/0001–0009`），术语统一见 `CONTEXT.md`。
 
 ## 目录结构
 
@@ -66,7 +66,7 @@ AI-COC-KP/
 ├── e2e/           # 端到端旅程（h5 单人 14 步 / rooms 多人 UI 14 步 / multiroom WS 14 步 / dossier 档案 7 步，MOCK_AI）
 ├── test-agent/    # Agent 工作流真实 LLM 测试套件（不改项目代码）
 ├── tools/         # 微信小程序自动化测试（miniprogram-automator）
-├── docs/          # ADR、架构、部署、API 契约、依赖审计报告
+├── docs/          # ADR、入职指南、部署、API 契约、开发日志、史实归档（history/）
 └── original/      # 原 Electron 项目（只读参考）
 ```
 
@@ -120,18 +120,30 @@ node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 - **E2E 旅程**覆盖：注册登录 → 导入/索引 → 建卡（选职业/投骰/兴趣）→ 开局 → 侦查（skill_check → grant_clue）/ 战斗（roll_dice → adjust_hp，HP 精确断言）→ 读档恢复；多人全链（建房 → 等待室绑卡/就绪 → 门闩 409 → 开局 → 队友档案切换 → 聊天）；
 - **真实 LLM 冒烟**：`e2e/byok-smoke.mjs`（需自备 Key：`E2E_REAL_API_KEY=sk-... node e2e/byok-smoke.mjs`，验证 settings 加密存储 → 不回传 → models → chat）；
 - **Agent 工作流套件**：`test-agent/`（真实 LLM 驱动，不改项目代码）——调查 / 战斗 / SAN / 门控 / 鲁棒性 / 性能；
-- 依赖安全：npm audit 实时核对，server 运行时 high 漏洞 = 0（express 5 + overrides 强升，见 `docs/DEPENDENCY-AUDIT-2026-09-04.md`）。
+- 依赖安全：npm audit 实时核对，server 运行时 high 漏洞 = 0（express 5 + overrides 强升，见 `docs/history/DEPENDENCY-AUDIT-2026-09-04.md`）。
 
 ## 文档索引
 
+**现行区**（canonical，随代码同步更新）：
+
 | 文档 | 内容 |
 |---|---|
-| `docs/adr/` | 架构决策记录 0001–0008（房间域 / 单人=单成员房 / LLM 协议一等公民 / UI 重设计 / 多人房间流程 / KP 训练框架 / 档案+检索双轨 / 无消费方 REST 面全链退役） |
-| `CONTEXT.md` | 领域术语统一（等待室 / 开局门闩 / 就绪 / 房主转让 / RoomClient …） |
+| `docs/ONBOARDING-GUIDE.md` | 主路径：项目定位 / FR-NFR / 模块地图 / 回合链路 / KP 状态机 / 知识供给 / 安全 / 测试 |
+| `CONTEXT.md` | 领域术语表（唯一词汇真源；含「不重议的决策」清单） |
+| `AGENTS.md` | Agent 工作流约定（issue tracker / triage 标签 / 领域文档入口） |
+| `docs/DEVELOPMENT-LOG.md` | 实现决策记录（D-01 起，与 ADR 分工的第二决策流） |
 | `docs/DEPLOYMENT.md` | 部署上线指南（含 BYOK 玩家引导、安全基线、回滚） |
-| `docs/api-contract.md` | 前后端 API 契约（唯一接口基准） |
-| `docs/ARCHITECTURE-MULTIPLAYER.md` | 多人架构细节 |
-| `docs/DEPENDENCY-AUDIT-2026-09-04.md` | 依赖漏洞联网复核 + 处置记录 |
+| `docs/api-contract.md` | 前后端 API 契约（唯一接口基准；§10 安全约束） |
+
+**指引层**（子目录）：
+
+| 目录 | 内容 |
+|---|---|
+| `docs/adr/` | 架构决策记录 0001–0009（房间域 / 单人=单成员房 / LLM 协议一等公民 / UI 重设计 / 多人房间流程 / KP 训练框架 / 档案+检索双轨 / 无消费方 REST 面全链退役 / docs 结构单一真源） |
+| `docs/agents/` | Agent 工作流模板（issue tracker / triage 标签 / domain 消费规则） |
+| `docs/experiments/` | append-only 实验证据链（13 份报告 + judge 口径与 P10 教训索引） |
+| `docs/research/` | 外部研究档案（append-only） |
+| `docs/history/` | 史实归档层（不再变更的死文件：MIGRATION-PLAN / DEPENDENCY-AUDIT-2026-09-04 / ARCHITECTURE-MULTIPLAYER / PROJECT-ANALYSIS / design/） |
 
 ## 项目状态
 

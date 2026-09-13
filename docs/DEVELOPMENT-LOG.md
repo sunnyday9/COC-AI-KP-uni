@@ -1,7 +1,7 @@
 # 多人联机 + 多端同步：开发决策记录（DEVELOPMENT LOG）
 
 > 版本：v1.0（2026-08-19 起）· 分支：feature/multiplayer-rooms
-> 架构依据：docs/ARCHITECTURE-MULTIPLAYER.md（v2.0 单轨服务端权威方案）
+> 架构依据：docs/history/ARCHITECTURE-MULTIPLAYER.md（v2.0 单轨服务端权威方案；路径已随 #99 归档调整）
 > 本文件记录开发过程中做出的**每一个实现决策及其原因**，与最终代码互为印证。
 
 ---

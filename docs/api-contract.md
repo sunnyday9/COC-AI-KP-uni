@@ -51,7 +51,7 @@
 ## 4. KP Agent（Task 3）
 
 - KP Agent 状态机（LangGraph）在服务端运行，配置读取与 AI 相同（服务端设置）。
-- **ADR-0002**：REST `POST /api/kp/invoke` 与 WS `kp:` 前缀帧（`kp:turn`/`kp:invoke`）已删除；KP 回合唯一入口是房间协议（`room:action` → 服务端图内工具循环 → `room:event` 广播，见 `docs/ARCHITECTURE-MULTIPLAYER.md`）。
+- **ADR-0002**：REST `POST /api/kp/invoke` 与 WS `kp:` 前缀帧（`kp:turn`/`kp:invoke`）已删除；KP 回合唯一入口是房间协议（`room:action` → 服务端图内工具循环 → `room:event` 广播，见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`）。
 - 服务端 `invokeKp`/`invokeKpStream`（`kpAgentService.ts`）保留为测试 harness（零生产调用方），不在公网面。
 
 ### WebSocket（替代原 Electron `onKpStream` / `kp:stream`）
@@ -59,7 +59,7 @@
 - 端点：`ws://<host>/ws?token=<JWT>`（H5/App）；小程序走 `wss://`；token 无效以 4001 关闭。
 - 心跳：客户端每 30s 发 `{ "type": "ping" }`，服务端回 `{ "type": "pong" }`。
 - 服务端 → 客户端推送：`{ "type": "rag:progress", "payload": {...} }`（RAG 索引进度，Task 4）。
-- 房间帧（`room:join` / `room:leave` / `room:sync` / `room:action`）与 `room:event` 广播见 `docs/ARCHITECTURE-MULTIPLAYER.md`；未知消息类型忽略。
+- 房间帧（`room:join` / `room:leave` / `room:sync` / `room:action`）与 `room:event` 广播见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`；未知消息类型忽略。
 
 ## 5. 剧本 / 文件（Task 4）
 

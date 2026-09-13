@@ -105,6 +105,6 @@ RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、
 - ADR-0002：单人游戏 = 单成员房间（`kind='solo'`），单人无独立回合协议；kp:turn 一侧全删，上下文注入服务端收口。
 - D-09：外部 id 只进 DB，fs 用 uuid 文件名（Mimosa 污点链断链方案）。
 - D7/D-10：单进程内存注册表 + 节流快照 + TTL 回收；Redis 是触发条件不是默认。
-- 服务端权威单轨：客户端无规则、无工具循环（ARCHITECTURE-MULTIPLAYER §四）。
+- 服务端权威单轨：客户端无规则、无工具循环（`docs/history/ARCHITECTURE-MULTIPLAYER.md` §四）。
 - ADR-0003：LLM 接入协议一等公民（协议模型 / 适配器 / 本地端点不豁免 / Responses 流式策略）。
 - ADR-0007：知识供给双轨——档案为权威框架，标准 RAG 只作纹理补充；放弃 GraphRAG；分块搬服务端；本地 cross-encoder rerank（禁用 pipeline text-classification 取分）。

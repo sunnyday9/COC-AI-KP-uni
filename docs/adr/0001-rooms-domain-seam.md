@@ -1,7 +1,7 @@
 # ADR-0001：房间 schema 收口于 RoomService 领域方法（roomStorage 为其私有 adapter）
 
 - 状态：已接受（2026-08-28）
-- 关联：架构评审候选 2（improve-codebase-architecture）；docs/ARCHITECTURE-MULTIPLAYER.md §四（D7/D-09/D-28）；DEVELOPMENT-LOG D-31
+- 关联：架构评审候选 2（improve-codebase-architecture）；docs/history/ARCHITECTURE-MULTIPLAYER.md（路径已随 #99 归档调整）§四（D7/D-09/D-28）；DEVELOPMENT-LOG D-31
 
 ## 背景
 
