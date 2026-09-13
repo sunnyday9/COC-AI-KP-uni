@@ -39,3 +39,7 @@ ADR-0002 把回合上下文注入收口到服务端并删除 gameStore 后，一
 ## 追加（2026-09-13，#97）
 
 全量盘点（bridge 46 方法 + 契约现存全部 REST 端点逐个 grep 消费面）后按同一标准退役 **D 桶 scripts `:id` 链与桥接死包装**（#97）：GET/PUT/DELETE /api/scripts/:id 三端点 + scriptService（服务整体删除）+ `scripts` 建表语句与 file_path 迁移块（9→8 张表，存量死表不迁移）+ bridge 七方法（readScript / saveScript / saveScriptToLibrary / deleteScript / readStory / readStoryForRag / setImportFilePath——全零页面调用方、仅 bridge.test 自引用）+ unwrapContent 孤儿助手。GET /api/stories/:id/rag 端点保留（e2e dossier 直接消费）；GET /api/stories/:id 与 PUT /api/rooms/:id/settings（roomSetTurnWindow）虽零非自测消费方，但属拍板参考中的「stories/rooms 全家」活面，列 #97 存疑留档待拍板。测试基线：server 816+1skip → 811+1skip（77→76 文件）、client 112 → 106、training 49。
+
+## 追加（2026-09-13，#98）
+
+**E 桶 `rag_index` 死表退役**（#98）：全库零 SQL 读写（from/into/update/join 全 0）的早期遗留表——RAG 索引实际落盘 `RAG_DATA_DIR/<userId>/rag_index/` 文件目录，SQL 表与 #67 user_graphs、#92 saves、#97 scripts 同型；fresh 安装不再建表（8→7 张表），存量死表不迁移，同一取舍（文件目录与 client `ragIndex` bridge 等撞名活面不动）。

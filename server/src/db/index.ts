@@ -47,12 +47,9 @@ function initSchema(database: DatabaseSync): void {
       created_at INTEGER NOT NULL,
       PRIMARY KEY (user_id, story_id)
     );
-    CREATE TABLE IF NOT EXISTS rag_index (
-      user_id INTEGER NOT NULL,
-      story_id TEXT NOT NULL,
-      data TEXT NOT NULL,
-      PRIMARY KEY (user_id, story_id)
-    );
+    -- rag_index 表退役（#98，E 桶）：fresh 安装不再建表；
+    -- 存量库中的死表不迁移（全库零 SQL 读写，RAG 索引实际落盘
+    -- RAG_DATA_DIR/<userId>/rag_index/，同 #92 取舍）。
     CREATE TABLE IF NOT EXISTS rooms (
       room_id TEXT PRIMARY KEY,
       owner_id INTEGER NOT NULL,

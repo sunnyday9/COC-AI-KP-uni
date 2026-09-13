@@ -64,7 +64,7 @@ AI-COC-KP/
 ### 3.1 启动与数据层
 
 - `app.ts`：`createApp()` 挂 `cors` + `express.json({limit:'1mb'})` → 9 组路由（auth/settings/ai/stories/rag/dossier/rooms/roomSettings/characters，/api/scripts 已随 #97 退役）→ 404 兜底 → 全局错误处理（4xx 保留状态、其余 500 不泄栈）。直跑时 `listen(PORT)` 后 `createWsServer(httpServer)`。
-- `db/index.ts`：`node:sqlite` `DatabaseSync` 单例，首次请求时懒建 8 张表——`users` / `settings`（JSON 文档）/ `stories` / `rag_index` / `rooms`（房间 DB 权威，含 `state` JSON 快照与 `kind`/`phase` 列）/ `characters`（角色卡）/ `room_members`（成员资格 + 绑卡）/ `kp_wire_samples`（wire 采样日志）。无迁移机制（幂等 CREATE IF NOT EXISTS）。
+- `db/index.ts`：`node:sqlite` `DatabaseSync` 单例，首次请求时懒建 7 张表——`users` / `settings`（JSON 文档）/ `stories` / `rooms`（房间 DB 权威，含 `state` JSON 快照与 `kind`/`phase` 列）/ `characters`（角色卡）/ `room_members`（成员资格 + 绑卡）/ `kp_wire_samples`（wire 采样日志）；`rag_index` 表建表语句已随 #98 退役摘除（RAG 索引实际落盘 `RAG_DATA_DIR`，同 #92 取舍）。无迁移机制（幂等 CREATE IF NOT EXISTS）。
 - 存储约定：**数据库存元数据与 JSON 文档，文件存故事/剧本实体**（`UPLOADS_DIR/<userId>/stories/`，scripts 目录随 #97 退役不再新增）；`scripts` 表建表语句已随 #97 摘除。
 
 ### 3.2 认证与设置

@@ -423,14 +423,13 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ## 十一、数据模型与持久化
 
-`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 8 张表（幂等；saves 表 #92、scripts 表 #97 退役摘除，存量死表不迁移）：
+`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 7 张表（幂等；saves 表 #92、scripts 表 #97、rag_index 表 #98 退役摘除，存量死表不迁移）：
 
 | 表 | 用途 |
 |---|---|
 | `users` | id / username(unique) / password_hash(bcrypt) / created_at |
 | `settings` | user_id 主键 + data(JSON 文档：ai 配置含 protocol + 加密 apiKey + rag 开关) |
 | `stories` | 故事元数据（实际文件落盘） |
-| `rag_index` | 向量索引 JSON 文档（实际按文件落盘 `RAG_DATA_DIR`，此表为索引记录） |
 | `rooms` | 房间（room_id / owner_id / invite_code / story_id / kind='solo'\|'multi' / phase / state JSON 快照 / version）——DB 权威（ADR-0001） |
 | `characters` | 角色卡（id / user_id / name / sheet JSON） |
 | `room_members` | 成员资格（room_id + user_id 主键 / role='owner' / character_id 绑卡） |
