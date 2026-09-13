@@ -3,6 +3,7 @@
  * Bridge (replaces the Electron IPC `window.electronAPI.rag*` calls, Task 7).
  */
 import { getBridge } from '../platform'
+import type { IndexedStory } from '../../../shared/types/bridge'
 
 export interface RAGChunkResult {
   content: string
@@ -10,12 +11,8 @@ export interface RAGChunkResult {
   distance: number
 }
 
-export interface IndexedStory {
-  storyId: string
-  name: string
-  chunkCount: number
-  indexedAt: number
-}
+/** IndexedStory 单源在 shared/types/bridge（wire 类型），此处 re-export 供既有消费方透传（issue #84）。 */
+export type { IndexedStory }
 
 /** Check if RAG service is available */
 export async function checkRagHealth(): Promise<boolean> {
