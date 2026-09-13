@@ -5,6 +5,7 @@ import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
 import { PORT, isMockAiMode } from './config.js'
 import { logger } from './utils/logging.js'
+import { startRoomReaper } from './services/roomService.js'
 import { createWsServer } from './ws/index.js'
 import authRoutes from './routes/auth.routes.js'
 import settingsRoutes from './routes/settings.routes.js'
@@ -82,4 +83,10 @@ if (isMain) {
     }
   })
   createWsServer(httpServer)
+  // 房间 TTL 回收（#86）：CONTEXT.md「活跃实例·TTL 回收」与 roomService 头注释
+  // 声明的运行时行为在此装配——定期扫描 roomRegistry，把空闲超过 ROOM_TTL_MS
+  // 的实例落库逐出（不删 DB 行，重进经 getOrCreateRoom 重物化）。只在真实进程
+  // 入口启动：createApp() 是 supertest/测试复用入口，不背运行时定时器。
+  // 返回句柄已 unref（roomService.startRoomReaper），不阻碍进程退出。
+  startRoomReaper()
 }

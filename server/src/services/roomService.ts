@@ -12,6 +12,7 @@
  */
 import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
+import { logger } from '../utils/logging.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
 import { isKpChunkStreamEnabled } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
@@ -1214,20 +1215,33 @@ export function isRoomMember(roomId: string, userId: number): boolean {
 
 /** 回收过期房间（TTL 扫描，进程启动时定期调用）。 */
 export function reapStaleRooms(): void {
-  const now = Date.now()
   for (const [id, room] of roomRegistry) {
     if (room.isStale()) {
-      void room.persistSnapshot().finally(() => {
-        room.dispose()
-        roomRegistry.delete(id)
-      })
+      // 装配级错误安全（#86）：persistSnapshot 内是 better-sqlite3 同步 UPDATE，
+      // 抛错会变成 rejected promise 经 finally 透传——无 catch 即 unhandledRejection
+      // （Node ≥15 默认崩进程）。catch 只记日志；dispose/逐出仍在 finally 执行，
+      // reap 语义零改动。
+      void room
+        .persistSnapshot()
+        .finally(() => {
+          room.dispose()
+          roomRegistry.delete(id)
+        })
+        .catch((err: unknown) => logger.error('room reaper persistSnapshot failed', { roomId: id, error: String(err) }))
     }
   }
 }
 
 /** 定期回收（测试可注入间隔；默认 60s）。 */
 export function startRoomReaper(intervalMs = 60_000): NodeJS.Timeout {
-  const t = setInterval(reapStaleRooms, intervalMs)
+  // interval 回调整体 try/catch（#86 装配级）：同步异常不让 interval 打崩进程。
+  const t = setInterval(() => {
+    try {
+      reapStaleRooms()
+    } catch (err) {
+      logger.error('room reaper scan failed', { error: String(err) })
+    }
+  }, intervalMs)
   t.unref?.()
   return t
 }
