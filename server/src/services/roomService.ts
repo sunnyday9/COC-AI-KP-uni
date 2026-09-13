@@ -1136,20 +1136,27 @@ export function leaveRoomAsOwner(
   const g = governanceGate(userId, roomId)
   if (!g.ok) return g
   if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
-  const members = roomStorage.listMembersOrdered(roomId)
-  const successor = members.find((m) => m.user_id !== userId)
-  if (!successor) {
-    roomStorage.deleteRoomRows(roomId)
-    return { ok: true }
-  }
-  transferOwnerRow(roomId, userId, successor.user_id)
-  syncActiveRoom(roomId)
+  transferToSuccessorOrDissolve(roomId, userId)
   return { ok: true }
 }
 
 /** 转让房主行写库（新 owner 行 role='owner' + ready 清零；旧 owner 行降为 member 且留在房内）。 */
 function transferOwnerRow(roomId: string, oldOwnerId: number, newOwnerId: number): void {
   roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId)
+}
+
+/** ADR-0005 继位策略单源（决策 6）：还有其他成员 → 立即转让给最早成员（rowid 序）；否则解散房间行。
+ *  转让后对活跃实例做 DB→广播对账（syncActiveRoom）；解散路径行已删、无实例对账。
+ *  调用方（REST leaveRoomAsOwner / WS handleOwnerWsDisconnect）各持前置 gate，进入时调用者即 multi 房主。 */
+function transferToSuccessorOrDissolve(roomId: string, oldOwnerId: number): void {
+  const members = roomStorage.listMembersOrdered(roomId)
+  const successor = members.find((m) => m.user_id !== oldOwnerId)
+  if (!successor) {
+    roomStorage.deleteRoomRows(roomId)
+    return
+  }
+  transferOwnerRow(roomId, oldOwnerId, successor.user_id)
+  syncActiveRoom(roomId)
 }
 
 /** DELETE /api/rooms/:id/members/:userId —— 房主踢出成员（owner only；删行 + 广播；不可踢自己/owner）。 */
@@ -1189,14 +1196,7 @@ export function handleOwnerWsDisconnect(roomId: string, userId: number): void {
   const room = roomStorage.getRoomRow(roomId)
   if (!room || room.phase === 'ended') return
   if (room.kind !== 'multi' || room.owner_id !== userId) return
-  const members = roomStorage.listMembersOrdered(roomId)
-  const successor = members.find((m) => m.user_id !== userId)
-  if (!successor) {
-    roomStorage.deleteRoomRows(roomId)
-    return
-  }
-  transferOwnerRow(roomId, userId, successor.user_id)
-  syncActiveRoom(roomId)
+  transferToSuccessorOrDissolve(roomId, userId)
 }
 
 /** WS join：校验成员资格并返回活跃实例（不存在则 materialize——懒激活）。 */
