@@ -183,7 +183,7 @@ describe('PlatformBridge', () => {
     })
   })
 
-  describe('uploads (importStory / importScript)', () => {
+  describe('uploads (importStory)', () => {
     it('importStory uploads via uni.uploadFile with field `file`', async () => {
       state.uploadResponder = () => ({ statusCode: 200, data: '{"ok":true,"id":"a.pdf","name":"a.pdf"}' })
       setToken('tok')
@@ -209,14 +209,6 @@ describe('PlatformBridge', () => {
       expect(state.uploads[0].filePath).toBe('/tmp/b.md')
     })
 
-    it('importScript uploads to /api/scripts/upload', async () => {
-      state.uploadResponder = () => ({ statusCode: 200, data: '{"ok":true,"id":"s.json","name":"s.json"}' })
-      const bridge = new PlatformBridge()
-      bridge.setImportFilePath('/tmp/s.json')
-      await expect(bridge.importScript()).resolves.toEqual({ ok: true, id: 's.json', name: 's.json' })
-      expect(state.uploads[0].url).toBe('/api/scripts/upload')
-    })
-
     it('upload 401 clears token and emits unauthorized', async () => {
       const fired: string[] = []
       const off = bridgeUnauthorized(() => fired.push("unauthorized"))
@@ -234,7 +226,7 @@ describe('PlatformBridge', () => {
       state.uploadResponder = () => ({ statusCode: 200, data: '{"ok":false,"error":"Invalid script format"}' })
       const bridge = new PlatformBridge()
       bridge.setImportFilePath('/tmp/bad.json')
-      await expect(bridge.importScript()).resolves.toEqual({ ok: false, error: 'Invalid script format' })
+      await expect(bridge.importStory()).resolves.toEqual({ ok: false, error: 'Invalid script format' })
     })
   })
 

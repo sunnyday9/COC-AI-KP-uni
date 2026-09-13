@@ -47,7 +47,7 @@ beforeAll(async () => {
 })
 
 describe('characters routes', () => {
-  it('创建角色卡 → 列表包含 → 详情匹配', async () => {
+  it('创建角色卡 → 列表包含', async () => {
     const created = await request(app).post('/api/characters').set(...auth(tokenA)).send({ name: '调查员甲', sheet: makeSheet('调查员甲') })
     expect(created.status).toBe(200)
     const charId = (created.body as { id: string }).id
@@ -56,10 +56,6 @@ describe('characters routes', () => {
     const list = await request(app).get('/api/characters').set(...auth(tokenA))
     expect(list.status).toBe(200)
     expect((list.body as { id: string; name: string }[]).some((c) => c.id === charId && c.name === '调查员甲')).toBe(true)
-
-    const detail = await request(app).get(`/api/characters/${charId}`).set(...auth(tokenA))
-    expect(detail.status).toBe(200)
-    expect((detail.body as { sheet: { derived: { hp: number } } }).sheet.derived.hp).toBe(10)
   })
 
   it('缺 name 或 sheet → 400', async () => {
@@ -69,24 +65,13 @@ describe('characters routes', () => {
     expect(noSheet.status).toBe(400)
   })
 
-  it('他人角色卡 → 404（数据隔离）', async () => {
+  it('他人角色卡 → 列表隔离（数据隔离）', async () => {
     const created = await request(app).post('/api/characters').set(...auth(tokenA)).send({ name: '甲', sheet: makeSheet('甲') })
     const charId = (created.body as { id: string }).id
-    const detail = await request(app).get(`/api/characters/${charId}`).set(...auth(tokenB))
-    expect(detail.status).toBe(404)
-  })
 
-  it('删除角色卡（仅本人）', async () => {
-    const created = await request(app).post('/api/characters').set(...auth(tokenA)).send({ name: '待删', sheet: makeSheet('待删') })
-    const charId = (created.body as { id: string }).id
-
-    const forbidden = await request(app).delete(`/api/characters/${charId}`).set(...auth(tokenB))
-    expect(forbidden.status).toBe(404)
-
-    const del = await request(app).delete(`/api/characters/${charId}`).set(...auth(tokenA))
-    expect(del.status).toBe(200)
-    const after = await request(app).get(`/api/characters/${charId}`).set(...auth(tokenA))
-    expect(after.status).toBe(404)
+    const listB = await request(app).get('/api/characters').set(...auth(tokenB))
+    expect(listB.status).toBe(200)
+    expect((listB.body as { id: string }[]).some((c) => c.id === charId)).toBe(false)
   })
 
   it('绑定角色卡到房间（一人一卡，他人绑定冲突 409）', async () => {

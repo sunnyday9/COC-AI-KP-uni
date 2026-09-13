@@ -94,11 +94,11 @@ interface AppSettings {
 
 | Method | Path | Request | Response |
 |---|---|---|---|
-| GET | `/api/scripts` | — | `{ name, id }[]` |
 | GET | `/api/scripts/:id` | — | `{ name, content }` |
 | PUT | `/api/scripts/:id` | `{ content }` | `{ ok }` |
-| POST | `/api/scripts/upload` | multipart `file` | `{ ok, name?, id? }` |
 | DELETE | `/api/scripts/:id` | — | `{ ok }` |
+
+> `GET /api/scripts`（列表）与 `POST /api/scripts/upload` 已于 2026-09-13 退役（#91 C 桶「全链退役」拍板，#94）：服务端路由 / `scriptService.listScripts` / `scriptService.importScript`（含存量文件系统自动导入链）与路由自测一并删除；客户端 bridge 方法（listScripts / importScript）已同步删除。e2e journey 的 `uploadScript` 帮助函数与剧本页上传实际走 `POST /api/stories/upload`（§5），不受影响。本节编号保留不重排。
 
 ## 7. 存档（已退役，#92）
 
@@ -129,7 +129,7 @@ interface AppSettings {
 |---|---|
 | getSettings / setSettings | GET/PUT `/api/settings` |
 | listStories / readStory / readStoryForRag / importStory / deleteStory | `/api/stories*` |
-| listScripts / readScript / saveScript / saveScriptToLibrary / deleteScript / importScript | `/api/scripts*` |
+| readScript / saveScript / saveScriptToLibrary / deleteScript | `/api/scripts*` |
 | aiChat / aiListModels | POST `/api/ai/chat`、GET `/api/ai/models` |
 | ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragGetIndex / ragTestEmbedding | `/api/rag*` |
 | login / register / logout / me（新增） | `/api/auth*` |
@@ -139,7 +139,7 @@ interface AppSettings {
 
 ## 10. 通用约定
 
-- 文件大小限制：stories/scripts 上传 ≤50MB。
+- 文件大小限制：stories 上传 ≤50MB（scripts 上传面已随 #94 退役）。
 - JWT 过期返回 401，前端 bridge 统一跳转登录页。
 - 所有服务端日志走 `server/src/utils/logging.ts`（迁移自 logging.cjs，traceId 上下文）。
 - 路径安全：任何基于用户输入的路径拼接前必须过 `server/src/utils/pathSafety.ts`（迁移自 pathSafety.cjs）。

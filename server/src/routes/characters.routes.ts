@@ -2,15 +2,17 @@
  * Character routes (Phase B4, 架构方案 v2.0 D9) — 角色卡持久化。
  *  - POST   /api/characters       创建角色卡（sheet = COCCharacterSheet JSON）
  *  - GET    /api/characters       我的角色卡列表
- *  - GET    /api/characters/:id   详情（仅本人）
- *  - DELETE /api/characters/:id   删除（仅本人）
  *  - POST   /api/rooms/:roomId/character  绑定角色卡到房间（一人一卡）
+ *
+ * GET/DELETE /api/characters/:id 已于 2026-09-13 退役（#91 C 桶「全链退役」拍板，#94）：
+ * 客户端 bridge 包装（characterDetail/characterDelete）零页面调用方已于 #94 删除，
+ * 端点全仓零直接消费方（仅路由自测）。
  */
 import { Router } from 'express'
 import crypto from 'node:crypto'
 import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
-import { sendError, NotFoundError, BadRequestError, ConflictError } from '../utils/errors.js'
+import { sendError, BadRequestError } from '../utils/errors.js'
 import { getDb } from '../db/index.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 
@@ -64,34 +66,6 @@ router.get('/', (req: AuthRequest, res) => {
     .prepare(`SELECT id, user_id, name, sheet, updated_at FROM characters WHERE user_id = ? ORDER BY updated_at DESC`)
     .all(userId) as unknown as CharacterRow[]
   res.json(rows.map(toCharacter))
-})
-
-/** GET /api/characters/:id — 详情（仅本人）。 */
-router.get('/:id', (req: AuthRequest, res) => {
-  const userId = req.userId as number
-  const charId = String(req.params.id ?? '')
-  const rows = getDb().prepare(`SELECT id, user_id, name, sheet, updated_at FROM characters WHERE id = ?`).all(charId) as unknown as CharacterRow[]
-  const row = rows[0]
-  if (!row || row.user_id !== userId) {
-    sendError(res, new NotFoundError('character not found'))
-    return
-  }
-  res.json(toCharacter(row))
-})
-
-/** DELETE /api/characters/:id — 删除（仅本人）。 */
-router.delete('/:id', (req: AuthRequest, res) => {
-  const userId = req.userId as number
-  const charId = String(req.params.id ?? '')
-  const db = getDb()
-  const rows = db.prepare(`SELECT user_id FROM characters WHERE id = ?`).all(charId) as unknown as { user_id: number }[]
-  const row = rows[0]
-  if (!row || row.user_id !== userId) {
-    sendError(res, new NotFoundError('character not found'))
-    return
-  }
-  db.prepare(`DELETE FROM characters WHERE id = ?`).run(charId)
-  res.json({ ok: true })
 })
 
 export default router

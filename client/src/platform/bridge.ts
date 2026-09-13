@@ -12,8 +12,8 @@
  *   only emits the event; page navigation is the page layer's job (Task 8).
  * - KP 回合只走房间协议（ADR-0002）：room:action{chat} → room:event 回灌；
  *   kp: 前缀帧与 /api/kp/invoke 已退役。
- * - Uploads (importStory / importScript): uni.uploadFile multipart field
- *   `file`; responses parsed to `{ ok, name?, id?, error? }`.
+ * - Uploads (importStory): uni.uploadFile multipart field `file`; responses
+ *   parsed to `{ ok, name?, id?, error? }`.
  * - Runtime dependencies: none beyond uni globals (type-only imports from
  *   shared/ — no runtime import, so no bundling concerns).
  */
@@ -167,7 +167,7 @@ export class PlatformBridge {
   }
 
   /**
-   * Set the temp file path for the NEXT importStory()/importScript() call
+   * Set the temp file path for the NEXT importStory() call
    * (file picking is platform-specific and owned by the page layer, Task 8+).
    * The interface methods themselves take no params (mirroring the original
    * Electron file dialog); passing a path directly also works.
@@ -249,10 +249,6 @@ export class PlatformBridge {
 
   // ── Scripts ──────────────────────────────────────────────────────────────
 
-  listScripts(): Promise<{ name: string; id: string }[]> {
-    return request<{ name: string; id: string }[]>('GET', '/api/scripts')
-  }
-
   async readScript(id: string): Promise<string> {
     const data = await request<unknown>('GET', `/api/scripts/${encodeURIComponent(id)}`)
     return unwrapContent(data)
@@ -266,7 +262,7 @@ export class PlatformBridge {
   /**
    * PUT /api/scripts/:id is an upsert — the server sanitizes the id
    * (fileNames.sanitizeFilename); the stored id is not guaranteed to equal
-   * `name` verbatim, so it may be omitted here (callers can listScripts()).
+   * `name` verbatim, so it may be omitted here.
    * The server response (currently `{ ok: true }`) is returned as-is.
    */
   async saveScriptToLibrary(name: string, content: string): Promise<{ ok: boolean; id?: string }> {
@@ -275,13 +271,6 @@ export class PlatformBridge {
 
   async deleteScript(id: string): Promise<void> {
     await request<{ ok: boolean }>('DELETE', `/api/scripts/${encodeURIComponent(id)}`)
-  }
-
-  importScript(filePath?: string): Promise<UploadResult> {
-    const fp = filePath ?? this.pendingImportPath
-    this.pendingImportPath = null
-    if (!fp) return Promise.resolve({ ok: false, error: 'no file selected' })
-    return uploadFile('/api/scripts/upload', fp)
   }
 
   // ── AI ───────────────────────────────────────────────────────────────────
@@ -369,12 +358,6 @@ export class PlatformBridge {
   }
   characterList(): Promise<CharacterListItem[]> {
     return request<CharacterListItem[]>('GET', '/api/characters')
-  }
-  characterDetail(id: string): Promise<CharacterListItem> {
-    return request<CharacterListItem>('GET', `/api/characters/${encodeURIComponent(id)}`)
-  }
-  characterDelete(id: string): Promise<{ ok: boolean }> {
-    return request('DELETE', `/api/characters/${encodeURIComponent(id)}`)
   }
 
   // ── RAG ──────────────────────────────────────────────────────────────────
