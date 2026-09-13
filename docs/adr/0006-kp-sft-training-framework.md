@@ -33,7 +33,7 @@
 
 ## 后果
 
-- 训练/评测/数据管线脚本为独立工作区（不进 server 运行时依赖）；repo 需新增两件事：`runKpTurn` wire 采样日志（原始 tool_calls 与当轮 RAG 注入落库，让以后的局直接攒成可用数据）+ 从 rooms.state/saves 抽样的数据导出器。
+- 训练/评测/数据管线脚本为独立工作区（不进 server 运行时依赖）；repo 需新增两件事：`runKpTurn` wire 采样日志（原始 tool_calls 与当轮 RAG 注入落库，让以后的局直接攒成可用数据）+ 从 rooms.state/saves 抽样的数据导出器。（2026-09-13 追记：save 抽样源已随 #92 退役删除，见 ADR-0008。）
 - 本地 5060 做推理评测需 4-bit 量化（AWQ/GPTQ）；产品内置若启动，服务端需自持 GPU 推理基建与配额设计（独立票）。
 - Qwen3-8B 为 Apache-2.0，微调合并权重可合规分发（内置前提）。
 

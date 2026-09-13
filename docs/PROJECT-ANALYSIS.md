@@ -36,10 +36,10 @@ AI-COC-KP/
 │   │   ├── kpGraph.ts      #   LangGraph：analyzeInput→routeByIntent→5×Plan/Generate→validate→forceTools
 │   │   └── scriptContext.ts#   剧本结构化加载 + 线索门控（requiredClues 判定）
 │   ├── rule-engine/        # ★ COC 工具服务端执行（orchestrator + 6 handlers + toolContextFactory）
-│   ├── routes/             # 11 组路由：auth/settings/ai/stories/scripts/saves/rag/dossier/rooms/roomSettings/characters
-│   ├── services/           # roomService/roomStorage/roomStateCodec/startGate/kpTurnService/kpAgentService/kpPromptService/turnKnowledge/roomMemory/wireSampleService/aiService+llm（4 适配器）/settings/save/story/script/mockAi
+│   ├── routes/             # 10 组路由：auth/settings/ai/stories/scripts/rag/dossier/rooms/roomSettings/characters
+│   ├── services/           # roomService/roomStorage/roomStateCodec/startGate/kpTurnService/kpAgentService/kpPromptService/turnKnowledge/roomMemory/wireSampleService/aiService+llm（4 适配器）/settings/story/script/mockAi
 │   ├── rag/                # chunker/embedding/reranker/supplementService/supplementAssembly/sceneAttribution/queryBuild/storyParsers/dossier/
-│   ├── db/index.ts         # node:sqlite 单例 + 10 张表
+│   ├── db/index.ts         # node:sqlite 单例 + 9 张表
 │   ├── middleware/auth.ts  # JWT 签发/校验 + requireAuth
 │   ├── ws/                 # index（鉴权+帧分派）/ rooms（编解码 adapter）/ roomLedger（订阅簿+帧规划）/ progress（rag:progress）
 │   └── utils/              # errors/logging/crypto/outboundUrl(SSRF)/pathSafety/fileNames/fsSafe
@@ -63,8 +63,8 @@ AI-COC-KP/
 
 ### 3.1 启动与数据层
 
-- `app.ts`：`createApp()` 挂 `cors` + `express.json({limit:'1mb'})` → 11 组路由（auth/settings/ai/stories/scripts/saves/rag/dossier/rooms/roomSettings/characters）→ 404 兜底 → 全局错误处理（4xx 保留状态、其余 500 不泄栈）。直跑时 `listen(PORT)` 后 `createWsServer(httpServer)`。
-- `db/index.ts`：`node:sqlite` `DatabaseSync` 单例，首次请求时懒建 10 张表——`users` / `settings`（JSON 文档）/ `saves` / `scripts` / `stories` / `rag_index` / `rooms`（房间 DB 权威，含 `state` JSON 快照与 `kind`/`phase` 列）/ `characters`（角色卡）/ `room_members`（成员资格 + 绑卡）/ `kp_wire_samples`（wire 采样日志）。无迁移机制（幂等 CREATE IF NOT EXISTS）。
+- `app.ts`：`createApp()` 挂 `cors` + `express.json({limit:'1mb'})` → 10 组路由（auth/settings/ai/stories/scripts/rag/dossier/rooms/roomSettings/characters）→ 404 兜底 → 全局错误处理（4xx 保留状态、其余 500 不泄栈）。直跑时 `listen(PORT)` 后 `createWsServer(httpServer)`。
+- `db/index.ts`：`node:sqlite` `DatabaseSync` 单例，首次请求时懒建 9 张表——`users` / `settings`（JSON 文档）/ `scripts` / `stories` / `rag_index` / `rooms`（房间 DB 权威，含 `state` JSON 快照与 `kind`/`phase` 列）/ `characters`（角色卡）/ `room_members`（成员资格 + 绑卡）/ `kp_wire_samples`（wire 采样日志）。无迁移机制（幂等 CREATE IF NOT EXISTS）。
 - 存储约定：**数据库存元数据与 JSON 文档，文件存故事/剧本实体**（`UPLOADS_DIR/<userId>/stories|scripts/`）；`scripts` 表为 schema 遗留（实际文件落盘）。
 
 ### 3.2 认证与设置
@@ -188,7 +188,7 @@ START → analyzeInput → routeByIntent ─(条件边)→ {generic|combat|sanit
   ──> roomMemory 记忆编排（要点抽取 + 摘要收缩，服务端）
 ```
 
-存/读档：房间快照节流落库（重进即续玩）为默认路径；`/api/saves*` REST 为显式存读档契约（见 `docs/api-contract.md`）。
+存/读档：房间快照节流落库（重进即续玩）为唯一路径；`/api/saves*` REST 显式存读档契约已于 2026-09-13 全链退役（#92 / ADR-0008）。
 
 **状态归属**：角色属性/线索/场景/疯狂状态的唯一真源在**服务端**（RoomService 活跃实例 + DB 节流落库，ADR-0001）；客户端 RoomClient 是纯视图模型，按 seq 应用事件——服务端权威单轨（ADR-0002），防作弊、多端一致、重进即恢复。
 

@@ -66,7 +66,7 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 编写�
 | FR-6 | 工具链驱动规则：检定/战斗/SAN/幸运/医疗/场景/线索/结局等 24 个 COC 工具 | `shared/tools/cocTools.ts`（定义）+ `server/src/rule-engine/`（服务端图内执行） |
 | FR-7 | 确定性兜底：SAN 超阈值强制疯狂、结局表达强制 end_game、停滞强制推进 | `server/src/agent/kpGraph.ts` |
 | FR-8 | 线索门控：剧本结构化 `requiredClues` 程序化判定场景解锁 | `server/src/agent/scriptContext.ts` |
-| FR-9 | 存档/读档（全量快照：角色/线索/场景/消息/结局） | `server/src/services/saveService.ts` |
+| FR-9 | 存档/读档 —— 已退役（2026-09-13，#92 / ADR-0008）：`/api/saves*` 全链下线，续玩 = 重进房间（房间快照） | — |
 | FR-10 | 结局结算 + 结局报告（含关键事实/回顾） | `client/src/pages/game/game-end/` |
 | FR-11 | AI 设置（provider/baseUrl/key/model）服务端持久化 | `server/src/services/settingsService.ts` |
 | FR-12 | 三端一致：H5 / 微信小程序 / App | `client/src/platform/bridge.ts` |
@@ -126,8 +126,8 @@ AI-COC-KP/
 │       │   ├── kpGraph.ts     #   LangGraph 状态机（1097 行，见 §5）
 │       │   └── scriptContext.ts # 剧本结构化加载 + 线索门控（见 §6）
 │       ├── rule-engine/       # ★ COC 工具服务端执行：orchestrator + 6 handlers + toolContextFactory + characterMutators
-│       ├── routes/            # auth / settings / ai / stories / scripts / saves / rag / dossier / rooms / roomSettings / characters（11 组）
-│       ├── services/          # roomService（房间领域）/ roomStorage / roomStateCodec / startGate / kpTurnService（图内工具循环）/ kpAgentService（getSharedGraph/normalizeMessages 由 kpTurnService 生产复用；invokeKp/invokeKpStream 单发入口 = 零生产调用方的测试 harness，DEVELOPMENT-LOG D-35 T4）/ kpPromptService / turnKnowledge / roomMemory / wireSampleService / aiService + llm/（4 协议适配器）/ settings / save / story / script / mockAi
+│       ├── routes/            # auth / settings / ai / stories / scripts / rag / dossier / rooms / roomSettings / characters（10 组）
+│       ├── services/          # roomService（房间领域）/ roomStorage / roomStateCodec / startGate / kpTurnService（图内工具循环）/ kpAgentService（getSharedGraph/normalizeMessages 由 kpTurnService 生产复用；invokeKp/invokeKpStream 单发入口 = 零生产调用方的测试 harness，DEVELOPMENT-LOG D-35 T4）/ kpPromptService / turnKnowledge / roomMemory / wireSampleService / aiService + llm/（4 协议适配器）/ settings / story / script / mockAi
 │       ├── rag/               # chunker / embedding / reranker / supplementService / supplementAssembly / sceneAttribution / queryBuild / storyParsers / dossier/（档案域：dossierCore / dossierGenerate / originalLookup / dossierLookupTools / prefetch …）
 │       ├── ws/                # index（鉴权 + 帧分派）/ rooms（JSON 编解码 adapter）/ roomLedger（订阅簿 + 帧规划）/ progress（rag:progress）
 │       └── utils/             # errors / logging / crypto / outboundUrl(SSRF) / pathSafety / fileNames / fsSafe
@@ -423,13 +423,12 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ## 十一、数据模型与持久化
 
-`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 10 张表（幂等）：
+`server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 9 张表（幂等）：
 
 | 表 | 用途 |
 |---|---|
 | `users` | id / username(unique) / password_hash(bcrypt) / created_at |
 | `settings` | user_id 主键 + data(JSON 文档：ai 配置含 protocol + 加密 apiKey + rag 开关) |
-| `saves` | (user_id, save_id) + data(JSON 全量快照) + updated_at |
 | `scripts` | 剧本库（schema 遗留，当前路由为死代码，见 §16） |
 | `stories` | 故事元数据（实际文件落盘） |
 | `rag_index` | 向量索引 JSON 文档（实际按文件落盘 `RAG_DATA_DIR`，此表为索引记录） |
@@ -493,7 +492,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ```
 ① 单元测试（vitest）
-   server 829+1skip 用例：路由（auth/ai/settings/stories/saves/scripts/rag/dossier/rooms/roomSettings/characters + 上传限额）、
+   server 816+1skip 用例：路由（auth/ai/settings/stories/scripts/rag/dossier/rooms/roomSettings/characters + 上传限额）、
    kpGraph 状态机（含 fixes）、scriptContext 门控、rule-engine（coc/ 与 rule-engine/ 用例）、kpTurnService、
    mockAi、aiService 超时、ws 房间帧、RAG / 档案 各件
    client：roomStore / settingsStore spec、ChatMessage / classifySystemMessage / parseActionOptions、
