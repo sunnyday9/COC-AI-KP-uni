@@ -1,7 +1,7 @@
 /**
  * 调查员池与 rollout 调度（T4）。
  *
- * 角色卡从 server DB（rooms.state.characters / saves.characterSheet）只读装载——
+ * 角色卡从 server DB（rooms.state.characters）只读装载——
  * DB 路径为模块常量（D-09 外部输入不进 fs 路径），SELECT 全参数绑定。
  * rollout = （剧本 × 调查员小队 × 回合类型序列）的一场合成对局：状态（场景/线索/
  * 记忆/角色卡）跨回合演化，产出与真实对局同构的连续情境。
@@ -35,7 +35,8 @@ function isUsableSheet(sheet: unknown): sheet is COCCharacterSheet {
   )
 }
 
-/** 从 DB 只读装载调查员卡池（rooms + saves；同名调查员去重取首张）。 */
+/** 从 DB 只读装载调查员卡池（rooms.state.characters；同名调查员去重取首张）。
+ *  saves 表来源已随 /api/saves* 全链退役删除（#92）。 */
 export function loadSheetPool(dbPath: string): { entries: SheetEntry[]; warnings: string[] } {
   if (!fs.existsSync(dbPath)) throw new Error(`DB 文件不存在: ${dbPath}（与 #38 导出器同一数据源）`)
   const db = new DatabaseSync(dbPath, { readOnly: true })
@@ -71,18 +72,6 @@ export function loadSheetPool(dbPath: string): { entries: SheetEntry[]; warnings
     }
   }
 
-  const saveRows = db.prepare(`SELECT save_id, data FROM saves ORDER BY save_id ASC`).all() as unknown as {
-    save_id: string
-    data: string
-  }[]
-  for (const row of saveRows) {
-    try {
-      const data = JSON.parse(row.data) as { characterSheet?: unknown }
-      if (data.characterSheet) push('char_0', data.characterSheet, `save:${row.save_id}`)
-    } catch (err) {
-      warnings.push(`save ${row.save_id}: data 解析失败已跳过（${err instanceof Error ? err.message : String(err)}）`)
-    }
-  }
   db.close()
   return { entries, warnings }
 }

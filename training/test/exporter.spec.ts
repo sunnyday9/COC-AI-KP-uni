@@ -11,17 +11,15 @@
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { COC_KP_TOOLS } from '../../shared/tools/cocTools.js'
-import type { COCCharacterSheet } from '../../shared/types/character.js'
 import type { Message } from '../../shared/types/game.js'
 import {
   OPENING_USER_REQUEST,
-  buildRoomOpeningMessages,
   buildRoomTurnMessages,
   injectCharacterRoster,
   type RoomPromptInput,
 } from '../../server/src/services/kpPromptService.js'
 import { exportKpContext, extractStreamTurns, renderJsonl } from '../src/exporter.js'
-import { ROOM_ID, SAVE_ID, createFixtureDb, roomDemoLibState, saveDemoLibData, type FixtureDb } from './fixtureDb.js'
+import { ROOM_ID, createFixtureDb, roomDemoLibState, type FixtureDb } from './fixtureDb.js'
 
 let fixture: FixtureDb
 
@@ -43,10 +41,10 @@ function goldProjection(lines: ReturnType<typeof exportAll>['lines']) {
 }
 
 describe('demo 剧本局金样本导出（票 #38）', () => {
-  it('导出 6 行：房间 wire×2 + 房间重建×1 + 孤儿 wire×1 + 存档重建×2', () => {
+  it('导出 4 行：房间 wire×2 + 房间重建×1 + 孤儿 wire×1', () => {
     const { lines, stats } = exportAll()
-    expect(lines).toHaveLength(6)
-    expect(stats).toEqual({ lines: 6, wire: 3, rebuilt: 3, opening: 2, rooms: 1, orphanWireRooms: 1, saves: 1 })
+    expect(lines).toHaveLength(4)
+    expect(stats).toEqual({ lines: 4, wire: 3, rebuilt: 1, opening: 1, rooms: 1, orphanWireRooms: 1 })
 
     const keys = lines.map((l) => `${l.meta.origin}:${l.meta.source}:${l.meta.kind}`)
     expect(keys).toEqual([
@@ -54,8 +52,6 @@ describe('demo 剧本局金样本导出（票 #38）', () => {
       'room:wire:turn',         // room_demo_lib 回合1（真实注入）
       'room:rebuilt:turn',      // room_demo_lib 回合2（多人批量，无采样 → 重建）
       'orphan-wire:wire:turn',  // room_recycled（rooms 行已回收）
-      'save:rebuilt:opening',   // save_demo_lib 开场
-      'save:rebuilt:turn',      // save_demo_lib 回合1
     ])
   })
 
@@ -120,10 +116,6 @@ describe('demo 剧本局金样本导出（票 #38）', () => {
     expect(rebuiltTurn.meta.turnSeq).toBeNull()
     expect(rebuiltTurn.meta.ragContextChars).toBe(0)
     expect(rebuiltTurn.meta.caveats).toEqual(['rag_context_unavailable_offline', 'state_blocks_from_final_snapshot'])
-
-    const saveTurn = lines[5]!
-    expect(saveTurn.meta.saveId).toBe(SAVE_ID)
-    expect(saveTurn.meta.caveats).toEqual(['rag_context_unavailable_offline', 'state_blocks_from_final_snapshot'])
   })
 
   it('孤儿 wire 采样（rooms 行已回收）可导出且标注 origin', () => {
@@ -135,31 +127,6 @@ describe('demo 剧本局金样本导出（票 #38）', () => {
     expect(orphan.meta.turnSeq).toBe(1)
     expect(orphan.messages).toHaveLength(2)
     expect(orphan.messages[1]).toEqual({ role: 'user', content: '【钟明】我翻阅那本破损日记的残页。' })
-  })
-
-  it('存档重建：开场行含固定开场请求，回合行含存档角色卡上下文', () => {
-    const { lines } = exportAll()
-    const saveOpening = lines[4]!
-    const saveTurn = lines[5]!
-
-    expect(saveOpening.meta.kind).toBe('opening')
-    expect(saveOpening.messages[1]).toEqual({ role: 'user', content: OPENING_USER_REQUEST })
-    // 开场回合在空状态上运行（与线上 opening 一致）：重建不含终局记忆/线索/场景
-    const save = saveDemoLibData()
-    const sheet = save.characterSheet as COCCharacterSheet
-    const openInput: RoomPromptInput = {
-      storyName: save.storyName as string,
-      scene: null,
-      clues: [],
-      messages: [],
-      kpMemory: [],
-      longTermSummary: '',
-      characters: [sheet],
-    }
-    expect(saveOpening.messages).toEqual(injectCharacterRoster(buildRoomOpeningMessages(openInput, ''), { save_character: sheet }))
-
-    expect(saveTurn.messages.at(-1)).toEqual({ role: 'user', content: '【钟明】我向管理员打听地下室的来历。' })
-    expect(JSON.stringify(saveTurn.messages[0])).toContain('## 调查员: 钟明 (古董商)')
   })
 
   it('金样本快照：demo 剧本局全量输出逐字节锁定（fixtures/gold-demo-export.json）', () => {

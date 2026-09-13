@@ -3,12 +3,12 @@
  * （e2e/fixtures/demo-story.txt，h5.journey 的导入/索引/跑团素材）为蓝本
  * 构建的确定性对局库——固定 id / 时间戳 / 文案，导出器输出可整行快照。
  *
- * 内容覆盖导出器的全部三个来源：
+ * 内容覆盖导出器的全部来源：
  *  - room_demo_lib  在场房间（2 角色多人局）：opening + 回合1 有 wire 采样（真实注入），
  *    回合2 无采样（多人批量合并 → 确定性重建）；
  *  - room_recycled  已被 TTL 回收的房间（rooms 行已删、kp_wire_samples 仍在）：
- *    孤儿 wire 采样导出——房间短暂、采样长存，这是长期积累的主路径；
- *  - save_demo_lib  旧版单人存档（GameSaveSnapshot）：无 wire，全量重建。
+ *    孤儿 wire 采样导出——房间短暂、采样长存，这是长期积累的主路径。
+ *    （save 旧版单人存档来源已随 /api/saves* 全链退役删除，#92。）
  *
  * wire 行的 system 文案为手写紧凑版（真实落库行即「当刻线上 prompt 的逐字快照」，
  * 与导出器无关；导出器对 wire 来源只做逐字拷贝，fixture 不必复现全长 BASE_INSTRUCTIONS）。
@@ -24,7 +24,6 @@ export const USER_ID = 7
 export const STORY_ID = 'demo-story'
 export const ROOM_ID = 'room_demo_lib'
 export const ORPHAN_ROOM_ID = 'room_recycled'
-export const SAVE_ID = 'save_demo_lib'
 
 const T = 1_725_500_000_000
 
@@ -133,43 +132,6 @@ export function roomDemoLibState(): Record<string, unknown> {
   }
 }
 
-/** 旧版单人存档（saves.data，结构 = client GameSaveSnapshot）。导出供测试对拍。 */
-export function saveDemoLibData(): Record<string, unknown> {
-  return {
-    version: 3,
-    name: SAVE_ID,
-    storyId: STORY_ID,
-    storyName: 'demo-story',
-    storyOverview: '1925 年，阿卡姆。一封没有署名的信件把你引到市立图书馆的旧馆……',
-    currentScene: '旧图书馆',
-    cluesObtained: [{ id: 'clue_1', description: '青瓷花瓶底部有夹层。' }],
-    messages: [
-      { id: 'kp_open', timestamp: T + 1, role: 'kp', content: '1925 年秋，阿卡姆。一封没有署名的信件……（开场白）' },
-      { id: 'msg_s1', timestamp: T + 2, role: 'player', playerName: '钟明', content: '我向管理员打听地下室的来历。' },
-      { id: 'kp_1', timestamp: T + 3, role: 'kp', content: '阿洛伊斯的眼神闪烁了一下……（最终叙事）' },
-    ],
-    kpMemory: ['钟明向管理员打听地下室，对方守口如瓶。'],
-    longTermSummary: '',
-    longTermFacts: [],
-    playerTurnCount: 1,
-    gamePhase: 'playing',
-    characterSheet: {
-      occupationId: 'antiquarian', occupationName: '古董商', playerName: '钟明',
-      attributes: { str: 45, con: 60, siz: 60, dex: 50, app: 55, int: 80, pow: 65, edu: 75, luck: 48 },
-      skills: { 估价: 70, 图书馆使用: 60, 侦查: 45 },
-      occupationSkillKeys: ['估价', '历史', '图书馆使用', '母语', '信用评级', '侦查', '心理学', '话术', '信用评级'],
-      personalInterestKeys: ['神秘学', '考古学', '聆听', '母语'],
-      derived: { hp: 11, hpMax: 11, mp: 13, mpMax: 13, san: 58, sanMax: 58 },
-      damageBonus: '0', build: 0, insanityState: 'normal',
-    },
-    playerName: '钟明',
-    selectedOccupationId: 'antiquarian',
-    selectedOccupationName: '古董商',
-    sessionId: null,
-    endingState: null,
-  }
-}
-
 export interface FixtureDb {
   dbPath: string
   dispose(): void
@@ -191,10 +153,6 @@ export function createFixtureDb(): FixtureDb {
       user_id INTEGER NOT NULL, story_id TEXT NOT NULL, name TEXT NOT NULL,
       file_path TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
       PRIMARY KEY (user_id, story_id)
-    );
-    CREATE TABLE saves (
-      user_id INTEGER NOT NULL, save_id TEXT NOT NULL, data TEXT NOT NULL,
-      updated_at INTEGER NOT NULL, PRIMARY KEY (user_id, save_id)
     );
     CREATE TABLE kp_wire_samples (
       id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, turn_seq INTEGER NOT NULL,
@@ -218,9 +176,6 @@ export function createFixtureDb(): FixtureDb {
   // 孤儿：房间已回收（rooms 无行），采样仍在
   insertSample.run(ORPHAN_ROOM_ID, 1, USER_ID, STORY_ID, WIRE_RAG_ORPHAN, '[]', JSON.stringify(ORPHAN_WIRE), T + 20)
 
-  db.prepare(`INSERT INTO saves (user_id, save_id, data, updated_at) VALUES (?, ?, ?, ?)`).run(
-    USER_ID, SAVE_ID, JSON.stringify(saveDemoLibData()), T + 50,
-  )
   db.close()
   return { dbPath, dispose: () => fs.rmSync(dir, { recursive: true, force: true }) }
 }

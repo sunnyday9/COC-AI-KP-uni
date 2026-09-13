@@ -35,13 +35,8 @@ function initSchema(database: DatabaseSync): void {
       user_id INTEGER PRIMARY KEY,
       data TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS saves (
-      user_id INTEGER NOT NULL,
-      save_id TEXT NOT NULL,
-      data TEXT NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (user_id, save_id)
-    );
+    -- saves 表退役（#92，A 桶 /api/saves* 全链退役）：fresh 安装不再建表；
+    -- 存量库中的死表不迁移（写入链已断于 #59/#60，恒空，与 #67 user_graphs 同款取舍）。
     CREATE TABLE IF NOT EXISTS scripts (
       user_id INTEGER NOT NULL,
       script_id TEXT NOT NULL,

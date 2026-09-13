@@ -100,16 +100,9 @@ interface AppSettings {
 | POST | `/api/scripts/upload` | multipart `file` | `{ ok, name?, id? }` |
 | DELETE | `/api/scripts/:id` | — | `{ ok }` |
 
-## 7. 存档（Task 5）
+## 7. 存档（已退役，#92）
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| GET | `/api/saves` | — | `string[]`（saveId 列表） |
-| GET | `/api/saves/:id` | — | `GameSaveSnapshot`（原结构，见 `src/types/game.ts` + saveService） |
-| PUT | `/api/saves/:id` | `GameSaveSnapshot` | `{ ok }` |
-| DELETE | `/api/saves/:id` | — | `{ ok }` |
-
-- `GameSaveSnapshot`：`{ version: 1, name, storyId, storyName, storyOverview, currentScene, cluesObtained, messages, kpMemory, longTermSummary, longTermFacts, playerTurnCount, gamePhase, characterSheet, playerName, selectedOccupationId, selectedOccupationName, sessionId, endingState?, scenesVisited? }`
+> `/api/saves*` 全链已于 2026-09-13 退役（#91 A 桶「全链退役」拍板）：服务端路由 / saveService / `saves` 建表语句（fresh 安装不再建表，存量死表不迁移，写入链断于 #59/#60）与 training save 导出源一并删除；客户端 bridge 方法已于 #60 删除。本节保留编号占位——§8+ 编号被 server/client/shared 多处注释引用，不重排（§9 bridge 映射行归后续票处理）。
 
 ## 8. RAG（Task 3，与 ragHandlers.cjs 一致）
 

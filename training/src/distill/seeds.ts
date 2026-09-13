@@ -25,12 +25,6 @@ interface RoomRow {
   state: string
 }
 
-interface SaveRow {
-  user_id: number
-  save_id: string
-  data: string
-}
-
 interface SeedSource {
   userId: number
   originId: string
@@ -42,7 +36,6 @@ interface SeedSource {
   kpMemory: string[]
   longTermSummary: string
   messages: Message[]
-  provenance: 'room' | 'save'
 }
 
 function seedSkeleton(src: SeedSource, turn: StreamTurn): DistillSkeleton {
@@ -70,8 +63,9 @@ function seedSkeleton(src: SeedSource, turn: StreamTurn): DistillSkeleton {
   }
 }
 
-/** rooms + saves 全量切片成 seed 骨架（与 #38 导出器同一数据面；wire 优先逻辑不在
- *  本票范围——本地 DB 当前 wire 采样为 0，导出器全 rebuilt）。 */
+/** rooms 全量切片成 seed 骨架（与 #38 导出器同一数据面；wire 优先逻辑不在
+ *  本票范围——本地 DB 当前 wire 采样为 0，导出器全 rebuilt。saves 表来源已随
+ *  /api/saves* 全链退役删除，#92）。 */
 export function buildSeedSkeletons(dbPath: string): { skeletons: DistillSkeleton[]; warnings: string[] } {
   if (!fs.existsSync(dbPath)) throw new Error(`DB 文件不存在: ${dbPath}`)
   const db = new DatabaseSync(dbPath, { readOnly: true })
@@ -113,39 +107,12 @@ export function buildSeedSkeletons(dbPath: string): { skeletons: DistillSkeleton
         kpMemory: state.kpMemory ?? [],
         longTermSummary: state.longTermSummary ?? '',
         messages: state.messages ?? [],
-        provenance: 'room',
       }
       for (const turn of extractStreamTurns(src.messages)) {
         skeletons.push(seedSkeleton(src, turn))
       }
     } catch (err) {
       warnings.push(`room ${room.room_id}: state 解析失败已跳过（${err instanceof Error ? err.message : String(err)}）`)
-    }
-  }
-
-  const saveRows = db.prepare(`SELECT user_id, save_id, data FROM saves ORDER BY user_id, save_id ASC`).all() as unknown as SaveRow[]
-  for (const save of saveRows) {
-    try {
-      const data = JSON.parse(save.data) as Record<string, unknown>
-      const sheet = data.characterSheet as COCCharacterSheet | null
-      const src: SeedSource = {
-        userId: save.user_id,
-        originId: save.save_id,
-        storyId: (data.storyId as string | null) ?? null,
-        storyName: (data.storyName as string) || '',
-        scene: (data.currentScene as string) || null,
-        clues: (data.cluesObtained as { id: string; description: string }[]) ?? [],
-        characters: sheet ? { char_0: sheet } : {},
-        kpMemory: (data.kpMemory as string[]) ?? [],
-        longTermSummary: (data.longTermSummary as string) ?? '',
-        messages: (data.messages as Message[]) ?? [],
-        provenance: 'save',
-      }
-      for (const turn of extractStreamTurns(src.messages)) {
-        skeletons.push(seedSkeleton(src, turn))
-      }
-    } catch (err) {
-      warnings.push(`save ${save.save_id}: data 解析失败已跳过（${err instanceof Error ? err.message : String(err)}）`)
     }
   }
 

@@ -1,7 +1,7 @@
 /**
  * KP 数据导出器核心（T2，spec #36 / 票 #38 / ADR-0006「后果」第 2 条）。
  *
- * 从既有对局快照与存档导出「上下文 + 玩家行动流」骨架：每行 = 一个 KP 回合的
+ * 从既有对局快照导出「上下文 + 玩家行动流」骨架：每行 = 一个 KP 回合的
  * context 侧（system + 近窗对话 + 收尾玩家行动）+ 线上 24 工具定义，即 OpenAI
  * messages + tools JSONL（Hermes 风格）——#40 教师重放在此骨架上生成理想回复。
  *
@@ -9,8 +9,8 @@
  *  - room        rooms.state 快照逐回合切片；该回合有 wire 采样（#37 kp_wire_samples）
  *                → 优先真实注入（initialMessages 逐字拷贝，meta.source='wire'）；
  *  - orphan-wire 房间已被 TTL 回收（rooms 行删除、采样仍在）的孤儿采样独立导出——
- *                房间短暂、采样长存，这是长期数据积累的主路径；
- *  - save        旧版单人存档（GameSaveSnapshot）确定性重建。
+ *                房间短暂、采样长存，这是长期数据积累的主路径。
+ *                （save 旧版单人存档导出源已随 /api/saves* 全链退役删除，#92。）
  *
  * 无采样的回合走确定性重建：复用服务端提示词纯函数（kpPromptService 的
  * buildRoomTurnMessages / buildRoomOpeningMessages / injectCharacterRoster——与
@@ -42,10 +42,9 @@ export interface ExportMeta {
   kind: 'opening' | 'turn'
   /** wire = 落库采样的真实注入逐字拷贝；rebuilt = 提示词纯函数确定性重建。 */
   source: 'wire' | 'rebuilt'
-  /** 数据出处：room 在场房间 / orphan-wire 已回收房间的采样 / save 旧版存档。 */
-  origin: 'room' | 'orphan-wire' | 'save'
+  /** 数据出处：room 在场房间 / orphan-wire 已回收房间的采样。 */
+  origin: 'room' | 'orphan-wire'
   roomId: string | null
-  saveId: string | null
   userId: number
   storyId: string | null
   storyName: string
@@ -74,7 +73,6 @@ export interface ExportStats {
   opening: number
   rooms: number
   orphanWireRooms: number
-  saves: number
 }
 
 export interface ExportResult {
@@ -88,10 +86,8 @@ export interface ExportOptions {
   dbPath: string
   /** 过滤：缺省 = 全量。 */
   roomIds?: string[]
-  saveIds?: string[]
   includeRooms?: boolean
   includeOrphanWire?: boolean
-  includeSaves?: boolean
 }
 
 /* ── DB 行与游戏流切片 ─────────────────────────────────────── */
@@ -110,12 +106,6 @@ interface RoomRow {
   owner_id: number
   story_id: string | null
   state: string
-}
-
-interface SaveRow {
-  user_id: number
-  save_id: string
-  data: string
 }
 
 /** 游戏流切出的一个回合（context 侧输入）。 */
@@ -278,7 +268,7 @@ export function exportKpContext(options: ExportOptions): ExportResult {
   const db = new DatabaseSync(options.dbPath)
   const warnings: string[] = []
   const lines: ExportLine[] = []
-  const stats: ExportStats = { lines: 0, wire: 0, rebuilt: 0, opening: 0, rooms: 0, orphanWireRooms: 0, saves: 0 }
+  const stats: ExportStats = { lines: 0, wire: 0, rebuilt: 0, opening: 0, rooms: 0, orphanWireRooms: 0 }
 
   const storyNames = new Map<string, string>()
   for (const row of db.prepare(`SELECT user_id, story_id, name FROM stories`).all() as unknown as { user_id: number; story_id: string; name: string }[]) {
@@ -301,13 +291,6 @@ export function exportKpContext(options: ExportOptions): ExportResult {
       : db.prepare(`SELECT room_id, owner_id, story_id, state FROM rooms ORDER BY room_id ASC`).all()
   ) as unknown as RoomRow[]
   const roomIdsSeen = new Set(roomRows.map((r) => r.room_id))
-
-  const saveIds = options.saveIds?.length ? options.saveIds : null
-  const saveRows = (
-    saveIds
-      ? db.prepare(`SELECT user_id, save_id, data FROM saves WHERE save_id IN (${saveIds.map(() => '?').join(', ')}) ORDER BY user_id, save_id ASC`).all(...saveIds)
-      : db.prepare(`SELECT user_id, save_id, data FROM saves ORDER BY user_id, save_id ASC`).all()
-  ) as unknown as SaveRow[]
 
   db.close()
 
@@ -354,7 +337,7 @@ export function exportKpContext(options: ExportOptions): ExportResult {
           }
           pushLine(
             {
-              kind: turn.kind, source: 'wire', origin: 'room', roomId: room.room_id, saveId: null,
+              kind: turn.kind, source: 'wire', origin: 'room', roomId: room.room_id,
               userId: room.owner_id, storyId: room.story_id ?? null, storyName: src.storyName,
               turnSeq: sample.turn_seq, turnIndex: turn.turnIndex,
               batchPlayerMessages: turn.batch.length, ragContextChars: sample.rag_context.length, caveats: [],
@@ -364,7 +347,7 @@ export function exportKpContext(options: ExportOptions): ExportResult {
         } else {
           pushLine(
             {
-              kind: turn.kind, source: 'rebuilt', origin: 'room', roomId: room.room_id, saveId: null,
+              kind: turn.kind, source: 'rebuilt', origin: 'room', roomId: room.room_id,
               userId: room.owner_id, storyId: room.story_id ?? null, storyName: src.storyName,
               turnSeq: null, turnIndex: turn.turnIndex,
               batchPlayerMessages: turn.batch.length, ragContextChars: 0,
@@ -396,7 +379,7 @@ export function exportKpContext(options: ExportOptions): ExportResult {
         pushLine(
           {
             kind: isOpening ? 'opening' : 'turn', source: 'wire', origin: 'orphan-wire',
-            roomId, saveId: null, userId: sample.owner_id, storyId: sample.story_id,
+            roomId, userId: sample.owner_id, storyId: sample.story_id,
             storyName: (sample.story_id && storyNames.get(`${sample.owner_id}:${sample.story_id}`)) || '',
             turnSeq: sample.turn_seq, turnIndex: sample.turn_seq,
             batchPlayerMessages: isOpening ? 0 : 1, ragContextChars: sample.rag_context.length, caveats: [],
@@ -407,43 +390,8 @@ export function exportKpContext(options: ExportOptions): ExportResult {
     }
   }
 
-  /* 3) 旧版单人存档：全量重建（存档无 room 关联，不可能有采样） */
-  if (options.includeSaves !== false) {
-    for (const save of saveRows) {
-      stats.saves++
-      let data: Record<string, unknown>
-      try {
-        data = JSON.parse(save.data) as Record<string, unknown>
-      } catch (err) {
-        warnings.push(`save ${save.save_id}: data JSON 解析失败，已跳过（${err instanceof Error ? err.message : String(err)}）`)
-        continue
-      }
-      const messages = (data.messages ?? []) as Message[]
-      const sheet = data.characterSheet as unknown as COCCharacterSheet | null
-      const src: GameContextSource = {
-        userId: save.user_id,
-        storyId: (data.storyId as string | null) ?? null,
-        storyName: (data.storyName as string) || '',
-        scene: (data.currentScene as string) || null,
-        clues: (data.cluesObtained as { id: string; description: string }[]) ?? [],
-        characters: sheet ? [sheet] : [],
-        kpMemory: (data.kpMemory as string[]) ?? [],
-        longTermSummary: (data.longTermSummary as string) ?? '',
-      }
-      for (const turn of extractStreamTurns(messages)) {
-        pushLine(
-          {
-            kind: turn.kind, source: 'rebuilt', origin: 'save', roomId: null, saveId: save.save_id,
-            userId: save.user_id, storyId: src.storyId, storyName: src.storyName,
-            turnSeq: null, turnIndex: turn.turnIndex,
-            batchPlayerMessages: turn.batch.length, ragContextChars: 0,
-            caveats: turn.kind === 'opening' ? [CAVEAT_RAG] : [CAVEAT_RAG, CAVEAT_FINAL_STATE],
-          },
-          rebuildContext(src, turn),
-        )
-      }
-    }
-  }
+  /* 3) 旧版单人存档导出源已随 /api/saves* 全链退役删除（#92）——
+   *    存量 saves 表写入链断于 #59/#60（恒空），无数据可导。 */
 
   return { lines, stats, warnings }
 }

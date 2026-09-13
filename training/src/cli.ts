@@ -2,8 +2,8 @@
  * KP 数据导出器 CLI（T2，spec #36 / 票 #38）。
  *
  * 用法（training 工作区内）：
- *   npm run export -- --out kp-context.jsonl [--db server/data/ai-kp.db] [--room <id>...] [--save <id>...]
- *     [--no-rooms] [--no-orphan-wire] [--no-saves]
+ *   npm run export -- --out kp-context.jsonl [--db server/data/ai-kp.db] [--room <id>...]
+ *     [--no-rooms] [--no-orphan-wire]
  *
  * IO 边界：--db / --out 相对路径分别解析到各自的允许根目录内，越界（../ 逃逸）
  * 一律拒绝——
@@ -23,17 +23,15 @@ const REPO_ROOT = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const DB_ROOT = path.resolve(process.env.KP_EXPORT_DB_ROOT ?? REPO_ROOT)
 const OUT_ROOT = path.resolve(process.env.KP_EXPORT_OUT_ROOT ?? path.join(REPO_ROOT, 'training', 'out'))
 
-const USAGE = `用法: npm run export -- --out <file.jsonl> [--db <path>] [--room <id>...] [--save <id>...] [--no-rooms] [--no-orphan-wire] [--no-saves]
+const USAGE = `用法: npm run export -- --out <file.jsonl> [--db <path>] [--room <id>...] [--no-rooms] [--no-orphan-wire]
 IO 根目录: --db ⊆ ${DB_ROOT}（KP_EXPORT_DB_ROOT 可改） / --out ⊆ ${OUT_ROOT}（KP_EXPORT_OUT_ROOT 可改）`
 
 interface CliArgs {
   db: string
   out: string
   rooms: string[]
-  saves: string[]
   includeRooms: boolean
   includeOrphanWire: boolean
-  includeSaves: boolean
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -41,10 +39,8 @@ function parseArgs(argv: string[]): CliArgs {
     db: 'server/data/ai-kp.db',
     out: 'kp-context.jsonl',
     rooms: [],
-    saves: [],
     includeRooms: true,
     includeOrphanWire: true,
-    includeSaves: true,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!
@@ -57,10 +53,8 @@ function parseArgs(argv: string[]): CliArgs {
       case '--db': args.db = next(); break
       case '--out': args.out = next(); break
       case '--room': args.rooms.push(next()); break
-      case '--save': args.saves.push(next()); break
       case '--no-rooms': args.includeRooms = false; break
       case '--no-orphan-wire': args.includeOrphanWire = false; break
-      case '--no-saves': args.includeSaves = false; break
       case '--help': case '-h': throw new Error(USAGE)
       default: throw new Error(`未知参数: ${a}\n${USAGE}`)
     }
@@ -86,10 +80,8 @@ function main(): void {
   const result = exportKpContext({
     dbPath,
     roomIds: args.rooms,
-    saveIds: args.saves,
     includeRooms: args.includeRooms,
     includeOrphanWire: args.includeOrphanWire,
-    includeSaves: args.includeSaves,
   })
 
   const jsonl = renderJsonl(result.lines)
@@ -100,7 +92,7 @@ function main(): void {
 
   console.log(`导出完成: ${result.stats.lines} 行 → ${jsonl ? outPath : '(空结果，未写文件)'}`)
   console.log(
-    `  来源: room=${result.stats.rooms} orphan-wire=${result.stats.orphanWireRooms} save=${result.stats.saves}` +
+    `  来源: room=${result.stats.rooms} orphan-wire=${result.stats.orphanWireRooms}` +
       ` | wire=${result.stats.wire} rebuilt=${result.stats.rebuilt} opening=${result.stats.opening}`,
   )
   for (const w of result.warnings) console.warn(`  [警告] ${w}`)

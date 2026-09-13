@@ -40,7 +40,6 @@ describe('app smoke', () => {
     ['GET', '/api/stories'],
     ['POST', '/api/stories/upload'],
     ['GET', '/api/scripts'],
-    ['GET', '/api/saves'],
   ])('%s %s without token returns 401', async (method, route) => {
     const res = await request(createApp())[method.toLowerCase() as 'get'](route)
     expect(res.status).toBe(401)
