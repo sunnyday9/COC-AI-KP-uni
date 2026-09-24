@@ -13,6 +13,7 @@ import { safeOutboundFetch } from '../utils/safeOutboundFetch.js'
 import { BadRequestError, UpstreamError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import { dispatch } from './llm/index.js'
+import { normalizeOpenAiChatBaseUrl } from './llm/openaiChatEndpoint.js'
 import type { ChatMessage, ChatTool, ToolCallResult } from './llm/types.js'
 
 /**
@@ -304,7 +305,8 @@ export async function listModels(userId: number, purpose = 'chat'): Promise<Mode
   const ai = getAiConfig(userId)
   const protocol = ai.protocol as LLMProtocol
   if (!protocol) return []
-  const baseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(protocol)).replace(/\/$/, '')
+  const configuredBaseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(protocol)).replace(/\/$/, '')
+  const baseUrl = protocol === 'openai_chat' ? normalizeOpenAiChatBaseUrl(configuredBaseUrl)! : configuredBaseUrl
   const apiKey = ai.apiKey
 
   if (protocol === 'openai_chat' || protocol === 'openai_responses' || protocol === 'anthropic_messages') {

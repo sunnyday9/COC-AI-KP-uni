@@ -28,6 +28,9 @@ import type {
   RAGContextParams,
   RAGIndexParams,
   RAGQueryParams,
+  StoryDossierGenerateResult,
+  StoryDossierSummary,
+  StoryOperationProgress,
 } from '../../../shared/types/bridge'
 import { getBaseUrl, getPlatform, joinApiUrl } from './config'
 import { clearToken, emitUnauthorized, getToken, setToken } from './token'
@@ -36,9 +39,13 @@ import { WSService } from './ws'
 /** Error surfaced by the bridge — message only, no stack content. */
 export class BridgeError extends Error {
   readonly isBridgeError = true
-  constructor(message: string) {
+  readonly statusCode?: number
+  readonly networkError: boolean
+  constructor(message: string, options: { statusCode?: number; networkError?: boolean } = {}) {
     super(message)
     this.name = 'BridgeError'
+    this.statusCode = options.statusCode
+    this.networkError = options.networkError ?? false
   }
 }
 
@@ -94,12 +101,12 @@ function request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T
           emitUnauthorized()
           reject(new BridgeError('未登录或登录已过期'))
         } else {
-          reject(new BridgeError(extractError(res.data, `请求失败 (${res.statusCode})`)))
+          reject(new BridgeError(extractError(res.data, `请求失败 (${res.statusCode})`), { statusCode: res.statusCode }))
         }
       },
       fail: (err) => {
         const msg = err && typeof err === 'object' && typeof (err as { errMsg?: unknown }).errMsg === 'string' ? (err as { errMsg: string }).errMsg : ''
-        reject(new BridgeError(`网络错误：${msg || '请求失败'}`))
+        reject(new BridgeError(`网络错误：${msg || '请求失败'}`, { networkError: true }))
       },
     })
   })
@@ -285,6 +292,9 @@ export class PlatformBridge {
   onRoomFrame(handler: (frame: RoomServerFrame) => void): () => void {
     return this.ws.onRoomFrame(handler)
   }
+  onStoryProgress(handler: (progress: StoryOperationProgress) => void): () => void {
+    return this.ws.onStoryProgress(handler)
+  }
   /** 断线自动重连通知（roomStore 重新订阅房间）。返回取消函数。 */
   onReconnect(handler: () => void): () => void {
     return this.ws.onReconnect(handler)
@@ -312,7 +322,7 @@ export class PlatformBridge {
     return request('POST', '/api/rag/test-embedding')
   }
 
-  ragIndex(params: RAGIndexParams): Promise<{ ok: boolean; indexed: number }> {
+  ragIndex(params: RAGIndexParams): Promise<{ ok: boolean; indexed: number; warning?: string; error?: string }> {
     return request('POST', '/api/rag/index', params)
   }
 
@@ -330,6 +340,14 @@ export class PlatformBridge {
 
   ragListStories(): Promise<IndexedStory[]> {
     return request<IndexedStory[]>('GET', '/api/rag/stories')
+  }
+
+  dossierList(): Promise<StoryDossierSummary[]> {
+    return request<StoryDossierSummary[]>('GET', '/api/dossier')
+  }
+
+  dossierGenerate(scriptId: string, operationId?: string): Promise<StoryDossierGenerateResult> {
+    return request<StoryDossierGenerateResult>('POST', `/api/dossier/${encodeURIComponent(scriptId)}/generate`, operationId ? { operationId } : {})
   }
 
   ragGetIndex(params: { scriptId: string }): Promise<RagGetIndexResult> {

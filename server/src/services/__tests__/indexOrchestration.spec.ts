@@ -68,6 +68,56 @@ describe('rag/index 编排（服务端自读自切）', () => {
     expect(fakeEmbed).toHaveBeenCalledTimes(res.indexed as number)
   })
 
+  it('retries transient embedding failures and saves complete vectors', async () => {
+    const { indexStoryForRag } = await import('../indexOrchestration.js')
+    const vectorStore = await import('../../rag/vectorStore.js')
+    let first = true
+    const flakyEmbed = vi.fn(async (text: string) => {
+      if (first) {
+        first = false
+        throw Object.assign(new Error('network timeout'), { code: 'ETIMEDOUT' })
+      }
+      return [text.length, 1, 0]
+    })
+
+    const res = await indexStoryForRag(1, 'story-transient-embed', undefined, { getEmbedding: flakyEmbed })
+    const saved = vectorStore.loadIndexFile(1, 'story-transient-embed')
+    expect(res.ok).toBe(true)
+    expect(saved?.docs.every((doc) => Array.isArray(doc.vector) && doc.vector.length > 0)).toBe(true)
+  })
+
+  it('keeps lexical search available and reports a warning when embedding retries are exhausted', async () => {
+    const { indexStoryForRag } = await import('../indexOrchestration.js')
+    const vectorStore = await import('../../rag/vectorStore.js')
+    const unavailableEmbed = vi.fn(async () => { throw new Error('network timeout') })
+
+    const result = await indexStoryForRag(1, 'story-embed-exhausted', undefined, { getEmbedding: unavailableEmbed })
+    const saved = vectorStore.loadIndexFile(1, 'story-embed-exhausted')
+    expect(result.ok).toBe(true)
+    expect(result.warning).toContain('未能生成向量')
+    expect(unavailableEmbed).toHaveBeenCalledTimes((result.indexed ?? 0) * 3)
+    expect(saved?.docs.every((doc) => doc.vector === undefined)).toBe(true)
+    const { chunks } = await vectorStore.queryChunks({
+      userId: 1,
+      query: '青瓷花瓶',
+      scriptId: 'story-embed-exhausted',
+      topK: 5,
+      getEmbedding: unavailableEmbed,
+    })
+    expect(chunks.some((chunk) => chunk.content.includes('青瓷花瓶'))).toBe(true)
+  })
+
+  it('reports indexing percentage progress to the caller', async () => {
+    const { indexStoryForRag } = await import('../indexOrchestration.js')
+    const progress: { stage: string; percent: number }[] = []
+    const options = {
+      getEmbedding: fakeEmbed,
+      onProgress: (value: { stage: string; percent: number }) => progress.push(value),
+    }
+    await indexStoryForRag(1, 'story-progress', undefined, options)
+    expect(progress.at(-1)).toMatchObject({ stage: 'complete', percent: 100 })
+  })
+
   it('落盘块带字符偏移（可还原原文子串）', async () => {
     const { indexStoryForRag } = await import('../indexOrchestration.js')
     const { queryChunks } = await import('../../rag/vectorStore.js')

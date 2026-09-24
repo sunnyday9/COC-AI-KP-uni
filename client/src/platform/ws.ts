@@ -18,15 +18,17 @@
  *   `kp:` 前缀帧已退役，回合输出走房间事件流).
  * - When an established connection drops, roomStore is notified via
  *   onReconnect after the automatic reconnect succeeds.
- * - Frames of unknown type (e.g. server→client `rag:progress`) are ignored at
+ * - Frames of unknown type are ignored at
  *   this layer, mirroring the server's unknown-frame handling.
  */
 import { getWsBaseUrl } from './config'
 import { getToken } from './token'
 import type { RoomServerFrame } from '../../../shared/types/room'
+import type { StoryOperationProgress } from '../../../shared/types/bridge'
 
 /** Phase B3: 房间帧监听器（room:state / room:event / room:sync:done / room:error）。 */
 export type RoomFrameHandler = (frame: RoomServerFrame) => void
+export type StoryProgressHandler = (progress: StoryOperationProgress) => void
 
 export interface WSServiceOptions {
   /** Heartbeat ping interval (default 30s). */
@@ -67,6 +69,7 @@ const DEFAULT_MAX_BACKOFF_MS = 30_000
 
 interface WsFrame {
   type?: unknown
+  payload?: unknown
 }
 
 export class WSService {
@@ -76,6 +79,7 @@ export class WSService {
   private resolveConnect: (() => void) | null = null
   private rejectConnect: ((err: Error) => void) | null = null
   private roomHandlers = new Set<RoomFrameHandler>()
+  private storyProgressHandlers = new Set<StoryProgressHandler>()
   /** 重连成功后通知（roomStore 据此重新订阅房间——审查修复 #2）。 */
   private reconnectListeners = new Set<() => void>()
   /** 上次连接是否因故障断开（区分首次连接与重连）。 */
@@ -153,6 +157,11 @@ export class WSService {
     return () => {
       this.roomHandlers.delete(handler)
     }
+  }
+
+  onStoryProgress(handler: StoryProgressHandler): () => void {
+    this.storyProgressHandlers.add(handler)
+    return () => this.storyProgressHandlers.delete(handler)
   }
 
   /** 订阅重连通知（断线自动重连成功后触发）。返回取消函数。 */
@@ -345,7 +354,22 @@ export class WSService {
     }
     if (typeof frame !== 'object' || frame === null) return
     const type = frame.type
-    if (type === 'pong' || type === 'rag:progress') return
+    if (type === 'pong') return
+
+    if (type === 'rag:progress') {
+      const payload = frame.payload
+      if (!payload || typeof payload !== 'object') return
+      const progress = payload as StoryOperationProgress
+      if (typeof progress.operationId !== 'string' || typeof progress.scriptId !== 'string') return
+      for (const handler of this.storyProgressHandlers) {
+        try {
+          handler(progress)
+        } catch {
+          // progress handlers must not break the message loop
+        }
+      }
+      return
+    }
 
     // 房间帧（room:*）逐帧转发给订阅者（roomStore）。
     if (type === 'room:state' || type === 'room:event' || type === 'room:sync:done' || type === 'room:error') {

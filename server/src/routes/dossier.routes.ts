@@ -15,6 +15,8 @@ import { requireAuth } from '../middleware/auth.js'
 import { sendError } from '../utils/errors.js'
 import { assertId } from '../utils/fileNames.js'
 import * as dossierService from '../rag/dossier/storyDossierService.js'
+import { runIdempotently, validOperationId } from '../services/operationIdempotency.js'
+import { pushRagProgress } from '../ws/progress.js'
 
 const router = Router()
 
@@ -34,14 +36,36 @@ router.post('/:scriptId/generate', (req: AuthRequest, res) => {
     sendError(res, err)
     return
   }
-  const body = (req.body ?? {}) as { model?: unknown; annex?: unknown }
-  void dossierService
-    .generateDossier(userId, scriptId, {
+  const body = (req.body ?? {}) as { model?: unknown; annex?: unknown; operationId?: unknown }
+  const operationId = validOperationId(body.operationId) ? body.operationId : undefined
+  const run = () => dossierService.generateDossier(userId, scriptId, {
       model: typeof body.model === 'string' ? body.model : undefined,
       annex: typeof body.annex === 'boolean' ? body.annex : undefined,
+      onProgress: operationId
+        ? (progress) => pushRagProgress(userId, { ...progress, operation: 'dossier', operationId, scriptId, state: 'running' })
+        : undefined,
     })
-    .then((result) => res.json(result))
-    .catch((err) => sendError(res, err))
+  const task = operationId
+    ? runIdempotently(`dossier:${userId}:${scriptId}:${operationId}`, run, `dossier:${userId}:${scriptId}`)
+    : run()
+  void task
+    .then((result) => {
+      if (operationId) {
+        pushRagProgress(userId, {
+          operation: 'dossier', operationId, scriptId,
+          stage: result.ok ? 'complete' : 'failed',
+          percent: result.ok ? 100 : undefined,
+          state: result.ok ? 'complete' : 'failed',
+          message: result.ok ? result.warnings?.[0] || '档案生成完成' : result.error || '档案生成失败',
+          ...(result.degraded ? { warning: result.warnings?.[0] || '档案已生成但质量不足' } : {}),
+        })
+      }
+      res.json(result)
+    })
+    .catch((err) => {
+      if (operationId) pushRagProgress(userId, { operation: 'dossier', operationId, scriptId, stage: 'failed', state: 'failed', message: err instanceof Error ? err.message : '档案生成失败' })
+      sendError(res, err)
+    })
 })
 
 /** GET /api/dossier — 档案清单（房主选剧本/门闩用）。 */

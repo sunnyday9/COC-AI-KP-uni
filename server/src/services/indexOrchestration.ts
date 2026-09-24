@@ -15,10 +15,12 @@ import * as vectorStore from '../rag/vectorStore.js'
 import { chunkStoryText } from '../rag/chunker.js'
 import { loadRerankModel } from '../rag/reranker.js'
 import { logger } from '../utils/logging.js'
+import { isRetryableFailure, retryDelayMs, waitForRetry } from '../utils/retry.js'
 
 export interface IndexOptions {
   /** 嵌入函数（缺省由调用方按设置提供；不传则索引只有词面统计）。 */
   getEmbedding?: (text: string) => Promise<number[]>
+  onProgress?: (progress: { stage: string; percent: number; message?: string }) => void
 }
 
 export interface IndexResult {
@@ -41,6 +43,8 @@ export async function indexStoryForRag(
 ): Promise<IndexResult> {
   const id = String(scriptId ?? '').trim()
   if (!id) return { ok: false, error: 'scriptId required' }
+  const report = (stage: string, percent: number, message?: string) => options.onProgress?.({ stage, percent, message })
+  report('read', 1, '读取故事原文')
 
   let raw: { name: string; content: string }
   try {
@@ -53,6 +57,7 @@ export async function indexStoryForRag(
 
   const chunks = chunkStoryText(text)
   if (chunks.length === 0) return { ok: false, error: 'story content is empty' }
+  report('chunk', 5, `切分完成，共 ${chunks.length} 个信息块`)
 
   const inputs = chunks.map((c, i) => ({
     id: `${id}-chunk-${i}`,
@@ -64,27 +69,65 @@ export async function indexStoryForRag(
   }))
 
   let stored: { ok: boolean; indexed: number }
+  let embeddingFailures = 0
+  let lastEmbeddingError = ''
+  let completedChunks = 0
+  const withEmbeddingRetry = options.getEmbedding
+    ? async (content: string): Promise<number[]> => {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            return await options.getEmbedding!(content)
+          } catch (error) {
+            lastEmbeddingError = error instanceof Error ? error.message : String(error)
+            if (!isRetryableFailure(error) || attempt === 2) {
+              embeddingFailures++
+              throw error
+            }
+            const delay = retryDelayMs(attempt + 1)
+            report('embedding_retry', Math.min(84, 5 + Math.round((completedChunks / inputs.length) * 80)), `嵌入请求暂时失败，${attempt + 1}/2 次重试中`)
+            await waitForRetry(delay)
+          }
+        }
+        throw new Error('embedding retries exhausted')
+      }
+    : undefined
   try {
     stored = await vectorStore.indexChunks(
       userId,
       id,
       inputs,
       { name: storyMeta?.name ?? raw.name },
-      options.getEmbedding ? { getEmbedding: options.getEmbedding } : undefined,
+      {
+        ...(withEmbeddingRetry ? { getEmbedding: withEmbeddingRetry } : {}),
+        onChunkProgress: ({ completed, total }) => {
+          completedChunks = completed
+          const percent = 5 + Math.round((completed / total) * 80)
+          report('embedding', percent, `已处理 ${completed}/${total} 个信息块`)
+        },
+      },
     )
   } catch (e) {
     // 落盘为同步 IO（磁盘/权限失败会抛）——统一收成失败形态，不让异常穿透到路由
     return { ok: false, error: `index persist failed: ${e instanceof Error ? e.message : String(e)}` }
   }
+  report('save', 88, '索引已保存，正在准备检索')
 
   // 预取重排模型（非致命）：让首次检索不必等冷启；失败仅告警
   let warning: string | undefined
+  const warnings: string[] = []
+  if (embeddingFailures > 0) {
+    warnings.push(`${embeddingFailures} 个信息块未能生成向量，已保留词面索引；修复连接或模型设置后可重试索引${lastEmbeddingError ? `（${lastEmbeddingError}）` : ''}`)
+  }
+  report('rerank', 94, '准备检索排序模型')
   try {
     await loadRerankModel()
   } catch (e) {
-    warning = `rerank model prefetch failed: ${e instanceof Error ? e.message : String(e)}`
-    logger.warn('rag:index rerank prefetch failed', { userId, scriptId: id, error: warning })
+    const rerankWarning = `rerank model prefetch failed: ${e instanceof Error ? e.message : String(e)}`
+    warnings.push(rerankWarning)
+    logger.warn('rag:index rerank prefetch failed', { userId, scriptId: id, error: rerankWarning })
   }
 
+  warning = warnings.length ? warnings.join('；') : undefined
+  report('complete', 100, warning || '索引完成')
   return { ok: stored.ok, indexed: stored.indexed, warning }
 }

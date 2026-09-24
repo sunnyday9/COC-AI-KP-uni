@@ -133,18 +133,21 @@ describe('WSService', () => {
       expect(seen).toEqual(['room:state'])
     })
 
-    it('ignores non-room frames (pong, rag:progress, kp:*, unknown) without crashing', async () => {
-      const { socket } = await openWs()
+    it('forwards story progress and ignores unrelated non-room frames', async () => {
+      const { ws, socket } = await openWs()
       const frames: unknown[] = []
-      // (listener registered via a fresh service would see nothing here anyway)
+      ws.onStoryProgress((progress) => frames.push(progress))
       socket.emitMessage({ type: 'pong' })
-      socket.emitMessage({ type: 'rag:progress', payload: { done: 1 } })
+      socket.emitMessage({ type: 'rag:progress', payload: {
+        operation: 'index', operationId: 'index_a1', scriptId: 'story.txt',
+        stage: 'embedding', percent: 42, state: 'running', message: '已处理 2/5 个信息块',
+      } })
       socket.emitMessage({ type: 'kp:turn', streamId: 's1' }) // 已退役帧
       socket.emitMessage({ type: 'chunk', streamId: 's1', chunk: 'x' })
       socket.emitMessage({ type: 'end', streamId: 's1', content: 'x' })
       socket.emitMessage({ type: 'nope' })
       socket.emitMessage('not json')
-      expect(frames).toHaveLength(0)
+      expect(frames).toMatchObject([{ operation: 'index', scriptId: 'story.txt', percent: 42 }])
     })
   })
 

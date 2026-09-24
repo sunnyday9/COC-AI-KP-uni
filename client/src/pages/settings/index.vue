@@ -421,6 +421,9 @@ async function confirmLogout() {
                 <text v-if="baseUrlPlaceholder" class="field-note">
                   留空则使用默认值：{{ baseUrlPlaceholder }}
                 </text>
+                <text v-if="settings.ai.protocol === 'openai_chat'" class="field-note">
+                  也可以粘贴以 /chat/completions 结尾的完整地址。
+                </text>
               </view>
 
               <!-- API Key（仅保存在服务端） -->

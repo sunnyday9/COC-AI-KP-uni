@@ -4,6 +4,7 @@
  */
 import { getBridge } from '../platform'
 import type { IndexedStory } from '../../../shared/types/bridge'
+import { retryTransientRequest } from './retry'
 
 export interface RAGChunkResult {
   content: string
@@ -29,8 +30,9 @@ export async function checkRagHealth(): Promise<boolean> {
 export async function indexStory(
   storyId: string,
   storyMeta?: { name?: string },
+  operationId?: string,
 ): Promise<{ ok: boolean; indexed: number; error?: string; warning?: string }> {
-  return getBridge().ragIndex({ scriptId: storyId, storyMeta })
+  return retryTransientRequest(() => getBridge().ragIndex({ scriptId: storyId, storyMeta, operationId }))
 }
 
 /** Delete story index */

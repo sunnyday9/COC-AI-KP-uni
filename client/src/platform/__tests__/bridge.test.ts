@@ -264,9 +264,27 @@ describe('PlatformBridge', () => {
     it('ragIndex posts scriptId only (server chunks the story)', async () => {
       state.requestResponder = () => ({ statusCode: 200, data: { ok: true, indexed: 2 } })
       const bridge = new PlatformBridge()
-      const params = { scriptId: 's1', storyMeta: { name: 's1' } }
+      const params = { scriptId: 's1', storyMeta: { name: 's1' }, operationId: 'index_a1' }
       await expect(bridge.ragIndex(params)).resolves.toEqual({ ok: true, indexed: 2 })
       expect(state.requests[0].data).toEqual(params)
+    })
+
+    it('dossierGenerate posts to the encoded story dossier endpoint', async () => {
+      state.requestResponder = () => ({ statusCode: 200, data: { ok: true, scriptId: 'story one.txt', scenes: 3 } })
+      const bridge = new PlatformBridge()
+      await expect(bridge.dossierGenerate('story one.txt', 'dossier_a1')).resolves.toMatchObject({ ok: true, scenes: 3 })
+      expect(state.requests[0]).toMatchObject({
+        url: '/api/dossier/story%20one.txt/generate',
+        method: 'POST',
+        data: { operationId: 'dossier_a1' },
+      })
+    })
+
+    it('dossierList reads generated story dossier summaries', async () => {
+      const dossiers = [{ scriptId: 's1', name: 'Story', sceneCount: 3, generatedAt: 1 }]
+      state.requestResponder = () => ({ statusCode: 200, data: dossiers })
+      await expect(new PlatformBridge().dossierList()).resolves.toEqual(dossiers)
+      expect(state.requests[0]).toMatchObject({ url: '/api/dossier', method: 'GET' })
     })
 
     it('ragTestEmbedding posts with no body', async () => {

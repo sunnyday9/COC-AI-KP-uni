@@ -108,6 +108,20 @@ describe('storyDossierService', () => {
     expect(await loadDossier(userId, scriptId)).toBeNull()
   })
 
+  it('reports dossier generation batch percentage progress', async () => {
+    const up = await importStory(userId, {
+      originalname: 'progress-repro.txt',
+      buffer: Buffer.from('# 测试故事\n\n## 场景一：旧图书馆\n\n书架角落放着一只青瓷花瓶。'),
+      size: 100,
+    })
+    const progress: { stage: string; percent: number }[] = []
+    const result = await generateDossier(userId, up.id as string, {
+      onProgress: (value: { stage: string; percent: number }) => progress.push(value),
+    })
+    expect(result.ok).toBe(true)
+    expect(progress.at(-1)).toMatchObject({ stage: 'complete', percent: 100 })
+  })
+
   it('findScene matches by name, id and substring (longest wins)', async () => {
     const dossier = {
       scriptId: 's', storyName: 's', generatedAt: 0,
@@ -251,6 +265,19 @@ describe('storyDossierService', () => {
     expect(res.ok).toBe(true)
     expect(res.scenes).toBe(1)
     expect(chatMock.mock.calls).toHaveLength(2)
+  })
+
+  it('does not retry permanent configuration errors', async () => {
+    const { BadRequestError } = await import('../../../utils/errors.js')
+    chatMock.mockImplementation(async () => { throw new BadRequestError('请先在设置中配置 AI 协议') })
+    const up = await importStory(userId, {
+      originalname: 'retry-config.txt',
+      buffer: Buffer.from('# 测试故事\n\n书架角落放着一只青瓷花瓶。'),
+      size: 40,
+    })
+    const result = await generateDossier(userId, up.id as string)
+    expect(result.ok).toBe(false)
+    expect(chatMock).toHaveBeenCalledTimes(1)
   })
 
   it('#55：解析失败重试抬 max_tokens——第 1-2 次 16384，第 3 次起 32768（推理模型截断不因重发自愈）', async () => {

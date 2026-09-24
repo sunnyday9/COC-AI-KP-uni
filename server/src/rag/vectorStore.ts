@@ -165,6 +165,15 @@ function cosineSimilarityArray(a: number[], b: number[]): number {
   return norm > 0 ? dot / norm : 0
 }
 
+/** Keep dense and lexical scores on the same [0, 1] relevance scale. */
+function normalizeDenseSimilarity(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(1, (value + 1) / 2))
+}
+
+const DENSE_SCORE_WEIGHT = 0.7
+const TFIDF_SCORE_WEIGHT = 0.3
+
 /* ------------------------------------------------------------------ */
 /*  Types (on-disk + in-memory index)                                  */
 /* ------------------------------------------------------------------ */
@@ -289,7 +298,10 @@ export async function indexChunks(
   storyId: string,
   chunks: RAGChunkInput[],
   storyMeta: StoryMeta | undefined,
-  options: { getEmbedding?: (text: string) => Promise<number[]> } | undefined,
+  options: {
+    getEmbedding?: (text: string) => Promise<number[]>
+    onChunkProgress?: (progress: { completed: number; total: number; embeddingFailures: number }) => void
+  } | undefined,
 ): Promise<{ ok: boolean; indexed: number }> {
   if (!chunks || !chunks.length) return { ok: true, indexed: 0 }
 
@@ -312,13 +324,20 @@ export async function indexChunks(
   }
 
   const getEmbedding = options && typeof options.getEmbedding === 'function' ? options.getEmbedding : null
+  let embeddingFailures = 0
   if (getEmbedding) {
     for (let j = 0; j < docs.length; j++) {
       try {
         ;(docs[j] as IndexDoc).vector = await getEmbedding((docs[j] as IndexDoc).content || '')
       } catch {
         // leave vector undefined; query will use TF-IDF for this doc
+        embeddingFailures++
       }
+      options?.onChunkProgress?.({ completed: j + 1, total: docs.length, embeddingFailures })
+    }
+  } else {
+    for (let j = 0; j < docs.length; j++) {
+      options?.onChunkProgress?.({ completed: j + 1, total: docs.length, embeddingFailures })
     }
   }
 
@@ -376,7 +395,11 @@ export function deleteChunks(userId: number, scriptId: string): { ok: boolean; d
 
 /**
  * Query for the top-K most relevant chunks.
- * If params.getEmbedding (async (text) => number[]) is provided, uses dense similarity when doc.vector exists; else TF-IDF. Hybrid index supported.
+ * Uses TF-IDF as the always-available baseline. When a query embedding and a
+ * document embedding are both available, their normalized dense score is
+ * fused with TF-IDF; documents missing an embedding keep their lexical score.
+ * This makes MOCK_AI and partial embedding failures useful instead of turning
+ * retrieval into an empty result set.
  */
 export async function queryChunks(params: {
   userId: number
@@ -395,25 +418,20 @@ export async function queryChunks(params: {
   const topK = params.topK || 5
   const getEmbedding = params.getEmbedding
 
-  // 始终使用嵌入向量检索；若未提供 embedding，则不返回结果（不再回退到 TF-IDF）
-  if (!getEmbedding || typeof getEmbedding !== 'function') {
-    return { chunks: [] }
-  }
-
   if (!scriptId) return { chunks: [] }
   const idx = getOrLoadIndex(userId, scriptId)
   if (!idx || !idx.docs.length) return { chunks: [] }
 
+  const queryTfidf = tfidfVector(tokenize(query || ''), idx.idf)
   let queryVector: number[] | null = null
-  try {
-    queryVector = await getEmbedding(query || '')
-  } catch {
-    queryVector = null
+  if (typeof getEmbedding === 'function') {
+    try {
+      queryVector = await getEmbedding(query || '')
+    } catch {
+      queryVector = null
+    }
   }
-
-  if (!queryVector || !Array.isArray(queryVector) || queryVector.length === 0) {
-    return { chunks: [] }
-  }
+  const hasQueryVector = Array.isArray(queryVector) && queryVector.length > 0
 
   // Candidate selection policy (anti-spoiler):
   // - If sceneId is provided, NEVER fall back to chunks from other scenes.
@@ -441,9 +459,11 @@ export async function queryChunks(params: {
   if (!candidates || candidates.length === 0) return { chunks: [] }
 
   const scored = candidates.map(function (doc) {
-    let score = 0
-    if (Array.isArray(doc.vector) && doc.vector.length === queryVector!.length) {
-      score = cosineSimilarityArray(queryVector!, doc.vector)
+    const lexicalScore = cosineSimilarity(queryTfidf, doc.tfidf)
+    let score = lexicalScore
+    if (hasQueryVector && Array.isArray(doc.vector) && doc.vector.length === queryVector!.length) {
+      const denseScore = normalizeDenseSimilarity(cosineSimilarityArray(queryVector!, doc.vector))
+      score = DENSE_SCORE_WEIGHT * denseScore + TFIDF_SCORE_WEIGHT * lexicalScore
     }
     return {
       id: doc.id,

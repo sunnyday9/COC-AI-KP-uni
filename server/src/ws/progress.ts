@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws'
+import type { StoryOperationProgress } from '../../../shared/types/bridge.js'
 
 /**
  * Server→client `rag:progress` push channel (api-contract §4 通用消息).
@@ -20,6 +21,10 @@ export interface RagProgressPayload {
   scriptId: string
   percent?: number
   message?: string
+  operation?: StoryOperationProgress['operation']
+  operationId?: string
+  state?: StoryOperationProgress['state']
+  warning?: string
 }
 
 const userSockets = new Map<number, Set<WebSocket>>()

@@ -69,6 +69,32 @@ describe('dossier routes', () => {
     expect(list.body[0].sceneCount).toBe(3)
   })
 
+  it('coalesces concurrent retries and lets a fresh attempt rerun after completion', async () => {
+    const token = await registerToken('dossier_retry')
+    let finish: ((value: unknown) => void) | undefined
+    generateMock.mockImplementation(() => {
+      if (generateMock.mock.calls.length === 1) return new Promise((resolve) => { finish = resolve })
+      return Promise.resolve({ ok: true, scriptId: 'demo.txt', scenes: 2 })
+    })
+    const app = createApp()
+    const send = (operationId: string) => request(app).post('/api/dossier/demo.txt/generate').set(auth(token)).send({ operationId })
+
+    const first = send('retry-op-1').then((response) => response)
+    await vi.waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1))
+    const retry = send('retry-op-2').then((response) => response)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    finish?.({ ok: true, scriptId: 'demo.txt', scenes: 1 })
+
+    const [firstResponse, retryResponse] = await Promise.all([first, retry])
+    expect(generateMock).toHaveBeenCalledTimes(1)
+    expect(firstResponse.body).toMatchObject({ ok: true })
+    expect(retryResponse.body).toMatchObject({ ok: true })
+
+    const freshAttempt = await send('retry-op-3')
+    expect(freshAttempt.body).toMatchObject({ ok: true, scenes: 2 })
+    expect(generateMock).toHaveBeenCalledTimes(2)
+  })
+
   it('rejects traversal scriptIds (400 from assertSafeId or 404 from routing)', async () => {
     const token = await registerToken('dossier_trav')
     const res = await request(createApp()).post('/api/dossier/..%2F..%2Fetc%2Fpasswd/generate').set(auth(token)).send({})

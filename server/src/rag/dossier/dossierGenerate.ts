@@ -31,6 +31,7 @@ import {
 import { persistAnnex, runAnnex } from './annex.js'
 import { computeCoverageGaps, persistGaps } from './coverageGaps.js'
 import { persist } from './dossierCore.js'
+import { isRetryableFailure, retryDelayMs, waitForRetry } from '../../utils/retry.js'
 
 /** Max raw story chars fed to the generator overall (safety; ~170k max known). */
 const MAX_GENERATE_CHARS = 200_000
@@ -112,11 +113,17 @@ export function splitStorySections(content: string, batchChars: number = DOSSIER
 export async function generateDossier(
   userId: number,
   scriptId: string,
-  options: { model?: string; annex?: boolean } = {},
+  options: {
+    model?: string
+    annex?: boolean
+    onProgress?: (progress: { stage: string; percent: number; message?: string }) => void
+  } = {},
 ): Promise<GenerateResult> {
-  const { model, annex } = options
+  const { model, annex, onProgress } = options
+  const report = (stage: string, percent: number, message?: string) => onProgress?.({ stage, percent, message })
   if (!scriptId) return { ok: false, error: 'missing scriptId' }
 
+  report('read', 1, '读取故事原文')
   let raw: { name: string; content: string }
   try {
     raw = await readStoryForRag(userId, scriptId)
@@ -135,6 +142,7 @@ export async function generateDossier(
   const sections = splitStorySections(storyText)
   const batches = sections.slice(0, MAX_BATCHES)
   const totalBatches = batches.length
+  report('split', 5, `分成 ${totalBatches} 个处理批次`)
 
   const seenSceneNames: string[] = []
   const seenNpcNames: string[] = []
@@ -144,6 +152,8 @@ export async function generateDossier(
   let batchFailures = 0
 
   for (let bi = 0; bi < totalBatches; bi++) {
+    const batchStartPercent = 10 + Math.floor((bi / totalBatches) * 75)
+    report('batch', batchStartPercent, `正在处理第 ${bi + 1}/${totalBatches} 批`)
     const prompt = buildDossierPrompt({
       batchIndex: bi,
       storyText: batches[bi],
@@ -170,6 +180,12 @@ export async function generateDossier(
         if (!parsed) lastBatchError = '解析结果为空/无效 JSON'
       } catch (e) {
         lastBatchError = e instanceof Error ? e.message : String(e)
+        if (!isRetryableFailure(e)) break
+        if (attempt + 1 < DOSSIER_GEN_ATTEMPTS) {
+          const delay = retryDelayMs(attempt + 1)
+          report('retry', batchStartPercent, `第 ${bi + 1} 批网络请求失败，等待后重试（${attempt + 1}/${DOSSIER_GEN_ATTEMPTS - 1}）`)
+          await waitForRetry(delay)
+        }
       }
     }
     if (parsed && parsed.scenes.length + parsed.clues.length + parsed.npcs.length + (parsed.transitions?.length ?? 0) + (parsed.events?.length ?? 0) + (parsed.truths?.length ?? 0) + (parsed.endings?.length ?? 0) > 0) {
@@ -186,9 +202,12 @@ export async function generateDossier(
       lastError = `batch ${bi + 1}/${totalBatches}: ${lastBatchError || '解析结果为空'}`
       batchFailures++
     }
+    const percent = 10 + Math.floor(((bi + 1) / totalBatches) * 75)
+    report('batch', percent, `已处理 ${bi + 1}/${totalBatches} 批`)
   }
 
   if (parsedParts.length === 0) {
+    report('failed', 10, lastError || '档案生成失败')
     return { ok: false, error: lastError || 'dossier generation failed' }
   }
 
@@ -221,6 +240,7 @@ export async function generateDossier(
   // coverage gaps（P22）：本地计算原文未被 sceneText 覆盖的区间 + 场景锚点，
   // 落盘 .gaps.json（回退定位/质量门用）；失败不阻断生成。
   let gapsRan = false
+  report('coverage', 90, '计算剧本覆盖与剧透锚点')
   try {
     const gaps = computeCoverageGaps(storyText, dossier.scenes)
     await persistGaps(userId, {
@@ -254,6 +274,7 @@ export async function generateDossier(
   }
   dossier = { ...dossier, quality: qualitySummary }
 
+  report('save', 97, '保存档案与质量信息')
   await persist(userId, dossier)
   const result: GenerateResult = {
     ok: true,
@@ -282,6 +303,7 @@ export async function generateDossier(
     result.gapChars = quality.gapChars
     result.gapPct = quality.gapPct
   }
+  report('complete', 100, degraded ? '档案已生成，但部分内容质量不足' : '档案生成完成')
   return result
 }
 

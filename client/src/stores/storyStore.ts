@@ -53,15 +53,22 @@ export const useStoryStore = defineStore('story', () => {
    * filename/displayName/是否 Markdown）。原 pathToId（去扩展名）不再需要——
    * 索引键必须与服务端 storyId 一致（api-contract §8 按 userId + storyId 隔离）。
    */
-  async function indexStoryForRag(storyId: string): Promise<{ ok: boolean; error?: string; indexed?: number }> {
+  async function indexStoryForRag(storyId: string, operationId?: string): Promise<{ ok: boolean; error?: string; warning?: string; indexed?: number; networkError?: boolean }> {
     try {
       const filename = storyId.split(/[/\\]/).pop() || 'story.txt'
       const displayName = filename.replace(/\.[^./\\]+$/i, '')
       // M1-T3：切块搬到服务端——只报 storyId，服务端自读原文、自切块（递归语义 + 字符偏移）。
-      const result = await indexStory(storyId, { name: displayName })
-      return result.ok ? { ok: true, indexed: result.indexed } : { ok: false, error: result.error ?? 'Index failed' }
+      const result = await indexStory(storyId, { name: displayName }, operationId)
+      return result.ok
+        ? { ok: true, indexed: result.indexed, warning: result.warning }
+        : { ok: false, error: result.error ?? 'Index failed', warning: result.warning }
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+      const details = e && typeof e === 'object' ? e as { networkError?: unknown; statusCode?: unknown } : {}
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        networkError: details.networkError === true || (typeof details.statusCode === 'number' && (details.statusCode === 408 || details.statusCode === 425 || details.statusCode === 429 || details.statusCode >= 500)),
+      }
     }
   }
 

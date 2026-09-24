@@ -124,6 +124,7 @@ export async function testEmbedding(
 export async function index(
   userId: number,
   params: { scriptId?: string; chunks?: unknown; storyMeta?: { name?: string } } | undefined,
+  onProgress?: (progress: { stage: string; percent: number; message?: string }) => void,
 ): Promise<{ ok: boolean; indexed: number; error?: string; warning?: string }> {
   const { scriptId, chunks, storyMeta } = params || {}
   if (!scriptId) {
@@ -141,7 +142,10 @@ export async function index(
   // 动态导入：索引编排链（切块/故事读取/重排器）只在真正索引时才载入，
   // 不给服务启动与房间回合的模块图增加负担（冷启动 +1.1s 实测）。
   const { indexStoryForRag } = await import('./indexOrchestration.js')
-  const result = await indexStoryForRag(userId, String(scriptId), storyMeta, getEmbedding ? { getEmbedding } : {})
+  const result = await indexStoryForRag(userId, String(scriptId), storyMeta, {
+    ...(getEmbedding ? { getEmbedding } : {}),
+    ...(onProgress ? { onProgress } : {}),
+  })
   return { ok: result.ok, indexed: result.indexed ?? 0, error: result.error, warning: result.warning }
 }
 

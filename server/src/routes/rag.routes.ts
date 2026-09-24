@@ -3,6 +3,8 @@ import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError } from '../utils/errors.js'
 import * as ragService from '../services/ragService.js'
+import { runIdempotently, validOperationId } from '../services/operationIdempotency.js'
+import { pushRagProgress } from '../ws/progress.js'
 
 /**
  * RAG routes (api-contract §8) — migrated from the IPC handlers in
@@ -32,10 +34,35 @@ router.post('/test-embedding', (req: AuthRequest, res) => {
 
 /** POST /api/rag/index — rag:index. */
 router.post('/index', (req: AuthRequest, res) => {
-  void ragService
-    .index(req.userId as number, req.body)
-    .then((result) => res.json(result))
-    .catch((err) => sendError(res, err))
+  const userId = req.userId as number
+  const body = (req.body ?? {}) as { scriptId?: unknown; operationId?: unknown }
+  const scriptId = typeof body.scriptId === 'string' ? body.scriptId : ''
+  const operationId = validOperationId(body.operationId) ? body.operationId : undefined
+  const run = () => ragService.index(userId, req.body, operationId
+    ? (progress) => pushRagProgress(userId, { ...progress, operation: 'index', operationId, scriptId, state: 'running' })
+    : undefined)
+  const task = operationId
+    ? runIdempotently(`index:${userId}:${scriptId}:${operationId}`, run, `index:${userId}:${scriptId}`)
+    : run()
+
+  void task
+    .then((result) => {
+      if (operationId) {
+        pushRagProgress(userId, {
+          operation: 'index', operationId, scriptId,
+          stage: result.ok ? 'complete' : 'failed',
+          percent: result.ok ? 100 : undefined,
+          state: result.ok ? 'complete' : 'failed',
+          message: result.ok ? result.warning || '索引完成' : result.error || '索引失败',
+          ...(result.warning ? { warning: result.warning } : {}),
+        })
+      }
+      res.json(result)
+    })
+    .catch((err) => {
+      if (operationId) pushRagProgress(userId, { operation: 'index', operationId, scriptId, stage: 'failed', state: 'failed', message: err instanceof Error ? err.message : '索引失败' })
+      sendError(res, err)
+    })
 })
 
 /** DELETE /api/rag/index/:scriptId — rag:delete. */

@@ -21,6 +21,8 @@ export interface AuthResult {
 export interface RAGIndexParams {
   scriptId: string
   storyMeta?: { name?: string }
+  /** Stable key reused for transport retries so the server can deduplicate work. */
+  operationId?: string
 }
 
 export interface RAGContextParams {
@@ -43,6 +45,54 @@ export interface IndexedStory {
   name: string
   chunkCount: number
   indexedAt: number
+}
+
+/** GET /api/dossier summary and POST /api/dossier/:scriptId/generate response. */
+export interface StoryDossierSummary {
+  scriptId: string
+  name: string
+  sceneCount: number
+  generatedAt: number
+  coveragePct?: number
+  degraded?: boolean
+  failedBatches?: number
+}
+
+export interface StoryDossierGenerateResult {
+  ok: boolean
+  scriptId?: string
+  scenes?: number
+  clues?: number
+  npcs?: number
+  transitions?: number
+  events?: number
+  truths?: number
+  endings?: number
+  coveragePct?: number
+  degraded?: boolean
+  warnings?: string[]
+  annexImages?: number
+  annexDrops?: number
+  annexFailed?: number
+  annexPending?: number
+  annexTransitions?: number
+  annexClues?: number
+  gapCount?: number
+  gapChars?: number
+  gapPct?: number
+  error?: string
+}
+
+/** Server-pushed, user-scoped progress for long story setup operations. */
+export interface StoryOperationProgress {
+  operation: 'index' | 'dossier'
+  operationId: string
+  scriptId: string
+  stage: string
+  percent?: number
+  state: 'running' | 'complete' | 'failed'
+  message?: string
+  warning?: string
 }
 
 /** GET /api/rag/index/:scriptId 响应（原 Bridge.ragGetIndex 返回形状，#80 升格为具名 wire 类型）。 */
