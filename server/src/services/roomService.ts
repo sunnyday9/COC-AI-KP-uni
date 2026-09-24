@@ -14,7 +14,7 @@ import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
 import { logger } from '../utils/logging.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
-import { isKpChunkStreamEnabled } from '../config.js'
+import { isKpChunkStreamEnabled, isMockAiMode } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
 // 共用 checkStartGate，差异用 gateFor 表达。startGate 是零 fs/db 运行时依赖的叶子
@@ -44,6 +44,13 @@ export type RoomMember = RoomMemberInfo
 /** 房间事件（全序，seq 由 RoomService 串行分配）；payload 单一来源 = shared RoomEventPayloadMap。 */
 export type RoomEvent = { [K in RoomEventType]: { type: K; payload: RoomEventPayloadMap[K] } }[RoomEventType]
 
+interface PendingTurnMessage {
+  username: string
+  content: string
+  characterId: string | null
+  authorUserId: number
+}
+
 /** 房间持久化快照（rooms.state JSON）。 */
 export interface RoomSnapshot {
   seq: number
@@ -61,6 +68,11 @@ export interface RoomSnapshot {
   kpMemory?: string[]
   /** 长期摘要（ADR-0002 上下文收口，服务端持有）。 */
   longTermSummary?: string
+  /** 每房间近期对话上下文预算（字符数）；旧快照使用当前服务端配置。 */
+  /** Pending player actions survive a paused KP turn and server restart. */
+  pendingTurnMessages?: PendingTurnMessage[]
+  /** True while the current room owner must complete AI settings before KP can run. */
+  kpSetupRequired?: boolean
   updatedAt: number
 }
 
@@ -69,6 +81,7 @@ interface RoomOptions {
   ownerId: number
   ownerName: string
   storyId?: string | null
+  storyOwnerId?: number | null
   turnWindowMs?: number
   workflow?: StoryWorkflow
   restore?: RoomSnapshot | null
@@ -94,12 +107,18 @@ const LONG_TERM_SUMMARY_EVERY_TURNS = 10
  * `Record<string, unknown> | null`，interface 无隐式索引签名会断型。
  */
 export type RoomStoryContext = {
+  /** IDs of already obtained story clues, derived from server-owned room state. */
+  openClues: string[]
   /** 当前剧本 id（KP 图脚本门控 loadScriptContext 的入参）。 */
   scriptId: string
+  /** Account owning the selected story artifacts; AI calls use the current room owner. */
+  storyOwnerId: number
   /** 房间当前场景名（未切过场景以 undefined 传递；门控据此定位当前场景）。 */
   sceneId?: string
   /** 房间知识 workflow（rag/dossier；图内暂未读，透传保留）。 */
   workflow: StoryWorkflow
+  /** Dossier terminal metadata, kept out of player-facing prompt text. */
+  terminalEndings?: { name: string; condition: string; outcome?: string; relatedTruths?: string[] }[]
 }
 
 /**
@@ -113,6 +132,9 @@ export class RoomService {
 
   private phase: RoomPhase = 'lobby'
   private storyId: string | null = null
+  /** Account that owns the selected story artifacts; unlike AI identity, this survives handoff. */
+  private storyOwnerId: number | null = null
+  private kpSetupRequired = false
   private messages: Message[] = []
   private characters = new Map<string, COCCharacterSheet>()
   /** characterId → 绑定它的成员 userId（D5 归属校验）。 */
@@ -142,7 +164,9 @@ export class RoomService {
   private eventLogStartSeq = 0
   private snapshotTimer: NodeJS.Timeout | null = null
   /** 回合窗口（D4）：缓冲窗口内玩家消息，超时合并进一次 KP 回合。 */
-  private turnBuffer: { username: string; content: string; characterId: string | null; authorUserId: number }[] = []
+  private turnBuffer: PendingTurnMessage[] = []
+  /** Batch currently executing; included in snapshots until its turn commits. */
+  private activeTurnBatch: PendingTurnMessage[] = []
   private turnTimer: NodeJS.Timeout | null = null
   private turnFlushing = false
 
@@ -151,11 +175,19 @@ export class RoomService {
     this.ownerId = opts.ownerId
     this.ownerName = opts.ownerName
     this.storyId = opts.storyId ?? null
+    this.storyOwnerId = opts.storyOwnerId ?? (this.storyId ? opts.ownerId : null)
     this.turnWindowMs = opts.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
     this.workflow = opts.workflow ?? 'rag'
     if (opts.restore) {
       this.phase = opts.restore.phase ?? 'lobby'
       this.storyId = opts.restore.storyId ?? null
+      this.kpSetupRequired = opts.restore.kpSetupRequired === true
+      this.turnBuffer = Array.isArray(opts.restore.pendingTurnMessages)
+        ? opts.restore.pendingTurnMessages.filter((entry): entry is PendingTurnMessage =>
+            !!entry && typeof entry.username === 'string' && typeof entry.content === 'string' &&
+            (entry.characterId === null || typeof entry.characterId === 'string') && Number.isSafeInteger(entry.authorUserId),
+          )
+        : []
       this.messages = Array.isArray(opts.restore.messages) ? opts.restore.messages : []
       this.characters = new Map(Object.entries(opts.restore.characters ?? {}))
       this.clues = Array.isArray(opts.restore.clues) ? opts.restore.clues : []
@@ -178,6 +210,8 @@ export class RoomService {
   isEnded(): boolean { return this.phase === 'ended' }
   getSeq(): number { return this.seq }
   getStoryId(): string | null { return this.storyId }
+  getStoryOwnerId(): number | null { return this.storyOwnerId }
+  getKpSetupRequired(): boolean { return this.kpSetupRequired }
   getWorkflow(): StoryWorkflow { return this.workflow }
   getScene(): string | null { return this.scene }
   getMessages(): readonly Message[] { return this.messages }
@@ -201,6 +235,8 @@ export class RoomService {
       workflow: this.workflow === 'dossier' ? 'dossier' : 'rag',
       kpMemory: this.kpMemory,
       longTermSummary: this.longTermSummary,
+      pendingTurnMessages: [...this.activeTurnBatch, ...this.turnBuffer],
+      kpSetupRequired: this.kpSetupRequired,
       updatedAt: Date.now(),
     }
   }
@@ -287,6 +323,11 @@ export class RoomService {
     this.persistPhase('ended')
     this.emit({ type: 'state_patch', payload: { path: 'ending', value: ending } })
     this.emit({ type: 'room_meta', payload: { phase: 'ended', turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
+    // Endings are terminal state. Persist them immediately instead of waiting
+    // for the normal event-count/time snapshot threshold.
+    void this.persistSnapshot().catch((err) => {
+      logger.warn('room ending snapshot failed', { roomId: this.roomId, error: err instanceof Error ? err.message : String(err) })
+    })
   }
 
   /** 设置房间阶段（room_meta）。 */
@@ -303,7 +344,7 @@ export class RoomService {
     try {
       roomStorage.updateRoomPhase(this.roomId, phase)
     } catch (err) {
-      console.error(`[room-phase] room=${this.roomId} 落库 ${phase} 失败：${err instanceof Error ? err.message : String(err)}`)
+      logger.error('room phase persistence failed', { roomId: this.roomId, phase, error: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -329,8 +370,9 @@ export class RoomService {
   }
 
   /** 开始游戏（lobby → playing，绑定剧本）。 */
-  startGame(storyId: string): void {
+  startGame(storyId: string, storyOwnerId = this.ownerId): void {
     this.storyId = storyId
+    this.storyOwnerId = storyOwnerId
     this.phase = 'playing'
     this.emit({ type: 'room_meta', payload: { phase: 'playing', turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
   }
@@ -344,6 +386,7 @@ export class RoomService {
     const r = roomStorage.getRoomRow(this.roomId)
     if (!r) return
     if (typeof r.story_id === 'string') this.storyId = r.story_id
+    this.storyOwnerId = typeof r.story_id === 'string' ? (r.story_owner_id ?? r.owner_id) : null
     if (typeof r.phase === 'string' && (r.phase === 'lobby' || r.phase === 'playing' || r.phase === 'ended')) {
       this.phase = r.phase
     }
@@ -359,6 +402,11 @@ export class RoomService {
         this.characters.set(b.characterId, sheet)
         this.characterOwner.set(b.characterId, b.userId)
       } catch { /* 脏 sheet 忽略 */ }
+    }
+    if (this.phase === 'playing') {
+      void this.refreshOwnerAiSetupStatus().then((ready) => {
+        if (ready && this.turnBuffer.length > 0) void this.flushTurn()
+      })
     }
   }
 
@@ -429,44 +477,59 @@ export class RoomService {
   async flushTurn(): Promise<void> {
     if (this.turnFlushing) return
     // 结束态是终态（#54）：end_game 之后不再消费任何缓冲消息。
-    // 覆盖两条入口——本函数自身，以及回合进行中投递的消息（见下方 finally 的补触发）。
-    // 只拦 'ended'（不拦 lobby）：阶段门闩在 `submitPlayerChat`（生产唯一入口），
-    // 本方法是**无门闩的机制**——等待室闲聊本就不经它（D4/B6 既有分工）。
     if (this.isEnded()) {
       this.turnBuffer = []
       return
     }
-    const batch = this.turnBuffer
-    this.turnBuffer = []
-    if (this.turnTimer) {
-      clearTimeout(this.turnTimer)
-      this.turnTimer = null
-    }
-    if (batch.length === 0) return
+    if (this.turnBuffer.length === 0) return
 
     this.turnFlushing = true
     try {
-      // 合并为带行动者标记的 user 消息（D4：一次 LLM 推理覆盖多人行动）
+      // Check the successor's own provider setup before consuming queued player actions.
+      // When missing, keep the full batch in the persisted snapshot for an explicit retry.
+      if (!(await this.refreshOwnerAiSetupStatus())) {
+        // A paused room can receive more player actions while the flag is
+        // already set; persist the unchanged pause state together with the new
+        // queue so a restart cannot lose those actions.
+        await this.persistSnapshot()
+        return
+      }
+      const batch = this.turnBuffer
+      this.turnBuffer = []
+      this.activeTurnBatch = batch
+      await this.persistSnapshot()
+      if (this.turnTimer) {
+        clearTimeout(this.turnTimer)
+        this.turnTimer = null
+      }
+      if (batch.length === 0) return
+
+      const turnOwnerId = this.ownerId
+      const turnStoryOwnerId = this.storyOwnerId ?? this.ownerId
       const merged = batch.map((b) => `【${b.username}】${b.content}`).join('\n')
-      // 缺省工具 characterId 回退目标 = 最后一位行动者
       const activeCharacterId = batch[batch.length - 1]?.characterId ?? null
-      // D5 归属校验：窗口内行动者可用的角色卡 id 集（各自绑定的卡）
       const allowedCharacterIds = new Set(batch.map((b) => b.characterId).filter((id): id is string => !!id))
-      // 上下文注入服务端收口（ADR-0002）：RAG + 记忆 + 近窗对话在本侧组装；
-      // 历史不含本批（本批以合并 user 消息收尾），角色组随状态注入 system。
       const historyEnd = Math.max(0, this.messages.length - batch.length)
-      // 回合知识装配唯一入口（TurnKnowledge deep module）：workflow 分派 / 补充层 /
-      // 预取 / trace JSONL / wire 注入列口径全在其内，本路径一行调用。
       const { assembleTurnKnowledge } = await import('./turnKnowledge.js')
       const knowledge = await assembleTurnKnowledge({
         workflow: this.workflow,
-        ownerId: this.ownerId,
+        ownerId: turnOwnerId,
+        storyOwnerId: turnStoryOwnerId,
         storyId: this.storyId,
         roomId: this.roomId,
         scene: this.scene,
         playerText: merged,
         stage: 'turn',
       })
+      if (this.ownerId !== turnOwnerId) {
+        // Ownership changed during knowledge assembly. Requeue the complete
+        // batch so the successor gets a fresh turn assembled with their setup.
+        this.turnBuffer = [...batch, ...this.turnBuffer]
+        this.activeTurnBatch = []
+        await this.refreshOwnerAiSetupStatus()
+        await this.persistSnapshot()
+        return
+      }
       const chatMessages = buildRoomTurnMessages(
         this.promptInput(knowledge.storyName, this.messages.slice(0, historyEnd)),
         knowledge.ragContext,
@@ -474,25 +537,35 @@ export class RoomService {
         { workflow: this.workflow, sceneBlock: knowledge.sceneBlock, verifyBlock: knowledge.verifyBlock, supplement: knowledge.supplement },
       )
       await this.runKpTurnForRoom(
-        this.ownerId,
+        turnOwnerId,
         chatMessages,
-        this.buildStoryContext(),
+        this.buildStoryContext(knowledge.terminalEndings),
         activeCharacterId,
         (chunk) => this.emitKpChunk(chunk),
         allowedCharacterIds,
-        // wire 采样注入列：口径单源在 TurnKnowledge（场景块 + 补充小节；rag 房回退情报块）
         knowledge.wireInjectionText,
+        () => this.ownerId === turnOwnerId,
+        () => {
+          this.turnBuffer = [...batch, ...this.turnBuffer]
+          this.activeTurnBatch = []
+          void this.refreshOwnerAiSetupStatus()
+            .finally(() => this.persistSnapshot())
+            .catch((error) => logger.warn('room stale turn recovery persistence failed', { roomId: this.roomId, error: String(error) }))
+        },
       )
+      this.activeTurnBatch = []
+      await this.persistSnapshot()
     } finally {
       this.turnFlushing = false
-      // 本回合内 KP 可能调了 end_game（setEnding 改 phase）——此时缓冲里的消息
-      // **不再**补触发新回合（#54：已完结的局不该继续跑 KP）；直接丢弃。
-      // 用 isEnded() 而不是裸 `this.phase === 'ended'`：函数顶部那条同形守卫会把
-      // `this.phase` 收窄成非 ended，TS 在 finally 里看不到回合中的变更（TS2367）。
+      if (this.activeTurnBatch.length > 0) {
+        this.turnBuffer = [...this.activeTurnBatch, ...this.turnBuffer]
+        this.activeTurnBatch = []
+        void this.persistSnapshot().catch((error) => logger.warn('room interrupted turn recovery persistence failed', { roomId: this.roomId, error: String(error) }))
+      }
       if (this.isEnded()) {
         this.turnBuffer = []
-      } else if (this.turnBuffer.length > 0) {
-        // 审查修复：flush 期间到达的新消息补触发（否则挂起到下一条消息）
+      } else if (!this.kpSetupRequired && this.turnBuffer.length > 0) {
+        // Messages arriving while a healthy turn is running are flushed next.
         if (this.turnWindowMs <= 0) {
           void this.flushTurn()
         } else {
@@ -519,8 +592,17 @@ export class RoomService {
    * 房间故事上下文唯一构造点（#77 收编 flushTurn / runOpeningTurn 的重复字面量）：
    * 未绑定剧本（storyId 为空）传 null，KP 图据此跳过脚本门控。
    */
-  private buildStoryContext(): RoomStoryContext | null {
-    return this.storyId ? { scriptId: this.storyId, sceneId: this.scene ?? undefined, workflow: this.workflow } : null
+  private buildStoryContext(terminalEndings: RoomStoryContext['terminalEndings'] = []): RoomStoryContext | null {
+    return this.storyId
+      ? {
+          scriptId: this.storyId,
+          storyOwnerId: this.storyOwnerId ?? this.ownerId,
+          sceneId: this.scene ?? undefined,
+          openClues: this.clues.map((clue) => clue.id),
+          workflow: this.workflow,
+          terminalEndings,
+        }
+      : null
   }
 
   /**
@@ -550,6 +632,9 @@ export class RoomService {
     allowedCharacterIds?: Set<string>,
     /** 当轮 RAG 注入原文（wire 采样 T1；缺省 = 无注入）。 */
     ragContext = '',
+    /** Suppress subsequent graph calls and tool effects if governance changes mid-turn. */
+    isOwnerCurrent: () => boolean = () => true,
+    onOwnerChanged?: () => void,
   ): Promise<void> {
     const { runKpTurn } = await import('./kpTurnService.js')
     // dossier 查证工具执行器随回合知识一并收编在 TurnKnowledge（活值读取器传入——
@@ -577,11 +662,14 @@ export class RoomService {
         activeCharacterId,
         mutatorFactory,
         allowedCharacterIds, // D5：归属校验（窗口内行动者可用的角色卡集）
+        isOwnerCurrent,
+        onOwnerChanged,
         sampling: { roomId: this.roomId, storyId: this.storyId, ragContext }, // T1 wire 采样（唯一新缝）
         storyLookup: buildStoryLookup({ // dossier workflow 查证工具（rag = undefined）
           roomId: this.roomId,
           getWorkflow: () => this.workflow,
           getOwnerId: () => this.ownerId,
+          getStoryOwnerId: () => this.storyOwnerId ?? this.ownerId,
           getStoryId: () => this.storyId,
           getScene: () => this.scene,
         }),
@@ -666,9 +754,61 @@ export class RoomService {
     }
   }
 
+  private async refreshOwnerAiSetupStatus(): Promise<boolean> {
+    // aiService deliberately bypasses account settings in deterministic mock mode.
+    if (isMockAiMode()) {
+      this.setKpSetupRequired(null)
+      return true
+    }
+    let issue: string | null
+    try {
+      const { getAiSetupIssue } = await import('./settingsService.js')
+      issue = getAiSetupIssue(this.ownerId)
+    } catch (error) {
+      logger.warn('room owner AI setup check failed', { roomId: this.roomId, ownerId: this.ownerId, error: String(error) })
+      issue = '无法读取当前房主的 AI 设置，请检查设置后重试。'
+    }
+    this.setKpSetupRequired(issue)
+    return issue === null
+  }
+
+  private setKpSetupRequired(issue: string | null): void {
+    const required = issue !== null
+    if (this.kpSetupRequired === required) return
+    this.kpSetupRequired = required
+    this.emit({ type: 'state_patch', payload: { path: 'kpSetupRequired', value: required } })
+    if (required) {
+      this.appendMessage(
+        {
+          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: Date.now(),
+          role: 'system',
+          content: `KP 已暂停：${issue} 待处理的玩家行动已保留。配置后请房主点击“重试 KP”。`,
+        },
+        { userId: this.ownerId, roleName: 'system' },
+      )
+    }
+    void this.persistSnapshot().catch((error) => {
+      logger.warn('room AI setup status persistence failed', { roomId: this.roomId, ownerId: this.ownerId, error: String(error) })
+    })
+  }
+
+  /** Current owner can resume the preserved opening or queued player actions after setup. */
+  async retryKpTurn(userId: number): Promise<boolean> {
+    if (userId !== this.ownerId || !roomStorage.isRoomMember(this.roomId, userId) || this.phase !== 'playing') return false
+    if (!(await this.refreshOwnerAiSetupStatus())) return true
+    if (this.turnBuffer.length > 0) {
+      void this.flushTurn()
+      return true
+    }
+    const hasNarrative = this.messages.some((message) => message.role === 'player' || message.role === 'kp')
+    if (!hasNarrative && !this.openingStarted) this.beginOpeningIfPending()
+    return true
+  }
+
   /** opening（ADR-0002）：startRoom / 首次 join 时触发一次，失败不阻塞进入。 */
   beginOpeningIfPending(): void {
-    if (this.openingStarted || this.phase !== 'playing' || this.messages.length > 0) return
+    if (this.openingStarted || this.phase !== 'playing' || this.messages.some((message) => message.role === 'player' || message.role === 'kp')) return
     this.openingStarted = true
     void this.runOpeningTurn()
   }
@@ -681,18 +821,39 @@ export class RoomService {
    */
   private async runOpeningTurn(): Promise<void> {
     try {
+      const setupOwnerId = this.ownerId
+      if (!(await this.refreshOwnerAiSetupStatus())) {
+        this.openingStarted = false
+        return
+      }
+      if (this.ownerId !== setupOwnerId) {
+        this.openingStarted = false
+        void this.refreshOwnerAiSetupStatus().then((ready) => {
+          if (ready) this.beginOpeningIfPending()
+        })
+        return
+      }
+      const turnOwnerId = this.ownerId
       // 回合知识装配唯一入口（TurnKnowledge）：stage:'opening' = 无玩家文本——
       // rag query 退化为开场固定 query、补充层 query 退化为纯场景名（T4 契约）、不触发预取。
       const { assembleTurnKnowledge } = await import('./turnKnowledge.js')
       const knowledge = await assembleTurnKnowledge({
         workflow: this.workflow,
-        ownerId: this.ownerId,
+        ownerId: turnOwnerId,
+        storyOwnerId: this.storyOwnerId ?? this.ownerId,
         storyId: this.storyId,
         roomId: this.roomId,
         scene: this.scene,
         playerText: '',
         stage: 'opening',
       })
+      if (this.ownerId !== turnOwnerId) {
+        this.openingStarted = false
+        void this.refreshOwnerAiSetupStatus().then((ready) => {
+          if (ready) this.beginOpeningIfPending()
+        })
+        return
+      }
       const chatMessages = buildRoomOpeningMessages(this.promptInput(knowledge.storyName, this.messages), knowledge.ragContext, {
         workflow: this.workflow,
         sceneBlock: knowledge.sceneBlock,
@@ -701,19 +862,26 @@ export class RoomService {
       const firstCharacterId = [...this.characters.keys()][0] ?? null
       await this.enqueue(() =>
         this.runKpTurnForRoom(
-          this.ownerId,
+          turnOwnerId,
           chatMessages,
-          this.buildStoryContext(),
+          this.buildStoryContext(knowledge.terminalEndings),
           firstCharacterId,
           (chunk) => this.emitKpChunk(chunk),
           undefined,
           // wire 采样注入列：与 flushTurn 同口径（单源在 TurnKnowledge）
           knowledge.wireInjectionText,
+          () => this.ownerId === turnOwnerId,
+          () => {
+            this.openingStarted = false
+            void this.refreshOwnerAiSetupStatus().then((ready) => {
+              if (ready) this.beginOpeningIfPending()
+            })
+          },
         ),
       )
     } catch (err) {
       // opening 失败不阻塞（ADR-0002）——保留可见日志（此前全吞难排查）
-      console.log('[opening] runOpeningTurn FAILED room=', this.roomId, 'err=', err instanceof Error ? err.message : String(err))
+      logger.warn('room opening turn failed', { roomId: this.roomId, ownerId: this.ownerId, error: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -784,7 +952,7 @@ export function getOrCreateRoom(
         updatedAt: Date.now(),
       }
     }
-    room = new RoomService({ roomId, ownerId, ownerName, storyId, restore })
+    room = new RoomService({ roomId, ownerId, ownerName, storyId: typeof r?.story_id === 'string' ? r.story_id : storyId, storyOwnerId: r?.story_owner_id ?? (typeof r?.story_id === 'string' ? r.owner_id : null), restore })
     roomRegistry.set(roomId, room)
     // 对账（ADR-0001）：物化即列优先同步——列（story_id/phase）已入 restore，
     // 绑定角色组从 DB 装载（createSoloRoom 先绑后 join、TTL 回收重进都依赖此步）。
@@ -869,7 +1037,7 @@ export function listRoomsForUser(userId: number): roomStorage.RoomListItemRow[] 
   return roomStorage.listRoomsForUser(userId)
 }
 
-/** GET /api/rooms/solo —— 未结束单人局列表（继续游戏入口，ADR-0002）。 */
+/** GET /api/rooms/solo —— 未结束单人局列表（游戏 hub 的 solo 续玩入口，ADR-0002）。 */
 export function listSoloRoomsForUser(userId: number): roomStorage.SoloRoomListItemRow[] {
   return roomStorage.listSoloRoomsForUser(userId)
 }
@@ -890,10 +1058,8 @@ export async function createSoloRoom(
     return { ok: false, reason: 'bad-request', message: 'sheet required (COCCharacterSheet)' }
   }
   // 开局门闩（唯一判定落点 startGate，gateFor='solo-create'）：solo 出生即 playing、不经
-  // startRoom——dossier workflow 只拦降质档案（#55 产物期），否则 A/B harness 与 API 调用方
-  // 仍会静默拿到残档房。缺档案不拦（维持现状：多人 startRoom 已有「未生成」门闩，#55 只
-  // 收窄「生成了但质量不足」的静默放行）；rag 局零门闩（现状不变）。无结束态/已选剧本/
-  // 绑卡闩——房间行尚未存在，一体动作自己在下面的同一事务里绑卡。
+  // startRoom，但仍必须通过所选 workflow 的知识 artifact 门闩，避免直接进入没有原文的局。
+  // 无结束态/已选剧本/绑卡闩——房间行尚未存在，一体动作自己在下面的同一事务里绑卡。
   const gate = await checkStartGate({ gateFor: 'solo-create', storyId, ownerId: userId, workflow: input?.workflow })
   if (!gate.ok) return gate
   const characterId = `char_${crypto.randomUUID().slice(0, 8)}`
@@ -910,7 +1076,7 @@ export async function createSoloRoom(
     // 出生即 playing（列权威）；turnWindowMs=0 进 state（ADR-0002：solo 恒严格排队，restore 时实例取 0）。
     // workflow（实验分支）一并进 state——实例物化时经 snapshot restore 读到。
     // 懒激活保持：REST 建房只持久化，不激活实例。
-    roomStorage.updateRoomStart(roomId, storyId)
+    roomStorage.updateRoomStart(roomId, storyId, userId)
     roomStorage.updateRoomStateSettings(roomId, serializeRoomState(workflow === 'dossier' ? { turnWindowMs: 0, workflow: 'dossier' } : { turnWindowMs: 0 }))
     db.exec('COMMIT')
     return { ok: true, roomId, inviteCode, characterId }
@@ -984,15 +1150,20 @@ export async function startRoom(
   if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
   // 开局门闩（唯一判定落点 startGate）：入口只喂房间行摘要 + 成员行摘要 + 归属，
   // 判定（含 rooms.state workflow 解析与分派）全在门内。
+  // Reuse the persisted source when the selected story is unchanged; a newly
+  // selected story belongs to the current owner who selected it.
+  const storyOwnerId = storyId === g.room.story_id && g.room.story_owner_id !== null
+    ? g.room.story_owner_id
+    : g.room.owner_id
   const gate = await checkStartGate({
     gateFor: 'lobby-start',
     storyId,
-    ownerId: g.room.owner_id,
+    ownerId: storyOwnerId,
     room: { phase: g.room.phase, state: g.room.state },
     members: roomStorage.listMembers(roomId).map((m) => ({ characterId: m.character_id, username: m.username })),
   })
   if (!gate.ok) return gate
-  roomStorage.updateRoomStart(roomId, storyId)
+  roomStorage.updateRoomStart(roomId, storyId, storyOwnerId)
   syncActiveRoom(roomId)
   // opening 回合（ADR-0002）：实例已激活则立即触发；未激活时随首次 join 触发（懒激活保持）。
   getRoom(roomId)?.beginOpeningIfPending()

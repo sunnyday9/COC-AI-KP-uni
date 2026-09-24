@@ -10,7 +10,7 @@
  * `getRoomDetail` / `listSoloRoomsForUser` / restore（列优先）的唯一真源——
  * 于是结束的局仍挂在首页入口上，重启后还会被复活成进行中。
  */
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 
 // 桩掉 KP 回合实现：本 spec 只验「结束态是否触发回合」，不碰 LLM/检索链
 // （真实链会动态 import embedding → 在空 MODELS_DIR 下试图下载模型）。
@@ -38,6 +38,55 @@ vi.mock('../roomMemory.js', () => ({
   extractMemoryPoints: vi.fn(async () => []),
   summarizeLongTerm: vi.fn(async () => ''),
 }))
+vi.mock('../ragService.js', () => ({
+  listStories: vi.fn(() => [
+    { storyId: 'story_e1', name: 'e1', chunkCount: 1, indexedAt: 1 },
+    { storyId: 'story_e2', name: 'e2', chunkCount: 1, indexedAt: 1 },
+    { storyId: 'story_e3', name: 'e3', chunkCount: 1, indexedAt: 1 },
+  ]),
+}))
+
+const endedPhaseStories = vi.hoisted(() => ['story_e1', 'story_e2', 'story_e3'])
+vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
+  return {
+    ...actual,
+    listDossiers: vi.fn(async () => endedPhaseStories.map((scriptId) => ({
+      scriptId,
+      name: scriptId,
+      sceneCount: 1,
+      generatedAt: 1,
+      degraded: false,
+      coveragePct: 100,
+    }))),
+    loadDossier: vi.fn(async (_ownerId: number, scriptId: string) => ({
+      scriptId,
+      storyName: scriptId,
+      generatedAt: 1,
+      scenes: [{ id: 'reveal', name: '终幕', sceneText: '终幕原文' }],
+      clues: [],
+      npcs: [],
+      truths: [{ id: 'truth_finale', title: '幕后真相', detail: '真相细节', revealScene: 'reveal' }],
+      endings: [],
+    })),
+  }
+})
+vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/coverageGaps.js')>()
+  return {
+    ...actual,
+    loadGaps: vi.fn(async (_ownerId: number, scriptId: string) => ({
+      scriptId,
+      storyChars: 20_000,
+      sceneTextChars: 4,
+      gapCount: 0,
+      gapChars: 0,
+      gapPct: 0,
+      spans: [],
+      sceneAnchors: [{ id: 'reveal', name: '终幕', matched: true, starts: [12_000] }],
+    })),
+  }
+})
 
 import {
   createSoloRoom,
@@ -74,6 +123,13 @@ const ENDING = { outcome: 'victory', title: '真相大白', summary: '调查员�
 afterEach(() => {
   _clearRoomRegistryForTests()
   runKpTurnMock.mockClear()
+  vi.unstubAllEnvs()
+})
+
+beforeEach(() => {
+  // This suite verifies room end-state semantics; the mocked KP turn should not
+  // be paused by the separate per-owner provider setup preflight.
+  vi.stubEnv('MOCK_AI', '1')
 })
 
 describe('#54 end_game 落库 phase 列', () => {
@@ -87,10 +143,17 @@ describe('#54 end_game 落库 phase 列', () => {
     expect(listSoloRoomsForUser(userId).map((r) => r.roomId)).toContain(created.roomId)
 
     const room = getOrCreateRoom(created.roomId, userId, 'ended_alice', 'story_e1')
+    const events: unknown[] = []
+    const unsubscribe = room.subscribe((event) => events.push(event))
     room.setEnding(ENDING)
 
     // ① 权威列落库
     expect(getRoomRow(created.roomId)!.phase).toBe('ended')
+    expect(room.snapshot().ending).toEqual(ENDING)
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'state_patch', payload: { path: 'ending', value: ENDING } }),
+      expect.objectContaining({ type: 'room_meta', payload: expect.objectContaining({ phase: 'ended' }) }),
+    ]))
     // ② 继续游戏入口不再列出（listSoloRoomsForUser 的 WHERE phase != 'ended'）
     expect(listSoloRoomsForUser(userId).map((r) => r.roomId)).not.toContain(created.roomId)
     // ③ 房间详情报 ended（getRoomDetail 读的就是这一列）
@@ -98,6 +161,7 @@ describe('#54 end_game 落库 phase 列', () => {
     expect(detail.ok).toBe(true)
     if (detail.ok) expect(detail.detail.phase).toBe('ended')
 
+    unsubscribe()
     room.dispose()
   })
 
@@ -122,6 +186,8 @@ describe('#54 end_game 落库 phase 列', () => {
     const restored = getOrCreateRoom(created.roomId, userId, 'ended_bob')
     try {
       expect(restored.getPhase()).toBe('ended')
+      expect(restored.getEnding()).toEqual(ENDING)
+      expect(restored.snapshot().ending).toEqual(ENDING)
       // 结束态下玩家消息只进聊天流，**不触发 KP 回合**（等一段确定的时间再看计数）
       restored.submitPlayerChat(userId, '我还想继续调查。')
       await new Promise((r) => setTimeout(r, 200))

@@ -7,8 +7,9 @@ import AppIcon from '../ui/AppIcon.vue'
  * 原 vue-router 父子路由结构 → uni-app 无嵌套路由：每个页面自行包裹 <app-layout>。
  * - 桌面侧边栏 / 移动端底部导航：原 Tailwind md: 断点 → CSS @media（H5 生效；
  *   小程序端无媒体查询，回落为移动端底部导航形态）。
- * - 路由跳转：router.push → uni.navigateTo；首页为根页面用 uni.reLaunch
- *   （避免页面栈堆积）；当前项高亮由各页面传入 active 判断。
+ * - 路由跳转：自定义导航不属于 pages.json tabBar，因此切换时用
+ *   uni.redirectTo 替换当前页；首页用 uni.reLaunch 清理返回栈。
+ *   当前项高亮由各页面传入 active 判断。
  * - 背景图：原各 View 自带 bg-cover + 暗色遮罩 → 统一由 layout 渲染
  *   <image mode="aspectFill"> 背景层 + 遮罩（小程序端 background-attachment
  *   不支持，fixed 背景层等价于原 bg-fixed）。
@@ -32,7 +33,7 @@ const props = withDefaults(defineProps<{
 const navItems = [
   { key: 'home' as const, path: '/pages/home/index', label: '首页', icon: 'house' },
   { key: 'scripts' as const, path: '/pages/scripts/index', label: '故事', icon: 'book-open' },
-  { key: 'game' as const, path: '/pages/game/index', label: '游戏', icon: 'sword' },
+  { key: 'game' as const, path: '/pages/game/hub', label: '游戏', icon: 'sword' },
   { key: 'settings' as const, path: '/pages/settings/index', label: '设置', icon: 'gear' },
 ]
 
@@ -41,7 +42,7 @@ function go(item: { key: string; path: string }) {
   if (item.key === 'home') {
     uni.reLaunch({ url: item.path })
   } else {
-    uni.navigateTo({ url: item.path })
+    uni.redirectTo({ url: item.path })
   }
 }
 </script>

@@ -338,7 +338,10 @@ export interface VerifyMeta {
 }
 
 export interface VerifyOriginalDeps {
+  /** AI credential owner (current room owner). */
   userId: number
+  /** Story file owner; defaults to userId for non-room callers. */
+  storyOwnerId?: number
   scriptId: string
   /** 原文读取（缺省 readStoryForRag + 进程内 TTL 缓存）。 */
   loadStoryText?: () => Promise<string | null>
@@ -445,7 +448,8 @@ export async function verifyOriginal(
       meta: { ok: false, tier: 'none', spoiler: 'normal', cached: false, chars: 0, reason: 'empty-question', durationMs: 0 },
     }
   }
-  const cacheKey = `${deps.userId}:${deps.scriptId}:${scene}:${question}`
+  const storyOwnerId = deps.storyOwnerId ?? deps.userId
+  const cacheKey = `${storyOwnerId}:${deps.scriptId}:${scene}:${question}`
   const hit = answerCache.get(cacheKey)
   if (hit && now() - hit.at < CACHE_TTL_MS) {
     return { content: hit.content, meta: { ...hit.meta, cached: true, durationMs: Date.now() - started } }
@@ -453,7 +457,7 @@ export async function verifyOriginal(
 
   let storyText: string | null = null
   try {
-    storyText = deps.loadStoryText ? await deps.loadStoryText() : await defaultLoadStoryText(deps.userId, deps.scriptId, now)
+    storyText = deps.loadStoryText ? await deps.loadStoryText() : await defaultLoadStoryText(storyOwnerId, deps.scriptId, now)
   } catch {
     storyText = null
   }
@@ -465,8 +469,8 @@ export async function verifyOriginal(
   }
 
   const [gaps, dossier] = await Promise.all([
-    (deps.loadGaps ?? (() => loadGaps(deps.userId, deps.scriptId)))().catch(() => null),
-    (deps.loadDossier ?? (() => loadDossier(deps.userId, deps.scriptId)))().catch(() => null),
+    (deps.loadGaps ?? (() => loadGaps(storyOwnerId, deps.scriptId)))().catch(() => null),
+    (deps.loadDossier ?? (() => loadDossier(storyOwnerId, deps.scriptId)))().catch(() => null),
   ])
 
   const loc = locateForQuestion(storyText, gaps, dossier, scene || undefined, question, deps.budget ?? DEFAULT_BUDGET)

@@ -38,6 +38,60 @@ vi.mock('../roomMemory.js', () => ({
   extractMemoryPoints: vi.fn(async () => []),
   summarizeLongTerm: vi.fn(async () => ''),
 }))
+const reaperStories = vi.hoisted(() => ['story_r1', 'story_r2', 'story_r3', 'story_r4', 'story_r5', 'story_r6', 'story_r7'])
+vi.mock('../ragService.js', () => ({
+  // createSoloRoom now enforces the same indexed-story start gate as a lobby
+  // start. Seed every synthetic story used by the reaper cases so this suite
+  // exercises TTL persistence rather than rejecting its fixture at creation.
+  listStories: vi.fn(() =>
+    reaperStories.map((storyId) => ({
+      storyId,
+      name: 'reaper',
+      chunkCount: 1,
+      indexedAt: 1,
+    })),
+  ),
+}))
+vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
+  return {
+    ...actual,
+    listDossiers: vi.fn(async () => reaperStories.map((scriptId) => ({
+      scriptId,
+      name: 'reaper',
+      sceneCount: 1,
+      generatedAt: 1,
+      degraded: false,
+      coveragePct: 100,
+    }))),
+    loadDossier: vi.fn(async (_ownerId: number, scriptId: string) => ({
+      scriptId,
+      storyName: 'reaper',
+      generatedAt: 1,
+      scenes: [{ id: 'reveal', name: '终幕', sceneText: '终幕原文' }],
+      clues: [],
+      npcs: [],
+      truths: [{ id: 'truth_finale', title: '幕后真相', detail: '真相细节', revealScene: 'reveal' }],
+      endings: [],
+    })),
+  }
+})
+vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/coverageGaps.js')>()
+  return {
+    ...actual,
+    loadGaps: vi.fn(async (_ownerId: number, scriptId: string) => ({
+      scriptId,
+      storyChars: 20_000,
+      sceneTextChars: 4,
+      gapCount: 0,
+      gapChars: 0,
+      gapPct: 0,
+      spans: [],
+      sceneAnchors: [{ id: 'reveal', name: '终幕', matched: true, starts: [12_000] }],
+    })),
+  }
+})
 
 import {
   createSoloRoom,

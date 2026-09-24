@@ -2,7 +2,7 @@
  * Solo 房间领域直测（ADR-0002：单人=单成员房间）——RoomService 领域方法缝，
  * node:sqlite 临时库（test/setup.ts 每 worker 独立 DATA_DIR），唯一 id 隔离用例。
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import {
   createSoloRoom,
   listRoomsForUser,
@@ -14,6 +14,22 @@ import {
 } from '../roomService.js'
 import { getRoomRow } from '../roomStorage.js'
 import { getDb } from '../../db/index.js'
+
+const listStoriesMock = vi.hoisted(() => vi.fn())
+vi.mock('../ragService.js', () => ({ listStories: listStoriesMock }))
+
+const listDossiersMock = vi.hoisted(() => vi.fn())
+const loadDossierMock = vi.hoisted(() => vi.fn())
+vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
+  return { ...actual, listDossiers: listDossiersMock, loadDossier: loadDossierMock }
+})
+
+const loadGapsMock = vi.hoisted(() => vi.fn())
+vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/coverageGaps.js')>()
+  return { ...actual, loadGaps: loadGapsMock }
+})
 
 const suite = `solo_${Date.now()}`
 
@@ -30,6 +46,45 @@ const validSheet = {
 
 afterEach(() => {
   _clearRoomRegistryForTests()
+})
+
+beforeEach(() => {
+  const stories = [
+    { storyId: 'story_solo_a', name: 'a', chunkCount: 1, indexedAt: 1 },
+    { storyId: 'story_w', name: 'w', chunkCount: 1, indexedAt: 1 },
+    { storyId: 'story_c', name: 'c', chunkCount: 1, indexedAt: 1 },
+    { storyId: 'story_c2', name: 'c2', chunkCount: 1, indexedAt: 1 },
+    { storyId: 'story_e', name: 'e', chunkCount: 1, indexedAt: 1 },
+  ]
+  listStoriesMock.mockReturnValue(stories)
+  listDossiersMock.mockResolvedValue(stories.map(({ storyId, name }) => ({
+    scriptId: storyId,
+    name,
+    sceneCount: 1,
+    generatedAt: 1,
+    degraded: false,
+    coveragePct: 100,
+  })))
+  loadDossierMock.mockImplementation(async (_ownerId: number, scriptId: string) => ({
+    scriptId,
+    storyName: scriptId,
+    generatedAt: 1,
+    scenes: [{ id: 'reveal', name: '终幕', sceneText: '终幕原文' }],
+    clues: [],
+    npcs: [],
+    truths: [{ id: 'truth_finale', title: '幕后真相', detail: '真相细节', revealScene: 'reveal' }],
+    endings: [],
+  }))
+  loadGapsMock.mockImplementation(async (_ownerId: number, scriptId: string) => ({
+    scriptId,
+    storyChars: 20_000,
+    sceneTextChars: 4,
+    gapCount: 0,
+    gapChars: 0,
+    gapPct: 0,
+    spans: [],
+    sceneAnchors: [{ id: 'reveal', name: '终幕', matched: true, starts: [12_000] }],
+  }))
 })
 
 describe('createSoloRoom 一体领域动作', () => {

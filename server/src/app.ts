@@ -4,6 +4,7 @@ import cors from 'cors'
 import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
 import { PORT, isMockAiMode } from './config.js'
+import { getDb } from './db/index.js'
 import { logger } from './utils/logging.js'
 import { startRoomReaper } from './services/roomService.js'
 import { createWsServer } from './ws/index.js'
@@ -72,6 +73,8 @@ const isMain =
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
 if (isMain) {
+  // Apply and validate schema migrations before accepting traffic.
+  getDb()
   const httpServer = createApp().listen(PORT, () => {
     logger.info(`COC AI KP server listening on http://localhost:${PORT}`)
     if (isMockAiMode()) {

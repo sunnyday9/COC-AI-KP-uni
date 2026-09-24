@@ -37,11 +37,12 @@ function gaps(): CoverageGaps {
     sceneAnchors: [
       { id: 's1', name: '门厅', matched: true, starts: [300] },
       { id: 's2', name: '书房', matched: true, starts: [5300] },
+      { id: 's3', name: '终幕', matched: true, starts: [18000] },
     ],
   }
 }
 
-function dossier(truths: { revealScene?: string }[] = []): StoryDossier {
+function dossier(truths: { revealScene?: string }[] = [{ revealScene: 's3' }]): StoryDossier {
   return {
     schemaVersion: 2,
     storyName: '测试',
@@ -49,6 +50,7 @@ function dossier(truths: { revealScene?: string }[] = []): StoryDossier {
     scenes: [
       { id: 's1', name: '门厅', sceneText: '门厅里挂着黄铜吊灯，地板上铺着深红地毯。' },
       { id: 's2', name: '书房', sceneText: '书房四壁皆是书架，写字台上摊着一本账簿。' },
+      { id: 's3', name: '终幕', sceneText: '终幕的门缓缓关上。' },
     ],
     clues: [],
     npcs: [],
@@ -78,16 +80,16 @@ describe('supplementAssembly: 空输入与降级', () => {
     expect(res.blocks).toEqual([])
   })
 
-  it('无 gaps（无档案锚点）→ 全部无归属，仍可注入（只是不排序为场景内）', () => {
+  it('缺少 dossier/gaps 元数据 → fail closed，不把无法检查剧透的块注入', () => {
     const res = assembleSupplement({
       candidates: [cand('c1', '铜灯下的地毯泛着暗红。', 100)],
       gaps: null,
       dossier: null,
       currentScene: 's1',
     })
-    expect(res.blocks).toHaveLength(1)
-    expect(res.blocks[0].attribution).toBe('none')
-    expect(res.section).toContain('铜灯下的地毯泛着暗红。')
+    expect(res.blocks).toEqual([])
+    expect(res.droppedSpoiler).toBe(1)
+    expect(res.section).toBe('')
   })
 
   it('空 content / 纯空白候选被丢弃（不占预算）', () => {
@@ -147,28 +149,28 @@ describe('supplementAssembly: 剧透硬闸（revealScene 锚点相交即丢）',
     expect(res.blocks).toEqual([])
   })
 
-  it('revealScene 无锚点（matched=false / 未收录）→ 闸门不误伤其它块', () => {
+  it('revealScene 无可用锚点（matched=false / 未收录）→ 元数据不 usable，fail closed', () => {
     const g = gaps()
-    g.sceneAnchors = [...g.sceneAnchors, { id: 's3', name: '地窖', matched: false }]
+    g.sceneAnchors = [...g.sceneAnchors.filter((anchor) => anchor.id !== 's3'), { id: 's3', name: '终幕', matched: false }]
     const res = assembleSupplement({
       candidates: [cand('c1', '地窖的台阶湿滑。', 12000, 0.6)],
       gaps: g,
       dossier: dossier([{ revealScene: 's3' }]),
       currentScene: 's1',
     })
-    expect(res.blocks.map((b) => b.id)).toEqual(['c1'])
-    expect(res.droppedSpoiler).toBe(0)
+    expect(res.blocks).toEqual([])
+    expect(res.droppedSpoiler).toBe(1)
   })
 
-  it('无 truths → 无剧透丢弃', () => {
+  it('没有 truths/revealScene 声明 → 不能证明硬闸可评估，fail closed', () => {
     const res = assembleSupplement({
       candidates: [cand('c1', '书房里账簿摊开。', 5300, 0.6)],
       gaps: gaps(),
       dossier: dossier([]),
       currentScene: 's1',
     })
-    expect(res.blocks).toHaveLength(1)
-    expect(res.droppedSpoiler).toBe(0)
+    expect(res.blocks).toEqual([])
+    expect(res.droppedSpoiler).toBe(1)
   })
 })
 
@@ -277,6 +279,7 @@ describe('supplementAssembly: 跨场景块至多 1 条 + 前缀', () => {
     g.sceneAnchors = [
       { id: 's1', name: '门厅', matched: true, starts: [300] },
       { id: 's2', name: '书房', matched: true, starts: [2000] },
+      { id: 's3', name: '终幕', matched: true, starts: [18000] },
     ]
     const res = assembleSupplement({
       candidates: [cand('x1', '重叠区描写一。', 2100, 0.9), cand('x2', '重叠区描写二。', 2200, 0.8)],
@@ -293,6 +296,7 @@ describe('supplementAssembly: 跨场景块至多 1 条 + 前缀', () => {
     g.sceneAnchors = [
       { id: 's1', name: '门厅', matched: true, starts: [300] },
       { id: 's2', name: '书房', matched: true, starts: [2000] },
+      { id: 's3', name: '终幕', matched: true, starts: [18000] },
     ]
     const res = assembleSupplement({
       candidates: [cand('x1', '重叠区描写一。', 2100, 0.9)],
@@ -309,6 +313,7 @@ describe('supplementAssembly: 跨场景块至多 1 条 + 前缀', () => {
     g.sceneAnchors = [
       { id: 's1', name: '门厅', matched: true, starts: [300] },
       { id: 's2', name: '书房', matched: true, starts: [2000] },
+      { id: 's3', name: '终幕', matched: true, starts: [18000] },
     ]
     const res = assembleSupplement({
       candidates: [cand('x1', '重叠区描写一。', 2100, 0.9)],
@@ -597,6 +602,17 @@ describe('supplementAssembly: plain 模式（rag 房标准情报块，审查发�
     expect(res.droppedSpoiler).toBe(1)
   })
 
+  it('plain 缺少可用的真相锚点时不输出候选块', () => {
+    const res = assembleSupplement({
+      candidates: [cand('possible-spoiler', '书房里的结局说明。', 5300, 0.99)],
+      gaps: gaps(),
+      dossier: dossier([{ revealScene: '未收录的揭晓场景' }]),
+      mode: 'plain',
+    })
+    expect(res.blocks).toEqual([])
+    expect(res.droppedSpoiler).toBe(1)
+  })
+
   it('plain 仍受条数/预算约束', () => {
     const many = Array.from({ length: 8 }, (_, i) => cand(`c${i}`, `短句${i}。`, 400 + i, 0.9 - i * 0.01))
     const res = assembleSupplement({ candidates: many, gaps: gaps(), dossier: dossier(), currentScene: '门厅', mode: 'plain' })
@@ -705,20 +721,62 @@ describe('supplementService: 端到端编排（注入缝，不触网不加载模
     expect(res.chars).toBeLessThanOrEqual(1_600)
   })
 
-  it('无档案（gaps/dossier 均 null）→ 归属全 none、闸门不生效，仍能注入纹理', async () => {
+  it('运行时缺少 dossier/gaps → fail closed，且不启动向量检索', async () => {
     const { buildSupplement } = await import('../supplementService.js')
+    const queryVectors = fakeVectors([{ id: 'a', content: '门厅的铜灯泛着暖光。', start: 400, distance: 0.2 }])
     const res = await buildSupplement(
       { userId: 1, scriptId: 'st1', playerText: '看看门厅', sceneName: '门厅' },
       {
-        queryVectors: fakeVectors([{ id: 'a', content: '门厅的铜灯泛着暖光。', start: 400, distance: 0.2 }]),
+        queryVectors,
         loadGaps: async () => null,
         loadDossier: async () => null,
         rerank: async (_q, p) => p.map((_, i) => ({ index: i, score: 1 - i * 0.1 })),
       },
     )
+    expect(res.section).toBe('')
+    expect(res.blocks).toEqual([])
+    expect(res.error).toBe('spoiler-metadata-unavailable')
+    expect(res.degraded).toBe(true)
+    expect(queryVectors).not.toHaveBeenCalled()
+  })
+
+  it('plain 模式具备可用元数据时仍检索并注入 rag 唯一的知识来源', async () => {
+    const { buildSupplement } = await import('../supplementService.js')
+    const queryVectors = fakeVectors([
+      { id: 'texture', content: '门厅的铜灯泛着暖光。', start: 400, distance: 0.2 },
+      { id: 'ending', content: '结局：调查员被永远困在书房。', start: 5300, distance: 0.1 },
+    ])
+    const res = await buildSupplement(
+      { userId: 1, scriptId: 'st1', playerText: '【玩家】查看门厅', sceneName: '门厅', mode: 'plain' },
+      {
+        queryVectors,
+        loadGaps: async () => GAPS,
+        loadDossier: async () => DOSSIER,
+        rerank: async (_q, passages) => passages.map((_, i) => ({ index: i, score: 1 - i * 0.1 })),
+      },
+    )
+    expect(queryVectors).toHaveBeenCalledOnce()
     expect(res.section).toContain('铜灯')
-    expect(res.blocks[0].attribution).toBe('none')
-    expect(res.blocks[0].crossScene).toBe(false)
+    expect(res.section).not.toContain('调查员被永远困在书房')
+    expect(res.droppedSpoiler).toBe(1)
+  })
+
+  it('运行时遇到未锚定的 revealScene → fail closed', async () => {
+    const { buildSupplement } = await import('../supplementService.js')
+    const queryVectors = fakeVectors([{ id: 'possible-spoiler', content: '结局在此揭晓。', start: 5300, distance: 0.1 }])
+    const unanchored = dossier([{ revealScene: '失配的揭晓场景' }])
+    const res = await buildSupplement(
+      { userId: 1, scriptId: 'st1', playerText: '查看', mode: 'plain' },
+      {
+        queryVectors,
+        loadGaps: async () => GAPS,
+        loadDossier: async () => unanchored,
+        rerank: async () => null,
+      },
+    )
+    expect(res.section).toBe('')
+    expect(res.error).toBe('spoiler-metadata-unavailable')
+    expect(queryVectors).not.toHaveBeenCalled()
   })
 
   it('检索抛错 → 空小节 + error，不抛出（回合不中断）', async () => {
@@ -795,19 +853,21 @@ describe('supplementService: 端到端编排（注入缝，不触网不加载模
     expect(res.droppedSpoiler).toBe(2)
   })
 
-  it('无揭晓区域时，无偏移块仍可注入（闸门不该在无剧透风险时误杀）', async () => {
+  it('truth layer 为空时没有显式 no-spoiler 信号 → fail closed', async () => {
     const { buildSupplement } = await import('../supplementService.js')
+    const queryVectors = fakeVectors([{ id: 'possible-spoiler', content: '未锚定的原文段落。', start: 400, distance: 0.1 }])
     const res = await buildSupplement(
       { userId: 1, scriptId: 'st1', playerText: '看看门厅', sceneName: '门厅' },
       {
-        queryVectors: async () => ({ chunks: [{ id: 'nostart', content: '无偏移的原文描写。', metadata: {}, distance: 0.1 }] }),
+        queryVectors,
         loadGaps: async () => GAPS,
         loadDossier: async () => dossier([]), // 无 truths → 无揭晓区域
         rerank: async () => null,
       },
     )
-    expect(res.blocks.map((b) => b.id)).toEqual(['nostart'])
-    expect(res.blocks[0].attribution).toBe('none')
+    expect(res.blocks).toEqual([])
+    expect(res.error).toBe('spoiler-metadata-unavailable')
+    expect(queryVectors).not.toHaveBeenCalled()
   })
 
   it('重排同步抛错 → 降级余弦，不抛出（"永不抛出"须覆盖同步异常）', async () => {

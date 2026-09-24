@@ -24,13 +24,17 @@
  * 门禁安全边界：本模块静态图上不牵连任何重依赖链）。
  */
 import type { StoryWorkflow } from '../../services/kpPromptService.js'
+import { logger } from '../../utils/logging.js'
 
 /** dossier 查证工具执行器的输入：房间 id 直传；owner/剧本/场景是**运行时活值**——
  *  经读取器在工具调用时刻取值（工厂门在装配时刻判定一次，活值语义见模块头注释）。 */
 export interface StoryLookupInput {
   roomId: string
   getWorkflow: () => StoryWorkflow
+  /** Current room owner for AI calls. */
   getOwnerId: () => number
+  /** Persisted story source owner for files, dossier, and gaps. */
+  getStoryOwnerId: () => number
   getStoryId: () => string | null
   getScene: () => string | null
 }
@@ -48,10 +52,11 @@ export async function runStoryLookup(
   args: Record<string, unknown>,
 ): Promise<{ content: string }> {
   const ownerId = input.getOwnerId()
+  const storyOwnerId = input.getStoryOwnerId()
   const storyId = input.getStoryId() as string
   const { loadDossier, listScenes, buildSceneBlock, findScene, lexicalSearch, renderSceneNotFound, renderLexicalMiss } = await import('./dossierCore.js')
   const { computeSceneCoverage, loadGaps } = await import('./coverageGaps.js')
-  const dossier = await loadDossier(ownerId, storyId)
+  const dossier = await loadDossier(storyOwnerId, storyId)
   if (!dossier) return { content: 'error: 剧本档案不存在' }
   if (toolName === 'scene_list') {
     const scenes = listScenes(dossier)
@@ -66,7 +71,7 @@ export async function runStoryLookup(
       return { content: renderSceneNotFound(name, listScenes(dossier).map((s) => s.name)) }
     }
     // P26：附场景覆盖提示（缺口归属按 .gaps.json；loadGaps 内部已吞错返回 null）
-    const gaps = await loadGaps(ownerId, storyId)
+    const gaps = await loadGaps(storyOwnerId, storyId)
     const coverage = gaps ? computeSceneCoverage(gaps, scene.id) : null
     return { content: buildSceneBlock(dossier, scene.id, coverage) }
   }
@@ -86,10 +91,17 @@ export async function runStoryLookup(
     const { verifyOriginal } = await import('./originalLookup.js')
     const res = await verifyOriginal(
       { question, scene: sceneArg },
-      { userId: ownerId, scriptId: storyId },
+      { userId: ownerId, storyOwnerId, scriptId: storyId },
     )
     if (process.env.KP_LLM_DEBUG === '1') {
-      console.error(`[verify-original] room=${input.roomId} scene=${sceneArg ?? ''} tier=${res.meta.tier} chars=${res.meta.chars} ok=${res.meta.ok} ${res.meta.durationMs}ms`)
+      logger.debug('verify original complete', {
+        roomId: input.roomId,
+        scene: sceneArg ?? '',
+        tier: res.meta.tier,
+        chars: res.meta.chars,
+        ok: res.meta.ok,
+        durationMs: res.meta.durationMs,
+      })
     }
     return { content: res.content }
   }

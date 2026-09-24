@@ -26,13 +26,16 @@ DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执�
 房主可调的 KP 回合合并窗口（0 = 严格排队）。运行时由活跃实例**唯一持有**；REST 设置经领域方法一次写库 + 同步实例，无每消息重读。
 
 ### 单人房间（Solo Room）
-单人游戏的唯一形态：单成员房间（`kind='solo'`），不出现在房间列表（首页走「继续游戏」入口），回合窗口恒为 0，出生即 playing。wire 协议、持久化、事件流与多人房间完全一致——**单人没有独立的回合协议**（ADR-0002）。
+单人游戏的唯一形态：单成员房间（`kind='solo'`），不出现在多人房间列表（「游戏」tab 的调查 hub 通过 `/api/rooms/solo` 收编续玩），回合窗口恒为 0，出生即 playing；出生前仍须通过所选 workflow 的 artifact 门闩（rag 已索引，dossier 已生成且未降质）。wire 协议、持久化、事件流与多人房间完全一致——**单人没有独立的回合协议**（ADR-0002）。
+
+### 调查导航（Investigation navigation）
+客户端 `AppLayout` 的四个 tab 是：首页（新调查启动台）、故事（导入/索引）、游戏（进行中的调查 hub）、设置。首页故事卡只负责启动新的建卡流程；游戏 hub 合并未结束的 solo 调查与多人房间，`pages/game/index.vue` 只承载已带 `roomId` 的沉浸式会话。多人 lobby 仍从 hub 进入 `pages/game/rooms/room.vue`，playing 房间进入统一游戏页（ADR-0004）。
 
 ### 等待室（Waiting Room / Lobby）
 多人房间 `phase='lobby'` 的形态：成员经邀请码加入、创建并绑定角色卡、就绪；房主选择剧本并开局。等待室可闲聊（消息广播）但**不触发 KP 回合**。代码落点：房间页（`pages/game/rooms/room.vue`）在 lobby 阶段呈现等待室；开局后跳游戏页游玩。
 
 ### 房间剧本（room story）
-多人局共用的剧本：**房主**已导入并索引的故事，`story_id` 存 `rooms` 表；KP 回合全程以房主账号解析剧本与 RAG 上下文（成员无需拥有该故事）。房主只可从**已索引**故事中选择（未索引不列入候选项，避免 KP 无原文空跑）。
+多人局共用的剧本：**房主**已导入并索引的故事，`story_id` 存 `rooms` 表；KP 回合全程以房主账号解析剧本与 RAG 上下文（成员无需拥有该故事）。房主只可从**已索引**故事中选择；rag workflow 还要求有可用的档案与 gaps 剧透定位材料（至少一条真相揭晓锚点，且均可评估；见开局门闩），避免无原文或无剧透闸的局开起来。
 
 ### 开局门闩（start gate）
 `lobby → playing` 的迁移约束：房主已选剧本 + **每名成员已绑定角色卡**，任一不满足则开局被拒（服务端 409 带缺项提示）。角色卡绑定是硬前提；就绪是软信号。判定单源落点 `server/src/services/startGate.ts`（`checkStartGate`：结束态终态/已选剧本/workflow 可用性/成员绑卡全收编；startRoom 与 createSoloRoom 双入口差异用 `gateFor: 'lobby-start' | 'solo-create'` 表达；dossier「已生成 + 未降质」两个判定共用 dossierCore.listDossiers 的一次 readdir 扫描——消掉原双入口各自的双扫描）。

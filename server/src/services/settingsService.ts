@@ -2,8 +2,9 @@ import type { AppSettings } from '../../../shared/types/settings.js'
 import { getDb } from '../db/index.js'
 import { BadRequestError } from '../utils/errors.js'
 import { decryptSecret, encryptSecret, type EncryptedSecret } from '../utils/crypto.js'
-import { ALL_PROTOCOL_IDS } from '../../../shared/constants/providers.js'
+import { ALL_PROTOCOL_IDS, resolveProtocolDefaultBaseUrl } from '../../../shared/constants/providers.js'
 import { logger } from '../utils/logging.js'
+import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 
 /**
  * Settings service (api-contract §2) — per-user settings stored in the
@@ -156,6 +157,26 @@ export function getAiConfig(userId: number): AppSettings['ai'] {
     }
   }
   return ai
+}
+
+/** Return a setup instruction when the user's current KP settings cannot start a turn. */
+export function getAiSetupIssue(userId: number): string | null {
+  const ai = getAiConfig(userId)
+  if (!ai.model?.trim()) return '请在设置中选择或输入 KP 模型。'
+  const effectiveBaseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(ai.protocol)).trim().replace(/\/+$/, '')
+  try {
+    assertSafeOutboundUrl(effectiveBaseUrl)
+  } catch {
+    return '当前 AI Base URL 不可用于服务端请求；请在设置中填写安全的 HTTP(S) 服务地址后重试。'
+  }
+  const effectiveHost = new URL(effectiveBaseUrl).hostname.toLowerCase().replace(/\.+$/, '')
+  const requiresKey = ai.protocol === 'anthropic_messages' || ai.protocol === 'google_compatible'
+    || ((ai.protocol === 'openai_chat' || ai.protocol === 'openai_responses')
+      && effectiveHost === 'api.openai.com')
+  if (requiresKey && !ai.apiKey?.trim()) {
+    return '当前协议需要 API Key；请在设置中补全后重试。'
+  }
+  return null
 }
 
 /**

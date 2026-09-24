@@ -127,7 +127,7 @@ describe('rag routes', () => {
     expect(String(ghost.body.error).length).toBeGreaterThan(0)
   })
 
-  it('context builds text context with chunkCount', async () => {
+  it('context fails closed when reveal-scene metadata is missing', async () => {
     const token = await registerToken('rag_ctx')
     const scriptId = await uploadStory(token, 'ctx.md')
     await request(createApp())
@@ -141,8 +141,8 @@ describe('rag routes', () => {
       .set(auth(token))
       .send({ query: '图书馆', scriptId, topK: 1 })
     expect(res.status).toBe(200)
-    expect(res.body.context).toContain('图书馆')
-    expect(res.body.chunkCount).toBeGreaterThanOrEqual(1)
+    expect(res.body.context).toBe('')
+    expect(res.body.chunkCount).toBe(0)
   })
 
   it('stories / getIndex report the indexed story', async () => {

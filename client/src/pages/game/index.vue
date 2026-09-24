@@ -138,6 +138,14 @@ function handleSend() {
   roomStore.sendChat(text)
 }
 
+function openAiSettings() {
+  uni.navigateTo({ url: '/pages/settings/index' })
+}
+
+function retryKpTurn() {
+  roomStore.retryKpTurn()
+}
+
 function handleKeydown(e: KeyboardEvent) {
   // H5 回车发送（不拦截 Shift+Enter 换行）
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -229,6 +237,21 @@ function confirmExit() {
           <view class="game-exit" @click="handleExit">
             <app-icon name="x" :size="13" />
             <text>退出</text>
+          </view>
+        </view>
+
+        <view v-if="roomStore.kpSetupRequired" class="kp-setup-banner" role="status">
+          <view class="kp-setup-copy">
+            <text class="kp-setup-title">KP 暂停中</text>
+            <text class="kp-setup-text">
+              {{ roomStore.isOwner
+                ? '请先完成 AI 设置。待处理的行动已保留，配置后可以重试 KP。'
+                : '待处理的行动已保留，请当前房主完成 AI 设置后重试 KP。' }}
+            </text>
+          </view>
+          <view v-if="roomStore.isOwner" class="kp-setup-actions">
+            <button class="kp-setup-button" @click="openAiSettings">打开 AI 设置</button>
+            <button class="kp-setup-button kp-setup-retry" @click="retryKpTurn">重试 KP</button>
           </view>
         </view>
 
@@ -507,6 +530,51 @@ function confirmExit() {
   font-size: 0.8125rem;
   font-style: italic;
   color: var(--c-fog);
+}
+
+.kp-setup-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--c-blood-400) 45%, transparent);
+  background: color-mix(in srgb, var(--c-blood-950) 82%, var(--c-abyss));
+}
+.kp-setup-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.kp-setup-title {
+  color: var(--c-blood-100);
+  font-family: $font-display;
+  font-size: 0.875rem;
+}
+.kp-setup-text {
+  color: var(--c-paper-300);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.kp-setup-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+.kp-setup-button {
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--c-paper-400) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--c-obsidian) 70%, transparent);
+  color: var(--c-paper-100);
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+.kp-setup-retry {
+  border-color: color-mix(in srgb, var(--c-eld-300) 55%, transparent);
+  color: var(--c-eld-100);
 }
 
 /* ── 输入区 ── */

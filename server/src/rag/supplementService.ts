@@ -16,6 +16,7 @@ import {
   assembleSupplement,
   retrieveSupplement,
   revealRegions,
+  hasUsableSpoilerMetadata,
   renderBlock,
   DEFAULT_RECALL_TOP_K,
   DEFAULT_RERANK_TOP_N,
@@ -166,6 +167,17 @@ export async function buildSupplement(
   } catch {
     gaps = null
     dossier = null
+  }
+  // Plain RAG and dossier supplement share the same spoiler boundary. Retrieval can safely
+  // degrade to an empty section when its source positions cannot be checked; missing metadata
+  // must never turn into an unguarded retrieval fallback.
+  if (!hasUsableSpoilerMetadata(gaps, dossier)) {
+    return {
+      ...EMPTY(),
+      degraded: true,
+      error: 'spoiler-metadata-unavailable',
+      durationMs: Date.now() - started,
+    }
   }
   const scene = dossier && input?.sceneName ? findScene(dossier, input.sceneName) : null
   const sceneName = scene?.name ?? String(input?.sceneName ?? '').trim()

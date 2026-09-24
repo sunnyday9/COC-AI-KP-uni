@@ -11,6 +11,7 @@
  */
 
 import { MODELS_DIR } from '../config.js'
+import { safeOutboundFetch } from '../utils/safeOutboundFetch.js'
 
 const DEFAULT_API_MODEL = 'text-embedding-3-small'
 /**
@@ -83,7 +84,7 @@ export function createEmbedder(config: { baseUrl?: string; apiKey?: string; mode
   return async function getEmbedding(text: string): Promise<number[]> {
     if (!text || typeof text !== 'string') return []
     const url = `${baseUrl}/v1/embeddings`
-    const res = await fetch(url, {
+    const res = await safeOutboundFetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

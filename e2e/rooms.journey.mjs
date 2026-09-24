@@ -270,6 +270,9 @@ async function indexDemoStory(token) {
     storyMeta: { name: 'demo-story' },
   }, token)
   assert(idx.status === 200 && idx.data.ok, `rag index failed: ${idx.status} ${JSON.stringify(idx.data)}`)
+  const dossier = await api('POST', `/api/dossier/${encodeURIComponent(id)}/generate`, {}, token)
+  assert(dossier.status === 200 && dossier.data.ok, `dossier generate failed: ${dossier.status} ${JSON.stringify(dossier.data)}`)
+  assert(dossier.data.truths > 0, `dossier has no reveal truth: ${JSON.stringify(dossier.data)}`)
   const stories = await api('GET', '/api/rag/stories', undefined, token)
   assert(stories.status === 200, `rag stories failed: ${stories.status}`)
   const hit = (stories.data ?? []).find((s) => s.storyId === id)

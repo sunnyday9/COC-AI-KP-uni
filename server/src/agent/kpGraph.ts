@@ -32,6 +32,7 @@ import {
   loadScriptContext,
   sceneUnlocked,
 } from './scriptContext.js'
+import { logger } from '../utils/logging.js'
 
 /* ================================================================== */
 /*  Types (annotations only — no behavior change)                      */
@@ -662,9 +663,13 @@ function createPlanNode(agentKind: string, userId?: number) {
     // scanned for a known scene name (a different scene than the current one
     // is a move target); exploration turns get the scene's obtainable clues.
     let gatingHint = ''
-    if (agentKind === 'narrative' && userId && state.storyContext?.scriptId) {
+    const storyOwnerId = Number.isSafeInteger(state.storyContext?.storyOwnerId)
+      && Number(state.storyContext?.storyOwnerId) > 0
+      ? Number(state.storyContext?.storyOwnerId)
+      : userId
+    if (agentKind === 'narrative' && storyOwnerId && state.storyContext?.scriptId) {
       try {
-        const scriptCtx = await loadScriptContext(userId, String(state.storyContext.scriptId))
+        const scriptCtx = await loadScriptContext(storyOwnerId, String(state.storyContext.scriptId))
         const obtainedIds: string[] = []
         if (Array.isArray(state.storyContext.openClues)) {
           for (const c of state.storyContext.openClues) {
@@ -968,7 +973,11 @@ function createForceToolNode(invokeLLM: InvokeLLM) {
     try {
       result = await invokeLLM(forceMsgs)
     } catch (err) {
-      console.error('[kpGraph forceTools] LLM call failed:', (err as Error | undefined)?.message || String(err))
+      logger.error('kpGraph forceTools LLM call failed', {
+        error: err instanceof Error ? err.message || String(err) : String(err),
+        requiredTools: required,
+        retryCount,
+      })
       return {
         retryCount: retryCount + 1,
         validationResult: 'max_retries',

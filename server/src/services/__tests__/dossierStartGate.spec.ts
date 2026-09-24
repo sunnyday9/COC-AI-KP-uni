@@ -25,14 +25,46 @@ const listStoriesMock = vi.hoisted(() => vi.fn())
 vi.mock('../ragService.js', () => ({ listStories: listStoriesMock }))
 
 const listDossiersMock = vi.hoisted(() => vi.fn())
+const loadDossierMock = vi.hoisted(() => vi.fn())
 vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
-  return { ...actual, listDossiers: listDossiersMock }
+  return { ...actual, listDossiers: listDossiersMock, loadDossier: loadDossierMock }
+})
+
+const loadGapsMock = vi.hoisted(() => vi.fn())
+vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/coverageGaps.js')>()
+  return { ...actual, loadGaps: loadGapsMock }
 })
 
 /** 造一条清单记录（其余字段门闩不读）。 */
 function item(scriptId: string, quality: { degraded?: boolean; coveragePct?: number; failedBatches?: number }) {
   return { scriptId, name: 'x', sceneCount: 3, generatedAt: 1, ...quality }
+}
+
+function usableRagDossier(scriptId: string) {
+  return {
+    scriptId,
+    storyName: 'x',
+    generatedAt: 1,
+    scenes: [{ id: 'reveal', name: '终幕', sceneText: '终幕原文' }],
+    clues: [],
+    npcs: [],
+    truths: [{ title: '幕后真相', detail: '真相细节', revealScene: 'reveal' }],
+  }
+}
+
+function usableRagGaps(scriptId: string) {
+  return {
+    scriptId,
+    storyChars: 20000,
+    sceneTextChars: 4,
+    gapCount: 0,
+    gapChars: 0,
+    gapPct: 0,
+    spans: [],
+    sceneAnchors: [{ id: 'reveal', name: '终幕', matched: true, starts: [12000] }],
+  }
 }
 
 const MISSING_MSG = '该剧本尚未生成档案，请先在「我的故事」中为剧本生成档案'
@@ -66,6 +98,8 @@ const MINIMAL_SHEET = {
 beforeEach(() => {
   listStoriesMock.mockReturnValue([])
   listDossiersMock.mockReset()
+  loadDossierMock.mockReset().mockResolvedValue(null)
+  loadGapsMock.mockReset().mockResolvedValue(null)
 })
 
 afterEach(() => {
@@ -157,10 +191,91 @@ describe('#55 createSoloRoom 门闩（solo 出生即 playing，不经 startRoom�
     expect(res.ok).toBe(true)
   })
 
-  it('缺省 workflow=rag 不查档案（现状不变）', async () => {
-    const owner = seedUser('so_rag_owner')
+  it('workflow=dossier + 缺档案 → conflict，不创建 playing 房间', async () => {
+    const owner = seedUser('so_missing_owner')
+    listDossiersMock.mockResolvedValue([])
+
+    const res = await createSoloRoom(owner, { storyId: 'story_missing', name: '调查员', sheet: MINIMAL_SHEET, workflow: 'dossier' })
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.reason).toBe('conflict')
+      expect(res.message).toBe(MISSING_MSG)
+    }
+    expect(getDb().prepare(`SELECT 1 FROM rooms WHERE owner_id = ?`).get(owner)).toBeUndefined()
+  })
+
+  it('缺省 workflow=rag + 未索引 → conflict，不创建 playing 房间', async () => {
+    const owner = seedUser('so_unindexed_owner')
+    listStoriesMock.mockReturnValue([])
+
+    const res = await createSoloRoom(owner, { storyId: 'story_unindexed', name: '调查员', sheet: MINIMAL_SHEET })
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.reason).toBe('conflict')
+      expect(res.message).toBe('该剧本尚未索引，请先在「我的故事」中完成索引')
+    }
+    expect(getDb().prepare(`SELECT 1 FROM rooms WHERE owner_id = ?`).get(owner)).toBeUndefined()
+  })
+
+  it('workflow=rag + 已索引但缺 gaps → conflict，不创建 playing 房间', async () => {
+    const owner = seedUser('so_rag_missing_gaps')
+    listStoriesMock.mockReturnValue([{ storyId: 'story_rag', name: 'x', chunkCount: 1, indexedAt: 1 }])
+    listDossiersMock.mockResolvedValue([item('story_rag', { degraded: false, coveragePct: 54.7 })])
+    loadDossierMock.mockResolvedValue(usableRagDossier('story_rag'))
+
     const res = await createSoloRoom(owner, { storyId: 'story_rag', name: '调查员', sheet: MINIMAL_SHEET })
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.reason).toBe('conflict')
+      expect(res.message).toContain('剧透保护锚点')
+    }
+    expect(getDb().prepare(`SELECT 1 FROM rooms WHERE owner_id = ?`).get(owner)).toBeUndefined()
+  })
+
+  it('workflow=rag + 已索引且揭晓锚点可用 → ok', async () => {
+    const owner = seedUser('so_rag_ready')
+    listStoriesMock.mockReturnValue([{ storyId: 'story_rag_ready', name: 'x', chunkCount: 1, indexedAt: 1 }])
+    listDossiersMock.mockResolvedValue([item('story_rag_ready', { degraded: false, coveragePct: 54.7 })])
+    loadDossierMock.mockResolvedValue(usableRagDossier('story_rag_ready'))
+    loadGapsMock.mockResolvedValue(usableRagGaps('story_rag_ready'))
+
+    const res = await createSoloRoom(owner, { storyId: 'story_rag_ready', name: '调查员', sheet: MINIMAL_SHEET })
     expect(res.ok).toBe(true)
-    expect(listDossiersMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('rag workflow multiplayer start gate', () => {
+  it('已索引但 revealScene 未匹配 gaps 锚点 → conflict，房间保留 lobby', async () => {
+    const owner = seedUser('multi_rag_missing_anchor')
+    const created = createRoom(owner, null)
+    bindRoomCharacter(owner, created.roomId, seedChar(owner, 'multi_rag_card'))
+    listStoriesMock.mockReturnValue([{ storyId: 'story_multi', name: 'x', chunkCount: 1, indexedAt: 1 }])
+    listDossiersMock.mockResolvedValue([item('story_multi', { degraded: false, coveragePct: 54.7 })])
+    loadDossierMock.mockResolvedValue(usableRagDossier('story_multi'))
+    loadGapsMock.mockResolvedValue({
+      ...usableRagGaps('story_multi'),
+      sceneAnchors: [{ id: 'reveal', name: '终幕', matched: false }],
+    })
+
+    const res = await startRoom(owner, created.roomId, 'story_multi')
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.reason).toBe('conflict')
+      expect(res.message).toContain('剧透保护锚点')
+    }
+    expect(getDb().prepare(`SELECT phase FROM rooms WHERE room_id = ?`).get(created.roomId)).toEqual({ phase: 'lobby' })
+  })
+
+  it('已索引且 revealScene 锚点可用 → 多人开局成功', async () => {
+    const owner = seedUser('multi_rag_ready')
+    const created = createRoom(owner, null)
+    bindRoomCharacter(owner, created.roomId, seedChar(owner, 'multi_rag_card'))
+    listStoriesMock.mockReturnValue([{ storyId: 'story_multi_ready', name: 'x', chunkCount: 1, indexedAt: 1 }])
+    listDossiersMock.mockResolvedValue([item('story_multi_ready', { degraded: false, coveragePct: 54.7 })])
+    loadDossierMock.mockResolvedValue(usableRagDossier('story_multi_ready'))
+    loadGapsMock.mockResolvedValue(usableRagGaps('story_multi_ready'))
+
+    const res = await startRoom(owner, created.roomId, 'story_multi_ready')
+    expect(res.ok).toBe(true)
   })
 })

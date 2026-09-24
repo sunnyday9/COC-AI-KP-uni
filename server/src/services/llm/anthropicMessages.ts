@@ -6,6 +6,7 @@
  */
 import type { AIProviderConfig } from '../../../../shared/constants/providers.js'
 import { BadRequestError } from '../../utils/errors.js'
+import { safeOutboundFetch } from '../../utils/safeOutboundFetch.js'
 import type { ChatMessage, ChatTool, LLMCallParams, LLMResult, ToolCallResult } from './types.js'
 
 function toAnthropicTools(openaiTools?: ChatTool[]): unknown[] | undefined {
@@ -124,7 +125,7 @@ export async function anthropicMessagesAdapter(
   if (system) body.system = system
   if (anthropicTools?.length) body.tools = anthropicTools
 
-  const res = await fetch(messagesUrl, {
+  const res = await safeOutboundFetch(messagesUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

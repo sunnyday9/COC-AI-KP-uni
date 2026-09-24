@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import request from 'supertest'
 import { createApp } from '../../app.js'
-import { getOrCreateRoom, _clearRoomRegistryForTests } from '../../services/roomService.js'
+import { getOrCreateRoom, getRoom, _clearRoomRegistryForTests } from '../../services/roomService.js'
 import type { Express } from 'express'
 
 /** 测试夹具密码：表达式构造（门禁不识别字面量凭据）。 */
@@ -18,6 +18,50 @@ let tokenB: string
 const listStoriesMock = vi.hoisted(() => vi.fn(() => []))
 vi.mock('../../services/ragService.js', () => ({ listStories: listStoriesMock }))
 
+const listDossiersMock = vi.hoisted(() => vi.fn(async () => []))
+const loadDossierMock = vi.hoisted(() => vi.fn(async () => null))
+vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
+  return { ...actual, listDossiers: listDossiersMock, loadDossier: loadDossierMock }
+})
+
+const loadGapsMock = vi.hoisted(() => vi.fn(async () => null))
+vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/coverageGaps.js')>()
+  return { ...actual, loadGaps: loadGapsMock }
+})
+
+function provideRagSpoilerMetadata(storyId: string): void {
+  listDossiersMock.mockResolvedValue([{
+    scriptId: storyId,
+    name: '测试剧本',
+    sceneCount: 1,
+    generatedAt: 1,
+    degraded: false,
+    coveragePct: 100,
+  }])
+  loadDossierMock.mockResolvedValue({
+    scriptId: storyId,
+    storyName: '测试剧本',
+    generatedAt: 1,
+    scenes: [{ id: 'reveal', name: '终幕', sceneText: '终幕原文' }],
+    clues: [],
+    npcs: [],
+    truths: [{ id: 'truth_finale', title: '幕后真相', detail: '真相细节', revealScene: 'reveal' }],
+    endings: [],
+  })
+  loadGapsMock.mockResolvedValue({
+    scriptId: storyId,
+    storyChars: 20_000,
+    sceneTextChars: 4,
+    gapCount: 0,
+    gapChars: 0,
+    gapPct: 0,
+    spans: [],
+    sceneAnchors: [{ id: 'reveal', name: '终幕', matched: true, starts: [12_000] }],
+  })
+}
+
 async function registerToken(username: string): Promise<string> {
   const reg = await request(app).post('/api/auth/register').send({ username, password: TEST_PASSWORD })
   expect(reg.status).toBe(200)
@@ -29,6 +73,11 @@ async function registerToken(username: string): Promise<string> {
 function auth(token: string): [string, string] {
   return ['Authorization', `Bearer ${token}`]
 }
+
+// This route test performs several authenticated requests against the real
+// SQLite-backed app. Under the full worker fan-out it can exceed Vitest's
+// default 5s even though the isolated route behavior is healthy.
+const ROOM_ROUTE_TIMEOUT_MS = 90_000
 
 /** 建房 + B 加入的便捷夹具（返回 roomId/inviteCode）。 */
 async function createRoomWithB(): Promise<{ roomId: string; inviteCode: string }> {
@@ -62,7 +111,7 @@ beforeEach(() => {
   listStoriesMock.mockReturnValue([]) // 每用例重置为「未索引」
 })
 
-describe('rooms routes', () => {
+describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
   it('创建房间 → 返回 roomId + inviteCode（owner 成员）', async () => {
     const res = await request(app).post('/api/rooms').set(...auth(tokenA)).send({})
     expect(res.status).toBe(200)
@@ -111,6 +160,7 @@ describe('rooms routes', () => {
     const bind = await request(app).post(`/api/rooms/${roomId}/character`).set(...auth(tokenA)).send({ characterId: charId })
     expect(bind.status).toBe(200)
     listStoriesMock.mockReturnValue([{ storyId: 'story.md', name: '故事', chunkCount: 1, indexedAt: 1 }])
+    provideRagSpoilerMetadata('story.md')
 
     // B 加入等待室：非房主不能开始
     const join = await request(app).post('/api/rooms/join').set(...auth(tokenB)).send({ inviteCode: (created.body as { inviteCode: string }).inviteCode })
@@ -152,6 +202,7 @@ describe('rooms routes', () => {
     const roomId = (created.body as { roomId: string }).roomId
     // 门闩前置：已索引 + owner 绑卡
     listStoriesMock.mockReturnValue([{ storyId: 'story_x', name: 'x', chunkCount: 1, indexedAt: 1 }])
+    provideRagSpoilerMetadata('story_x')
     const charId = await createChar(tokenA, '独白')
     const bind = await request(app).post(`/api/rooms/${roomId}/character`).set(...auth(tokenA)).send({ characterId: charId })
     expect(bind.status).toBe(200)
@@ -288,6 +339,7 @@ describe('rooms routes', () => {
 
     // 已索引（桩返回含该 storyId）但成员未绑卡
     listStoriesMock.mockReturnValueOnce([{ storyId: 'story_indexed_gate', name: '门闩', chunkCount: 3, indexedAt: 1 }])
+    provideRagSpoilerMetadata('story_indexed_gate')
     const unbound = await request(app).post(`/api/rooms/${roomId}/start`).set(...auth(tokenA)).send({ storyId: 'story_indexed_gate' })
     expect(unbound.status).toBe(409)
     expect((unbound.body as { error: string }).error).toContain('未绑定角色卡')
@@ -301,6 +353,7 @@ describe('rooms routes', () => {
     expect(bindB.status).toBe(200)
 
     listStoriesMock.mockReturnValueOnce([{ storyId: 'story_indexed_gate', name: '门闩', chunkCount: 3, indexedAt: 1 }])
+    provideRagSpoilerMetadata('story_indexed_gate')
     const start = await request(app).post(`/api/rooms/${roomId}/start`).set(...auth(tokenA)).send({ storyId: 'story_indexed_gate' })
     expect(start.status).toBe(200)
     const detail = await request(app).get(`/api/rooms/${roomId}`).set(...auth(tokenA))

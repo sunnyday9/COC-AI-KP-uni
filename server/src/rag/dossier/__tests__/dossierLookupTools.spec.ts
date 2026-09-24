@@ -49,6 +49,7 @@ function makeInput(overrides: Partial<StoryLookupInput> = {}) {
     roomId: 'room_k',
     getWorkflow: () => 'dossier',
     getOwnerId: () => 7,
+    getStoryOwnerId: () => 7,
     getStoryId: () => 'story_k',
     getScene: () => scene,
     ...overrides,
@@ -139,14 +140,14 @@ describe('runStoryLookup — verify_original（原文查证，活值 getter）',
     const lookup = makeLookup(makeInput().input)
 
     expect(await lookup('verify_original', { question: '铜钥匙在哪' })).toEqual({ content: '查证内容（桩）' })
-    expect(verifyOriginal).toHaveBeenCalledWith({ question: '铜钥匙在哪', scene: '门厅' }, { userId: 7, scriptId: 'story_k' })
+    expect(verifyOriginal).toHaveBeenCalledWith({ question: '铜钥匙在哪', scene: '门厅' }, { userId: 7, storyOwnerId: 7, scriptId: 'story_k' })
 
     await lookup('verify_original', { question: '钟楼的门', scene: ' 钟楼 ' })
-    expect(verifyOriginal).toHaveBeenLastCalledWith({ question: '钟楼的门', scene: '钟楼' }, { userId: 7, scriptId: 'story_k' })
+    expect(verifyOriginal).toHaveBeenLastCalledWith({ question: '钟楼的门', scene: '钟楼' }, { userId: 7, storyOwnerId: 7, scriptId: 'story_k' })
 
     const { input } = makeInput({ getScene: () => null })
     await makeLookup(input)('verify_original', { question: '全篇哪里提到海' })
-    expect(verifyOriginal).toHaveBeenLastCalledWith({ question: '全篇哪里提到海', scene: undefined }, { userId: 7, scriptId: 'story_k' })
+    expect(verifyOriginal).toHaveBeenLastCalledWith({ question: '全篇哪里提到海', scene: undefined }, { userId: 7, storyOwnerId: 7, scriptId: 'story_k' })
   })
 
   it('活值 getter：同回合内场景切换（transition_to_scene）后，verify_original 拿到新场景', async () => {
@@ -158,7 +159,22 @@ describe('runStoryLookup — verify_original（原文查证，活值 getter）',
 
     setScene('钟楼')
     await lookup('verify_original', { question: '钟楼的门是什么状态' })
-    expect(verifyOriginal).toHaveBeenLastCalledWith({ question: '钟楼的门是什么状态', scene: '钟楼' }, { userId: 7, scriptId: 'story_k' })
+    expect(verifyOriginal).toHaveBeenLastCalledWith({ question: '钟楼的门是什么状态', scene: '钟楼' }, { userId: 7, storyOwnerId: 7, scriptId: 'story_k' })
+  })
+
+  it('loads story artifacts by source owner and verifies with current owner AI settings', async () => {
+    const input = makeInput({ getOwnerId: () => 9, getStoryOwnerId: () => 7 }).input
+    const lookup = makeLookup(input)
+
+    await lookup('scene_dossier', { sceneName: '门厅' })
+    expect(loadDossier).toHaveBeenCalledWith(7, 'story_k')
+    expect(loadGaps).toHaveBeenCalledWith(7, 'story_k')
+
+    await lookup('verify_original', { question: '铜钥匙在哪' })
+    expect(verifyOriginal).toHaveBeenCalledWith(
+      { question: '铜钥匙在哪', scene: '门厅' },
+      { userId: 9, storyOwnerId: 7, scriptId: 'story_k' },
+    )
   })
 
   it('缺参 → error 回包（不触查证）', async () => {

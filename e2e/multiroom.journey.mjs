@@ -37,6 +37,7 @@ const API_BASE = (process.env.E2E_API_BASE || 'http://localhost:3100').replace(/
 const SELF_START_API = !process.env.E2E_API_BASE
 // vite 服务绑 127.0.0.1；localhost 可能解析到 ::1（IPv6）导致 WS 连不上 → 显式 IPv4。
 const WS_URL = (API_BASE.replace(/^http/, 'ws')).replace('localhost', '127.0.0.1')
+const KP_REPLY_TIMEOUT_MS = 60_000
 
 const results = []
 const step = createStep(results)
@@ -108,6 +109,10 @@ async function indexStory(token, scriptId) {
     storyMeta: { name: 'demo-story' },
   }, token)
   assert(idx.status === 200 && idx.data.ok, `rag index failed: ${idx.status} ${JSON.stringify(idx.data)}`)
+  // Plain RAG also requires a usable spoiler gate before the room may start.
+  const dossier = await api('POST', `/api/dossier/${encodeURIComponent(scriptId)}/generate`, {}, token)
+  assert(dossier.status === 200 && dossier.data.ok, `dossier generate failed: ${dossier.status} ${JSON.stringify(dossier.data)}`)
+  assert(dossier.data.truths > 0, `dossier has no reveal truth: ${JSON.stringify(dossier.data)}`)
   return scriptId
 }
 
@@ -263,7 +268,7 @@ async function main() {
 
     let storyId
     await step('开局门闩：B 未绑卡 → A start 409（缺项文案）', async () => {
-      // 房主先索引剧本（/start 门闩 4：storyId 必须在房主 RAG 已索引）
+      // 房主先索引剧本并生成 truth/gaps 揭晓锚点（rag 开局门闩要求两类材料都可用）
       const scriptId = await uploadScript(userA.token)
       storyId = await indexStory(userA.token, scriptId)
       const res = await api('POST', `/api/rooms/${roomId}/start`, { storyId }, userA.token)
@@ -318,21 +323,21 @@ async function main() {
       // B 应收到：玩家消息 + KP 回复（mock 侦查 → skill_check → grant_clue → 收尾）
       const kpMsg = await wsB.waitFor(
         (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp' && (f.seq ?? 0) > kpWatermark,
-        20_000,
+        KP_REPLY_TIMEOUT_MS,
         'B kp reply',
       )
       assert(kpMsg.payload.message.content.length > 0, 'kp reply empty')
       // A 也应收到同一 KP 回复（全序广播）
       const kpMsgA = await wsA.waitFor(
         (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp' && (f.seq ?? 0) > kpWatermark,
-        20_000,
+        KP_REPLY_TIMEOUT_MS,
         'A kp reply',
       )
       assert(kpMsgA.seq === kpMsg.seq, `kp seq mismatch: A=${kpMsgA.seq} B=${kpMsg.seq}`)
       // 骰子展示消息（skill_check 的 displayMessage）也应广播
       const dice = await wsB.waitFor(
         (f) => f.type === 'room:event' && f.eventType === 'message_appended' && typeof f.payload?.message?.content === 'string' && f.payload.message.content.includes('侦查检定'),
-        20_000,
+        KP_REPLY_TIMEOUT_MS,
         'B dice display',
       )
       assert(dice.payload.message.content.includes('侦查'), `dice content mismatch: ${dice.payload.message.content}`)
@@ -369,7 +374,7 @@ async function main() {
       // 等窗口 flush 后的 KP 回合回复（seq 必须大于步骤开始时的水位）
       const kpReply = await wsB.waitFor(
         (f) => f.type === 'room:event' && f.eventType === 'message_appended' && f.payload?.message?.role === 'kp' && (f.seq ?? 0) > kpMaxSeq,
-        20_000,
+        KP_REPLY_TIMEOUT_MS,
         'merged kp reply',
       )
       assert(kpReply.payload.message.content.length > 0, 'merged kp reply empty')
@@ -422,8 +427,7 @@ async function main() {
       } catch { /* ignore */ }
     }
     await Promise.all(exits)
-    // ws 连接等 handle 会阻止进程自然退出 → 显式退出
-    process.exit(process.exitCode ?? 0)
+    // Let main().catch handle failures after child cleanup has completed.
   }
 }
 

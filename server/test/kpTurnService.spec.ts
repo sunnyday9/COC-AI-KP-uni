@@ -2,14 +2,63 @@
  * kpTurnService — 服务端图内工具循环（MOCK_AI 确定性链路）。
  * 验证：侦查消息 → skill_check → grant_clue → 「线索已记录」收尾的完整闭环。
  */
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { runKpTurn } from '../src/services/kpTurnService.js'
+import * as kpGraph from '../src/agent/kpGraph.js'
 import { createCharacterMutatorFactory } from '../src/rule-engine/characterMutators.js'
 import type { COCCharacterSheet } from '../../shared/types/character.js'
 
 beforeAll(() => {
   process.env.MOCK_AI = '1'
 })
+
+// Terminal and owner-recovery paths exercise the real graph/tool loop.
+const GRAPH_LOOP_TIMEOUT_MS = 60_000
+
+function runTurnWithTerminalEndings(
+  userText: string,
+  terminalEndings: unknown[],
+  modelResponses?: Awaited<ReturnType<typeof kpGraph.invokeKPAgent>>[],
+) {
+  const invokeSpy = vi.spyOn(kpGraph, 'invokeKPAgent')
+  for (const response of modelResponses ?? []) invokeSpy.mockResolvedValueOnce(response)
+  const executedTools: { name: string; success: boolean }[] = []
+  return new Promise<{
+    toolCalls: { name: string }[]
+    executedTools: { name: string; success: boolean }[]
+    llmIterations: number
+    worldDeltas: { ending?: { outcome: string; title: string; summary: string } }
+  }>((resolve, reject) => {
+    void runKpTurn(
+      1,
+      {
+        messages: [
+          { role: 'system', content: '你是守秘人。' },
+          { role: 'user', content: userText },
+        ],
+        storyContext: { terminalEndings },
+      },
+      {
+        characters: { default: MOCK_SHEET },
+        activeCharacterId: 'default',
+        mutatorFactory: createCharacterMutatorFactory({ resolveSheet: (id) => (id === 'default' ? MOCK_SHEET : null) }),
+        handlers: {
+          onChunk: () => {},
+          onToolExecuted: ({ name, success }) => executedTools.push({ name, success }),
+          onEnd: (r) => {
+            const llmIterations = invokeSpy.mock.calls.length
+            invokeSpy.mockRestore()
+            resolve({ toolCalls: r.toolCalls, executedTools, llmIterations, worldDeltas: r.worldDeltas })
+          },
+          onError: (e) => {
+            invokeSpy.mockRestore()
+            reject(new Error(e))
+          },
+        },
+      },
+    )
+  })
+}
 
 const MOCK_SHEET: COCCharacterSheet = {
   occupationId: 'judge',
@@ -59,6 +108,144 @@ describe('kpTurnService (MOCK_AI 服务端图内循环)', () => {
     // displayMessages 应包含骰子检定消息
     expect(result.displayMessages.some((m) => (m as { content?: string }).content?.includes('检定'))).toBe(true)
   }, 30_000)
+
+  it('discards stale model output and tool calls after ownership changes in flight', async () => {
+    let transferred = false
+    const invokeSpy = vi.spyOn(kpGraph, 'invokeKPAgent').mockImplementationOnce(async () => {
+      transferred = true
+      return {
+        content: '旧房主回合结果',
+        toolCalls: [{ id: 'stale_tool', name: 'grant_clue', arguments: JSON.stringify({ description: '不应写入的线索' }) }],
+      } as Awaited<ReturnType<typeof kpGraph.invokeKPAgent>>
+    })
+    const onOwnerChanged = vi.fn()
+    const onEnd = vi.fn()
+    const onToolExecuted = vi.fn()
+
+    await runKpTurn(
+      1,
+      { messages: [{ role: 'user', content: '我检查书架。' }] },
+      {
+        characters: { default: MOCK_SHEET },
+        activeCharacterId: 'default',
+        mutatorFactory: createCharacterMutatorFactory({ resolveSheet: (id) => (id === 'default' ? MOCK_SHEET : null) }),
+        isOwnerCurrent: () => !transferred,
+        onOwnerChanged,
+        handlers: { onChunk: () => {}, onToolExecuted, onEnd, onError: () => {} },
+      },
+    )
+
+    expect(onOwnerChanged).toHaveBeenCalledTimes(1)
+    expect(onEnd).not.toHaveBeenCalled()
+    expect(onToolExecuted).not.toHaveBeenCalled()
+    invokeSpy.mockRestore()
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('档案中的弱完成措辞由服务端直接触发结构化结局', async () => {
+    const result = await runTurnWithTerminalEndings('破坏仪式', [
+      { name: '仪式被阻止', condition: '破坏仪式', outcome: '祭祀终止，调查员幸存。' },
+    ])
+
+    expect(result.toolCalls.map((call) => call.name).filter((name) => name === 'end_game')).toEqual(['end_game'])
+    expect(result.executedTools.filter((tool) => tool.name === 'end_game')).toEqual([
+      { name: 'end_game', success: true },
+    ])
+    expect(result.llmIterations).toBe(1)
+    expect(result.worldDeltas.ending).toMatchObject({
+      outcome: 'victory',
+      title: '仪式被阻止',
+      summary: '祭祀终止，调查员幸存。',
+    })
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it.each([
+    { userText: '真相大白', ending: { name: '真相结局', condition: '揭开真相', outcome: '幕后真相公开。' }, outcome: 'victory' },
+    { userText: '成功逃离', ending: { name: '逃生结局', condition: '成功逃离地底', outcome: '调查员逃出生天。' }, outcome: 'survival' },
+    { userText: '团灭', ending: { name: '团灭结局', condition: '调查员团灭', outcome: '所有调查员阵亡。' }, outcome: 'defeat' },
+    { userText: '永久疯狂', ending: { name: '永久疯狂结局', condition: '调查员陷入永久疯狂', outcome: '调查员永久失去理智。' }, outcome: 'defeat' },
+  ])('结构化终局元数据匹配后强制结局：$userText', async ({ userText, ending, outcome }) => {
+    const result = await runTurnWithTerminalEndings(userText, [ending])
+
+    expect(result.worldDeltas.ending).toMatchObject({ outcome, title: ending.name, summary: ending.outcome })
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('没有结构化终局元数据时保留遗留模型 end_game 行为', async () => {
+    const result = await runTurnWithTerminalEndings('我们成功逃离了这里', [])
+
+    expect(result.toolCalls.map((call) => call.name).filter((name) => name === 'end_game')).toEqual(['end_game'])
+    expect(result.executedTools.filter((tool) => tool.name === 'end_game')).toEqual([
+      { name: 'end_game', success: true },
+    ])
+    expect(result.llmIterations).toBe(1)
+    expect(result.worldDeltas.ending).toBeDefined()
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('a malformed legacy end_game can recover before a successful end ends the turn', async () => {
+    const result = await runTurnWithTerminalEndings('结束冒险', [], [
+      {
+        content: 'The ending details are incomplete.',
+        toolCalls: [{ id: 'call_bad_end', name: 'end_game', arguments: '{"outcome":"victory","title":"结局"}' }],
+      },
+      {
+        content: 'Recovered ending.',
+        toolCalls: [{ id: 'call_valid_end', name: 'end_game', arguments: '{"outcome":"victory","title":"结局","summary":"冒险结束。"}' }],
+      },
+    ])
+
+    expect(result.executedTools.filter((tool) => tool.name === 'end_game')).toEqual([
+      { name: 'end_game', success: false },
+      { name: 'end_game', success: true },
+    ])
+    expect(result.llmIterations).toBe(2)
+    expect(result.worldDeltas.ending).toMatchObject({ outcome: 'victory', title: '结局', summary: '冒险结束。' })
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('存在结构化终局元数据但玩家措辞未命中时，抑制模型 end_game', async () => {
+    const result = await runTurnWithTerminalEndings('我们成功逃离了这里', [
+      { name: '真相结局', condition: '调查员揭开幕后真相', outcome: '幕后真相公开。' },
+    ])
+
+    expect(result.toolCalls.map((call) => call.name)).not.toContain('end_game')
+    expect(result.worldDeltas.ending).toBeUndefined()
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it.each([
+    { userText: '我没有破坏仪式', ending: { name: '仪式被阻止', condition: '破坏仪式', outcome: '祭祀终止。' } },
+    { userText: '我破坏仪式没成功', ending: { name: '仪式被阻止', condition: '破坏仪式', outcome: '祭祀终止。' } },
+    { userText: '我没有成功逃离地底', ending: { name: '逃生结局', condition: '成功逃离地底', outcome: '调查员逃出生天。' } },
+    { userText: '我无法成功逃离地底', ending: { name: '逃生结局', condition: '成功逃离地底', outcome: '调查员逃出生天。' } },
+  ])('否定完成措辞不能触发结构化终局：$userText', async ({ userText, ending }) => {
+    const result = await runTurnWithTerminalEndings(userText, [ending])
+
+    expect(result.toolCalls.map((call) => call.name)).not.toContain('end_game')
+    expect(result.worldDeltas.ending).toBeUndefined()
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('玩家仍在计划逃离时，即使措辞命中终局条件也不提前结束', async () => {
+    const result = await runTurnWithTerminalEndings('我计划成功逃离地底', [
+      { name: '逃生结局', condition: '成功逃离地底', outcome: '调查员逃出生天。' },
+    ])
+
+    expect(result.toolCalls.map((call) => call.name)).not.toContain('end_game')
+    expect(result.worldDeltas.ending).toBeUndefined()
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it.each(['我想知道怎样成功逃离地底需要什么条件？', '如果我们成功逃离地底'])('疑问或假设中的逃离不触发结构化终局：%s', async (userText) => {
+    const result = await runTurnWithTerminalEndings(userText, [
+      { name: '逃生结局', condition: '成功逃离地底', outcome: '调查员逃出生天。' },
+    ])
+
+    expect(result.toolCalls.map((call) => call.name)).not.toContain('end_game')
+    expect(result.worldDeltas.ending).toBeUndefined()
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('已完成逃离后在新分句中提问仍触发结构化终局', async () => {
+    const result = await runTurnWithTerminalEndings('我成功逃离了地底，接下来该做什么？', [
+      { name: '逃生结局', condition: '成功逃离地底', outcome: '调查员逃出生天。' },
+    ])
+
+    expect(result.worldDeltas.ending).toMatchObject({ outcome: 'survival', title: '逃生结局' })
+  }, GRAPH_LOOP_TIMEOUT_MS)
 
   it('dossier 查证链（storyLookup 注入）：查证消息 → scene_list → scene_dossier → 叙事收尾', async () => {
     const userId = 1

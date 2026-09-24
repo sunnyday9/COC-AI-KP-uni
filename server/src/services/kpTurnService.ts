@@ -10,15 +10,13 @@
  *   - 一次 runKpTurn 调用内完成 ≤8 轮，LLM 工具结果不再经网络往返；
  *   - 工具结果摘要/截断策略原样保留（防长链劣化）。
  */
-import { invokeKPAgent } from '../agent/kpGraph.js'
-import { buildInvokeLLM, normalizeMessages, GRAPH_TIMEOUT_MS, getSharedGraph } from './kpAgentService.js'
 import { isKpChunkStreamEnabled } from '../config.js'
 import { getAiConfig } from './settingsService.js'
 import { processToolCalls } from '../rule-engine/orchestrator.js'
 import { buildToolContext } from '../rule-engine/toolContextFactory.js'
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
 import { STORY_LOOKUP_TOOLS, STORY_LOOKUP_TOOL_NAMES } from '../../../shared/tools/storyLookupTools.js'
-import type { KpMessage } from '../agent/kpGraph.js'
+import type { InvokeLLM, KpMessage, KpToolCall } from '../agent/kpGraph.js'
 import type { ToolCall } from '../rule-engine/types.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import type { Message } from '../../../shared/types/game.js'
@@ -111,7 +109,99 @@ export interface KpTurnDeps {
    *  (scene_list / scene_dossier / lexical_search) 在工具循环内特判执行，
    *  并把它们并入下发 LLM 的工具集。缺省 = rag workflow（无查证工具）。 */
   storyLookup?: (toolName: string, args: Record<string, unknown>) => Promise<{ content: string }>
+  /** Guard each graph call and discard stale results if ownership changes mid-turn. */
+  isOwnerCurrent?: () => boolean
+  /** Preserve the player's action and retry it with the successor's AI identity. */
+  onOwnerChanged?: () => void
   handlers: KpTurnHandlers
+}
+
+type StructuredTerminalEnding = {
+  name?: unknown
+  condition?: unknown
+  outcome?: unknown
+  relatedTruths?: unknown
+}
+
+const TERMINAL_COMPLETION_SIGNALS = [
+  { phrase: /(?:真相大白|真相揭晓)/, metadata: /真相|揭晓|秘密/, outcome: 'victory' },
+  { phrase: /(?:破坏|摧毁|阻止|终止)(?:了)?仪式/, metadata: /仪式/, outcome: 'victory' },
+  { phrase: /(?:成功逃离|成功逃出|逃出生天)/, metadata: /逃离|逃出|逃生|脱出/, outcome: 'survival' },
+  { phrase: /(?:团灭|全员死亡|调查员全灭)/, metadata: /团灭|全灭|全员死亡|调查员.{0,6}(?:死亡|阵亡)/, outcome: 'defeat' },
+  { phrase: /(?:永久疯狂|永久性精神错乱|永久失去理智)/, metadata: /永久.{0,4}(?:疯狂|精神错乱|失去理智)/, outcome: 'defeat' },
+  { phrase: /(?:结束冒险|冒险完结|故事结束|故事完结|调查结束|终止游戏|到此为止)/, metadata: /结束|完结|结局|终止|封存/, outcome: 'unknown' },
+] as const
+
+const PREMATURE_ENDING_PREFIX = /(?:没有成功|还没有|并没有|并未|从未|未曾|不曾|没能|未能|尚未|还没|没有|不可能|无法|不能|未|没|不|准备|打算|计划|尝试|试图|希望|想(?:要)?|要(?:去)?|必须|需要|如果|未完成)$/
+const PREMATURE_ENDING_SUFFIX = /^(?:(?:但是|不过|可是|但|却|而)?(?:没有|没能|没|未能|未|无法|不能|不可能)(?:成功)?|失败|未遂)/
+const HYPOTHETICAL_ENDING_PREFIX = /(?:如果|假如|假设|假使|要是|倘若|万一|就算|即使|哪怕)/
+const TERMINAL_CLAUSE_SEPARATORS = ['，', ',', '。', '.', '；', ';', '：', ':', '\n'] as const
+const QUESTION_ENDING_PREFIX = /(?:想知道|想问|请问|怎样|怎么|如何|是否|能否|能不能|可否|可不可以)[^，,。.;；：:\n]{0,8}$/
+const QUESTION_ENDING_SUFFIX = /^(?:[^，,。.;；：:\n]{0,8}(?:需要|要满足|需要满足|必须满足|得满足|要|得|具备|满足)[^，,。.;；：:\n]{0,6}(?:什么|哪些|哪种|何种|条件|要求|办法|方法)|[^，,。.;；：:\n]{0,8}(?:吗|呢)(?:[?？])?)/
+
+function getTerminalMatchClause(userText: string, start: number, end: number): { prefix: string; suffix: string } {
+  let clauseStart = 0
+  let clauseEnd = userText.length
+  for (const separator of TERMINAL_CLAUSE_SEPARATORS) {
+    const previous = userText.lastIndexOf(separator, start)
+    const next = userText.indexOf(separator, end)
+    if (previous >= 0) clauseStart = Math.max(clauseStart, previous + separator.length)
+    if (next >= 0) clauseEnd = Math.min(clauseEnd, next)
+  }
+  return {
+    prefix: userText.slice(clauseStart, start),
+    suffix: userText.slice(end, clauseEnd),
+  }
+}
+
+function findStructuredTerminalEnding(
+  userText: string,
+  rawEndings: unknown,
+): { ending: StructuredTerminalEnding; outcome: string } | null {
+  if (!userText || !Array.isArray(rawEndings)) return null
+  const candidates: { ending: StructuredTerminalEnding; outcome: string }[] = []
+
+  for (const rawEnding of rawEndings) {
+    if (!rawEnding || typeof rawEnding !== 'object') continue
+    const ending = rawEnding as StructuredTerminalEnding
+    const metadata = [ending.name, ending.condition, ending.outcome]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ')
+    if (!metadata) continue
+
+    for (const signal of TERMINAL_COMPLETION_SIGNALS) {
+      const match = signal.phrase.exec(userText)
+      if (!match || !signal.metadata.test(metadata)) continue
+      const { prefix, suffix } = getTerminalMatchClause(userText, match.index, match.index + match[0].length)
+      if (
+        PREMATURE_ENDING_PREFIX.test(prefix.slice(-14))
+        || PREMATURE_ENDING_SUFFIX.test(suffix.slice(0, 10))
+        || HYPOTHETICAL_ENDING_PREFIX.test(prefix)
+        || QUESTION_ENDING_PREFIX.test(prefix)
+        || QUESTION_ENDING_SUFFIX.test(suffix)
+      ) continue
+      candidates.push({ ending, outcome: signal.outcome })
+    }
+  }
+
+  // Ambiguous metadata must not be guessed. A single story ending and outcome
+  // must be supported by both the player's wording and the structured dossier.
+  const unique = candidates.filter((candidate, index) =>
+    candidates.findIndex((other) => other.ending === candidate.ending && other.outcome === candidate.outcome) === index,
+  )
+  return unique.length === 1 ? unique[0]! : null
+}
+
+function structuredEndGameCall(ending: StructuredTerminalEnding, outcome: string, id: string): KpToolCall {
+  const title = typeof ending.name === 'string' && ending.name.trim() ? ending.name.trim() : '结局'
+  const summary = typeof ending.outcome === 'string' && ending.outcome.trim()
+    ? ending.outcome.trim()
+    : typeof ending.condition === 'string' ? ending.condition.trim() : ''
+  return {
+    id,
+    name: 'end_game',
+    arguments: JSON.stringify({ outcome, title, summary, keyFacts: Array.isArray(ending.relatedTruths) ? ending.relatedTruths : [] }),
+  }
 }
 
 export async function runKpTurn(
@@ -119,6 +209,18 @@ export async function runKpTurn(
   body: { messages: unknown; storyContext?: Record<string, unknown> | null },
   turn: KpTurnDeps,
 ): Promise<void> {
+  // Keep the room-turn coordinator light: kpGraph pulls LangGraph and the
+  // agent service pulls the provider stack. Load both only when a turn really
+  // runs, which also lets knowledge-only consumers and room construction stay
+  // independent from that heavy graph module.
+  const [{ invokeKPAgent }, { buildInvokeLLM, normalizeMessages, getSharedGraph }] = await Promise.all([
+    import('../agent/kpGraph.js'),
+    import('./kpAgentService.js'),
+  ])
+  if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+    turn.onOwnerChanged?.()
+    return
+  }
   let messages: KpMessage[]
   try {
     messages = normalizeMessages(body?.messages)
@@ -128,14 +230,22 @@ export async function runKpTurn(
   }
   // B5：多人模式注入房间内调查员花名册（id + 名称 + 关键属性），LLM 据此用 characterId 调工具
   messages = injectCharacterRoster(messages, turn.characters)
+  const latestPlayerText = [...messages].reverse().find((message) => message.role === 'user')?.content ?? ''
+  const rawTerminalEndings = body.storyContext?.terminalEndings
+  const hasStructuredTerminalMetadata = Array.isArray(rawTerminalEndings) && rawTerminalEndings.length > 0
+  const terminalEnding = findStructuredTerminalEnding(latestPlayerText, rawTerminalEndings)
   const activeSheet = (turn.characters && turn.activeCharacterId ? turn.characters[turn.activeCharacterId] : null) ?? null
   if (messages.length === 0) {
     turn.handlers.onEnd({ content: '', displayMessages: [], toolCalls: [], worldDeltas: { cluesAdded: [] }, characterSheet: activeSheet })
     return
   }
 
+  if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+    turn.onOwnerChanged?.()
+    return
+  }
   const ai = getAiConfig(userId)
-  const invokeLLM = buildInvokeLLM(userId, ai, {
+  const invokeBase = buildInvokeLLM(userId, ai, {
     stream: true,
     onChunk: turn.handlers.onChunk,
     // dossier workflow: append story-lookup tools to the base COC tool set.
@@ -143,6 +253,12 @@ export async function runKpTurn(
       ? (COC_KP_TOOLS as unknown[]).concat(STORY_LOOKUP_TOOLS) as typeof COC_KP_TOOLS
       : undefined,
   })
+  const invokeLLM: InvokeLLM = async (llmMessages) => {
+    if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+      throw new Error('Room ownership changed during KP turn')
+    }
+    return invokeBase(llmMessages)
+  }
 
   let fullContent = ''
   let msgs: KpMessage[] = messages
@@ -158,8 +274,18 @@ export async function runKpTurn(
     ending?: { outcome: string; title: string; summary: string; epilogueOptions?: string[]; keyFacts?: string[]; keyTurnIds?: string[] }
   } = { cluesAdded: [] }
   const generateId = (): string => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+  let ownerChangeHandled = false
+  const recoverForOwnerChange = (): void => {
+    if (ownerChangeHandled) return
+    ownerChangeHandled = true
+    turn.onOwnerChanged?.()
+  }
 
   for (let loop = 0; loop < MAX_TOOL_ITERATIONS; loop++) {
+    if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+      recoverForOwnerChange()
+      return
+    }
     const base = fullContent
     let iter = ''
     const genStart = Date.now()
@@ -167,32 +293,73 @@ export async function runKpTurn(
     try {
       // chunk 流开启时禁用图缓存：缓存 key 取自 String(invokeLLM)，不含 onChunk 回调身份——
       // 跨回合命中会带走上一回合（跨房间同理）的叙事流回调，导致 chunk 广播错房/漏播。
-      r = await invokeKPAgent(msgs, invokeLLM, body?.storyContext ?? null, userId, getSharedGraph(invokeLLM, userId, isKpChunkStreamEnabled()))
+      r = await invokeKPAgent(
+        msgs,
+        invokeLLM,
+        body?.storyContext ?? null,
+        userId,
+        await getSharedGraph(invokeLLM, userId, isKpChunkStreamEnabled()),
+      )
     } catch (err) {
+      if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+        recoverForOwnerChange()
+        return
+      }
       logger.warn('kp:turn graph iteration failed', { userId, loop, error: errorMessage(err) })
       graphFailed = true
       break
+    }
+    if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+      // The dispatched request cannot be recalled, but its stale narrative and
+      // tool calls must not be applied after ownership has transferred.
+      recoverForOwnerChange()
+      return
     }
     const iterFinal = r?.content || ''
     if (iterFinal.trim()) {
       fullContent = base ? base + '\n\n' + iterFinal : iterFinal
     }
-    if (!r?.toolCalls?.length) break
-
     // 服务端执行工具：结果注入消息（摘要 + 截断），角色卡变更通过 mutators 应用。
     // 多人模式（D5）：每个 toolCall 按 args.characterId 选择角色卡（缺省 → 当前行动者）；
     // characterId 不存在于角色组 → 回退行动者（归属校验）。逐调用构造上下文，
     // 使同批工具可作用于多个角色卡。
-    const toolCalls = r.toolCalls as ToolCall[]
+    const toolCalls = ((r?.toolCalls ?? []) as KpToolCall[]).filter(
+      (call) => !hasStructuredTerminalMetadata || call.name !== 'end_game',
+    )
+    if (terminalEnding) {
+      toolCalls.push(structuredEndGameCall(terminalEnding.ending, terminalEnding.outcome, `terminal_${Date.now()}_${loop}`))
+    }
+    // A terminal tool ends this turn. Keep one end_game call and run it last so
+    // tool calls returned alongside it cannot execute after the game is ended.
+    const endGameCall = toolCalls.find((call) => call.name === 'end_game')
+    const endsTurn = endGameCall !== undefined
+    if (endGameCall) {
+      const otherCalls = toolCalls.filter((call) => call.name !== 'end_game')
+      toolCalls.splice(0, toolCalls.length, ...otherCalls, endGameCall)
+    }
+    // Structured stories are gated by their dossier endings and a matched
+    // completed signal. Stories without that metadata retain the legacy
+    // model-selected end_game behavior. A matched structured ending is
+    // synthesized above without waiting for another model decision.
+    if (toolCalls.length === 0) break
+
     const results: { role: 'tool'; tool_call_id: string; content: string }[] = []
     const iterDisplay: Message[] = []
     for (const tc of toolCalls) {
+      if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+        recoverForOwnerChange()
+        return
+      }
       // dossier workflow 查证工具：只读、不进 rule-engine（同步 handler 无异步缝），
       // 由注入的 storyLookup 特判执行（结果同样经摘要+截断回填）。
       if (turn.storyLookup && STORY_LOOKUP_TOOL_NAMES.indexOf(tc.name) >= 0) {
         try {
           const args = JSON.parse(tc.arguments || '{}') as Record<string, unknown>
           const res = await turn.storyLookup(tc.name, args)
+          if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+            recoverForOwnerChange()
+            return
+          }
           results.push({ role: 'tool', tool_call_id: tc.id, content: res.content })
         } catch (e) {
           results.push({ role: 'tool', tool_call_id: tc.id, content: `error: ${e instanceof Error ? e.message : String(e)}` })
@@ -225,8 +392,8 @@ export async function runKpTurn(
           m.transitionToScene(sceneName)
         },
         endGame: (ending) => {
-          worldDeltas.ending = ending
           m.endGame(ending)
+          worldDeltas.ending = ending
         },
       }
       const ctx = buildToolContext({ characterSheet: targetSheet, ...ctxMutators, generateId })
@@ -261,6 +428,9 @@ export async function runKpTurn(
       },
       ...wireToolMessages,
     ]
+    // Invalid end_game arguments (for example, a missing summary) produce an
+    // error tool result without an ending delta; let the model recover once.
+    if (endsTurn && worldDeltas.ending) break
   }
 
   // wire 采样收口（T1）：只收完整回合——图中断或无最终叙事（兜底文案）不进 SFT 语料。

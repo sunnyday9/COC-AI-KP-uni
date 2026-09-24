@@ -3,25 +3,24 @@
  *
  * 收编自 roomService 两个 REST 入口的门闩判定：startRoom（多人等待室开局）此前自带
  * 结束态/已选剧本/workflow 可用性/成员绑卡四道闩，createSoloRoom（solo 出生即 playing、
- * 不经 startRoom）另有一份 dossier 降质判定——workflow→门闩的映射（rag=已索引 /
- * dossier=已生成+未降质）没有单一落点，且 startRoom 的 dossier 分支对同一目录 readdir
+ * 不经 startRoom）另有一份 dossier 降质判定——workflow→门闩的映射（rag=已索引+
+ * 可评估剧透定位材料 / dossier=已生成+未降质）没有单一落点，且 startRoom 的 dossier 分支对同一目录 readdir
  * 扫两遍（listDossiersForOwner 拿 scriptId 集合 + dossierGateNoticeForOwner 再扫一遍
  * 喂 dossierGateNotice）。本模块把判定收成一处：一次 listDossiers 磁盘扫描同时服务
  * 「已生成」与「未降质」两个判定（scriptId 集合与降质视图同源一份 DossierListItem[]）。
  *
  * 双入口差异用 gateFor 表达（不是两份 if 链复刻）：
  *  - 'lobby-start'（startRoom）：结束态终态（#54）+ 已选剧本 + workflow 可用性
- *    （dossier 已生成→未降质；rag 已索引，ADR-0005 防 KP 无原文静默空跑）+ 成员绑卡；
+ *    （dossier 已生成→未降质；rag 已索引 + revealScene 锚点可评估，ADR-0005 防无原文/无剧透闸开局）+ 成员绑卡；
  *  - 'solo-create'（createSoloRoom）：一体动作自己绑卡、房间行尚未存在——无结束态/
- *    已选剧本/绑卡闩；**缺档案不拦**（维持现状，2026-09-12 #55 会话定的边界：多人
- *    startRoom 已有「未生成」门闩，#55 只收窄「生成了但质量不足」的静默放行），
- *    dossier workflow 只拦降质，rag 局零门闩（现状不变）。
+ *    已选剧本/绑卡闩，但仍要求所选 workflow 的知识 artifact 已可用；否则不能直接
+ *    创建 playing 房间并让 KP 在没有原文的情况下静默空跑。
  *
- * 判定形态（Mimosa 门禁放行形态，2026-09-12 验证）：质量视图只能经 dossierCore 的
- * listDossiers readdir 磁盘扫描拿全（文件名非请求输入）+ 纯函数 dossierGateNotice 判
- * 降质——REST 可达链上**不引入以请求 storyId 为键的 loadDossier/loadGaps keyed fs 读**。
- * 对知识层实现（dossierCore / ragService）保持动态 import。governanceGate 的
- * multi-only 前置（kind）留在房间域——它被全部治理动作共享，不是开局门闩。
+ * 判定形态：dossier 降质视图经 dossierCore.listDossiers 的磁盘扫描 + 纯函数
+ * dossierGateNotice 判定；rag 的剧透保护则必须读取 dossier/gaps 并验证 revealScene
+ * 锚点。两类 artifact loader 都按 JSON 内的 scriptId 查找 UUID 文件，不把请求 id
+ * 拼成 fs 路径。对知识层实现（dossierCore / coverageGaps / ragService）保持动态 import。
+ * governanceGate 的 multi-only 前置（kind）留在房间域——它被全部治理动作共享，不是开局门闩。
  * 本模块无状态、无 fs/db 静态运行时依赖（类型除外）：入口只喂「行摘要 + 归属」，
  * 成功路径副作用（写库/对账/opening）不在此——门闩只判定。唯一静态运行时依赖是
  * 零依赖纯函数 codec roomStateCodec（#61 rooms.state 读点收口），不引 fs/db 重量。
@@ -54,7 +53,7 @@ export interface StartGateInput {
   /** 剧本 id。lobby-start 允许空串（→ 已选剧本门闩）；solo-create 的必填是入口参数
    *  校验（bad-request），不是门闩。 */
   storyId: string
-  /** 剧本档案/索引按房主解析（KP 回合全程跟随现任 owner，ADR-0005）。 */
+  /** 开局时当前房主是剧本来源 owner；开局后转让房主时保留独立 source owner（ADR-0005）。 */
   ownerId: number
   /** lobby-start：房间行摘要。solo-create 不传（一体动作，房间行尚未存在）。 */
   room?: StartGateRoomSummary | null
@@ -106,6 +105,36 @@ async function loadIndexedStoryIds(ownerId: number): Promise<string[]> {
   }
 }
 
+/**
+ * rag 玩法除索引外还依赖可评估的剧透材料：已生成且未降质的档案，以及带场景原文
+ * 定位锚点的 gaps sidecar。任何文件缺失/损坏、truth revealScene 未匹配锚点都拒绝开局，
+ * 避免 plain RAG 在没有可执行剧透闸时把原文片段注入 KP。
+ */
+async function ragSpoilerMetadataNotice(ownerId: number, storyId: string): Promise<string | null> {
+  const missingNotice = '该剧本缺少可用的剧透保护锚点，请先重新生成档案并完成索引后再开局'
+  try {
+    const [dossierCore, coverageGaps, supplement] = await Promise.all([
+      import('../rag/dossier/dossierCore.js'),
+      import('../rag/dossier/coverageGaps.js'),
+      import('../rag/supplementAssembly.js'),
+    ])
+    const items = await dossierCore.listDossiers(ownerId)
+    if (!items.some((item) => item.scriptId === storyId)) {
+      return '该剧本尚未生成档案，请先在「我的故事」中生成可用于剧透保护的档案'
+    }
+    const degradedNotice = dossierCore.dossierGateNotice(items, storyId)
+    if (degradedNotice) return degradedNotice
+
+    const [dossier, gaps] = await Promise.all([
+      dossierCore.loadDossier(ownerId, storyId),
+      coverageGaps.loadGaps(ownerId, storyId),
+    ])
+    return supplement.hasUsableSpoilerMetadata(gaps, dossier) ? null : missingNotice
+  } catch {
+    return missingNotice
+  }
+}
+
 /** 门闩拒绝（409）构造。 */
 function gateConflict(message: string): StartGateResult {
   return { ok: false, reason: 'conflict', message }
@@ -113,8 +142,8 @@ function gateConflict(message: string): StartGateResult {
 
 /**
  * 开局门闩唯一判定入口：startRoom / createSoloRoom 各一行调用，409 reason/message
- * 与拆分前逐字节一致。判定次序与原两处 if 链逐一同构：
- * 结束态 → 已选剧本 → workflow 可用性（已生成/已索引 → 降质）→ 成员绑卡。
+ * 与拆分前逐字节一致。判定次序：
+ * 结束态 → 已选剧本 → workflow 可用性（dossier 已生成/未降质；rag 已索引/剧透锚点可用）→ 成员绑卡。
  */
 export async function checkStartGate(input: StartGateInput): Promise<StartGateResult> {
   const lobby = input.gateFor === 'lobby-start'
@@ -123,28 +152,26 @@ export async function checkStartGate(input: StartGateInput): Promise<StartGateRe
   if (lobby && input.room?.phase === 'ended') return gateConflict('对局已结束，无法重新开始')
   // 门闩 1（lobby-start）：已选剧本（storyId 必填——房间创建时允许为空，开局前必须选定）。
   if (lobby && !input.storyId) return gateConflict('请先在等待室选定剧本')
-  // 门闩 2：剧本可用性按 workflow 分派（dossier=已生成+未降质；rag=已索引）。
+  // 门闩 2：剧本可用性按 workflow 分派（dossier=已生成+未降质；rag=已索引+可评估剧透锚点）。
   const workflow = input.room ? roomWorkflowFromRow(input.room) : sanitizeWorkflow(input.workflow)
   if (workflow === 'dossier') {
     const materials = await loadDossierGateMaterials(input.ownerId, input.storyId)
-    if (lobby) {
-      // 「未生成」409：清单拿不到（扫描异常 → 与原 listDossiersForOwner catch → [] 同向）
-      // 或 scriptId 不在集合内，均按缺档案处理。
-      const generated = materials?.items.some((d) => d.scriptId === input.storyId) ?? false
-      if (!generated) return gateConflict('该剧本尚未生成档案，请先在「我的故事」中为剧本生成档案')
-    }
+    // 「未生成」409：清单拿不到（扫描异常 → []）或 scriptId 不在集合内，均按缺档案处理。
+    // solo-create 也必须过这道闩，否则它会绕过 lobby-start 直接出生为 playing。
+    const generated = materials?.items.some((d) => d.scriptId === input.storyId) ?? false
+    if (!generated) return gateConflict('该剧本尚未生成档案，请先在「我的故事」中为剧本生成档案')
     // 门闩 2b（#55，双入口共有）：低覆盖/分节失败的残档不再静默放行。文案与「未生成
     // 档案」分开——缺档案指引生成，残档指引重生成。判定走档案清单（readdir 磁盘扫描，
     // 文件名非请求输入）+ 纯函数：REST 可达链上不引入"以请求 id 为键"的 fs 读。
-    // solo-create 缺档案/清单拿不到 → degradedNotice 为 null 放行（维持现状，与原
-    // dossierGateNoticeForOwner 的 catch → null 语义一致）。
     if (materials?.degradedNotice) return gateConflict(materials.degradedNotice)
-  } else if (lobby) {
-    // rag workflow（仅 lobby-start）：solo 的 rag 局零门闩（现状不变）。
+  } else {
+    // rag workflow（两种入口共有）：必须已有索引，避免 playing 房没有原文上下文。
     const indexed = await loadIndexedStoryIds(input.ownerId)
     if (!indexed.includes(input.storyId)) {
       return gateConflict('该剧本尚未索引，请先在「我的故事」中完成索引')
     }
+    const spoilerMetadataNotice = await ragSpoilerMetadataNotice(input.ownerId, input.storyId)
+    if (spoilerMetadataNotice) return gateConflict(spoilerMetadataNotice)
   }
   // 门闩 3（lobby-start 数据驱动）：每名成员已绑定角色卡（不等待就绪——软信号）。
   // solo-create 不传 members（一体动作在同一事务里自己绑卡）→ 空集放行。

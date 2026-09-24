@@ -1,0 +1,61 @@
+name: RAG model smoke
+
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rag-model-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model-backed-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MODELS_DIR: ${{ github.workspace }}/server/data/models
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          npm_config_fund: 'false'
+
+      - name: Restore reranker model cache
+        id: reranker-cache
+        uses: actions/cache@v4
+        with:
+          path: server/data/models
+          key: rag-reranker-bge-base-q8-${{ runner.os }}-${{ hashFiles('package-lock.json', 'server/src/rag/reranker.ts') }}
+
+      - name: Populate model cache on miss
+        if: steps.reranker-cache.outputs.cache-hit != 'true'
+        working-directory: server
+        run: |
+          node --import tsx --input-type=module -e '
+            import { loadRerankModel } from "./src/rag/reranker.ts";
+            const model = await loadRerankModel();
+            if (!model) throw new Error("Reranker model cache population failed");
+            console.log("Reranker model and tokenizer cached under MODELS_DIR");
+          '
+
+      - name: Run real OCR and reranker smoke tests
+        working-directory: server
+        env:
+          RERANK_SMOKE: '1'
+          REAL_OCR_SMOKE: '1'
+        run: >-
+          npx vitest run
+          src/rag/__tests__/reranker.spec.ts
+          src/rag/__tests__/realOcr.smoke.spec.ts

@@ -29,6 +29,8 @@ import { dirname } from 'node:path'
 import { OPENING_RAG_QUERY, type StoryWorkflow } from './kpPromptService.js'
 import type { SceneCoverage } from '../rag/dossier/coverageGaps.js'
 import type { StoryLookupHandler, StoryLookupInput } from '../rag/dossier/dossierLookupTools.js'
+import type { DossierEnding } from '../rag/dossier/schema.js'
+import { logger } from '../utils/logging.js'
 
 /** 查证工具执行器的输入/Handler 形态单源在档案域 dossierLookupTools（类型擦除的
  *  re-export——保持本模块既有导出面，调用方零变化）。 */
@@ -43,8 +45,10 @@ export type TurnStage = 'turn' | 'opening'
 export interface TurnKnowledgeInput {
   /** 房间知识 workflow：rag = 检索情报块；dossier = 档案场景块 + 补充层。 */
   workflow: StoryWorkflow
-  /** KP/RAG/记忆全程跟随现任 owner（ADR-0005）：剧本/档案/嵌入按它解析。 */
+  /** Current room owner: AI settings, embeddings, and lookup calls use this identity. */
   ownerId: number
+  /** Persisted story source owner; story files and indexes use this identity. */
+  storyOwnerId?: number
   /** 剧本 id（null = 未绑定剧本 → 全部落空降级为空）。 */
   storyId: string | null
   /** 房间 id（trace JSONL / KP_LLM_DEBUG 日志标识）。 */
@@ -72,6 +76,8 @@ export interface TurnKnowledge {
   coverage?: SceneCoverage | null
   /** 剧本名（提示词「## 故事:」行；失败回退 ''）。 */
   storyName: string
+  /** Explicit dossier ending conditions used only by server-side terminal adjudication. */
+  terminalEndings: DossierEnding[]
   /** wire 采样「注入列」——拼装口径全仓唯一（见模块头注释）。 */
   wireInjectionText: string
 }
@@ -98,10 +104,17 @@ export async function assembleTurnKnowledge(input: TurnKnowledgeInput): Promise<
   const isOpening = input.stage === 'opening'
   const ragQuery = isOpening ? OPENING_RAG_QUERY : input.playerText
   const supplementQuery = isOpening ? '' : input.playerText
-  const [knowledge, storyName] = await Promise.all([
-    fetchKnowledge(input, ragQuery),
-    fetchStoryName(input),
-  ])
+  // Both dossier operations dynamically import dossierCore. Keeping them out
+  // of the same Promise.all avoids duplicate concurrent module loads in the
+  // Vitest mocker and still leaves the independent RAG operations parallel.
+  let knowledge: Awaited<ReturnType<typeof fetchKnowledge>>
+  let storyName = ''
+  if (input.workflow === 'dossier') {
+    knowledge = await fetchKnowledge(input, ragQuery)
+    storyName = knowledge.storyName ?? ''
+  } else {
+    ;[knowledge, storyName] = await Promise.all([fetchKnowledge(input, ragQuery), fetchStoryName(input)])
+  }
   // P27（预取）+ M1-T6（检索补充）并行：预取是事实层深挖（玩家发言是事实问句且
   // 档案对不上措辞时先跑一次查证，结论并入本轮 system，对玩家不可见——P26 已证
   // 纯提示词无法让 KP 主动查证）；补充层是纹理（ADR-0007）。两者互不依赖，失败
@@ -123,6 +136,7 @@ export async function assembleTurnKnowledge(input: TurnKnowledgeInput): Promise<
     sceneName: knowledge.sceneName,
     coverage: knowledge.coverage,
     storyName,
+    terminalEndings: knowledge.terminalEndings,
     wireInjectionText,
   }
 }
@@ -132,13 +146,13 @@ export async function assembleTurnKnowledge(input: TurnKnowledgeInput): Promise<
 async function fetchKnowledge(
   input: TurnKnowledgeInput,
   ragQuery: string,
-): Promise<{ ragContext: string; sceneBlock: string; sceneName?: string; coverage?: SceneCoverage | null }> {
-  if (!input.storyId) return { ragContext: '', sceneBlock: '' }
+): Promise<{ ragContext: string; sceneBlock: string; sceneName?: string; coverage?: SceneCoverage | null; storyName?: string; terminalEndings: DossierEnding[] }> {
+  if (!input.storyId) return { ragContext: '', sceneBlock: '', terminalEndings: [] }
   if (input.workflow === 'dossier') {
     const d = await fetchDossierContext(input)
-    return { ragContext: '', sceneBlock: d.block, sceneName: d.sceneName, coverage: d.coverage }
+    return { ragContext: '', sceneBlock: d.block, sceneName: d.sceneName, coverage: d.coverage, storyName: d.storyName, terminalEndings: d.terminalEndings }
   }
-  return { ragContext: await fetchRagContext(input, ragQuery), sceneBlock: '' }
+  return { ragContext: await fetchRagContext(input, ragQuery), sceneBlock: '', terminalEndings: [] }
 }
 
 /** 剧本名（rag 索引清单 / dossier 档案；失败回退 ''）。 */
@@ -147,11 +161,11 @@ async function fetchStoryName(input: TurnKnowledgeInput): Promise<string> {
   try {
     if (input.workflow === 'dossier') {
       const { loadDossier } = await import('../rag/dossier/dossierCore.js')
-      const dossier = await loadDossier(input.ownerId, input.storyId)
+      const dossier = await loadDossier(input.storyOwnerId ?? input.ownerId, input.storyId)
       if (dossier?.storyName) return dossier.storyName
     }
     const { listStories } = await import('./ragService.js')
-    return listStories(input.ownerId).find((s) => s.storyId === input.storyId)?.name ?? ''
+    return listStories(input.storyOwnerId ?? input.ownerId).find((s) => s.storyId === input.storyId)?.name ?? ''
   } catch {
     return ''
   }
@@ -179,7 +193,7 @@ async function fetchRagContext(input: TurnKnowledgeInput, query: string): Promis
     const { buildGetEmbeddingForUser } = await import('./ragService.js')
     const res = await buildSupplement(
       {
-        userId: input.ownerId,
+        userId: input.storyOwnerId ?? input.ownerId,
         scriptId: input.storyId,
         rawQuery: query,
         sceneName: input.scene ?? undefined,
@@ -191,15 +205,15 @@ async function fetchRagContext(input: TurnKnowledgeInput, query: string): Promis
         // 标准管线的低分改写对两房一致启用（否则 A/B 对照臂被削——审查发现）
         rewrite: defaultRewrite(input.ownerId),
         onEvent: (e) => {
-          if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch] room=${input.roomId} ${JSON.stringify(e)}`)
+          if (process.env.KP_LLM_DEBUG === '1') logger.debug('rag fetch event', { roomId: input.roomId, event: e })
         },
       },
     )
     const text = res.blocks.map(renderBlock).join('\n\n')
-    if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch] room=${input.roomId} chars=${text.length} degraded=${res.degraded}`)
+    if (process.env.KP_LLM_DEBUG === '1') logger.debug('rag fetch complete', { roomId: input.roomId, chars: text.length, degraded: res.degraded })
     return text
   } catch (err) {
-    if (process.env.KP_LLM_DEBUG === '1') console.error(`[rag-fetch-fail] room=${input.roomId} err=${err instanceof Error ? err.message : String(err)}`)
+    if (process.env.KP_LLM_DEBUG === '1') logger.debug('rag fetch failed', { roomId: input.roomId, error: err instanceof Error ? err.message : String(err) })
     return ''
   }
 }
@@ -209,13 +223,13 @@ async function fetchRagContext(input: TurnKnowledgeInput, query: string): Promis
  */
 async function fetchDossierContext(
   input: TurnKnowledgeInput,
-): Promise<{ block: string; sceneName?: string; coverage?: SceneCoverage | null }> {
-  if (!input.storyId) return { block: '' }
+): Promise<{ block: string; sceneName?: string; coverage?: SceneCoverage | null; storyName?: string; terminalEndings: DossierEnding[] }> {
+  if (!input.storyId) return { block: '', terminalEndings: [] }
   try {
     const { loadDossier, buildSceneBlock, listScenes, findScene, renderSceneUncovered } = await import('../rag/dossier/dossierCore.js')
     const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
-    const dossier = await loadDossier(input.ownerId, input.storyId)
-    if (!dossier) return { block: '' }
+    const dossier = await loadDossier(input.storyOwnerId ?? input.ownerId, input.storyId)
+    if (!dossier) return { block: '', terminalEndings: [] }
     const scenes = listScenes(dossier)
     // 场景归属（#53）：房间 scene 为空（新局，还没切过场景）→ 回落档案首场景；
     // **有值但对不上任何档案场景 → 绝不安到别的场景上**（错喂 B 场景的块/在场 NPC/
@@ -228,28 +242,31 @@ async function fetchDossierContext(
     const resolved = matched ?? (!wanted ? scenes[0] : undefined)
     const unmatched = !!wanted && !matched
     if (unmatched && process.env.KP_LLM_DEBUG === '1') {
-      console.error(
-        `[dossier-scene] room=${input.roomId} story=${input.storyId} 房间场景「${wanted}」未匹配到档案场景` +
-          `（档案 ${scenes.length} 个：${scenes.slice(0, 8).map((s) => s.name).join('、')}${scenes.length > 8 ? '…' : ''}）→ 不注入场景块`,
-      )
+      logger.debug('room scene did not match dossier scene', {
+        roomId: input.roomId,
+        storyId: input.storyId,
+        scene: wanted,
+        dossierScenes: scenes.slice(0, 8).map((scene) => scene.name),
+        dossierSceneCount: scenes.length,
+      })
     }
     const sceneName = unmatched ? wanted : resolved?.name
     // P26：场景块附覆盖提示（该场景原文有多少未入档）——P25 观测到 KP 缺少
     // "档案可能不全"的信号，从不主动查原文。loadGaps 内部已吞错返回 null。
     // 未覆盖时不取覆盖率：那是别的场景的数据，报出来就是冒充。
-    const gaps = unmatched ? null : await loadGaps(input.ownerId, input.storyId)
+    const gaps = unmatched ? null : await loadGaps(input.storyOwnerId ?? input.ownerId, input.storyId)
     const coverage = resolved?.id ? computeSceneCoverage(gaps, resolved.id) : null
     const block = unmatched
       ? renderSceneUncovered(wanted, scenes.map((s) => s.name))
       : buildSceneBlock(dossier, resolved?.id ?? '', coverage)
-    return { block, sceneName, coverage }
+    return { block, sceneName, coverage, storyName: dossier.storyName, terminalEndings: dossier.endings ?? [] }
   } catch (err) {
     // 静默降级为空块（既有约定：注入失败不阻断回合），但留可见诊断——
     // 否则"档案块凭空消失"（含 mock 缺导出这类编程错误）线上无从发现。
     if (process.env.KP_LLM_DEBUG === '1') {
-      console.error(`[dossier-scene] room=${input.roomId} story=${input.storyId} 场景块解析失败：${err instanceof Error ? err.message : String(err)}`)
+      logger.debug('dossier scene assembly failed', { roomId: input.roomId, storyId: input.storyId, error: err instanceof Error ? err.message : String(err) })
     }
-    return { block: '' }
+    return { block: '', terminalEndings: [] }
   }
 }
 
@@ -274,7 +291,7 @@ async function fetchTurnSupplement(
     const { buildGetEmbeddingForUser } = await import('./ragService.js')
     const res = await buildSupplement(
       {
-        userId: input.ownerId,
+        userId: input.storyOwnerId ?? input.ownerId,
         scriptId: input.storyId,
         playerText,
         sceneName: knowledge.sceneName ?? input.scene ?? undefined,
@@ -285,14 +302,14 @@ async function fetchTurnSupplement(
         // 低分改写（ADR-0007 决策 6）：仅在检索最高分低于阈值时触发一次
         rewrite: defaultRewrite(input.ownerId),
         onEvent: (e) => {
-          if (process.env.KP_LLM_DEBUG === '1') console.error(`[supplement] room=${input.roomId} ${JSON.stringify(e)}`)
+          if (process.env.KP_LLM_DEBUG === '1') logger.debug('dossier supplement event', { roomId: input.roomId, event: e })
           appendTraceFile('SUPPLEMENT_TRACE', input.roomId, input.storyId, e)
         },
       },
     )
     return res.section
   } catch (err) {
-    if (process.env.KP_LLM_DEBUG === '1') console.error(`[supplement-fail] room=${input.roomId} err=${err instanceof Error ? err.message : String(err)}`)
+    if (process.env.KP_LLM_DEBUG === '1') logger.debug('dossier supplement failed', { roomId: input.roomId, error: err instanceof Error ? err.message : String(err) })
     return ''
   }
 }
@@ -318,9 +335,10 @@ async function prefetchVerification(
       { playerText, sceneBlock: knowledge.sceneBlock, sceneName: knowledge.sceneName, coverage: knowledge.coverage ?? null },
       {
         userId: input.ownerId,
+        storyOwnerId: input.storyOwnerId ?? input.ownerId,
         scriptId: input.storyId,
         onEvent: (e) => {
-          if (process.env.KP_LLM_DEBUG === '1') console.error(`[prefetch] room=${input.roomId} ${JSON.stringify(e)}`)
+          if (process.env.KP_LLM_DEBUG === '1') logger.debug('dossier prefetch event', { roomId: input.roomId, event: e })
           appendTraceFile('PREFETCH_TRACE', input.roomId, input.storyId, e)
         },
       },

@@ -164,4 +164,4 @@ node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 
 - `MOCK_AI=1` 只替换 LLM 输出（确定性脚本），KP Agent 的 LangGraph 状态机真实运行——测试与演示等价于真实链路；
 - `shared/` 为纯 TS 源码包（无构建），server / client 相对路径直接引用；
-- 剧本结构化门控字段（`requiredClues`）为可选扩展：自由文本剧本行为与无门控完全一致，零回归。
+- 剧本结构化门控字段（`requiredClues`）为可选扩展：空自由文本条件不设门控，`requires_clues` 按已获得线索判定，其他非空自由文本条件失败关闭并保持锁定。

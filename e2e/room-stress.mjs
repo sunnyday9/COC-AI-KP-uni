@@ -220,7 +220,7 @@ async function main() {
       } catch { /* ignore */ }
     }
     await Promise.all(exits)
-    process.exit(process.exitCode ?? 0)
+    // Let main().catch handle failures after child cleanup has completed.
   }
 }
 

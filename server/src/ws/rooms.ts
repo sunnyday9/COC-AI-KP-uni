@@ -113,6 +113,11 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
       }
       // 领域方法（ADR-0001）：身份解析/消息流/回合缓冲都在 RoomService 内部
       room.submitPlayerChat(userId, content)
+    } else if (action.type === 'retry_kp') {
+      const accepted = await room.retryKpTurn(userId)
+      if (!accepted) {
+        send(socket, { type: 'room:error', roomId, error: '只有当前房主可以重试 KP。' })
+      }
     } else {
       send(socket, { type: 'room:error', roomId, error: `unknown action type: ${action.type}` })
       return

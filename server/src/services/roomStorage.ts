@@ -16,6 +16,7 @@ export interface RoomRow {
   owner_id: number
   invite_code: string
   story_id: string | null
+  story_owner_id: number | null
   kind: string
   phase: string
   state: string
@@ -60,9 +61,9 @@ export function insertRoom(
 ): void {
   const now = Date.now()
   getDb()
-    .prepare(`INSERT INTO rooms (room_id, owner_id, invite_code, story_id, kind, phase, state, version, updated_at, created_at)
-              VALUES (?, ?, ?, ?, ?, 'lobby', '{}', 0, ?, ?)`)
-    .run(roomId, ownerId, inviteCode, storyId, kind, now, now)
+    .prepare(`INSERT INTO rooms (room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, version, updated_at, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, 'lobby', '{}', 0, ?, ?)`)
+    .run(roomId, ownerId, inviteCode, storyId, storyId ? ownerId : null, kind, now, now)
 }
 
 export function inviteCodeExists(code: string): boolean {
@@ -86,7 +87,7 @@ export function listRoomsForUser(userId: number): RoomListItemRow[] {
   return rows.map((r) => ({ roomId: r.room_id, inviteCode: r.invite_code, storyId: r.story_id, phase: r.phase, updatedAt: r.updated_at }))
 }
 
-/** 未结束 solo 房间列表（继续游戏入口，ADR-0002）。 */
+/** 未结束 solo 房间列表（游戏 hub 的 solo 续玩入口，ADR-0002）。 */
 export function listSoloRoomsForUser(userId: number): SoloRoomListItemRow[] {
   const rows = getDb()
     .prepare(`SELECT r.room_id, r.story_id, r.phase, r.updated_at, r.state
@@ -105,14 +106,14 @@ export function listSoloRoomsForUser(userId: number): SoloRoomListItemRow[] {
 
 export function getRoomRow(roomId: string): RoomRow | undefined {
   return getDb()
-    .prepare(`SELECT room_id, owner_id, invite_code, story_id, kind, phase, state, created_at FROM rooms WHERE room_id = ?`)
+    .prepare(`SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, created_at FROM rooms WHERE room_id = ?`)
     .get(roomId) as RoomRow | undefined
 }
 
-export function updateRoomStart(roomId: string, storyId: string): void {
+export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number): void {
   getDb()
-    .prepare(`UPDATE rooms SET story_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`)
-    .run(storyId, Date.now(), roomId)
+    .prepare(`UPDATE rooms SET story_id = ?, story_owner_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`)
+    .run(storyId, storyOwnerId, Date.now(), roomId)
 }
 
 /** 房间阶段落库（#54）：`rooms.phase` 列是「房间详情 / 继续游戏列表 / restore」的

@@ -33,6 +33,12 @@
 			"root": "pages/game",
 			"pages": [
 				{
+					"path": "hub",
+					"style": {
+						"navigationBarTitleText": "进行中的调查"
+					}
+				},
+				{
 					"path": "index",
 					"style": {
 						"navigationBarTitleText": "游戏房间"

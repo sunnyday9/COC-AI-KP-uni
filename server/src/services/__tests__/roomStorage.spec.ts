@@ -68,8 +68,8 @@ describe('RoomStorage 持久化原语', () => {
 
   it('updateRoomStart 置 playing + story_id 列', () => {
     const roomId = seedRoom('e', 9005, 'rs_eve')
-    updateRoomStart(roomId, 'story.md')
-    expect(getRoomRow(roomId)).toMatchObject({ phase: 'playing', story_id: 'story.md' })
+    updateRoomStart(roomId, 'story.md', 9005)
+    expect(getRoomRow(roomId)).toMatchObject({ phase: 'playing', story_id: 'story.md', story_owner_id: 9005 })
   })
 
   it('快照落库 bump version；设置类小写不 bump', () => {

@@ -90,6 +90,8 @@ export interface RoomSnapshot {
   clues: { id: string; description: string }[]
   scene: string | null
   ending: unknown | null
+  /** KP is paused until the current owner completes provider setup. */
+  kpSetupRequired?: boolean
   turnWindowMs: number
   updatedAt: number
 }
@@ -139,7 +141,6 @@ export interface CharacterListItem {
 }
 
 /** 房间动作（room:action 帧）。 */
-export interface RoomAction {
-  type: 'chat'
-  payload: { content: string }
-}
+export type RoomAction =
+  | { type: 'chat'; payload: { content: string } }
+  | { type: 'retry_kp' }

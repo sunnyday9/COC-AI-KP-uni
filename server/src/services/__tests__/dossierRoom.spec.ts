@@ -18,13 +18,19 @@ vi.stubEnv('DOSSIER_DATA_DIR', path.join(tmp, 'dossiers'))
 // Re-import with env set (modules read config at import).
 vi.resetModules()
 
+// Match ragService.listStories: the production API is synchronous. Keeping
+// this mock synchronous lets the start gate exercise the indexed-story branch
+// instead of having its defensive catch treat the Promise as an empty list.
+const listStoriesMock = vi.hoisted(() => vi.fn(() => [{ storyId: 'demo.txt', name: 'demo', chunkCount: 1, indexedAt: 1 }]))
+vi.mock('../ragService.js', () => ({ listStories: listStoriesMock }))
+
 const { createSoloRoom, getOrCreateRoom, getRoom, _clearRoomRegistryForTests } = await import('../roomService.js')
 const roomStorage = await import('../roomStorage.js')
 const { getDb } = await import('../../db/index.js')
 
 // Mock the dossier store so flushTurn resolves a deterministic dossier block.
 // mock 落在轻核 dossierCore——roomService 动态 import 的就是它。
-vi.mock('../rag/dossier/dossierCore.js', async () => {
+vi.mock('../../rag/dossier/dossierCore.js', async () => {
   const { findScene } = await vi.importActual<typeof import('../../rag/dossier/sceneLookup.js')>('../../rag/dossier/sceneLookup.js')
   return {
     findScene,
@@ -35,6 +41,8 @@ vi.mock('../rag/dossier/dossierCore.js', async () => {
       scenes: [{ id: 'scene_1', name: '旧图书馆', sceneText: '灰尘与霉味。', description: '', npcIds: [], clueIds: [], requiredClues: [], hooks: [] }],
       clues: [],
       npcs: [],
+      truths: [{ id: 'truth_1', title: '隐藏真相', detail: '档案中的真相。', revealScene: 'scene_1' }],
+      endings: [],
     })),
     buildSceneBlock: vi.fn(() => '场景：旧图书馆\n现场描述：灰尘与霉味。'),
     listScenes: vi.fn(() => [{ id: 'scene_1', name: '旧图书馆' }]),
@@ -45,6 +53,23 @@ vi.mock('../rag/dossier/dossierCore.js', async () => {
     dossierGateNotice: vi.fn(() => null),
     // #53：mock 必须导出它（vitest 对缺失导出抛错 → 被 fetchDossierContext 的 catch 吞成空块）
     renderSceneUncovered: vi.fn((name: string, names: string[]) => `【场景归属提示】档案未覆盖当前场景「${name}」。档案中的场景：${names.join('、')}。`),
+  }
+})
+
+vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/coverageGaps.js')>()
+  return {
+    ...actual,
+    loadGaps: vi.fn(async (_ownerId: number, scriptId: string) => ({
+      scriptId,
+      storyChars: 20_000,
+      sceneTextChars: 8,
+      gapCount: 0,
+      gapChars: 0,
+      gapPct: 0,
+      spans: [],
+      sceneAnchors: [{ id: 'scene_1', name: '旧图书馆', matched: true, starts: [12_000] }],
+    })),
   }
 })
 

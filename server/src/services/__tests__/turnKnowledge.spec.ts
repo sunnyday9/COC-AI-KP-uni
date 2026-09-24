@@ -53,6 +53,7 @@ vi.mock('../../rag/dossier/dossierCore.js', () => ({
     scenes: [{ id: 's1', name: '门厅', sceneText: '门厅的铜灯。', description: '', npcIds: [], clueIds: [], requiredClues: [], hooks: [] }],
     clues: [],
     npcs: [],
+    endings: [{ name: '仪式被阻止', condition: '破坏仪式', outcome: '祭祀终止，调查员幸存。' }],
   })),
   buildSceneBlock: vi.fn((_d: unknown, id: string) => `场景：门厅（${id}）`),
   listScenes: vi.fn(() => [{ id: 's1', name: '门厅' }]),
@@ -129,6 +130,25 @@ describe('assembleTurnKnowledge — rag workflow（标准检索情报块，plain
     expect(runPrefetch).not.toHaveBeenCalled()
     expect(k.wireInjectionText).toBe(k.ragContext)
   })
+
+  it('loads shared story artifacts as the former source owner but uses the current owner for embedding credentials', async () => {
+    await assembleTurnKnowledge({ ...baseInput, ownerId: 9, storyOwnerId: 7, workflow: 'rag', playerText: '看门厅', stage: 'turn' })
+
+    expect(listStories).toHaveBeenCalledWith(7)
+    expect(buildSupplement).toHaveBeenCalledWith(expect.objectContaining({ userId: 7, scriptId: 'story_k' }), expect.anything())
+    expect(buildGetEmbeddingForUser).toHaveBeenCalledWith(9)
+  })
+
+  it('dossier supplement reads the source owner index while settings and embeddings use the current owner', async () => {
+    await assembleTurnKnowledge({ ...baseInput, ownerId: 9, storyOwnerId: 7, workflow: 'dossier', playerText: '【艾丽丝】钥匙在哪', stage: 'turn' })
+
+    expect(loadDossier).toHaveBeenCalledWith(7, 'story_k')
+    expect(loadGaps).toHaveBeenCalledWith(7, 'story_k')
+    expect(getSettings).toHaveBeenCalledWith(9)
+    expect(buildSupplement).toHaveBeenCalledWith(expect.objectContaining({ userId: 7, scriptId: 'story_k' }), expect.anything())
+    expect(buildGetEmbeddingForUser).toHaveBeenCalledWith(9)
+    expect(runPrefetch).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userId: 9, storyOwnerId: 7, scriptId: 'story_k' }))
+  })
 })
 
 describe('assembleTurnKnowledge — dossier workflow（场景档案块 + 补充层 + 预取）', () => {
@@ -152,6 +172,7 @@ describe('assembleTurnKnowledge — dossier workflow（场景档案块 + 补充�
     expect(k.verifyBlock).toBe('查证结论（桩）：铜钥匙在门厅。')
     // 剧本名：dossier 档案 / rag 清单同源同名（见 mock 处竞态说明）
     expect(k.storyName).toBe('雾中镇')
+    expect(k.terminalEndings).toEqual([{ name: '仪式被阻止', condition: '破坏仪式', outcome: '祭祀终止，调查员幸存。' }])
     // 注入列口径：场景块在前、补充小节在后，双非空拼接
     expect(k.wireInjectionText).toBe('场景：门厅（s1）\n\n## 原文片段（检索补充·仅作描写素材）\n纹理块（桩）')
   })
@@ -279,12 +300,12 @@ describe('assembleTurnKnowledge — trace JSONL 落盘（实验追踪，默认�
 
 describe('buildStoryLookup — 查证工具供给决策（workflow 门；执行器本体在档案域）', () => {
   it('rag workflow → undefined（本回合不提供查证工具）；dossier 未绑剧本 → undefined（#74：门判定自档案域死工厂收拢到此单源）', () => {
-    expect(buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'rag', getOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => null })).toBeUndefined()
-    expect(buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'dossier', getOwnerId: () => 7, getStoryId: () => null, getScene: () => null })).toBeUndefined()
+    expect(buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'rag', getOwnerId: () => 7, getStoryOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => null })).toBeUndefined()
+    expect(buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'dossier', getOwnerId: () => 7, getStoryOwnerId: () => 7, getStoryId: () => null, getScene: () => null })).toBeUndefined()
   })
 
   it('dossier workflow → 返回执行器（活值 getter 透传；四工具行为直测在 rag/dossier/__tests__/dossierLookupTools.spec.ts）', () => {
-    const lookup = buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'dossier', getOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => '门厅' })
+    const lookup = buildStoryLookup({ roomId: 'room_k', getWorkflow: () => 'dossier', getOwnerId: () => 7, getStoryOwnerId: () => 7, getStoryId: () => 'story_k', getScene: () => '门厅' })
     expect(typeof lookup).toBe('function')
   })
 })

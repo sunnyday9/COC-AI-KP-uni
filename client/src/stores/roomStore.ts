@@ -89,6 +89,8 @@ export const useRoomStore = defineStore('room', () => {
   const characters = ref<Record<string, unknown>>({})
   /** 结局（房间 ended 后存在）。 */
   const ending = ref<unknown | null>(null)
+  /** KP turn is paused until the current owner completes AI setup. */
+  const kpSetupRequired = ref(false)
   /** 连接状态。 */
   const connectionState = ref<RoomConnectionState>('idle')
   /** 错误信息（error 状态时展示）。 */
@@ -140,6 +142,7 @@ export const useRoomStore = defineStore('room', () => {
     scene.value = snap.scene ?? null
     clues.value = Array.isArray(snap.clues) ? snap.clues : []
     ending.value = snap.ending ?? null
+    kpSetupRequired.value = snap.kpSetupRequired === true
     characters.value = (snap.characters && typeof snap.characters === 'object') ? snap.characters : {}
     messages.value = Array.isArray(snap.messages) ? snap.messages as RoomMessageRecord[] : []
     // 成员列表来自 REST（room:state 不含 members；room_meta 事件会覆盖）
@@ -203,6 +206,11 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
 
   /** 应用 state_patch 路径补丁（characters.<id> 全量替换 / clues 全量 / scene / ending）。 */
   function applyPathPatch(path: string, value: unknown): void {
+    if (path === 'kpSetupRequired') {
+      kpSetupRequired.value = value === true
+      if (kpSetupRequired.value) awaitingKp.value = false
+      return
+    }
     if (path === 'clues') {
       if (Array.isArray(value)) clues.value = value as { id: string; description: string }[]
       return
@@ -318,6 +326,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     characters.value = {}
     scene.value = null
     ending.value = null
+    kpSetupRequired.value = false
     phase.value = 'lobby'
 
     try {
@@ -356,6 +365,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     clues.value = []
     characters.value = {}
     ending.value = null
+    kpSetupRequired.value = false
     connectionState.value = 'idle'
     errorMessage.value = ''
     lastSeq.value = 0
@@ -422,6 +432,17 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     }
   }
 
+  /** Ask the current room owner to resume a preserved KP opening/turn. */
+  function retryKpTurn(): void {
+    const rid = roomId.value
+    if (!rid || connectionState.value !== 'joined' || !isOwner.value || !kpSetupRequired.value) return
+    try {
+      getBridge().sendRoomFrame('room:action', { roomId: rid, action: { type: 'retry_kp' } })
+    } catch (err) {
+      errorMessage.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
   /** 等待室就绪/取消（软信号；owner 无 ready 语义，服务端 409——UI 不暴露给房主）。 */
   async function setReady(ready: boolean): Promise<void> {
     const rid = roomId.value
@@ -466,6 +487,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     clues,
     characters,
     ending,
+    kpSetupRequired,
     connectionState,
     errorMessage,
     lastSeq,
@@ -486,6 +508,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     leaveAndClear,
     resync,
     sendChat,
+    retryKpTurn,
     setReady,
     kickMember,
     transferOwner,

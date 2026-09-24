@@ -7,6 +7,7 @@
  */
 import type { AIProviderConfig } from '../../../../shared/constants/providers.js'
 import { BadRequestError } from '../../utils/errors.js'
+import { safeOutboundFetch } from '../../utils/safeOutboundFetch.js'
 import type { ChatMessage, ChatTool, LLMCallParams, LLMResult, ToolCallResult } from './types.js'
 
 function toGeminiTools(openaiTools?: ChatTool[]): unknown[] | null {
@@ -139,7 +140,7 @@ export async function googleAdapter(config: AIProviderConfig, params: LLMCallPar
   const altParam = stream ? '&alt=sse' : ''
   const url = `${baseURL}/v1beta/models/${model}:${endpoint}?key=${apiKey}${altParam}`
 
-  const res = await fetch(url, {
+  const res = await safeOutboundFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

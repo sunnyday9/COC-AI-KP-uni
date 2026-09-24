@@ -21,6 +21,7 @@
 import OpenAI from 'openai'
 import type { AIProviderConfig } from '../../../../shared/constants/providers.js'
 import type { ChatMessage, ChatTool, LLMCallParams, LLMResult, ToolCallResult } from './types.js'
+import { safeOutboundFetch } from '../../utils/safeOutboundFetch.js'
 
 /** chat 嵌套工具 → responses 扁平工具 */
 function toResponsesTools(tools?: ChatTool[]): unknown[] | undefined {
@@ -92,6 +93,7 @@ export async function openaiResponsesAdapter(
   const client = new OpenAI({
     baseURL: config.baseUrl,
     apiKey: config.apiKey || 'not-needed',
+    fetch: safeOutboundFetch as unknown as NonNullable<ConstructorParameters<typeof OpenAI>[0]>['fetch'],
   })
 
   const { input, instructions } = toResponsesInput(messages)

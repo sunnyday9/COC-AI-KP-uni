@@ -9,6 +9,7 @@ import { getAiConfig } from './settingsService.js'
 import { isMockAiMode } from '../config.js'
 import { mockChat, mockChatForAgent, mockChatForRag, mockListModels } from './mockAi.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
+import { safeOutboundFetch } from '../utils/safeOutboundFetch.js'
 import { BadRequestError, UpstreamError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import { dispatch } from './llm/index.js'
@@ -271,7 +272,7 @@ async function fetchOpenAiModels(
     const modelsUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/models` : `${baseUrl}/v1/models`
     const headers: Record<string, string> = {}
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-    const res = await fetch(modelsUrl, { headers })
+    const res = await safeOutboundFetch(modelsUrl, { headers })
     if (!res.ok) return null
     const data = (await res.json()) as { data?: { id: string }[] }
     let models: ModelOption[] = (data.data ?? []).filter((m) => m.id).map((m) => ({ value: m.id, label: m.id }))
@@ -326,7 +327,7 @@ export async function listModels(userId: number, purpose = 'chat'): Promise<Mode
     const base = baseUrl || 'https://generativelanguage.googleapis.com'
     try {
       assertSafeOutboundUrl(base)
-      const res = await fetch(`${base}/v1beta/models?key=${apiKey}&pageSize=100`)
+      const res = await safeOutboundFetch(`${base}/v1beta/models?key=${apiKey}&pageSize=100`)
       if (!res.ok) return []
       const data = (await res.json()) as {
         models?: { name: string; displayName?: string; supportedGenerationMethods?: string[] }[]

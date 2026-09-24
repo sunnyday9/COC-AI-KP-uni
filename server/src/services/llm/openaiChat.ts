@@ -8,6 +8,7 @@ import type { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat/
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js'
 import type { AIProviderConfig } from '../../../../shared/constants/providers.js'
 import type { ChatMessage, ChatTool, LLMCallParams, LLMResult, ToolCallResult } from './types.js'
+import { safeOutboundFetch } from '../../utils/safeOutboundFetch.js'
 
 export async function openaiChatAdapter(config: AIProviderConfig, params: LLMCallParams): Promise<LLMResult> {
   const { messages, tools, onChunk, temperature, maxTokens, stream } = params
@@ -20,6 +21,7 @@ export async function openaiChatAdapter(config: AIProviderConfig, params: LLMCal
     baseURL: config.baseUrl,
     apiKey: config.apiKey || 'not-needed',
     defaultHeaders,
+    fetch: safeOutboundFetch as unknown as NonNullable<ConstructorParameters<typeof OpenAI>[0]>['fetch'],
   })
 
   const opts: {

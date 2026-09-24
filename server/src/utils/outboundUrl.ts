@@ -84,7 +84,10 @@ export function assertSafeOutboundUrl(raw: string): void {
   }
   const lower = h.toLowerCase()
 
-  if (lower === 'localhost') {
+  // RFC 6761 reserves localhost and names below it; a terminal DNS root dot
+  // is equivalent and must not bypass the hostname check.
+  const normalizedHost = lower.replace(/\.+$/, '')
+  if (normalizedHost === 'localhost' || normalizedHost.endsWith('.localhost')) {
     throw new Error('unsafe outbound host: localhost is not allowed')
   }
   if (lower === '::' || lower === '::1') {

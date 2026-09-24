@@ -28,6 +28,19 @@ import {
 const listStoriesMock = vi.hoisted(() => vi.fn())
 vi.mock('../ragService.js', () => ({ listStories: listStoriesMock }))
 
+const listDossiersMock = vi.hoisted(() => vi.fn())
+const loadDossierMock = vi.hoisted(() => vi.fn())
+vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
+  return { ...actual, listDossiers: listDossiersMock, loadDossier: loadDossierMock }
+})
+
+const loadGapsMock = vi.hoisted(() => vi.fn())
+vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rag/dossier/coverageGaps.js')>()
+  return { ...actual, loadGaps: loadGapsMock }
+})
+
 const suite = `gov_${Date.now()}`
 
 /** 每用例独立用户与房间（成员/角色状态隔离）。 */
@@ -44,6 +57,45 @@ function seedChar(userId: number, tag: string): string {
   getDb().prepare(`INSERT OR IGNORE INTO characters (id, user_id, name, sheet, updated_at) VALUES (?, ?, ?, '{}', ?)`).run(id, userId, `卡_${tag}`, Date.now())
   return id
 }
+
+/** Keep gate-positive governance cases aligned with rag's required truth reveal anchor. */
+function provideRagSpoilerMetadata(storyId: string): void {
+  listDossiersMock.mockResolvedValue([{
+    scriptId: storyId,
+    name: 'x',
+    sceneCount: 1,
+    generatedAt: 1,
+    degraded: false,
+    coveragePct: 100,
+  }])
+  loadDossierMock.mockResolvedValue({
+    scriptId: storyId,
+    storyName: '测试剧本',
+    generatedAt: 1,
+    scenes: [{ id: 'reveal', name: '终幕', sceneText: '终幕原文' }],
+    clues: [],
+    npcs: [],
+    truths: [{ id: 'truth_finale', title: '幕后真相', detail: '真相细节', revealScene: 'reveal' }],
+    endings: [],
+  })
+  loadGapsMock.mockResolvedValue({
+    scriptId: storyId,
+    storyChars: 20_000,
+    sceneTextChars: 4,
+    gapCount: 0,
+    gapChars: 0,
+    gapPct: 0,
+    spans: [],
+    sceneAnchors: [{ id: 'reveal', name: '终幕', matched: true, starts: [12_000] }],
+  })
+}
+
+beforeEach(() => {
+  listStoriesMock.mockReturnValue([])
+  listDossiersMock.mockReset().mockResolvedValue([])
+  loadDossierMock.mockReset().mockResolvedValue(null)
+  loadGapsMock.mockReset().mockResolvedValue(null)
+})
 
 function memberRow(roomId: string, userId: number): { role: string; character_id: string | null; ready: number } {
   return getDb().prepare(`SELECT role, character_id, ready FROM room_members WHERE room_id = ? AND user_id = ?`).get(roomId, userId) as {
@@ -163,6 +215,25 @@ describe('kick（房主踢出）', () => {
   })
 })
 
+describe('房主转让后的剧本来源身份', () => {
+  it('直接转让与断线自动继位都保留已选剧本的来源账号', () => {
+    const owner = seedUser('story_source_owner')
+    const directSuccessor = seedUser('story_source_direct')
+    const autoSuccessor = seedUser('story_source_auto')
+    const created = createRoom(owner, 'story_shared')
+    joinRoomByInviteCode(directSuccessor, created.inviteCode)
+    joinRoomByInviteCode(autoSuccessor, created.inviteCode)
+
+    expect(transferOwnership(owner, created.roomId, directSuccessor).ok).toBe(true)
+    expect(getDb().prepare('SELECT story_owner_id FROM rooms WHERE room_id = ?').get(created.roomId)).toEqual({ story_owner_id: owner })
+
+    handleOwnerWsDisconnect(created.roomId, directSuccessor)
+    // The original owner remains the earliest member after the direct handoff,
+    // so automatic disconnect succession returns ownership to that row.
+    expect(getDb().prepare('SELECT owner_id, story_owner_id FROM rooms WHERE room_id = ?').get(created.roomId)).toEqual({ owner_id: owner, story_owner_id: owner })
+  })
+})
+
 describe('transfer（房主主动转让）', () => {
   it('转让 → rooms.owner_id + 双行 role 翻转；旧 owner 留房降为 member', () => {
     const owner = seedUser('tr_owner')
@@ -226,6 +297,7 @@ describe('开局门闩（ADR-0005 start gate）', () => {
 
     // 剧本已索引（mock 返回含该 storyId）但成员未绑卡
     listStoriesMock.mockReturnValue([{ storyId: 'story_gate_x', name: 'x', chunkCount: 1, indexedAt: 1 }])
+    provideRagSpoilerMetadata('story_gate_x')
     const unbound = await startRoom(owner, created.roomId, 'story_gate_x')
     expect(unbound.ok).toBe(false)
     if (!unbound.ok) {
@@ -236,6 +308,7 @@ describe('开局门闩（ADR-0005 start gate）', () => {
 
   it('门闩全过（已索引 + 全员绑卡）→ start 成功 phase=playing；就绪不要求', async () => {
     listStoriesMock.mockReturnValue([{ storyId: 'story_gate_ok', name: 'y', chunkCount: 1, indexedAt: 1 }])
+    provideRagSpoilerMetadata('story_gate_ok')
     const owner = seedUser('gate_ok_owner')
     const memberA = seedUser('gate_ok_a')
     const created = createRoom(owner, null)
@@ -288,6 +361,7 @@ describe('phase gate（lobby 禁 KP）', () => {
 describe('playing 锁房（ADR-0005 invite 拒绝）', () => {
   it('playing 后邀请码加入 → conflict；lobby 正常加入', async () => {
     listStoriesMock.mockReturnValue([{ storyId: 'story_lock_z', name: 'z', chunkCount: 1, indexedAt: 1 }])
+    provideRagSpoilerMetadata('story_lock_z')
     const owner = seedUser('lock_owner')
     const memberA = seedUser('lock_a')
     const created = createRoom(owner, null)
