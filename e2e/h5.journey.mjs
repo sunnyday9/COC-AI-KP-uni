@@ -398,11 +398,13 @@ async function main() {
         .locator('.indexed-card')
         .filter({ hasText: 'demo-story' })
         .first()
+      const generateButton = indexedCard.locator('uni-button').filter({ hasText: '生成守秘人档案' }).first()
+      await generateButton.waitFor({ state: 'visible', timeout: 15_000 })
       const generateResponse = page.waitForResponse((response) => {
         const pathname = new URL(response.url()).pathname
         return response.request().method() === 'POST' && /\/api\/dossier\/.+\/generate$/.test(pathname)
       }, { timeout: 60_000 })
-      await indexedCard.locator('button').filter({ hasText: '生成守秘人档案' }).click()
+      await generateButton.click()
       const response = await generateResponse
       const dossier = await response.json()
       assert(response.status() === 200 && dossier.ok === true && dossier.degraded !== true,
