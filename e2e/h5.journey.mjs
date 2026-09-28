@@ -390,7 +390,32 @@ async function main() {
       await waitText(page, '个信息块')
     })
 
-    /* ── 6. Home shows the indexed story ── */
+    /* ── 6. Generate the dossier required by the RAG spoiler-protection gate ── */
+    await step('generate dossier and spoiler anchors required for RAG play', async () => {
+      const indexedCard = pLoc('.section')
+        .filter({ hasText: '已索引故事' })
+        .first()
+        .locator('.indexed-card')
+        .filter({ hasText: 'demo-story' })
+        .first()
+      const generateResponse = page.waitForResponse((response) => {
+        const pathname = new URL(response.url()).pathname
+        return response.request().method() === 'POST' && /\/api\/dossier\/.+\/generate$/.test(pathname)
+      }, { timeout: 60_000 })
+      await indexedCard.locator('button').filter({ hasText: '生成守秘人档案' }).click()
+      const response = await generateResponse
+      const dossier = await response.json()
+      assert(response.status() === 200 && dossier.ok === true && dossier.degraded !== true,
+        `dossier generation failed or was degraded: ${response.status()} ${JSON.stringify(dossier)}`)
+      await pLoc('.section')
+        .filter({ hasText: '已生成守秘人档案' })
+        .first()
+        .locator('.file-name')
+        .filter({ hasText: 'demo-story' })
+        .waitFor({ state: 'visible', timeout: 15_000 })
+    })
+
+    /* ── 7. Home shows the indexed story ── */
     await step('home lists indexed story', async () => {
       await page.goto(`${WEB_BASE}/#/pages/home/index`, { waitUntil: 'domcontentloaded' })
       // uni-app H5 reuses the already-mounted first-page instance from its
@@ -401,7 +426,7 @@ async function main() {
       await waitText(page, 'demo-story', 20_000)
     })
 
-    /* ── 7. Start game → occupation (法官, all-fixed skill slots) ── */
+    /* ── 8. Start game → occupation (法官, all-fixed skill slots) ── */
     await step('occupation selection (法官)', async () => {
       await clickText(page, 'demo-story')
       await waitText(page, '选择职业')
@@ -412,7 +437,7 @@ async function main() {
       await waitText(page, '职业技能')
     })
 
-    /* ── 8. Character create (单页 step2 技能属性 → step3 兴趣姓名预览) → roomCreateSolo ── */
+    /* ── 9. Character create (单页 step2 技能属性 → step3 兴趣姓名预览) → roomCreateSolo ── */
     await step('character create → roomCreateSolo → 进入 solo 房间', async () => {
       await clickBtn(page, '投掷属性')
       await waitText(page, '重新投掷')
@@ -439,12 +464,12 @@ async function main() {
       )
     })
 
-    /* ── 9. Server opening (room event, mock KP) ── */
+    /* ── 10. Server opening (room event, mock KP) ── */
     await step('opening 叙述经房间事件流到达（服务端触发）', async () => {
       await waitText(page, '（测试模式）守秘人回应：你听到了远处的脚步声。', 30_000)
     })
 
-    /* ── 10. Investigate message → skill_check + grant_clue tool loop ── */
+    /* ── 11. Investigate message → skill_check + grant_clue tool loop ── */
     await step('侦查 message → skill_check + grant_clue loop', async () => {
       await fillInput(page, '描述你的行动...', '我仔细侦查房间，搜索书架。')
       await clickBtn(page, '发送')
@@ -458,7 +483,7 @@ async function main() {
       await pLoc('.left-rail .clue-card').filter({ hasText: '书架后的暗格里藏着一把铜钥匙' }).first().waitFor({ timeout: 10_000 })
     })
 
-    /* ── 11. Combat message → skill_check → roll_dice → adjust_hp (HP -2) ── */
+    /* ── 12. Combat message → skill_check → roll_dice → adjust_hp (HP -2) ── */
     await step('战斗 message → skill_check → roll_dice → adjust_hp (HP -2)', async () => {
       const hpBefore = Number((await pLoc('.stat-current').nth(1).textContent()).trim())
       assert(Number.isFinite(hpBefore) && hpBefore > 0, `invalid HP before combat: ${hpBefore}`)
@@ -472,7 +497,7 @@ async function main() {
       assert(hpAfter === hpBefore - 2, `HP should drop by exactly 2 (${hpBefore} → ${hpAfter})`)
     })
 
-    /* ── 12. Reload → resume from server snapshot（存读档已由服务端快照取代） ── */
+    /* ── 13. Reload → resume from server snapshot（存读档已由服务端快照取代） ── */
     await step('reload → 服务端快照续玩（消息 + HP 恢复）', async () => {
       await page.reload({ waitUntil: 'domcontentloaded' })
       // onLoad 带 roomId 参数 → joinRoom → 全量快照恢复
@@ -482,7 +507,7 @@ async function main() {
       assert(Number.isFinite(hp) && hp > 0, `HP should be restored (> 0), got "${hp}"`)
     })
 
-    /* ── 13. Home: 未结束 solo 局以「继续」角标出现在故事卡上（T7 移除独立续玩块） ── */
+    /* ── 14. Home: 未结束 solo 局以「继续」角标出现在故事卡上（T7 移除独立续玩块） ── */
     await step('首页故事卡「继续」角标（续玩入口）', async () => {
       await page.goto(`${WEB_BASE}/#/pages/home/index`, { waitUntil: 'domcontentloaded' })
       await page.reload({ waitUntil: 'domcontentloaded' })
@@ -493,7 +518,7 @@ async function main() {
       await waitText(page, '描述你的行动...', 30_000)
     })
 
-    /* ── 14. Screenshot ── */
+    /* ── 15. Screenshot ── */
     await step('screenshot output', async () => {
       fs.mkdirSync(SHOTS_DIR, { recursive: true })
       const shot = path.join(SHOTS_DIR, 'final-game.png')
