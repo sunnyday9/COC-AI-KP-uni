@@ -6,7 +6,7 @@
 > 沿革：原 Electron `window.electronAPI`（见 `original/ai-trpg-web/src/env.d.ts`）的 IPC 面
 > 由 REST + WebSocket 实现，本文节编号沿用至今（§6/§7/§8 等退役节保留注记不重排）。
 > §10 安全约束是 D-09 红线文档：`pathSafety.ts` / `fileNames.ts` 等代码注释引用它，原文逐字节保留。
-> 所有 `/api/*` 端点（除 `/api/auth/*` 外）需要 `Authorization: Bearer <JWT>`；
+> 仅 `POST /api/auth/register` 与 `POST /api/auth/login` 是公开端点；`GET /api/auth/me` 及其余所有 `/api/*` 端点均需要 `Authorization: Bearer <JWT>`；
 > 实挂路由组以 `server/src/app.ts` 为准（9 组，完整清单见 §11）。
 
 ## 约定
@@ -59,7 +59,10 @@
 - 端点：`ws://<host>/ws?token=<JWT>`（H5/App）；小程序走 `wss://`；token 无效以 4001 关闭。
 - 心跳：客户端每 30s 发 `{ "type": "ping" }`，服务端回 `{ "type": "pong" }`。
 - 服务端 → 客户端推送：`{ "type": "rag:progress", "payload": {...} }`（RAG 索引进度，Task 4）。
-- 房间帧（`room:join` / `room:leave` / `room:sync` / `room:action`）与 `room:event` 广播见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`；未知消息类型忽略。
+- 当前房间帧（共享类型见 `shared/types/room.ts`）：
+  - 客户端 → 服务端：`room:join {roomId}`、`room:leave {roomId}`、`room:sync {roomId,lastSeq}`、`room:action {roomId,action}`；当前动作是 `chat`，形状为 `{type:"chat",payload:{content}}`。
+  - 服务端 → 客户端：`room:state {roomId,snapshot,seq}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义；`kp_chunk` 仅在实验开关开启时广播，客户端仍以完整 `message_appended` 为准。
+  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
 
 ## 5. 剧本 / 文件（Task 4）
 
@@ -98,7 +101,7 @@
 
 > `/api/rag/story-overview` 已于 2026-09-13 退役（#91 B 桶「全链退役」拍板，#93）：服务端路由 / `ragService.storyOverview` / `vectorStore.getStoryOverview` 与路由自测段一并删除；客户端 bridge 方法已于 #85 删除。本节编号保留不重排（§8 被 server 路由注释引用）。
 
-- 数据按 `userId + storyId` 隔离；嵌入双通道（本地模型 / 用户 AI 设置中的 API）与检索、切块细节以 `services/ragService.ts` + `rag/` 实码为准（叙述见 ONBOARDING-GUIDE §7）；API 出站同样受 §3 安全约束。
+- 数据按 `userId + storyId` 隔离；嵌入双通道（本地模型 / 用户 AI 设置中的 API），无嵌入或单块嵌入失败时保留 TF-IDF 词面检索兜底；检索、切块细节以 `services/ragService.ts` + `rag/` 实码为准（叙述见 ONBOARDING-GUIDE §7）；API 出站同样受 §3 安全约束。
 
 ## 9. 客户端 Bridge 映射（Task 6）
 
@@ -110,17 +113,27 @@
 | listStories / importStory / deleteStory | `/api/stories*` |
 | aiChat / aiListModels | POST `/api/ai/chat`、GET `/api/ai/models` |
 | ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragGetIndex / ragTestEmbedding | `/api/rag*` |
-| login / register / logout / me（新增） | `/api/auth*` |
+| roomCreate / roomList / roomCreateSolo / roomListSolo / roomJoin / roomDetail / roomStart / roomDelete | `/api/rooms*`（`roomListSolo` 由「游戏」调查 hub 用于 solo 续玩） |
+| roomSetTurnWindow | PUT `/api/rooms/:id/settings` |
+| roomBindCharacter / roomSetReady / roomLeave / roomKickMember / roomTransfer | `/api/rooms/:id/*` 房间治理端点 |
+| characterCreate / characterList | POST/GET `/api/characters` |
+| login / register / me | `/api/auth/register`、`/api/auth/login`、`/api/auth/me` |
+| logout | 本地清除 token 并关闭 WS；服务端没有 logout REST 端点 |
+| connectWs / sendRoomFrame / onRoomFrame / onReconnect | `/ws` 房间帧与客户端重连订阅，具体帧见 §4 |
 | platform | `'h5' \| 'mp-weixin' \| 'app'` |
 
-> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002），存档走页面 → `/api/saves*`（§7，#60 删除 listSaves/readSave/writeSave bridge 方法）。scripts 与 story 读取的桥接死包装（readScript / saveScript / saveScriptToLibrary / deleteScript / readStory / readStoryForRag）与 setImportFilePath 已于 #97 删除（readStoryForRag 对应端点 §5 现行保留，e2e 直接消费）。
+> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002）；存档/读档语义由房间快照与重新进入房间取代，`/api/saves*` 已按 §7 退役（#60 删除 listSaves/readSave/writeSave bridge 方法，#92 删除服务端链路）。scripts 与 story 读取的桥接死包装（readScript / saveScript / saveScriptToLibrary / deleteScript / readStory / readStoryForRag）与 setImportFilePath 已于 #97 删除（readStoryForRag 对应端点 §5 现行保留，e2e 直接消费）。
 
 ## 10. 通用约定
 
 - 文件大小限制：stories 上传 ≤50MB（scripts 上传面已随 #94 退役）。
+- stories 上传默认上限为 52428800 字节（50 MiB），可由 `MAX_UPLOAD_BYTES` 覆盖。
 - JWT 过期返回 401，前端 bridge 统一跳转登录页。
 - 所有服务端日志走 `server/src/utils/logging.ts`（迁移自 logging.cjs，traceId 上下文）。
 - 路径安全：任何基于用户输入的路径拼接前必须过 `server/src/utils/pathSafety.ts`（迁移自 pathSafety.cjs）。
+- 路径边界补充：`assertPathInDir` 同时检查 lexical boundary 与 `realpath` boundary，符号链接指向允许目录外时拒绝。
+- 文件落盘：外部 `storyId/scriptId` 不得进入文件名。上传文件使用 DB 中的内部 uuid `file_path`；RAG 使用 `RAG_DATA_DIR/<userId>/rag_index/<uuid>.json`，档案及其 `.gaps.json` / `.annex.json` sidecar 使用 UUID 文件名，并通过 JSON 元数据反查外部 id。旧版外部 id 文件名可读，重新索引/生成时迁移为 UUID。
+- 生产配置：`NODE_ENV=production` 时 `JWT_SECRET` 必须设置为非空且非 `dev-secret-change-me` 的值，否则应用启动失败。
 
 ## 11. 实挂路由组一览（与 `server/src/app.ts` 对齐，9 组）
 
@@ -138,5 +151,6 @@
 | 8 | `/api/rooms` | `roomSettings.routes.ts` | PUT `/:id/settings` | 房间设置（turnWindowMs） |
 | 9 | `/api/characters` | `characters.routes.ts` | GET `/`、POST `/` | 角色卡存取 |
 
+- 房间解散只允许删除 `lobby` 或已结束房间；`playing` 房间返回 409，避免进行中的快照被 owner 直接删除。
 - KP 回合不占路由组：唯一入口为房间协议（ADR-0002，帧协议细节见 §4）。
 - §6/§7 为退役节：`/api/scripts*`、`/api/saves*` 已不在挂载面。

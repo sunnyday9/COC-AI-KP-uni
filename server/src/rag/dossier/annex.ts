@@ -18,12 +18,12 @@
  *    transitions（tr_map_*，condition='地图标注'，与现有边去重）；kept 的线索
  *    文字图转录 → 追加 clues（clue_map_*，location='附图 第N页'）。
  *
- * 落盘 DOSSIER_DATA_DIR/<uid>/<sanitizeScriptId>.annex.json（明细审计）；档案
+ * 落盘 DOSSIER_DATA_DIR/<uid>/<uuid>.annex.json（明细审计）；档案
  * JSON 只带计数摘要（schema.DossierAnnexSummary，非剧透）。
  *
  * 安全：视觉走 chatForRag（继承协议分发 + assertSafeOutboundUrl + MOCK_AI），
- * annex 文件路径沿用白名单 sanitize + resolveFileInDir 双保险（与 dossier 文件
- * 同模式）。凭据只从 settings/环境变量读，不落源码。
+ * annex 文件名由服务端生成 UUID，外部 scriptId 只存于 JSON 内容。凭据只从
+ * settings/环境变量读，不落源码。
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -32,11 +32,10 @@ import { DOSSIER_DATA_DIR } from '../../config.js'
 import { chatForRag } from '../../services/aiService.js'
 import { getAiConfig } from '../../services/settingsService.js'
 import { readStoryFileBytes } from '../../services/storyService.js'
-import { resolveFileInDir } from '../../utils/pathSafety.js'
+import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../../utils/jsonArtifact.js'
 import { BadRequestError } from '../../utils/errors.js'
 import type { ChatMessage } from '../../services/llm/types.js'
 import {
-  sanitizeScriptId,
   type StoryDossier,
   type DossierScene,
   type DossierAnnexSummary,
@@ -481,19 +480,26 @@ function edgeKey(from: string, to: string): string {
 /* ═══════════════════ 落盘 / 读取 ═══════════════════ */
 
 /** annex 文件路径：白名单 sanitize + resolve 边界双保险（同 dossier 文件）。 */
-function annexFile(userId: number, scriptId: string): string {
-  const safe = sanitizeScriptId(scriptId)
-  return resolveFileInDir(path.join(DOSSIER_DATA_DIR, String(userId)), `${safe}.annex.json`, 'annex file')
+function annexFiles(userId: number, scriptId: string): string[] {
+  return findJsonArtifactPaths(path.join(DOSSIER_DATA_DIR, String(userId)), scriptId, { suffix: '.annex.json' })
 }
 
 export async function persistAnnex(userId: number, annex: AnnexFile): Promise<void> {
-  await fs.mkdir(path.join(DOSSIER_DATA_DIR, String(userId)), { recursive: true })
-  await fs.writeFile(annexFile(userId, annex.scriptId), JSON.stringify(annex, null, 2), 'utf-8')
+  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  await fs.mkdir(dir, { recursive: true })
+  const existing = annexFiles(userId, annex.scriptId)
+  const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(dir, '.annex.json')
+  await fs.writeFile(file, JSON.stringify(annex, null, 2), 'utf-8')
+  for (const oldPath of existing) {
+    if (oldPath !== file) await fs.unlink(oldPath).catch(() => undefined)
+  }
 }
 
 export async function loadAnnex(userId: number, scriptId: string): Promise<AnnexFile | null> {
+  const [file] = annexFiles(userId, scriptId)
+  if (!file) return null
   try {
-    const raw = await fs.readFile(annexFile(userId, scriptId), 'utf-8')
+    const raw = await fs.readFile(file, 'utf-8')
     const parsed = JSON.parse(raw) as AnnexFile
     return parsed && typeof parsed === 'object' ? parsed : null
   } catch {
@@ -502,12 +508,12 @@ export async function loadAnnex(userId: number, scriptId: string): Promise<Annex
 }
 
 export async function deleteAnnex(userId: number, scriptId: string): Promise<boolean> {
-  try {
-    await fs.unlink(annexFile(userId, scriptId))
-    return true
-  } catch {
-    return false
+  const files = annexFiles(userId, scriptId)
+  let deleted = false
+  for (const file of files) {
+    await fs.unlink(file).then(() => { deleted = true }).catch(() => undefined)
   }
+  return deleted
 }
 
 /* ═══════════════════ 编排（annex 生成） ═══════════════════ */

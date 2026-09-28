@@ -45,8 +45,8 @@ export async function buildGetEmbeddingForUser(userId: number): Promise<Embedder
 
 async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
   if (isMockAiMode()) {
-    // MOCK_AI (Task 11): skip the local model download entirely — TF-IDF
-    // vectorStore still indexes/queries chunks without dense embeddings.
+    // MOCK_AI (Task 11): skip the local model download entirely — vectorStore
+    // uses its TF-IDF retrieval baseline when dense embeddings are unavailable.
     return null
   }
   const settings = getSettings(userId)

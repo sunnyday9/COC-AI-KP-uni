@@ -65,7 +65,7 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 编写�
 | FR-5 | 与 AI 守密人文字对话（WS 房间事件流，叙事整段回灌） | `client/src/stores/roomStore.ts` + `server/src/services/roomService.ts`（`flushTurn`）+ `kpTurnService.ts` |
 | FR-6 | 工具链驱动规则：检定/战斗/SAN/幸运/医疗/场景/线索/结局等 24 个 COC 工具 | `shared/tools/cocTools.ts`（定义）+ `server/src/rule-engine/`（服务端图内执行） |
 | FR-7 | 确定性兜底：SAN 超阈值强制疯狂、结局表达强制 end_game、停滞强制推进 | `server/src/agent/kpGraph.ts` |
-| FR-8 | 线索门控：剧本结构化 `requiredClues` 程序化判定场景解锁 | `server/src/agent/scriptContext.ts` |
+| FR-8 | 线索门控：结构化与规范化条件程序化判定场景/线索解锁 | `server/src/agent/scriptContext.ts` |
 | FR-9 | 存档/读档 —— 已退役（2026-09-13，#92 / ADR-0008）：`/api/saves*` 全链下线，续玩 = 重进房间（房间快照） | — |
 | FR-10 | 结局结算 + 结局报告（含关键事实/回顾） | `client/src/pages/game/game-end/` |
 | FR-11 | AI 设置（provider/baseUrl/key/model）服务端持久化 | `server/src/services/settingsService.ts` |
@@ -91,7 +91,7 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 编写�
 | 层面 | 选型 | 对比过什么 / 为什么 | 备注 |
 |---|---|---|---|
 | 后端框架 | Express + TypeScript (ESM) | NestJS（重）、Fastify（生态）——原主进程代码是 CJS/MJS，Express 迁移成本最低，路由级迁移可直接对应原 IPC handlers | `server/src/app.ts` |
-| 数据库 | SQLite（Node 24 内置 `node:sqlite`） | Prisma + SQLite（计划书初选）→ 最终弃用 Prisma，改手写 `DatabaseSync` 单例：零原生依赖、无构建步骤、无需迁移工具（幂等建表） | 代价：无迁移机制（§16） |
+| 数据库 | SQLite（Node 24 内置 `node:sqlite`） | Prisma + SQLite（计划书初选）→ 最终弃用 Prisma，改手写 `DatabaseSync` 单例：零原生依赖、无构建步骤；schema 由版本化事务迁移管理 | `server/src/db/migrations.ts`；版本存于 `PRAGMA user_version`，启动前升级 |
 | 状态机 | LangGraph（`@langchain/langgraph`） | 纯手写状态机（难维护）、LangChain 全量（重）——LangGraph 提供图式声明 + 条件边，且与原 Electron 版一脉相承 | 5 个 agent 变体共享 validate/forceTools |
 | WebSocket | `ws` | Socket.IO（协议重、小程序不友好）——原生 WS 协议 + 自定义 JSON 帧，小程序 `uni.connectSocket` 直接兼容 | 单连接多 streamId 并发 |
 | 认证 | JWT + bcrypt | Session（有状态、跨端难）——无状态、30 天有效期、WS 用 `?token=` 复用 | |
@@ -133,7 +133,7 @@ AI-COC-KP/
 │       └── utils/             # errors / logging / crypto / outboundUrl(SSRF) / pathSafety / fileNames / fsSafe
 ├── client/                    # uni-app (Vue 3 + Pinia)
 │   └── src/
-│       ├── pages/             # home / scripts / settings / rag-inspector(H5 only) / game(+game-end + rooms) / character(occupation 三步建卡向导)
+│       ├── pages/             # home（新调查启动台）/ scripts / settings / rag-inspector(H5 only) / game(hub + 会话 + game-end + rooms) / character(occupation 三步建卡向导)
 │       ├── stores/            # roomStore(RoomClient 视图模型，§9.1) / settingsStore / storyStore —— 零领域状态
 │       ├── services/          # ai/（设置/模型列表）+ ragService（索引/查询）
 │       ├── platform/          # bridge(三端抽象 + 房间帧收发) / ws(单连接 + 房间帧路由) / config / token
@@ -145,7 +145,7 @@ AI-COC-KP/
 │   └── constants/providers.ts # LLM 协议清单（4 协议一等公民，ADR-0003）
 ├── e2e/                       # 端到端旅程（h5 / rooms / multiroom / dossier，MOCK_AI）
 ├── training/                  # KP 自训模型工作区（distill 数据管线 + eval 评测，ADR-0006）
-├── test-agent/                # 独立 Agent 工作流测试（真实 LLM，不改项目代码）
+├── test-agent/                # 当前 room:* 协议真实 LLM 黑盒旅程（历史脚本另有标注）
 ├── tools/mp-test/             # 微信小程序自动化（miniprogram-automator）
 ├── docs/                      # ADR / api-contract / ONBOARDING-GUIDE / 本报告等
 └── original/                  # 原 Electron 项目（只读参考，禁止修改）
@@ -154,6 +154,8 @@ AI-COC-KP/
 **关键原则**：
 - **shared/ 是契约的单一来源**：工具定义（`cocTools.ts`）、档案查证工具定义（`storyLookupTools.ts`）、校验规则单源（`kpValidation.ts`，kpGraph validate 与训练评测共用）、规则纯函数（`coc/`）、全部跨端类型。服务端图内工具执行从这里取定义与校验。
 - **服务端权威单轨**（ADR-0001/0002）：房间状态真源 = RoomService 活跃实例（内存）+ DB 节流落库；客户端是纯视图模型，不持有领域状态、不组装提示词、不执行规则。
+
+客户端导航按 ADR-0004 收敛为四个 tab：`首页`只启动新调查，`故事`负责导入/索引，`游戏`打开 `client/src/pages/game/hub.vue` 汇总未结束的 solo 与多人房间，`设置`承载身份与 AI 配置。`client/src/pages/game/index.vue` 是带 `roomId` 的沉浸式会话页，不能作为无参数的导航目标。
 
 ---
 
@@ -216,9 +218,9 @@ START → analyzeInput → routeByIntent ─条件边→ {generic|combat|sanity|
 
 文件：`server/src/agent/scriptContext.ts`。解决的核心问题：**剧本推进不再依赖 LLM 自觉**。
 
-### 6.1 双轨设计（零回归的加法）
+### 6.1 条件格式与兼容策略
 
-原剧本 schema 的 `clues[].obtainCondition` / `scenes[].transitionCondition` 是自由文本，不可机读。本项目在其上新增**可选**结构化字段：
+原剧本 schema 的 `clues[].obtainCondition` / `scenes[].transitionCondition` 是自由文本，不能安全地由程序解释。本项目支持结构化字段，并只接受一种明确的自由文本语法：
 
 ```jsonc
 {
@@ -227,8 +229,14 @@ START → analyzeInput → routeByIntent ─条件边→ {generic|combat|sanity|
 }
 ```
 
-- 结构化字段存在 → **程序化判定**（`sceneUnlocked` 返回 true/false + 缺失清单）；
-- 只有自由文本（原仓库剧本）→ 返回 null，条件文本作为**参考提示**注入 prompt，永不拦截 → 行为与迁移前完全一致。
+自由文本字段也可写为 `requires_clues: c0, c1`（前缀不区分大小写；线索 ID 不含空格或逗号；列表按 AND 语义判定）。条件规则：
+
+- 非空 `requiredClues` **优先**于对应的旧文本字段，保持现有结构化剧本语义；
+- 没有非空结构化条件、且文本为空 → 无门控；规范 `requires_clues:` → 按已获得线索确定性判定；
+- 其他非空文本、格式错误或引用不存在的线索 ID → **失败关闭**：场景/线索保持锁定，不交由 LLM 猜测，也不授予高影响工具；KP 提示会说明锁定原因并要求向玩家解释；
+- 将旧自由文本迁为 `requires_clues: ...` 或结构化 `requiredClues` 后才能自动解锁。不要把自然语言描述当作可执行条件。
+
+除 KP 提示与 required-tools 约束外，`kpTurnService` 在执行叙事工具前还会再次检查脚本条件；模型即使仍输出被锁定的 `grant_clue` / `transition_scene`，服务端也不会修改房间状态。按剧本描述授予线索时，服务端会补齐规范线索 ID，供后续前置条件判定。房间的 `openClues` 由服务端房间线索状态生成，不能由客户端覆盖。
 
 ### 6.2 判定函数
 
@@ -237,20 +245,22 @@ START → analyzeInput → routeByIntent ─条件边→ {generic|combat|sanity|
 | `parseScriptContent` | 剧本 JSON → ScriptContext（宽容解析，坏字段跳过） |
 | `loadScriptContext(userId, scriptId)` | 经 storyService.readStory 读取 + 60s TTL 缓存 |
 | `findScene(ctx, nameOrId)` | id/名称精确 → 文本包含匹配，**最长名优先**（防"地下"误匹配"地下室"） |
-| `sceneUnlocked(scene, obtainedIds)` | `{unlocked: true\|false\|null, missing[]}` |
+| `sceneUnlocked(scene, obtainedIds, ctx?)` | `{unlocked: true\|false\|null, missing[], reason?}`；传入 `ctx` 时会校验线索 ID 是否存在；生产门控始终传入，无法解析/无效引用会安全锁定 |
+| `clueUnlocked(clue, obtainedIds, ctx)` | 判定线索前置条件；无法解析/无效引用会安全锁定 |
 | `getAvailableClues(scene, obtainedIds, ctx)` | 场景内未获 + 前置满足的线索清单（reason: open / unlocked-by-clue） |
+| `getBlockedClues(scene, obtainedIds, ctx)` | 被前置线索、歧义文本或无效线索 ID 锁定的线索及原因 |
 | `getSceneNpcs` | 场景 NPC 列表（prompt 渲染用） |
 
 ### 6.3 注入点（kpGraph planTools Phase 3.5）
 
-仅 narrative agent 且带 storyContext（`{scriptId, openClues, sceneName}`）时执行：
+仅 narrative agent 且带 storyContext（房间路径提供 `{scriptId, openClues, sceneId}`；图也兼容 `sceneName`）时执行：
 
-1. **移动目标门控**：玩家文本点名一个非当前场景的已知场景 → 锁闭则提示缺失线索 + **从 required 里移除 transition_scene**（物理上禁止硬切）；解锁则提示可切换；
-2. **探索门控**：当前场景存在可获线索 → 注入清单 + "请通过 grant_clue 授予"；前置不满足 → 提示"不要强行授予"。
+1. **移动目标门控**：玩家文本点名一个非当前场景的已知场景 → 锁闭则说明缺失/无效条件 + **从 required 里移除 transition_scene**；解锁则提示可切换。工具执行层会再次校验目标条件，拒绝模型越权切场景；
+2. **探索门控**：当前场景中可获线索注入清单；锁定线索会说明缺少的前置、歧义条件或配置错误；全部线索锁定时从 required 里移除 `grant_clue`。服务端执行器同样拒绝锁定线索，并将获准线索规范化为剧本 ID。
 
-与停滞强制（≥2 强制 grant_clue）配合，形成了"探索回合必有线索产出"的闭环。
+与停滞强制（≥2 强制 `grant_clue`）配合，优先推动线索产出；但若当前场景存在被门控线索且没有可授予线索，会移除强制调用并解释阻塞原因，因此探索回合不保证一定产出线索。
 
-**数据来源**：服务端自持（ADR-0002 决策 2/4，客户端不上传任何状态）——`RoomService.flushTurn` 以房主账号解析剧本与角色状态，组装 storyContext（scriptId/openClues/sceneName/sanity 等均来自房间运行时状态与 session 角色快照）；知识块由 TurnKnowledge 装配（§9.2）。
+**数据来源**：服务端自持（ADR-0002 决策 2/4，客户端不上传任何状态）——房间路径由 `RoomService` 组装 `{scriptId, sceneId, openClues, workflow, terminalEndings}`；`openClues` 是服务端房间状态中的已获得线索 ID，当前场景也取自房间状态。脚本门控据此加载剧本并解析线索/场景条件；知识块由 TurnKnowledge 装配（§9.2）。
 
 ---
 
@@ -266,10 +276,11 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 - **分块**：服务端递归语义切块（标题→段落→句末，~800 字符/重叠 100）——`POST /api/rag/index` 只报 scriptId，服务端自读自切（ADR-0007 决策 4，客户端切块器已删除）；
 - **块只存字符偏移**：场景归属在查询期用 `coverageGaps` 的场景锚点现算（`sceneAttribution.ts`）——索引与档案生成的先后解耦，档案重生成后归属自动跟随；
+- **rag 开局门闩**：除了已索引，还须已有未降质档案与 `.gaps.json` 原文锚点；truth 层至少有一条，每条 dossier `truths[].revealScene` 必须能匹配到有有效偏移的 `matched` scene anchor，否则 solo / 多人都拒绝开局（服务端 409）。当前 schema 没有显式 no-spoiler 标记，空 truth 层不能作为“无剧透”放行。
 - **分词**：中文按字符 1-3 gram + 英文按单词（`[a-z]{2,}`），停用字符表过滤标点；
 - **权重**：TF-IDF（`idf = ln((N+1)/(df+1)) + 1`）；
-- **混合检索**：TF-IDF 余弦 + 稠密向量（embedding，见 7.4），分数融合；
-- **持久化**：`RAG_DATA_DIR/<userId>/rag_index/<scriptId>.json`，每用户隔离。
+- **混合检索**：始终计算 TF-IDF 余弦；同时有 query 与块 embedding 时按 `0.7 × dense + 0.3 × TF-IDF` 融合，缺 embedding 或单块嵌入失败时回退该块的 TF-IDF 分数；
+- **持久化**：`RAG_DATA_DIR/<userId>/rag_index/<uuid>.json`，每用户隔离；外部 `scriptId` 保存在 JSON 元数据中，查询按元数据反查，不进入文件名。
 
 ### 7.3 档案域（`rag/dossier/`，按重量切两条 seam）
 
@@ -293,6 +304,8 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 ```
 
 注入以独立小节 `## 原文片段（检索补充·仅作描写素材）` 追加在档案块之后；跨场景块至多 1 条并标注「未来场景片段·不得向玩家揭示」；与 `truths[].revealScene` 锚点相交的块**直接丢弃**（剧透硬闸）。装配入口 = TurnKnowledge（§9.2）：dossier workflow = 场景档案块 + 补充层（`supplement` 模式，档案重叠剔除 + 场景内优先）；无档案的 rag 房 = 标准检索情报块（`plain` 模式，相关性排序 + 条数/预算截断）。总开关 `rag.supplement`（默认开）。
+
+两种模式都要求可用 dossier/gaps 和至少一条可评估的 truth revealScene；元数据缺失、空 truth 层或任何已声明 revealScene 无法映射到原文锚点时，服务端不执行检索并返回空小节，不能降级成无闸门 RAG。`plain` 模式在元数据有效时仍正常检索。保护范围按已声明 revealScene 的锚点窗口计算；当前 ending schema 没有直接的原文揭晓位置，位于这些窗口外的结局段或其他语义剧透不保证拦截。
 
 ---
 
@@ -372,7 +385,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 **性能保护原样保留**：工具结果回传先加摘要头（前 6 个字段各 40 字符），再截断 600 字符（`MAX_TOOL_RESULT_SUMMARY_CHARS` / `MAX_TOOL_RESULT_CHARS`）——长工具链历史不再无限膨胀。
 
-**单人模式**：solo = `kind='solo'` 单成员房间——设计决策、删除面与后果原文见 `docs/adr/0002-solo-room.md`。
+**单人模式**：solo = `kind='solo'` 单成员房间；创建时仍须通过 workflow artifact 门闩（rag 已索引，dossier 已生成且未降质），只是没有多人等待室的成员/结束态治理闩——设计决策、删除面与后果原文见 `docs/adr/0002-solo-room.md`。
 
 ### 9.3 规则引擎（`server/src/rule-engine/`）——COC 工具的服务端执行
 
@@ -490,13 +503,13 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ```
 ① 单元测试（vitest）
-   server 811+1skip 用例：路由（auth/ai/settings/stories/rag/dossier/rooms/roomSettings/characters + 上传限额）、
+   server Vitest 套件：路由（auth/ai/settings/stories/rag/dossier/rooms/roomSettings/characters + 上传限额）、
    kpGraph 状态机（含 fixes）、scriptContext 门控、rule-engine（coc/ 与 rule-engine/ 用例）、kpTurnService、
    mockAi、aiService 超时、ws 房间帧、RAG / 档案 各件
    client：roomStore / settingsStore spec、ChatMessage / classifySystemMessage / parseActionOptions、
    bridge/ws 平台层（规则纯函数用例随 shared/coc 上收，由 server/test/coc 承载）
-   training：distill / exporter 工具链用例（独立工作区）；eval 另有 node:test 自测 23 条（tsx 直跑），不在 test:all 内
-   → npm run test:server / test:client / test:training / test:all
+   training：distill / exporter 工具链用例（独立工作区）；eval 另有 node:test 自测 23 条（Node ≥24 原生 TS 类型擦除）
+   → npm run test:server / test:client / test:training / test:training:eval / test:all
 
 ② 端到端旅程（playwright-core + MOCK_AI，无需真实 LLM、不下载浏览器）
    e2e/h5.journey.mjs：自动起后端(3100) + H5 dev(5175) → 注册登录 → 设置（协议卡 + mock 模型保存）→ 导入剧本 → RAG 索引 →
@@ -507,19 +520,20 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
    dossier.journey.mjs（档案旅程）/ room-stress.mjs（房间规模边界）
    → npm run test:e2e:h5 + node e2e/multiroom.journey.mjs / rooms.journey.mjs（CI 中运行）
 
-③ Agent 工作流测试（test-agent/，真实 LLM，独立套件不改项目代码）
-   现行套件（run-all.mjs）：scenario-investigate(12) / scenario-combat(5) / scenario-sanity(5) /
-   scenario-gating(7) / scenario-rules(6) / robustness(8) / performance(5) = 48 用例，smoke.mjs 为独立连通性冒烟
-   （scenario-save(6) 已随 /api/saves* 全链退役删除 #92；REPORT.md「36 用例 + 门控回归 7 = 43 全过」为 e2c522a 时代史实快照）
-   需 OpenAI 兼容端点（自动读本机 ZCode opencode/mimo-v2.5 配置或 AW_* 环境变量）
-   → 报告在 test-agent/REPORT.md，性能数据在 perf-results.json
+③ 跨 REST/WS 房间协议旅程（test-agent/，可用 MOCK_AI 或真实 LLM；独立套件不改项目代码）
+   当前入口 `node test-agent/run-all.mjs` 只运行 `room-protocol.mjs`：注册/设置/上传索引 →
+   `POST /api/rooms/solo` → WS `room:join` → opening → `room:action` → 玩家/KP 事件 → solo 续玩列表。
+   它不发送已退役的 `kp:invoke`，也不调用 `/api/kp/invoke`。CI 以 `MOCK_AI=1` 执行，不需凭据；
+   真实模型模式需配置 `AW_BASE_URL` / `AW_API_KEY` / `AW_MODEL`，也可读取本机 ZCode 配置。
+   `scenario-*.mjs`、`REPORT.md` 与性能 JSON 是客户端工具循环时代的历史快照，不能作为当前协议的回归数字。
 
 ④ 设备端验证（文档记录在 bb29e30）
    - 微信小程序：miniprogram-automator 连开发者工具（需管理员启动 + 服务端口开启），7/7 断言通过
      （首页渲染→按钮→设置页→返回）；踩坑：Tool.getInfo 结构变化需 patch-automator 修补
    - Android 模拟器：Pixel 5 / Android 14 加载 H5 构建，首页渲染 + 后端可达（10.0.2.2）
 
-⑤ CI（.github/workflows/ci.yml）：push/PR 到 main → npm ci → server 单测 → client 单测 → client tsc → training 测试 →
+⑤ CI（.github/workflows/ci.yml）：push 到 main/feature 分支、PR 到 main 或手动触发 → npm ci → server 单测 →
+   test-agent 房间协议旅程（MOCK_AI）→ client 单测 + client tsc → training tsc / 测试 / eval 自测 →
    构建（server / H5 / 微信小程序）→ e2e（h5 / multiroom / rooms / room-stress）
    发布（release.yml）：tag v* → 构建产物上传 GitHub Release（幂等：release 已存在时补传资产）
 ```
@@ -549,9 +563,9 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 | 🟡 确定性 | 弱结局表达（如"破坏仪式"）仍依赖 LLM 自觉 | 已修强意图词；可考虑「门控场景完结时服务端强制 end_game」 |
 | 🟢 已消亡 | storyContext 由客户端上传的兼容性问题 | 客户端状态上传入口已随 ADR-0002 整体删除，上下文注入服务端收口（§9.2） |
 | ✅ 已退役 | `scripts` 路由/桥接/scriptService/建表语句已于 2026-09-13 随 #97 全链退役（ADR-0008）；剧本库语义由 stories 面承载 | 无 |
-| 🟢 遗留 | 自由文本 obtainCondition/transitionCondition 无语义解析（维持双轨） | 结构化优先策略，有意为之 |
-| 🟢 遗留 | 无 DB 迁移机制（幂等建表） | 结构变更需手动处理，建议引入版本号 |
-| 🟢 测试 | test-agent 真实 LLM 用例偶发超时（120s step 上限） | 已放宽 240s；CI 不跑 test-agent（需 API Key） |
+| 🟢 遗留 | 自然语言 obtainCondition/transitionCondition 不作为可执行条件；仅支持 `requires_clues` DSL | 迁移旧条件到 DSL 或结构化 `requiredClues`；未迁移文本失败关闭 |
+| ✅ 已修复 | DB schema 版本化迁移（#109） | `server/src/db/migrations.ts`；失败事务回滚并在监听前中止启动，数据库备份用于回滚 |
+| 🟢 测试 | test-agent 真实 LLM 旅程受 provider 延迟影响 | 长步骤上限为 240s；CI 运行同一 room-protocol 旅程但使用 `MOCK_AI=1`，不覆盖真实 provider 延迟 |
 
 ---
 
@@ -560,7 +574,7 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 **建议阅读顺序**（由外到内，每层都先读注释头再读实现）：
 
 1. **README.md** —— 全项目运行手册（30 分钟）；
-2. **docs/api-contract.md** —— 前后端唯一接口基准，所有端点/帧/错误码的定义；
+2. **docs/api-contract.md** —— 路由组、端点存在性与房间帧导览；请求/响应校验及具体错误语义以对应 route/service 实码为准；
 3. **shared/tools/cocTools.ts** —— 24 个工具的 schema（读完你就知道 KP 能做什么）；
 4. **server/src/agent/kpGraph.ts** —— 状态机（最难但最重要，配合 §5 逐节点读）；
 5. **server/src/services/kpAgentService.ts** —— 图如何被注入与调用（超时/缓存/校验）；
@@ -573,10 +587,10 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 12. **server/src/services/turnKnowledge.ts** —— 回合知识装配（档案/检索双轨入口）；
 13. **client/src/platform/bridge.ts + ws.ts** —— 三端抽象 + 房间帧收发；
 14. **e2e/h5.journey.mjs** —— 一次完整旅程的自动化视角；
-15. **test-agent/REPORT.md** —— 真实 LLM 下系统如何表现、修过什么。
+15. **test-agent/README.md** —— 当前 room:* 黑盒旅程；`test-agent/REPORT.md` 是旧客户端工具循环时代的历史实测记录，不代表当前协议基线。
 
 **动手建议**：
-- 改后端前先跑 `npm run test:server` 建立基线（811+1skip 用例）；
+- 改后端前先跑 `npm run test:server` 建立基线；用例数以当前 Vitest reporter 输出为准；
 - 改前端逻辑前跑 `npm run test:client` + `npx tsc --noEmit`（零错误基线）；
 - 本地体验全流程：`MOCK_AI=1 npm run dev:server` + `npm run dev:h5`（零配置，无需 API Key）；
 - 需要真实 LLM 验证时：`cd test-agent && node run-all.mjs`（需配置 AW_* 环境变量）；

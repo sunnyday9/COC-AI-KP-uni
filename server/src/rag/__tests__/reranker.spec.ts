@@ -12,6 +12,8 @@
  * transformers.js 的 `pipeline('text-classification')` 会对其做 softmax——
  * 单元素 softmax 恒等于 1.0（**静默失效**）。因此实现必须直接取 logits 后 sigmoid。
  */
+import { statSync } from 'node:fs'
+import path from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import {
   rerank,
@@ -20,6 +22,7 @@ import {
   RERANK_MODEL_ID,
   type RerankScorer,
 } from '../reranker.js'
+import { MODELS_DIR } from '../../config.js'
 
 /** 假打分器：按关键词出现次数给分（确定性、可排序）。 */
 function keywordScorer(keyword: string): RerankScorer {
@@ -95,6 +98,7 @@ describe('reranker: 降级与语义', () => {
   it('模型缺失路径（loadRerankModel 返回 null）→ 降级且错误信息可诊断', async () => {
     // 直接测 modelScorer 的真实失败路径：把动态 import 的模块替换为缺 AutoTokenizer 的桩，
     // 使 loadRerankModel 抛错（而不是走 MOCK_AI 早退）。
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.resetModules()
     vi.doMock('@huggingface/transformers', () => ({ env: {} }))
     try {
@@ -102,9 +106,12 @@ describe('reranker: 降级与语义', () => {
       fresh._resetRerankModelForTests()
       const res = await fresh.rerank('q', ['甲', '乙'])
       expect(res.ok).toBe(false)
-      // 保留原始错误信息（不再是笼统的 "unavailable"）
-      expect(String(res.error).length).toBeGreaterThan(0)
+      expect(res.error).toContain('degraded to cosine fallback')
+      expect(res.error).toContain(fresh.RERANK_MODEL_ID)
+      expect(res.error).toContain(MODELS_DIR)
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('rag:rerank degraded to cosine fallback'))
     } finally {
+      warning.mockRestore()
       vi.doUnmock('@huggingface/transformers')
       vi.resetModules()
     }
@@ -159,10 +166,35 @@ describe('reranker: 模型标识', () => {
  * 价值：钉住"Sigmoid 路径真的能区分相关/无关"——这是 pipeline softmax 静默失效的反面证据。
  */
 const smoke = process.env.RERANK_SMOKE === '1' ? it : it.skip
+const requiredSmokeAssets = [
+  'config.json',
+  'tokenizer.json',
+  'tokenizer_config.json',
+  'onnx/model_quantized.onnx',
+].map((asset) => path.join(MODELS_DIR, RERANK_MODEL_ID, asset))
+
 describe('reranker: 真实模型冒烟', () => {
   smoke(
-    '相关段落得分显著高于无关段落（sigmoid 生效，非全 1.0）',
+    '本地模型返回非恒定 sigmoid 分数、正确排序并可由 selectTop 截断',
     async () => {
+      const missingAssets = requiredSmokeAssets.filter((file) => {
+        try {
+          return statSync(file).size === 0
+        } catch {
+          return true
+        }
+      })
+      expect(
+        missingAssets,
+        `RERANK_SMOKE degraded: missing local model/tokenizer assets under MODELS_DIR=${MODELS_DIR}: ${missingAssets.join(', ') || '(empty files)'}. A cache miss must be populated by the scheduled/manual workflow before this offline smoke.`,
+      ).toEqual([])
+
+      // Never let a local smoke silently download a model. The workflow primes
+      // the Hugging Face cache explicitly on cache miss, then runs this offline.
+      const { env } = await import('@huggingface/transformers')
+      env.cacheDir = MODELS_DIR
+      env.allowRemoteModels = false
+
       const query = '祭坛上刻着什么样的纹样？'
       const passages = [
         '钟楼地下室的门被木板钉死，墙上有六道抓痕。',
@@ -170,7 +202,11 @@ describe('reranker: 真实模型冒烟', () => {
         '旅馆前台的登记簿上有三个名字被划掉了。',
       ]
       const res = await rerank(query, passages)
-      expect(res.ok).toBe(true)
+      expect(
+        res.ok,
+        `RERANK_SMOKE degraded: ${RERANK_MODEL_ID} failed from MODELS_DIR=${MODELS_DIR}: ${res.error ?? 'no diagnostic returned'}`,
+      ).toBe(true)
+      expect(res.source).toBe('model')
       expect(res.ranked?.[0]?.index).toBe(1)
       const scores = res.ranked?.map((r) => r.score) ?? []
       expect(new Set(scores).size).toBeGreaterThan(1)
@@ -181,6 +217,13 @@ describe('reranker: 真实模型冒烟', () => {
         expect(s).toBeGreaterThanOrEqual(0)
         expect(s).toBeLessThanOrEqual(1)
       }
+
+      const selected = await selectTop(query, passages, { topN: 2 })
+      expect(
+        selected,
+        `RERANK_SMOKE degraded: selectTop returned null for MODELS_DIR=${MODELS_DIR}`,
+      ).not.toBeNull()
+      expect(selected?.map((item) => item.index)).toEqual(res.ranked?.slice(0, 2).map((item) => item.index))
     },
     180_000,
   )

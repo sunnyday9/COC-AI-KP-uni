@@ -23,6 +23,10 @@ const state = vi.hoisted(() => ({
   failGenerate: false,
 }))
 
+// This suite uses the real LangGraph coordinator while mocking only the LLM
+// boundary, so the first graph construction can exceed Vitest's 5s default.
+const REAL_GRAPH_TIMEOUT_MS = 60_000
+
 vi.mock('../aiService.js', () => ({
   chatForAgent: vi.fn(
     async (
@@ -96,7 +100,7 @@ describe('invokeKp (REST path)', () => {
     expect(state.calls.slice(1).every((c) => Array.isArray(c.tools) && c.tools.length === 24)).toBe(true)
     // REST path never streams
     expect(state.calls.every((c) => c.stream === false)).toBe(true)
-  })
+  }, REAL_GRAPH_TIMEOUT_MS)
 
   it('returns { content: "" } for empty messages without calling the LLM', async () => {
     const userId = await createUser('kp_bob')

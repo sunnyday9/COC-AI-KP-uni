@@ -2,7 +2,7 @@
  * 最小 ToolHandlerContext mock，用于 handler 单元测试。
  * 迁自 client/src/toolCalling/__tests__/mockContext.ts（Phase A1 规则引擎下沉）。
  */
-import type { ToolHandlerContext } from '../../src/rule-engine/types.js'
+import type { NarrativeToolResolution, ToolHandlerContext } from '../../src/rule-engine/types.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import { resolveSkillCheck, SUCCESS_LEVEL_RANK, SKILL_CHECK_RESULT_TEXT } from '../../../shared/coc/coc7Rules.js'
 
@@ -49,7 +49,8 @@ export interface MockContextOptions {
   onGrowCharacterSkill?: (skillId: string, newValue: number) => void
   onIncreaseCthulhuMythos?: (gain: number) => void
   onTransitionScene?: (name: string) => void
-  onAddClue?: (desc: string) => void
+  onAddClue?: (desc: string, clueId?: string) => void
+  resolveNarrativeToolCall?: (toolName: string, args: Record<string, unknown>) => NarrativeToolResolution
   onEndGame?: (ending: {
     outcome: string
     title: string
@@ -93,7 +94,8 @@ export function createMockContext(options: MockContextOptions = {}): ToolHandler
     growCharacterSkill: (id, v) => options.onGrowCharacterSkill?.(id, v),
     increaseCthulhuMythos: (gain) => options.onIncreaseCthulhuMythos?.(gain),
     transitionToScene: (name) => options.onTransitionScene?.(name),
-    addClue: (desc) => options.onAddClue?.(desc),
+    addClue: (desc, clueId) => options.onAddClue?.(desc, clueId),
+    resolveNarrativeToolCall: options.resolveNarrativeToolCall,
     endGame: (ending) => options.onEndGame?.(ending),
     generateId,
   }

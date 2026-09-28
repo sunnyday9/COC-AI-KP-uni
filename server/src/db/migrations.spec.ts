@@ -33,12 +33,10 @@ function startServer(dataDir: string): Promise<{ ready: boolean; code: number | 
     let output = ''
     let ready = false
     let timedOut = false
-    // The child imports the full Express/LangGraph server graph; leave room for
-    // cold startup when this integration test runs beside other workers.
     const timeout = setTimeout(() => {
       timedOut = true
       child.kill('SIGKILL')
-    }, 90_000)
+    }, 30_000)
     const capture = (chunk: Buffer): void => {
       output += chunk.toString()
       if (!ready && output.includes('COC AI KP server listening')) {
@@ -226,7 +224,7 @@ describe('SQLite schema migrations', () => {
       rmSync(freshDir, { recursive: true, force: true })
       rmSync(legacyDir, { recursive: true, force: true })
     }
-  }, 180_000)
+  }, 60_000)
 
   it('fails server startup for a database newer than the supported schema', async () => {
     const directory = makeTempDataDir()
@@ -244,5 +242,5 @@ describe('SQLite schema migrations', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
-  }, 180_000)
+  }, 60_000)
 })

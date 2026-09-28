@@ -236,6 +236,32 @@ describe('ai models', () => {
     vi.unstubAllGlobals()
   })
 
+  it('fetches models from the base URL when a full Chat Completions URL is configured', async () => {
+    const token = await registerToken('ai_full_chat_url')
+    await putSettings(token, {
+      protocol: 'openai_chat',
+      baseUrl: 'https://api.commandcode.ai/provider/v1/chat/completions',
+      model: 'fixture-model',
+      apiKey: KEY_OPENAI,
+    })
+
+    let outboundUrl = ''
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        outboundUrl = input instanceof Request ? input.url : String(input)
+        return Response.json({ data: [{ id: 'fixture-model' }] })
+      }),
+    )
+    const res = await request(createApp())
+      .get('/api/ai/models')
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(res.status).toBe(200)
+    expect(outboundUrl).toBe('https://api.commandcode.ai/provider/v1/models')
+    expect(res.body).toEqual([{ value: 'fixture-model', label: 'fixture-model' }])
+  })
+
   it('listModels with default settings returns [] without real network (stubbed upstream 401)', async () => {
     const token = await registerToken('ai_jack')
     // Fresh user → server merges DEFAULT_SETTINGS (protocol 'openai_chat', baseUrl

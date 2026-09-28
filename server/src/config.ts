@@ -5,8 +5,21 @@ import 'dotenv/config'
 /** HTTP listen port (default 3000) */
 export const PORT = Number(process.env.PORT ?? 3000)
 
-/** JWT signing secret — MUST be overridden in production (see .env.example) */
-export const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me'
+const DEV_JWT_SECRET = 'dev-secret-change-me'
+
+/**
+ * Reject an unsafe production configuration before the HTTP app starts.
+ * Development and test runs may use the documented local fallback.
+ */
+export function assertRuntimeConfig(): void {
+  const configuredSecret = process.env.JWT_SECRET?.trim()
+  if (process.env.NODE_ENV === 'production' && (!configuredSecret || configuredSecret === DEV_JWT_SECRET)) {
+    throw new Error('JWT_SECRET must be set to a non-default value in production')
+  }
+}
+
+/** JWT signing secret — production must provide an explicit value. */
+export const JWT_SECRET = process.env.JWT_SECRET?.trim() || DEV_JWT_SECRET
 
 /**
  * Runtime data directory (SQLite db lives here); created automatically on
@@ -30,7 +43,8 @@ export const RAG_DATA_DIR = process.env.RAG_DATA_DIR
 
 /**
  * Dossier (剧本档案) persistence root: per-user generated story dossiers live
- * under `DOSSIER_DATA_DIR/<userId>/<scriptId>.json`. Kept separate from
+ * under `DOSSIER_DATA_DIR/<userId>/<uuid>.json` (the external script id is
+ * stored in the JSON payload). Kept separate from
  * RAG_DATA_DIR so the embedding workflow and the dossier workflow can coexist
  * (experiment: feature/kp-dossier-workflow). `DOSSIER_DATA_DIR` env overrides
  * the default (tests isolate per-worker into a temp dir).
@@ -74,6 +88,14 @@ export const UPLOADS_DIR = process.env.UPLOADS_DIR
  * allocating 50MB buffers).
  */
 export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 50 * 1024 * 1024)
+
+/** Per-room retained transcript budget in characters (the prompt also carries
+ * structured room state and a durable summary). Invalid values use the default. */
+const DEFAULT_ROOM_CONTEXT_BUDGET_CHARS = 12_000
+export function getRoomContextBudgetChars(): number {
+  const configured = Number(process.env.ROOM_CONTEXT_BUDGET_CHARS ?? DEFAULT_ROOM_CONTEXT_BUDGET_CHARS)
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_ROOM_CONTEXT_BUDGET_CHARS
+}
 
 /**
  * MOCK_AI mode (Task 11, Phase 10): when `MOCK_AI=1` every AI/LLM call is

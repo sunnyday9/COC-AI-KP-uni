@@ -6,14 +6,38 @@ import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { runKpTurn } from '../src/services/kpTurnService.js'
 import * as kpGraph from '../src/agent/kpGraph.js'
 import { createCharacterMutatorFactory } from '../src/rule-engine/characterMutators.js'
+import { loadScriptContext, type ScriptContext } from '../src/agent/scriptContext.js'
 import type { COCCharacterSheet } from '../../shared/types/character.js'
+
+const loadScriptContextMock = vi.hoisted(() => vi.fn())
+vi.mock('../src/agent/scriptContext.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/agent/scriptContext.js')>(),
+  loadScriptContext: loadScriptContextMock,
+}))
 
 beforeAll(() => {
   process.env.MOCK_AI = '1'
 })
 
-// Terminal and owner-recovery paths exercise the real graph/tool loop.
+// These are deliberate end-to-end graph-loop checks. The first invocation
+// includes the real LangGraph/tool machinery and can be slower on a cold
+// worker, especially when the full server suite is running in parallel.
 const GRAPH_LOOP_TIMEOUT_MS = 60_000
+
+const MOCK_SHEET: COCCharacterSheet = {
+  occupationId: 'judge',
+  occupationName: '法官',
+  playerName: '测试员',
+  attributes: { str: 50, con: 50, siz: 50, dex: 50, app: 50, int: 50, pow: 60, edu: 60, luck: 50 },
+  skills: { 'Spot Hidden': 65 },
+  derived: { hp: 10, hpMax: 10, mp: 6, mpMax: 6, san: 60, sanMax: 60 },
+  dailySanLoss: 0,
+  phobias: [],
+  manias: [],
+  hasMajorWound: false,
+  isDying: false,
+  weapons: [],
+}
 
 function runTurnWithTerminalEndings(
   userText: string,
@@ -60,19 +84,33 @@ function runTurnWithTerminalEndings(
   })
 }
 
-const MOCK_SHEET: COCCharacterSheet = {
-  occupationId: 'judge',
-  occupationName: '法官',
-  playerName: '测试员',
-  attributes: { str: 50, con: 50, siz: 50, dex: 50, app: 50, int: 50, pow: 60, edu: 60, luck: 50 },
-  skills: { 'Spot Hidden': 65 },
-  derived: { hp: 10, hpMax: 10, mp: 6, mpMax: 6, san: 60, sanMax: 60 },
-  dailySanLoss: 0,
-  phobias: [],
-  manias: [],
-  hasMajorWound: false,
-  isDying: false,
-  weapons: [],
+function runStoryConditionTurn(scriptContext: ScriptContext, storyContext: Record<string, unknown>) {
+  vi.mocked(loadScriptContext).mockResolvedValue(scriptContext)
+  return new Promise<{
+    toolCalls: { name: string; arguments: string }[]
+    worldDeltas: { cluesAdded: { description: string; clueId?: string }[]; sceneChanged?: string }
+  }>((resolve, reject) => {
+    void runKpTurn(
+      1,
+      {
+        messages: [
+          { role: 'system', content: '你是守秘人。' },
+          { role: 'user', content: '我侦查一下书架。' },
+        ],
+        storyContext,
+      },
+      {
+        characters: { default: MOCK_SHEET },
+        activeCharacterId: 'default',
+        mutatorFactory: createCharacterMutatorFactory({ resolveSheet: (id) => (id === 'default' ? MOCK_SHEET : null) }),
+        handlers: {
+          onChunk: () => {},
+          onEnd: (r) => resolve({ toolCalls: r.toolCalls, worldDeltas: r.worldDeltas }),
+          onError: (e) => reject(new Error(e)),
+        },
+      },
+    )
+  })
 }
 
 describe('kpTurnService (MOCK_AI 服务端图内循环)', () => {
@@ -107,7 +145,72 @@ describe('kpTurnService (MOCK_AI 服务端图内循环)', () => {
     expect(result.content).toContain('线索已记录')
     // displayMessages 应包含骰子检定消息
     expect(result.displayMessages.some((m) => (m as { content?: string }).content?.includes('检定'))).toBe(true)
-  }, 30_000)
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('server-side enforcement prevents an ambiguous scripted clue from mutating room state', async () => {
+    const result = await runStoryConditionTurn({
+      scenes: [{ id: 'library', name: '图书馆', clueIds: ['script_key'] }],
+      clues: [{ id: 'script_key', description: '书架后的暗格里藏着一把铜钥匙', obtainCondition: '检查完房间后' }],
+      npcs: [],
+    }, { scriptId: 'ambiguous-story', sceneId: 'library', openClues: [] })
+
+    expect(result.toolCalls.map((call) => call.name)).toContain('grant_clue')
+    expect(result.worldDeltas.cluesAdded).toEqual([])
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('a valid scripted clue grant records the canonical clue ID for later conditions', async () => {
+    const result = await runStoryConditionTurn({
+      scenes: [{ id: 'library', name: '图书馆', clueIds: ['script_key'] }],
+      clues: [
+        { id: 'note', description: '值班记录' },
+        { id: 'script_key', description: '书架后的暗格里藏着一把铜钥匙', obtainCondition: 'requires_clues: note' },
+      ],
+      npcs: [],
+    }, { scriptId: 'valid-story', sceneId: 'library', openClues: ['note'] })
+
+    expect(result.worldDeltas.cluesAdded).toEqual([
+      { description: '书架后的暗格里藏着一把铜钥匙', clueId: 'script_key' },
+    ])
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('loads story conditions from the persisted story owner while AI calls keep the room owner identity', async () => {
+    await runStoryConditionTurn({
+      scenes: [{ id: 'library', name: '图书馆', clueIds: [] }],
+      clues: [],
+      npcs: [],
+    }, { scriptId: 'handoff-story', storyOwnerId: 70001, sceneId: 'library', openClues: [] })
+
+    expect(loadScriptContext).toHaveBeenLastCalledWith(70001, 'handoff-story')
+  }, GRAPH_LOOP_TIMEOUT_MS)
+
+  it('cancels a dossier turn when its story condition context is unavailable', async () => {
+    vi.mocked(loadScriptContext).mockResolvedValue(null)
+    const invokeSpy = vi.spyOn(kpGraph, 'invokeKPAgent')
+    const onError = vi.fn()
+    const onEnd = vi.fn()
+
+    try {
+      await runKpTurn(
+        1,
+        {
+          messages: [{ role: 'user', content: '我尝试切换场景并寻找线索。' }],
+          storyContext: { scriptId: 'missing-dossier', workflow: 'dossier' },
+        },
+        {
+          characters: { default: MOCK_SHEET },
+          activeCharacterId: 'default',
+          mutatorFactory: createCharacterMutatorFactory({ resolveSheet: (id) => (id === 'default' ? MOCK_SHEET : null) }),
+          handlers: { onChunk: () => {}, onEnd, onError },
+        },
+      )
+
+      expect(onError).toHaveBeenCalledWith(expect.stringContaining('cancelled'))
+      expect(onEnd).not.toHaveBeenCalled()
+      expect(invokeSpy).not.toHaveBeenCalled()
+    } finally {
+      invokeSpy.mockRestore()
+    }
+  })
 
   it('discards stale model output and tool calls after ownership changes in flight', async () => {
     let transferred = false
@@ -288,5 +391,5 @@ describe('kpTurnService (MOCK_AI 服务端图内循环)', () => {
     expect(lookupCalls).toEqual(['scene_list', 'scene_dossier'])
     expect(result.toolCalls.map((t) => t.name).slice(0, 2)).toEqual(['scene_list', 'scene_dossier'])
     expect(result.content.length).toBeGreaterThan(0)
-  }, 30_000)
+  }, GRAPH_LOOP_TIMEOUT_MS)
 })

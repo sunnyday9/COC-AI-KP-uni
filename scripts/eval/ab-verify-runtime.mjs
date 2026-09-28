@@ -24,6 +24,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Agent } from 'undici'
 import { parseJudgeJson, sleep, pdfText, loadFactsProbes, buildJudgePrompt } from './lib/harness.mjs'
+import { findJsonArtifact } from './lib/json-artifact.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
@@ -56,12 +57,11 @@ const { lexicalSearch } = await import('../../server/src/rag/dossier/storyDossie
 function cacheFiles(key) {
   const dir = path.join(CACHE_DIR, '1')
   if (!fs.existsSync(dir)) return { dossier: null, gaps: null }
-  const files = fs.readdirSync(dir)
-  const d = files.find((x) => x.startsWith(key) && x.endsWith('.json') && !x.includes('.annex.') && !x.includes('.gaps.'))
-  const g = files.find((x) => x === `${key}.gaps.json` || (x.startsWith(key) && x.endsWith('.gaps.json')))
-  const read = (f) => {
-    if (!f) return null
-    try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) } catch { return null }
+  const d = findJsonArtifact(dir, key, { excludeSuffixes: ['.gaps.json', '.annex.json'] })
+  const g = findJsonArtifact(dir, key, { suffix: '.gaps.json' })
+  const read = (filePath) => {
+    if (!filePath) return null
+    try { return JSON.parse(fs.readFileSync(filePath, 'utf8')) } catch { return null }
   }
   return { dossier: read(d), gaps: read(g) }
 }

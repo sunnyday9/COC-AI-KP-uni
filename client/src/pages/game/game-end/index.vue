@@ -32,11 +32,9 @@ const charSheet = computed(() => roomStore.selfCharacterSheet)
 /**
  * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
  */
-// #ifdef H5
-const pageBg = '/static/bg/bg_end.webp'
-// #endif
+let pageBg = '/static/bg/bg_end.webp'
 // #ifndef H5
-const pageBg = '/pages/game/static/bg_end.webp'
+pageBg = '/pages/game/static/bg_end.webp'
 // #endif
 
 const exporting = ref(false)

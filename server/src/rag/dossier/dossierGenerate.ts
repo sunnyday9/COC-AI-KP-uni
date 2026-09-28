@@ -13,8 +13,6 @@
  * returns deterministic JSON for dossier prompts (see mockAi.ts), so e2e can
  * run the whole dossier flow without an LLM.
  */
-import { readStoryForRag, readStory } from '../../services/storyService.js'
-import { chatForRag } from '../../services/aiService.js'
 import {
   DOSSIER_BATCH_CHARS,
   DOSSIER_SYSTEM_PROMPT,
@@ -28,7 +26,6 @@ import {
   type StoryDossier,
   type DossierQualitySummary,
 } from './schema.js'
-import { persistAnnex, runAnnex } from './annex.js'
 import { computeCoverageGaps, persistGaps } from './coverageGaps.js'
 import { persist } from './dossierCore.js'
 import { isRetryableFailure, retryDelayMs, waitForRetry } from '../../utils/retry.js'
@@ -126,10 +123,12 @@ export async function generateDossier(
   report('read', 1, '读取故事原文')
   let raw: { name: string; content: string }
   try {
+    const { readStoryForRag } = await import('../../services/storyService.js')
     raw = await readStoryForRag(userId, scriptId)
   } catch {
     // Fall back to the plain read for txt/md (no OCR needed).
     try {
+      const { readStory } = await import('../../services/storyService.js')
       raw = await readStory(userId, scriptId)
     } catch {
       return { ok: false, error: 'story not found' }
@@ -150,6 +149,7 @@ export async function generateDossier(
   const parsedParts: StoryDossier[] = []
   let lastError = ''
   let batchFailures = 0
+  const { chatForRag } = await import('../../services/aiService.js')
 
   for (let bi = 0; bi < totalBatches; bi++) {
     const batchStartPercent = 10 + Math.floor((bi / totalBatches) * 75)
@@ -227,6 +227,9 @@ export async function generateDossier(
   let annexRan = false
   if (annex) {
     try {
+      // Map/image analysis pulls pdf-lib and provider adapters. Keep the
+      // normal text-only generation path free of that optional heavy graph.
+      const { persistAnnex, runAnnex } = await import('./annex.js')
       const annexResult = await runAnnex(userId, { scriptId, storyName: dossier.storyName, dossier, model })
       dossier = annexResult.dossier
       await persistAnnex(userId, annexResult.annex)

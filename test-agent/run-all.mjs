@@ -2,14 +2,9 @@
 /**
  * test-agent/run-all.mjs — 全部测试统一入口
  *
- * 依次执行：
- *  1. scenario-investigate（调查链 12 用例）
- *  2. scenario-combat（战斗链 5 用例）
- *  3. scenario-sanity（SAN 链 5 用例）
- *  4. scenario-gating（门控 7 用例）
- *  5. scenario-rules（规则书补全 6 用例）
- *  6. robustness（鲁棒性 8 用例）
- *  7. performance（性能测量 5 项）
+ * 当前套件只运行 room-protocol：服务端权威单轨的公开 REST/WS 旅程。
+ * 旧的 scenario-*.mjs / robustness.mjs / performance.mjs 保留为历史材料，
+ * 不再由此入口执行（它们依赖已退役的 kp:invoke 客户端循环）。
  *
  * 运行：node test-agent/run-all.mjs
  * 环境：AW_BASE_URL / AW_API_KEY / AW_MODEL（或本机 ZCode 配置自动读取）
@@ -22,13 +17,7 @@ import { fileURLToPath } from 'node:url'
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
 
 const SCRIPTS = [
-  ['scenario-investigate.mjs', '调查链'],
-  ['scenario-combat.mjs', '战斗链'],
-  ['scenario-sanity.mjs', 'SAN 链'],
-  ['scenario-gating.mjs', '门控回归'],
-  ['scenario-rules.mjs', '规则书补全'],
-  ['robustness.mjs', '鲁棒性'],
-  ['performance.mjs', '性能'],
+  ['room-protocol.mjs', '房间权威协议'],
 ]
 
 let totalPass = 0

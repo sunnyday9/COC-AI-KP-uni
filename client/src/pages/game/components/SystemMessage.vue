@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { Message } from '../../../../../shared/types/game'
 import { classifySystemMessage, diceResultOf, type SystemMessageKind } from '../../../utils/classifySystemMessage'
+import AppIcon from '../../../components/ui/AppIcon.vue'
 
 /**
  * T4：系统消息分类渲染（ADR-0004 消息类型体系）。
@@ -67,9 +68,9 @@ function stripPrefix(content: string, prefix: string): string {
   <view v-if="kind === 'scene'" class="sys-row scene-wrap">
     <view class="scene-divider" />
     <view class="scene-chip">
-      <text class="scene-glyph">◆</text>
+      <app-icon name="sparkle" :size="10" class="scene-glyph" />
       <text class="scene-text" decode>{{ stripPrefix(msg.content, '场景切换') }}</text>
-      <text class="scene-glyph">◆</text>
+      <app-icon name="sparkle" :size="10" class="scene-glyph" />
     </view>
     <view class="scene-divider" />
   </view>
@@ -77,7 +78,7 @@ function stripPrefix(content: string, prefix: string): string {
   <!-- ── 线索获得：左缘绿光条 ── -->
   <view v-else-if="kind === 'clue'" class="sys-row">
     <view class="clue-line">
-      <text class="clue-glyph" decode>✦</text>
+      <app-icon name="sparkle" :size="14" class="clue-glyph" />
       <text class="clue-text" decode>{{ stripPrefix(msg.content, '获得线索') }}</text>
     </view>
   </view>
@@ -93,7 +94,7 @@ function stripPrefix(content: string, prefix: string): string {
   <!-- ── 战斗伤害：血色调脉冲卡 ── -->
   <view v-else-if="kind === 'damage'" class="sys-row">
     <view class="blood-card">
-      <text class="blood-glyph" decode>⚔</text>
+      <app-icon name="sword" :size="16" class="blood-glyph" />
       <text class="blood-text" decode>{{ msg.content }}</text>
     </view>
   </view>

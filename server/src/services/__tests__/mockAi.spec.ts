@@ -26,6 +26,11 @@ const MOCK_ENV: Record<string, string> = {
   UPLOADS_DIR: 'mock-ai-test-uploads',
 }
 
+// The real graph intentionally remains in this contract suite. Its first
+// LangGraph construction includes native/provider module loading and is much
+// slower than the unit-level mock tests below.
+const REAL_GRAPH_TIMEOUT_MS = 60_000
+
 afterEach(() => {
   vi.unstubAllEnvs()
 })
@@ -243,7 +248,7 @@ describe('MOCK_AI=1 — real kpGraph driven by the mock LLM (kpAgentService)', (
     expect(result.toolCalls![0].name).toBe('skill_check')
     const args = JSON.parse(result.toolCalls![0].arguments) as { skillName: string }
     expect(args.skillName).toBe('格斗')
-  })
+  }, REAL_GRAPH_TIMEOUT_MS)
 
   it('WS stream path emits chunk → trace → end with mock toolCalls', async () => {
     stubMockEnv()

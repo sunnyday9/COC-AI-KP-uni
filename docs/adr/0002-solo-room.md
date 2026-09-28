@@ -9,7 +9,7 @@
 
 ## 决策
 
-1. **单人游戏实现为 `kind='solo'` 的单成员房间**：不出现在房间列表、`turnWindowMs` 恒 0、出生即 playing——「确认角色卡」是一体领域动作（落角色卡 + 建 solo 房 + 绑卡 + start）。
+1. **单人游戏实现为 `kind='solo'` 的单成员房间**：不出现在房间列表、`turnWindowMs` 恒 0、出生即 playing——「确认角色卡」是一体领域动作（落角色卡 + 建 solo 房 + 绑卡 + start）。出生前仍须通过 workflow artifact 门闩：rag 必须已有索引，dossier 必须已生成且未降质；只省略多人等待室的结束态/选剧本/成员绑卡治理闩。
 2. **单人使用与多人完全相同的 wire 协议**（`room:join` / `room:action` / `room:event` / `room:sync`），无任何 solo 专用帧。
 3. **删除面**：ws `kp:turn` 帧及其 handler、`POST /api/kp/invoke`、客户端 kpSessionService、直连 LLM 兜底（runDirectChat）全部删除；KP agent 可用性是纯服务端部署问题。
 4. **上下文注入服务端收口**：提示词组装、RAG 检索上下文、记忆编排（kpMemory/长程摘要/抽取）移入服务端房间回合链路，数据落 `rooms.state`；本局会话图注入延后 A3（该延后特性已于 2026-09-12 退役删除，见 9d8fc10）。
@@ -24,6 +24,7 @@
 ## 后果
 
 - `rooms` 表加 `kind` 列（DEFAULT `'multi'`，存量数据不受影响）。
+- solo 与 multi 共用知识可用性门闩，避免一体创建动作绕过索引/档案检查后直接进入没有原文的 playing 房间。
 - solo 免费获得 seq 全序、断线重连、服务端持久化（重进房间=续玩）、骰子与 trace 事件——单人体验升级无需额外代码。
 - multi 自动获得开场叙述与 RAG/记忆上下文（与 solo 同一回合链路）。
 - DebugPanel 随客户端内部调试面（提示词/工具调用）消失而删除，调试面回到协议既有的 trace 事件；opening 回合失败不阻塞进入（首回合不是门闩）。

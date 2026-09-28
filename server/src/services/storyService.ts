@@ -28,7 +28,6 @@ import { assertId, assertStoredFilePath, generateFilePath, isInternalUuidFileNam
 import { readFileOr404, unlinkOr404 } from '../utils/fsSafe.js'
 import { assertPathInDir, resolveFileInDir } from '../utils/pathSafety.js'
 import { NotFoundError } from '../utils/errors.js'
-import * as storyParsers from '../rag/storyParsers.js'
 
 /** Story extensions — mirrors STORY_EXTENSIONS in fileHandlers.cjs verbatim. */
 export const STORY_EXTENSIONS = ['.txt', '.md', '.json', '.pdf', '.docx', '.epub', '.html', '.htm']
@@ -159,6 +158,7 @@ export async function readStory(userId: number, id: string): Promise<{ name: str
   if (['.docx', '.epub'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
     try {
+      const storyParsers = await import('../rag/storyParsers.js')
       const text = await storyParsers.parseByExtension(ext, dataBuffer)
       return { name, content: text || '' }
     } catch {
@@ -168,6 +168,7 @@ export async function readStory(userId: number, id: string): Promise<{ name: str
   if (['.html', '.htm'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
     try {
+      const storyParsers = await import('../rag/storyParsers.js')
       const text = await storyParsers.parseByExtension(ext, dataBuffer.toString('utf-8'))
       return { name, content: text || '' }
     } catch {
@@ -191,6 +192,7 @@ export async function readStoryForRag(userId: number, id: string): Promise<{ nam
   if (['.docx', '.epub'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
     try {
+      const storyParsers = await import('../rag/storyParsers.js')
       const text = await storyParsers.parseByExtension(ext, dataBuffer)
       return { name, content: text || '' }
     } catch {
@@ -200,6 +202,7 @@ export async function readStoryForRag(userId: number, id: string): Promise<{ nam
   if (['.html', '.htm'].includes(ext)) {
     const dataBuffer = await readFileOr404(safePath, 'story')
     try {
+      const storyParsers = await import('../rag/storyParsers.js')
       const text = await storyParsers.parseByExtension(ext, dataBuffer.toString('utf-8'))
       return { name, content: text || '' }
     } catch {
@@ -211,6 +214,7 @@ export async function readStoryForRag(userId: number, id: string): Promise<{ nam
     return { name, content: dataBuffer.toString('utf-8') }
   }
   const dataBuffer = await readFileOr404(safePath, 'story')
+  const storyParsers = await import('../rag/storyParsers.js')
   const mainText = await storyParsers.parsePdfWithOcr(dataBuffer)
   return { name, content: mainText }
 }

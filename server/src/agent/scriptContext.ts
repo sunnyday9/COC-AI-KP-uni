@@ -4,17 +4,18 @@
  * The script schema (`original/ai-trpg-web/schemas/coc-script.schema.json`)
  * defines `clues[].obtainCondition` / `scenes[].transitionCondition` as
  * free-text strings — there is no machine-readable gate. This module adds an
- * OPTIONAL structured layer on top:
+ * OPTIONAL structured layer on top and a deliberately small free-text grammar:
  *   - `clues[].requiredClues?: string[]`  — clue ids that must be obtained
  *     before this clue can be granted (structured obtainCondition).
  *   - `scenes[].requiredClues?: string[]` — clue ids that unlock the scene
  *     (structured transitionCondition).
+ *   - `obtainCondition` / `transitionCondition`: `requires_clues: id1, id2`.
  *
  * Two-track gating:
- *   - Structured conditions present → programmatic unlock checks.
- *   - Free-text only (original scripts) → `null` result; the raw condition
- *     text is injected into the plan prompt as reference, never enforced, so
- *     legacy scripts behave exactly as before.
+ *   - Structured conditions present → programmatic unlock checks, unchanged.
+ *   - Supported free-text conditions → deterministic clue-id checks.
+ *   - Other non-empty free text → fail closed as ambiguous; it cannot unlock
+ *     anything until rewritten in the supported format or structured form.
  *
  * Script JSON is loaded via storyService.readStory (stories are stored per
  * user under UPLOADS_DIR/<userId>/stories/<id>) with a short TTL cache.
@@ -109,7 +110,8 @@ export function parseScriptContent(content: string): ScriptContext | null {
 }
 
 /**
- * Load the structured script for a user+scriptId; null when unavailable / not a script JSON.
+ * Load the structured script for a user+scriptId; null when the story has no
+ * structured context, and throw when its source cannot be read.
  *
  * Two sources (experiment branch feature/kp-dossier-workflow):
  *  1. A generated dossier (`rag/dossier/dossierCore`), which is the
@@ -143,8 +145,10 @@ export async function loadScriptContext(userId: number, scriptId: string): Promi
   let raw: { content: string } | null = null
   try {
     raw = await readStory(userId, scriptId)
-  } catch {
-    return null
+  } catch (error) {
+    // A read failure is different from an ordinary text story: the caller may
+    // be enforcing clue or scene conditions from this source.
+    throw error
   }
   const ctx = parseScriptContent(raw?.content ?? '')
   if (ctx) cache.set(key, { loadedAt: Date.now(), ctx })
@@ -176,32 +180,76 @@ export function findScene(ctx: ScriptContext, nameOrId: string): ScriptScene | n
   return best
 }
 
-function hasAllClues(required: string[], obtained: Set<string>): boolean {
-  for (const r of required) {
-    if (!obtained.has(r)) return false
+type ConditionGateReason = 'missing-clues' | 'ambiguous-condition' | 'unknown-clue'
+
+interface ConditionGate {
+  unlocked: boolean | null
+  missing: string[]
+  reason?: ConditionGateReason
+}
+
+/** Normalize only the explicit grammar; natural-language matching is unsafe. */
+function parseFreeTextCondition(condition: string): { requiredClues: string[] } | { error: 'ambiguous-condition' } {
+  const match = /^requires_clues:\s*([^\s,]+(?:\s*,\s*[^\s,]+)*)$/i.exec(condition.trim())
+  if (!match) return { error: 'ambiguous-condition' }
+  const requiredClues = [...new Set(match[1]!.split(',').map((id) => id.trim()).filter(Boolean))]
+  return requiredClues.length > 0 ? { requiredClues } : { error: 'ambiguous-condition' }
+}
+
+function evaluateCondition(
+  structuredRequired: string[] | undefined,
+  freeTextCondition: string | undefined,
+  obtained: Set<string>,
+  knownClueIds?: Set<string>,
+): ConditionGate {
+  // A non-empty structured condition remains authoritative over legacy text.
+  if (Array.isArray(structuredRequired) && structuredRequired.length > 0) {
+    const missing = structuredRequired.filter((id) => !obtained.has(id))
+    return { unlocked: missing.length === 0, missing, ...(missing.length ? { reason: 'missing-clues' as const } : {}) }
   }
-  return true
+
+  const text = freeTextCondition?.trim()
+  if (!text) return { unlocked: null, missing: [] }
+  const parsed = parseFreeTextCondition(text)
+  if ('error' in parsed) return { unlocked: false, missing: [], reason: parsed.error }
+
+  const unknown = knownClueIds
+    ? parsed.requiredClues.filter((id) => !knownClueIds.has(id))
+    : []
+  if (unknown.length > 0) return { unlocked: false, missing: unknown, reason: 'unknown-clue' }
+
+  const missing = parsed.requiredClues.filter((id) => !obtained.has(id))
+  return { unlocked: missing.length === 0, missing, ...(missing.length ? { reason: 'missing-clues' as const } : {}) }
 }
 
 /**
  * Scene unlock check.
- *  - `true`  — scene has structured requiredClues and they are all obtained.
- *  - `false` — scene has structured requiredClues and some are missing
- *    (missing ids are also returned for prompt hints).
- *  - `null`  — no structured condition (free-text script) → not enforced.
+ *  - `true`  — any structured or supported free-text prerequisites are met.
+ *  - `false` — prerequisites are missing or the non-empty condition is invalid.
+ *  - `null`  — no structured or free-text condition is present.
  */
 export function sceneUnlocked(
   scene: ScriptScene,
   obtainedClueIds: string[],
-): { unlocked: boolean | null; missing: string[] } {
-  const required = scene.requiredClues
-  if (!Array.isArray(required) || required.length === 0) return { unlocked: null, missing: [] }
+  ctx?: Pick<ScriptContext, 'clues'>,
+): ConditionGate {
   const obtained = new Set(obtainedClueIds || [])
-  const missing = required.filter((r) => !obtained.has(r))
-  return { unlocked: missing.length === 0, missing }
+  const knownClueIds = ctx ? new Set(ctx.clues.map((clue) => clue.id)) : undefined
+  return evaluateCondition(scene.requiredClues, scene.transitionCondition, obtained, knownClueIds)
 }
 
-/** Clues available in a scene that the player has not obtained yet and whose structured prerequisites are met. */
+/** Evaluate a clue's prerequisites, including legacy free-text conditions. */
+export function clueUnlocked(
+  clue: ScriptClue,
+  obtainedClueIds: string[],
+  ctx: Pick<ScriptContext, 'clues'>,
+): ConditionGate {
+  const obtained = new Set(obtainedClueIds || [])
+  const knownClueIds = new Set(ctx.clues.map((candidate) => candidate.id))
+  return evaluateCondition(clue.requiredClues, clue.obtainCondition, obtained, knownClueIds)
+}
+
+/** Clues available in a scene that the player has not obtained and whose prerequisites are met. */
 export function getAvailableClues(
   scene: ScriptScene,
   obtainedClueIds: string[],
@@ -214,16 +262,31 @@ export function getAvailableClues(
     if (obtained.has(id)) continue
     const clue = ctx.clues.find((c) => c.id === id)
     if (!clue) continue
-    const required = clue.requiredClues
-    if (Array.isArray(required) && required.length > 0) {
-      const missing = required.filter((r) => !obtained.has(r))
-      if (missing.length > 0) continue // gated behind other clues
-      result.push({ clue, reason: 'unlocked-by-clue', missing: [] })
-    } else {
-      result.push({ clue, reason: 'open', missing: [] })
-    }
+    const gate = clueUnlocked(clue, obtainedClueIds, ctx)
+    if (gate.unlocked === false) continue
+    result.push({ clue, reason: gate.unlocked ? 'unlocked-by-clue' : 'open', missing: [] })
   }
   return result
+}
+
+/** Clues withheld by prerequisites or fail-safe free-text validation. */
+export function getBlockedClues(
+  scene: ScriptScene,
+  obtainedClueIds: string[],
+  ctx: ScriptContext,
+): { clue: ScriptClue; missing: string[]; reason: ConditionGateReason }[] {
+  const obtained = new Set(obtainedClueIds || [])
+  const blocked: { clue: ScriptClue; missing: string[]; reason: ConditionGateReason }[] = []
+  for (const id of scene.clueIds || []) {
+    if (obtained.has(id)) continue
+    const clue = ctx.clues.find((candidate) => candidate.id === id)
+    if (!clue) continue
+    const gate = clueUnlocked(clue, obtainedClueIds, ctx)
+    if (gate.unlocked === false) {
+      blocked.push({ clue, missing: gate.missing, reason: gate.reason ?? 'missing-clues' })
+    }
+  }
+  return blocked
 }
 
 /** NPC records for a scene (used to render the activeNPCs prompt block server-side). */

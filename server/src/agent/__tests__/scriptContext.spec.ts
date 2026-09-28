@@ -27,7 +27,7 @@ const STRUCTURED_SCRIPT = {
     },
   ],
   clues: [
-    { id: 'clue_001', description: '相框里的照片', obtainCondition: '查看办公桌' },
+    { id: 'clue_001', description: '相框里的照片' },
     { id: 'clue_002', description: '账本', requiredClues: ['clue_001'] },
     { id: 'clue_003', description: '仪式书' },
   ],

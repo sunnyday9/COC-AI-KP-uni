@@ -16,21 +16,23 @@
  * 本 spec 一并钉住：唯一反向命中 = 正常命中；歧义反向 / 单字 query 仍走「未覆盖」回落。
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
+import { logger } from '../../utils/logging.js'
 
 vi.mock('../../agent/kpGraph.js', () => ({
   invokeKPAgent: vi.fn(),
   createKPGraph: vi.fn(() => ({})),
 }))
-vi.mock('../kpAgentService.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../kpAgentService.js')>()
-  return {
-    ...actual,
-    buildInvokeLLM: vi.fn(() => async () => ({ content: '' })),
-    getSharedGraph: vi.fn(() => ({})),
-  }
-})
+// This suite verifies dossier scene selection and the room wire, not provider
+// module loading. Use a light coordinator seam so the mocked graph callback is
+// reached immediately on the WSL test runner.
+vi.mock('../kpAgentService.js', () => ({
+  buildInvokeLLM: vi.fn(() => async () => ({ content: '' })),
+  getSharedGraph: vi.fn(() => ({})),
+  normalizeMessages: vi.fn((messages: unknown) => messages as never),
+}))
 vi.mock('../settingsService.js', () => ({
   getAiConfig: vi.fn(() => ({ protocol: 'openai_chat' })),
+  getAiSetupIssue: vi.fn(() => null),
   getSettings: vi.fn(() => ({ rag: { supplement: true } })),
 }))
 vi.mock('../roomMemory.js', () => ({
@@ -295,11 +297,12 @@ describe('#53 档案房场景归属（错配不回落到别的场景）', () => 
 
   it('匹配失败留可见诊断（KP_LLM_DEBUG=1）', async () => {
     vi.stubEnv('KP_LLM_DEBUG', '1')
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const spy = vi.spyOn(logger, 'debug').mockImplementation(() => {})
     const room = await runTurn('room_dbg', '废弃的地窖')
     try {
       expect(
-        spy.mock.calls.some((c) => String(c[0]).includes('废弃的地窖') && String(c[0]).includes('未匹配')),
+        spy.mock.calls.some(([message, context]) => message.includes('did not match dossier scene')
+          && (context as { scene?: string } | undefined)?.scene === '废弃的地窖'),
       ).toBe(true)
     } finally {
       room.dispose()

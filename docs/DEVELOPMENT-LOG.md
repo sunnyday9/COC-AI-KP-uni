@@ -115,6 +115,81 @@
 
 **验证**：server 354 + client 87 单测全绿、tsc 零错误、MOCK E2E 14/14（含上传/索引/读档链路）。
 
+### D-09a：RAG/档案 artifact UUID 化与 realpath 边界（2026-09-22）
+
+**决策**：把 D-09 的内部文件名约束扩展到 RAG 索引与档案 sidecar：
+- RAG 索引、dossier、`.gaps.json`、`.annex.json` 均使用服务端生成的 UUID 文件名；外部 `storyId/scriptId` 只作为 JSON 元数据查找键，不再拼入 fs 路径。
+- 旧版以外部 id 命名的 artifact 仍可扫描读取；重新索引/重新生成时写入 UUID 文件并清理旧文件。
+- `assertPathInDir` 在 lexical boundary 之外增加 `realpath` boundary 检查，拒绝文件或父目录符号链接逃逸。
+
+**原因**：sanitize/resolve 只能防止字符串层面的路径穿越，不能阻止已存在的符号链接；UUID artifact + 元数据解析同时切断外部 id 文件名污点链并保留存量兼容。
+
+**验证**：新增路径符号链接回归测试、RAG/档案 UUID 文件名断言；server tsc/build 通过。完整 Vitest 仍受当前环境缺失 `@rolldown/binding-wasm32-wasi` 阻塞。
+
+### D-09b：RAG 无嵌入时保留词面检索（2026-09-22）
+
+**决策**：RAG 查询始终计算 TF-IDF；query 与索引块都有 embedding 时按 `0.7 × dense + 0.3 × TF-IDF` 融合，缺少 query embedding 或单块 embedding 失败时使用 TF-IDF 分数。`MOCK_AI=1` 因此仍能完成索引与检索。
+
+**原因**：`MOCK_AI` 和 embedding 服务不可用是受支持的离线/降级路径；原实现虽在索引阶段保留 TF-IDF，却在查询阶段无 embedding 时直接返回空结果，违反 ADR-0007 的可降级检索约定，也让离线 E2E 的 RAG 补充静默失效。
+
+**验证**：新增无 embedding 与部分 embedding 失败回归断言；server build 通过；直接编译产物行为检查确认词面与混合兜底均返回命中。完整 Vitest 仍受当前环境缺失 `@rolldown/binding-wasm32-wasi` 阻塞。
+
+### D-09c：solo 创建复用知识 artifact 开局门闩（2026-09-22）
+
+**决策**：`POST /api/rooms/solo` 与多人 `startRoom` 共用 workflow 可用性检查：RAG 必须已有索引，dossier 必须已生成且未降质；solo 仍保留出生即 playing、无等待室成员治理的差异。
+
+**原因**：原 solo 一体动作只拦 dossier 残档，RAG 未索引或 dossier 缺失也能直接创建 playing 房间，随后 KP 回合没有可靠的原文/知识上下文，形成静默空跑路径。门闩统一后，API 失败在创建事务前返回 409，避免留下孤儿角色卡或不可用房间。
+
+**验证**：新增 solo 缺索引、缺档案回归断言并更新受影响的房间 fixture；server build 通过。完整 Vitest 仍受当前环境缺失 `@rolldown/binding-wasm32-wasi` 阻塞。
+
+### D-09d：保护进行中房间并清理解散实例（2026-09-22）
+
+**决策**：房间 DELETE 只允许 lobby/ended；playing 房间返回 409。成功解散以及房主断线导致的无成员解散都会同步 dispose 并移除内存 `RoomService`，停止快照定时器与事件监听。
+
+**原因**：原 owner 解散接口没有 phase 闸门，可在进行中直接删除房间快照；删除 DB 行后活跃实例也会继续留在 registry，造成资源泄漏和幽灵状态。
+
+**验证**：新增 playing DELETE 409 与活跃实例移除回归断言；server build 通过。完整 Vitest 仍受当前环境缺失 `@rolldown/binding-wasm32-wasi` 阻塞。
+
+### D-09e：游戏 tab 收编进行中的调查（2026-09-22）
+
+**决策**：新增 `client/src/pages/game/hub.vue` 作为「游戏」tab 的统一入口，同时读取未结束的 solo 与多人房间；solo / playing 房间进入统一沉浸式会话，multiplayer lobby 进入等待室。首页移除续玩查询与故事卡「继续」分支，只保留新调查启动台。
+
+**原因**：原导航直接把「游戏」tab 指向需要 `roomId` 的会话页，点击后会因缺少房间上下文重返首页；续玩逻辑又藏在首页故事卡，和 ADR-0004 的四 tab 信息架构相反。统一 hub 让入口与页面职责一致，并保留 solo 与多人两类房间的单一续玩位置。
+
+**验证**：新增 game 子包 `hub` 路由，AppLayout 改指向 hub；待执行 client H5 build 验证页面模板与分包路由。服务端测试仍受当前环境缺失 `@rolldown/binding-wasm32-wasi` 阻塞。
+
+### D-09f：跨端图标不再回落 emoji（2026-09-22）
+
+**决策**：向导与系统消息中的直接 emoji 改用 `AppIcon`；MP-WEIXIN 无 SVG 能力端使用文本符号回落，不依赖彩色 emoji 字体。H5/App 继续使用统一的线性 SVG 图标。
+
+**原因**：ADR-0004 明确要求 Phosphor/线性图标体系，emoji 会随平台字体和渲染器变色、变形，导致小程序与 H5 视觉契约漂移。
+
+**验证**：客户端源码不再包含界面 emoji 图标调用；client TypeScript check 通过。H5 bundle 仍受当前 checkout 缺失 `@rollup/rollup-linux-x64-gnu` 阻塞。
+
+### D-09g：test-agent 迁移到 room:* 黑盒协议（2026-09-22）
+
+**决策**：`test-agent/run-all.mjs` 改为只运行 `room-protocol.mjs`，通过 REST 创建已索引的 solo 房，再用 WS `room:join` / `room:action` 验证服务端权威回合。旧 `scenario-*.mjs`、性能脚本与 `REPORT.md` 明确标注为客户端工具循环时代的历史快照。
+
+**原因**：ADR-0002 已删除 `/api/kp/invoke` 与 `kp:invoke` 帧，但原统一入口仍执行这些已退役调用，无法验证当前生产链路，且会让 onboarding 的 48 用例统计产生错误信号。
+
+**验证**：新增当前协议旅程与 test-agent README；`node --check` 通过。真实 LLM 旅程需 `AW_*` 凭据，未在本环境执行；vitest 仍受缺失 `@rolldown/binding-wasm32-wasi` 阻塞。
+
+### D-09h：纳入 training/eval 自测入口（2026-09-22）
+
+**决策**：新增根脚本 `npm run test:training:eval`，执行 `training/eval/test/` 的 23 条 `node:test`；`test:all` 与 CI 均显式包含该套件。`training/eval/README.md` 与 onboarding 只保留一个命令入口，测试数量以 reporter 为准。
+
+**原因**：eval 自测虽然一直存在，但之前只在目录 README 中手工执行，未进入仓库级测试聚合或 CI，且 README 的 21 条统计已落后于实际 23 条，容易把评测规则/请求构建回归误认为未覆盖。
+
+**验证**：`npm run test:training:eval` 在当前环境通过 23/23；Node 版本要求与仓库 engines（≥24）一致。
+
+### D-09i：轻量模块边界与稳定回归基线（2026-09-23）
+
+**决策**：纯查询/房间编排路径按需动态加载 LangGraph、provider、PDF/OCR 与 annex 重依赖；KP 意图规则抽到无图依赖的轻量叶模块。服务端 Vitest 默认限制为 4 个 worker，避免 WSL 上 SQLite、原生解析器与定时器测试因按 CPU 数量无限并发而互相争抢。
+
+**原因**：冷启动时重量级模块会让不需要 AI/解析器的测试阻塞；原来的默认 worker 数在当前主机上还会造成房间窗口与治理路由的假超时，掩盖真实回归结果。
+
+**验证**：server 全量 **77/77 文件、821 passed、1 skipped**；client **106 passed**；server build、client tsc、H5 build 均通过。需要真实服务/API 凭据的 E2E 与 LLM 旅程未在本次离线回归中执行。
+
 ### D-10：RoomService 每房间实例 + 串行队列（2026-08-20，Phase B1）
 
 **决策**：每房间一个 `RoomService` 实例（进程内注册表），状态真源 + 串行 enqueue + 全序 seq + 事件广播 + 节流快照落库 + TTL 回收。

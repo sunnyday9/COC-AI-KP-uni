@@ -32,7 +32,23 @@ vi.mock('../roomMemory.js', () => ({
 /** 桩 ragService：剧本名 + 嵌入器确定性（避免真拉 vectorStore/transformers）。 */
 vi.mock('../ragService.js', () => ({
   buildGetEmbeddingForUser: vi.fn(async () => null),
-  listStories: vi.fn(() => [{ storyId: 'story_x', name: '雾中镇', chunkCount: 1, indexedAt: 0 }]),
+  listStories: vi.fn(() => [
+    { storyId: 'story_x', name: '雾中镇', chunkCount: 1, indexedAt: 0 },
+    { storyId: 'story_o', name: '雾中镇', chunkCount: 1, indexedAt: 0 },
+    { storyId: 'story_r', name: '雾中镇', chunkCount: 1, indexedAt: 0 },
+    { storyId: 'story_f', name: '雾中镇', chunkCount: 1, indexedAt: 0 },
+  ]),
+}))
+
+const getAiSetupIssueMock = vi.hoisted(() => vi.fn((): string | null => null))
+vi.mock('../settingsService.js', () => ({
+  getAiSetupIssue: getAiSetupIssueMock,
+  getSettings: vi.fn(() => ({ rag: { supplement: true } })),
+}))
+
+vi.mock('../startGate.js', () => ({
+  checkStartGate: vi.fn(async () => ({ ok: true })),
+  sanitizeWorkflow: (workflow: unknown) => workflow === 'dossier' ? 'dossier' : 'rag',
 }))
 
 /** 桩检索补充层（M1-T6）：两房知识块都出自标准管线（ADR-0007 决策 2/3）。
@@ -53,9 +69,10 @@ vi.mock('../../rag/supplementService.js', () => ({
 }))
 
 import { runKpTurn } from '../kpTurnService.js'
-import { RoomService, createSoloRoom, joinRoom, getOrCreateRoom, _clearRoomRegistryForTests } from '../roomService.js'
+import { RoomService, createRoom, createSoloRoom, joinRoom, joinRoomByInviteCode, getOrCreateRoom, transferOwnership, _clearRoomRegistryForTests } from '../roomService.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, BASE_INSTRUCTIONS } from '../kpPromptService.js'
 import { getDb } from '../../db/index.js'
+import { updateRoomStart } from '../roomStorage.js'
 import type { COCCharacterSheet } from '../../../../shared/types/character.js'
 import type { Message } from '../../../../shared/types/game.js'
 
@@ -79,10 +96,16 @@ const sheet = {
 beforeEach(() => {
   _clearRoomRegistryForTests()
   runKpTurnMock.mockClear()
+  getAiSetupIssueMock.mockClear()
+  getAiSetupIssueMock.mockReturnValue(null)
+  // These context tests use a mocked KP provider; avoid coupling them to each
+  // seeded user's real provider settings unless a test explicitly covers setup.
+  vi.stubEnv('MOCK_AI', '1')
 })
 
 afterEach(() => {
   _clearRoomRegistryForTests()
+  vi.unstubAllEnvs()
 })
 
 describe('kpPromptService 房间组装器（纯函数）', () => {
@@ -130,11 +153,13 @@ describe('RoomService 回合上下文收口', () => {
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1)) // opening 先行
     runKpTurnMock.mockClear()
 
+    room.addClue('泥泞脚印', 'c1')
     room.submitPlayerChat(userId, '我检查校门')
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1))
 
     const call = runKpTurnMock.mock.calls[0]!
     const messages = call[1].messages as { role: string; content: string }[]
+    expect((call[1] as { storyContext?: { openClues?: string[] } }).storyContext?.openClues).toEqual(['c1'])
     expect(messages[0]!.role).toBe('system')
     expect(messages[0]!.content).toContain('## 调查员: 艾丽丝 (侦探)')
     expect(messages[0]!.content).toContain('RAG 检索上下文（桩）')
@@ -151,6 +176,51 @@ describe('RoomService 回合上下文收口', () => {
     const room = new RoomService({ roomId: `ctxs_${Date.now()}`, ownerId: userId, ownerName: 'ctx_scene', turnWindowMs: 0 })
     room.setScene('地下室')
     await vi.waitFor(() => expect(room.snapshot().longTermSummary).toBe('+摘要v2'))
+  })
+
+  it('direct transfer restores a paused player action after restart and replays it with successor AI identity', async () => {
+    vi.stubEnv('MOCK_AI', '0')
+    const formerOwner = seedUser('handoff_source')
+    const successor = seedUser('handoff_successor')
+    const created = createRoom(formerOwner, 'story_x')
+    joinRoomByInviteCode(successor, created.inviteCode)
+    updateRoomStart(created.roomId, 'story_x', formerOwner)
+    expect(transferOwnership(formerOwner, created.roomId, successor).ok).toBe(true)
+
+    getAiSetupIssueMock.mockReturnValue('请在设置中选择或输入 KP 模型。')
+    const paused = getOrCreateRoom(created.roomId, successor, 'handoff_successor')
+    paused.setTurnWindowMs(0)
+    paused.submitPlayerChat(successor, '我检查保留的铜钥匙')
+    await vi.waitFor(() => expect(paused.getKpSetupRequired()).toBe(true))
+    await vi.waitFor(() => expect(paused.snapshot().pendingTurnMessages).toHaveLength(1))
+    expect(runKpTurnMock).not.toHaveBeenCalled()
+
+    // Simulate process restart: the database snapshot and story-source column
+    // are the only durable state carried into the new room instance.
+    _clearRoomRegistryForTests()
+    const restored = getOrCreateRoom(created.roomId, successor, 'handoff_successor')
+    await vi.waitFor(() => expect(restored.snapshot().pendingTurnMessages).toHaveLength(1))
+    expect(restored.getStoryOwnerId()).toBe(formerOwner)
+    expect(runKpTurnMock).not.toHaveBeenCalled()
+
+    getAiSetupIssueMock.mockReturnValue(null)
+    expect(await restored.retryKpTurn(successor)).toBe(true)
+    await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1))
+    const call = runKpTurnMock.mock.calls[0]!
+    expect(call[0]).toBe(successor)
+    expect((call[1] as { storyContext?: { storyOwnerId?: number } }).storyContext?.storyOwnerId).toBe(formerOwner)
+    expect((call[1].messages as { role: string; content: string }[]).at(-1)?.content).toBe('【handoff_successor】我检查保留的铜钥匙')
+    expect(restored.snapshot().pendingTurnMessages).toEqual([])
+  })
+
+  it('MOCK_AI skips provider setup preflight', async () => {
+    const userId = seedUser('ctx_mock_ai')
+    const room = new RoomService({ roomId: `ctx_mock_${Date.now()}`, ownerId: userId, ownerName: 'ctx_mock_ai', turnWindowMs: 0 })
+    room.startGame('story_x', userId)
+    room.submitPlayerChat(userId, '继续行动')
+    await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1))
+    expect(getAiSetupIssueMock).not.toHaveBeenCalled()
+    room.dispose()
   })
 })
 

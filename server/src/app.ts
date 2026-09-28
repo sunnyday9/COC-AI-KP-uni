@@ -3,9 +3,9 @@ import { fileURLToPath } from 'node:url'
 import cors from 'cors'
 import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
-import { PORT, isMockAiMode } from './config.js'
-import { getDb } from './db/index.js'
+import { PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
 import { logger } from './utils/logging.js'
+import { getDb } from './db/index.js'
 import { startRoomReaper } from './services/roomService.js'
 import { createWsServer } from './ws/index.js'
 import authRoutes from './routes/auth.routes.js'
@@ -26,6 +26,8 @@ import charactersRoutes from './routes/characters.routes.js'
  * KP 回合只走房间协议（ADR-0002），无独立 kp 路由；/api/scripts 已随 #97 退役。
  */
 export function createApp(): Express {
+  assertRuntimeConfig()
+
   const app = express()
 
   app.use(cors())
@@ -73,7 +75,9 @@ const isMain =
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
 if (isMain) {
-  // Apply and validate schema migrations before accepting traffic.
+  assertRuntimeConfig()
+  // Apply/validate the SQLite schema before accepting traffic. A failed or
+  // unsupported migration must abort startup rather than fail on first use.
   getDb()
   const httpServer = createApp().listen(PORT, () => {
     logger.info(`COC AI KP server listening on http://localhost:${PORT}`)

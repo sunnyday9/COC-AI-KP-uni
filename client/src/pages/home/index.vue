@@ -1,9 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { listIndexedStories, type IndexedStory } from '../../services/ragService'
-import { getBridge } from '../../platform'
-import type { SoloRoomListItem } from '../../../../../shared/types/room'
 import AppLayout from '../../components/layout/AppLayout.vue'
 import AppIcon from '../../components/ui/AppIcon.vue'
 import Button from '../../components/ui/Button.vue'
@@ -12,8 +10,6 @@ const settingsStore = useSettingsStore()
 
 const stories = ref<IndexedStory[]>([])
 const isLoading = ref(false)
-const soloRooms = ref<SoloRoomListItem[]>([])
-const soloLoading = ref(false)
 
 async function loadStories() {
   isLoading.value = true
@@ -23,42 +19,10 @@ async function loadStories() {
   finally { isLoading.value = false }
 }
 
-async function loadSoloRooms() {
-  soloLoading.value = true
-  try {
-    soloRooms.value = await getBridge().roomListSolo()
-  } catch { soloRooms.value = [] }
-  finally { soloLoading.value = false }
-}
-
-onMounted(() => { loadStories(); loadSoloRooms() })
-
-/** T7：进行中局（storyId → room）——故事卡「继续」角标数据源。 */
-const roomByStory = computed(() => {
-  const map = new Map<string, SoloRoomListItem>()
-  for (const r of soloRooms.value) {
-    if (r.storyId && !map.has(r.storyId)) map.set(r.storyId, r)
-  }
-  return map
-})
-
-function storyNameOf(storyId: string | null): string {
-  if (!storyId) return '未命名故事'
-  return stories.value.find((s) => s.storyId === storyId)?.name ?? storyId
-}
+onMounted(() => { loadStories() })
 
 function goToSetup(story: IndexedStory) {
   uni.navigateTo({ url: `/pages/character/occupation/index?storyId=${encodeURIComponent(story.storyId)}&storyName=${encodeURIComponent(story.name)}` })
-}
-
-/** 故事卡点击：有进行中局 → 续玩；否则新建调查。 */
-function openStory(story: IndexedStory) {
-  const room = roomByStory.value.get(story.storyId)
-  if (room) {
-    uni.navigateTo({ url: `/pages/game/index?roomId=${encodeURIComponent(room.roomId)}&storyName=${encodeURIComponent(storyNameOf(room.storyId))}` })
-    return
-  }
-  goToSetup(story)
 }
 
 function goScripts() {
@@ -131,7 +95,7 @@ function goSettings() {
               :key="story.storyId"
               class="gothic-card story-card"
               hover-class="story-card-hover"
-              @click="openStory(story)"
+              @click="goToSetup(story)"
             >
               <view class="story-badge">
                 <text class="story-badge-text">{{ story.name.charAt(0) }}</text>
@@ -142,12 +106,7 @@ function goSettings() {
                      卡片元数据以信息块计数兜底，见 #27 项 3 -->
                 <text class="story-meta">{{ story.chunkCount }} 个信息块</text>
               </view>
-              <!-- T7：进行中角标（续玩入口，替代独立「继续游戏」块） -->
-              <view v-if="roomByStory.has(story.storyId)" class="story-resume-badge">
-                <text class="resume-dot" />
-                <text>继续</text>
-              </view>
-              <view v-else class="story-cta">
+              <view class="story-cta">
                 <text>开始调查</text>
               </view>
             </view>
@@ -429,33 +388,6 @@ function goSettings() {
   color: var(--c-eld-100);
   opacity: 0.75;
 }
-/* 进行中角标（eldritch 绿脉冲点） */
-.story-resume-badge {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 12px;
-  border-radius: 9999px;
-  border: 1px solid color-mix(in srgb, var(--c-eld-600) 60%, transparent);
-  background: color-mix(in srgb, var(--c-eld-800) 60%, transparent);
-  color: var(--c-eld-100);
-}
-.resume-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--c-eld-400);
-  box-shadow: 0 0 6px var(--c-eld-400);
-  animation: resume-pulse 1.6s ease-in-out infinite;
-}
-@keyframes resume-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-
 .empty-card {
   padding: 48px;
   text-align: center;

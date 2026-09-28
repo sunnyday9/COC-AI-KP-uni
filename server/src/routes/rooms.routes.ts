@@ -76,7 +76,7 @@ router.post('/solo', (req: AuthRequest, res) => {
     .catch((err) => sendError(res, err))
 })
 
-/** GET /api/rooms/solo — 未结束单人局列表（继续游戏）。 */
+/** GET /api/rooms/solo — 未结束单人局列表（游戏 hub 的 solo 续玩）。 */
 router.get('/solo', (req: AuthRequest, res) => {
   res.json(listSoloRoomsForUser(req.userId as number))
 })

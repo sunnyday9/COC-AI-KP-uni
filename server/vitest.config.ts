@@ -15,5 +15,9 @@ export default defineConfig({
       '**/.{idea,git,cache,output,temp}/**',
       '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*',
     ],
+    // Bound SQLite/native-parser worker fan-out. The host can report dozens
+    // of CPUs, but spawning one worker per CPU starves timers and makes the
+    // integration suites flaky under WSL.
+    maxWorkers: 4,
   },
 })

@@ -16,14 +16,15 @@
  *  - sceneAnchors：每场景 sceneText 首段在原文中的近似起点（matched=false 表
  *    示 sceneText 与原文无逐字对应——纯改写/摘要，回退时该场景锚不到原文）。
  *
- * 落盘 DOSSIER_DATA_DIR/<uid>/<sanitize>.gaps.json（明细）；dossier JSON 只带
- * 计数摘要（schema.StoryDossier.coverageGaps）。
+ * 落盘 DOSSIER_DATA_DIR/<uid>/<uuid>.gaps.json（明细）；dossier JSON 只带
+ * 计数摘要（schema.StoryDossier.coverageGaps）。外部 scriptId 只存于 JSON
+ * 内容，不参与文件名生成。
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { DOSSIER_DATA_DIR } from '../../config.js'
-import { resolveFileInDir } from '../../utils/pathSafety.js'
-import { sanitizeScriptId, type DossierScene } from './schema.js'
+import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../../utils/jsonArtifact.js'
+import { type DossierScene } from './schema.js'
 import { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
 
 /** 太短的段落不计缺口（目录页/占位符等噪声）。 */
@@ -287,20 +288,27 @@ export function computeSceneCoverage(gaps: CoverageGaps | null, sceneIdOrName: s
 
 /* ═══════════════════ 落盘 / 读取（白名单 + resolve 双保险，同 dossier/annex） ═══════════════════ */
 
-function gapsFile(userId: number, scriptId: string): string {
-  const safe = sanitizeScriptId(scriptId)
-  return resolveFileInDir(path.join(DOSSIER_DATA_DIR, String(userId)), `${safe}.gaps.json`, 'gaps file')
+function gapsFiles(userId: number, scriptId: string): string[] {
+  return findJsonArtifactPaths(path.join(DOSSIER_DATA_DIR, String(userId)), scriptId, { suffix: '.gaps.json' })
 }
 
 export async function persistGaps(userId: number, gaps: CoverageGapsFile): Promise<void> {
-  await fs.mkdir(path.join(DOSSIER_DATA_DIR, String(userId)), { recursive: true })
+  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  await fs.mkdir(dir, { recursive: true })
+  const existing = gapsFiles(userId, gaps.scriptId)
+  const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(dir, '.gaps.json')
   const stamped: CoverageGapsFile = { ...gaps, gapsVersion: gaps.gapsVersion ?? GAPS_VERSION }
-  await fs.writeFile(gapsFile(userId, gaps.scriptId), JSON.stringify(stamped, null, 2), 'utf-8')
+  await fs.writeFile(file, JSON.stringify(stamped, null, 2), 'utf-8')
+  for (const oldPath of existing) {
+    if (oldPath !== file) await fs.unlink(oldPath).catch(() => undefined)
+  }
 }
 
 export async function loadGaps(userId: number, scriptId: string): Promise<CoverageGapsFile | null> {
+  const [file] = gapsFiles(userId, scriptId)
+  if (!file) return null
   try {
-    const raw = await fs.readFile(gapsFile(userId, scriptId), 'utf-8')
+    const raw = await fs.readFile(file, 'utf-8')
     const parsed = JSON.parse(raw) as CoverageGapsFile
     return parsed && typeof parsed === 'object' && Array.isArray(parsed.spans) ? parsed : null
   } catch {
@@ -317,10 +325,10 @@ export function isCurrentGapsVersion(gaps: CoverageGapsFile | null): boolean {
 }
 
 export async function deleteGaps(userId: number, scriptId: string): Promise<boolean> {
-  try {
-    await fs.unlink(gapsFile(userId, scriptId))
-    return true
-  } catch {
-    return false
+  const files = gapsFiles(userId, scriptId)
+  let deleted = false
+  for (const file of files) {
+    await fs.unlink(file).then(() => { deleted = true }).catch(() => undefined)
   }
+  return deleted
 }

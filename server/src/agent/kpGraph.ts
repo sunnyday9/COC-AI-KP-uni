@@ -28,11 +28,17 @@ import {
 import {
   findScene,
   getAvailableClues,
+  getBlockedClues,
   getSceneNpcs,
   loadScriptContext,
   sceneUnlocked,
 } from './scriptContext.js'
+import { classifyIntentByRules, COMBAT_SKILLS } from './kpIntent.js'
 import { logger } from '../utils/logging.js'
+
+// Preserve the graph module's public exports for existing callers/tests while
+// keeping the implementation in a dependency-free leaf.
+export { classifyIntentByRules, COMBAT_SKILLS } from './kpIntent.js'
 
 /* ================================================================== */
 /*  Types (annotations only — no behavior change)                      */
@@ -183,30 +189,6 @@ function parseIntent(raw: string | null | undefined): string {
  * the real LLM path agree — do not copy the word faces elsewhere. Falls back
  * to the classifier LLM in analyzeInput when no rule matches.
  */
-const INTENT_RULES_ORDER: Array<{ re: RegExp; intent: string }> = [
-  // dossier 查证词：叙事性信息动作 → narrative（避免误判 investigate 强制授线索）
-  { re: /情报确认|查证一下|查一下档案|查阅档案|确认一下/, intent: 'narrative' },
-  { re: /战斗|攻击|开枪|射击|格斗|挥拳|扑向|砍|刺|开枪打/, intent: 'combat' },
-  { re: /撬锁|开锁/, intent: 'skill_check' },
-  // 调查(?!员): the word 调查员 (investigator) must NOT trigger an action.
-  { re: /侦查|搜索|检查|查看|搜寻|翻找|搜查|调查(?!员)/, intent: 'investigate' },
-  { re: /恐怖|疯狂|尖叫|理智|诡异|吓人|毛骨悚然/, intent: 'san_encounter' },
-  { re: /对话|询问|交谈|打听|说服|恐吓|问.{0,6}(?:情况|消息|下落)/, intent: 'talk_npc' },
-  { re: /移动|前往|走到|走进|进入|来到|离开|跑去|奔向/, intent: 'move' },
-  { re: /使用|掏出|拿出|服用|佩戴/, intent: 'use_item' },
-  { re: /骰|检定|投掷/, intent: 'skill_check' },
-]
-
-export function classifyIntentByRules(userText: string): string | null {
-  const text = String(userText || '').trim()
-  if (!text) return null
-  for (let i = 0; i < INTENT_RULES_ORDER.length; i++) {
-    const rule = INTENT_RULES_ORDER[i]
-    if (rule.re.test(text)) return rule.intent
-  }
-  return null
-}
-
 /* ================================================================== */
 /*  Text-simulation detection (rules live in shared/tools/kpValidation) */
 /* ================================================================== */
@@ -221,8 +203,6 @@ export function classifyIntentByRules(userText: string): string | null {
  * services/mockAi.ts imports this table for its deterministic
  * tool-continuation script — do not copy the array elsewhere.
  */
-export const COMBAT_SKILLS = ['格斗', '射击', '手枪', '步枪', '投掷', '弓术', '斧', '刀', '矛', '鞭', '拳']
-
 /**
  * Parse the JSON payload out of a tool-result message. The client prepends a
  * `【结果摘要】…` head to tool results (kpSessionService perf A4) before
@@ -656,9 +636,9 @@ function createPlanNode(agentKind: string, userId?: number) {
     }
 
     // Phase 3.5: script-gating (clue-driven story). Optional — when the
-    // current script has structured requiredClues, planTools renders the
-    // gate state into the plan text and refuses to force transition_scene
-    // for locked scenes. Free-text scripts return null and behave as before.
+    // current script has structured or supported free-text conditions,
+    // planTools renders the gate state and refuses to force transition_scene
+    // for locked scenes. Ambiguous non-empty conditions remain locked.
     // Detection does NOT depend on the classifier: the player's text is
     // scanned for a known scene name (a different scene than the current one
     // is a move target); exploration turns get the scene's obtainable clues.
@@ -694,32 +674,52 @@ function createPlanNode(agentKind: string, userId?: number) {
           //    is NOT the current one → lock check + transition guard.
           const mentioned = findScene(scriptCtx, userText)
           if (mentioned && (!currentScene || mentioned.name !== currentScene.name)) {
-            const gate = sceneUnlocked(mentioned, obtainedIds)
+            const gate = sceneUnlocked(mentioned, obtainedIds, scriptCtx)
             if (gate.unlocked === false) {
-              const missingDescriptions = gate.missing
-                .map((id) => scriptCtx.clues.find((c) => c.id === id)?.description || id)
-                .join('；')
-              gatingHint = `【门控】目标场景「${mentioned.name}」尚未解锁，需要先获得线索：${missingDescriptions}。本轮不要调用 transition_scene，先引导玩家获取这些线索。`
+              if (gate.reason === 'ambiguous-condition') {
+                gatingHint = `【门控】目标场景「${mentioned.name}」的转移条件无法安全判定（${mentioned.transitionCondition ?? ''}），因此暂时锁定。请向玩家解释该条件目前无法验证，并引导其先明确/满足条件；本轮不要调用 transition_scene。`
+              } else if (gate.reason === 'unknown-clue') {
+                gatingHint = `【门控】目标场景「${mentioned.name}」的转移条件引用了不存在的线索 ID：${gate.missing.join('、')}，因此暂时锁定。请向玩家说明剧本条件配置有误，并且不要调用 transition_scene。`
+              } else {
+                const missingDescriptions = gate.missing
+                  .map((id) => scriptCtx.clues.find((c) => c.id === id)?.description || id)
+                  .join('；')
+                gatingHint = `【门控】目标场景「${mentioned.name}」尚未解锁，需要先获得线索：${missingDescriptions}。请向玩家说明缺少这些前置线索；本轮不要调用 transition_scene。`
+              }
               const idx = required.indexOf('transition_scene')
               if (idx >= 0) required.splice(idx, 1)
             } else if (gate.unlocked === true) {
               gatingHint = `【门控】目标场景「${mentioned.name}」已解锁（前置线索已获得），可以调用 transition_scene(sceneName: "${mentioned.name}")。`
-            } else if (mentioned.transitionCondition) {
-              gatingHint = `【门控参考】目标场景「${mentioned.name}」的转移条件（文本描述，供你判断）：${mentioned.transitionCondition}`
             }
           } else if (currentScene) {
             // 2) Exploration gate: list the scene's obtainable clues so the
             //    LLM stops defaulting to skill_check-only turns.
             const available = getAvailableClues(currentScene, obtainedIds, scriptCtx)
+            const blocked = getBlockedClues(currentScene, obtainedIds, scriptCtx)
+            const hints: string[] = []
             if (available.length > 0) {
               const list = available.map((a) => `- ${a.clue.description}${a.reason === 'unlocked-by-clue' ? '（前置线索已满足，可授予）' : ''}`).join('\n')
-              gatingHint = `【门控】当前场景「${currentScene.name}」中玩家尚未获得、且前置条件已满足的线索：\n${list}\n请通过 grant_clue 授予其中合适的线索（可带 clueId）。`
-            } else {
-              const allIds = currentScene.clueIds || []
-              const pending = allIds.filter((id) => obtainedIds.indexOf(id) < 0)
-              if (pending.length > 0) {
-                gatingHint = `【门控】当前场景「${currentScene.name}」仍有 ${pending.length} 条线索未获得，但前置条件未满足（需要先在别处获得其他线索），不要强行授予。`
-              }
+              hints.push(`当前场景「${currentScene.name}」中可授予的线索：\n${list}\n请通过 grant_clue 授予其中合适的线索，并传入该线索对应的精确 clueId。`)
+            }
+            if (blocked.length > 0) {
+              const explanations = blocked.map(({ clue, missing, reason }) => {
+                if (reason === 'ambiguous-condition') {
+                  return `- 「${clue.description}」的获取条件「${clue.obtainCondition ?? ''}」无法安全判定；该线索暂时锁定，请向玩家解释原因，不要调用 grant_clue 授予它。`
+                }
+                if (reason === 'unknown-clue') {
+                  return `- 「${clue.description}」引用了不存在的线索 ID（${missing.join('、')}）；该线索暂时锁定，请向玩家说明剧本配置有误，不要调用 grant_clue 授予它。`
+                }
+                const missingDescriptions = missing
+                  .map((id) => scriptCtx.clues.find((candidate) => candidate.id === id)?.description || id)
+                  .join('、')
+                return `- 「${clue.description}」尚缺前置线索：${missingDescriptions}；请向玩家说明并先不要授予。`
+              })
+              hints.push(`以下未获得线索暂时锁定：\n${explanations.join('\n')}`)
+            }
+            gatingHint = hints.length > 0 ? `【门控】${hints.join('\n\n')}` : ''
+            if (available.length === 0 && blocked.length > 0) {
+              const idx = required.indexOf('grant_clue')
+              if (idx >= 0) required.splice(idx, 1)
             }
           }
         }

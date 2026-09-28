@@ -15,6 +15,7 @@
  * 打分器可注入（`RerankScorer`）：单测用确定性假打分器，不触碰 279MB 模型。
  */
 import { MODELS_DIR, isMockAiMode } from '../config.js'
+import { logger } from '../utils/logging.js'
 
 /** 重排模型（q8 约 279MB；xlm-roberta 架构，transformers.js 原生支持）。 */
 export const RERANK_MODEL_ID = 'onnx-community/bge-reranker-base-ONNX'
@@ -48,6 +49,20 @@ type RerankModelHandle = {
 }
 
 let modelPromise: Promise<RerankModelHandle | null> | null = null
+let degradedModeWarningEmitted = false
+
+function modelDegradedResult(reason: string): RerankResult {
+  const error = `rerank degraded to cosine fallback: ${RERANK_MODEL_ID} could not load from MODELS_DIR=${MODELS_DIR}: ${reason}`
+  if (!degradedModeWarningEmitted) {
+    logger.warn('rag:rerank degraded to cosine fallback', {
+      modelId: RERANK_MODEL_ID,
+      modelsDir: MODELS_DIR,
+      error: reason,
+    })
+    degradedModeWarningEmitted = true
+  }
+  return { ok: false, error }
+}
 
 /**
  * 加载本地重排模型（惰性单例；失败返回 null → 调用方降级）。
@@ -86,6 +101,7 @@ export async function loadRerankModel(): Promise<RerankModelHandle | null> {
 /** 测试用：清空单例缓存。 */
 export function _resetRerankModelForTests(): void {
   modelPromise = null
+  degradedModeWarningEmitted = false
 }
 
 /**
@@ -133,11 +149,14 @@ export async function rerank(query: string, passages: string[], options: RerankO
   try {
     scores = await scorer(String(query), texts)
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    const reason = e instanceof Error ? e.message : String(e)
+    return options.scorer ? { ok: false, error: reason } : modelDegradedResult(reason)
   }
   if (!Array.isArray(scores) || scores.length !== texts.length) {
-    return { ok: false, error: `rerank scorer returned ${Array.isArray(scores) ? scores.length : 'non-array'} scores for ${texts.length} passages` }
+    const reason = `rerank scorer returned ${Array.isArray(scores) ? scores.length : 'non-array'} scores for ${texts.length} passages`
+    return options.scorer ? { ok: false, error: reason } : modelDegradedResult(reason)
   }
+  if (!options.scorer) degradedModeWarningEmitted = false
   const ranked = texts
     .map((_, index) => ({ index, score: Number(scores[index]) || 0 }))
     .sort((a, b) => b.score - a.score || a.index - b.index)

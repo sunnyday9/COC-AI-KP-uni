@@ -23,10 +23,12 @@ jobs:
         # onnxruntime-node postinstall 下载 GPU 二进制偶发 ECONNRESET → 重试 3 次
         run: |
           for i in 1 2 3; do
-            if npm ci; then break; fi
+            if npm ci; then exit 0; fi
             echo "npm ci attempt $i failed, retrying..."
-            sleep 5
+            if [ "$i" -lt 3 ]; then sleep 5; fi
           done
+          echo "npm ci failed after 3 attempts" >&2
+          exit 1
 
       - name: Build H5
         run: npm run build:h5

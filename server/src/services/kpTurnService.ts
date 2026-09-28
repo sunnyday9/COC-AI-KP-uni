@@ -116,6 +116,19 @@ export interface KpTurnDeps {
   handlers: KpTurnHandlers
 }
 
+function getObtainedClueIds(storyContext: Record<string, unknown> | null | undefined): string[] {
+  const openClues = storyContext?.openClues
+  if (!Array.isArray(openClues)) return []
+  const ids: string[] = []
+  for (const clue of openClues) {
+    const id = typeof clue === 'string'
+      ? clue
+      : clue && typeof clue === 'object' ? (clue as { id?: unknown }).id : undefined
+    if (typeof id === 'string' && id) ids.push(id)
+  }
+  return ids
+}
+
 type StructuredTerminalEnding = {
   name?: unknown
   condition?: unknown
@@ -228,6 +241,37 @@ export async function runKpTurn(
     turn.handlers.onError(errorMessage(err))
     return
   }
+  let scriptContext: Awaited<ReturnType<typeof import('../agent/scriptContext.js').loadScriptContext>> = null
+  let resolveStoryToolCall: typeof import('../agent/storyToolGate.js').resolveStoryToolCall | null = null
+  const scriptId = typeof body.storyContext?.scriptId === 'string' ? body.storyContext.scriptId : ''
+  const storyOwnerId = Number.isSafeInteger(body.storyContext?.storyOwnerId) && Number(body.storyContext?.storyOwnerId) > 0
+    ? Number(body.storyContext?.storyOwnerId)
+    : userId
+  if (scriptId) {
+    try {
+      const [scriptContextModule, storyToolGateModule] = await Promise.all([
+        import('../agent/scriptContext.js'),
+        import('../agent/storyToolGate.js'),
+      ])
+      scriptContext = await scriptContextModule.loadScriptContext(storyOwnerId, scriptId)
+      if (!scriptContext && body.storyContext?.workflow === 'dossier') {
+        throw new Error('Dossier story context is unavailable')
+      }
+      resolveStoryToolCall = storyToolGateModule.resolveStoryToolCall
+    } catch (err) {
+      if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
+        turn.onOwnerChanged?.()
+        return
+      }
+      logger.error('kp:story condition context unavailable; cancelling turn', { userId, storyOwnerId, scriptId, error: errorMessage(err) })
+      turn.handlers.onError('Story condition context is unavailable; this turn was cancelled to prevent unchecked scene or clue changes.')
+      return
+    }
+  }
+  const obtainedClueIds = getObtainedClueIds(body.storyContext)
+  const currentSceneName = typeof body.storyContext?.sceneName === 'string'
+    ? body.storyContext.sceneName
+    : typeof body.storyContext?.sceneId === 'string' ? body.storyContext.sceneId : undefined
   // B5：多人模式注入房间内调查员花名册（id + 名称 + 关键属性），LLM 据此用 characterId 调工具
   messages = injectCharacterRoster(messages, turn.characters)
   const latestPlayerText = [...messages].reverse().find((message) => message.role === 'user')?.content ?? ''
@@ -385,6 +429,7 @@ export async function runKpTurn(
         ...m,
         addClue: (description, clueId) => {
           worldDeltas.cluesAdded.push({ description, clueId })
+          if (clueId && !obtainedClueIds.includes(clueId)) obtainedClueIds.push(clueId)
           m.addClue(description, clueId)
         },
         transitionToScene: (sceneName) => {
@@ -396,7 +441,14 @@ export async function runKpTurn(
           worldDeltas.ending = ending
         },
       }
-      const ctx = buildToolContext({ characterSheet: targetSheet, ...ctxMutators, generateId })
+      const ctx = buildToolContext({
+        characterSheet: targetSheet,
+        ...ctxMutators,
+        generateId,
+        resolveNarrativeToolCall: scriptContext && resolveStoryToolCall
+          ? (toolName, args) => resolveStoryToolCall!(toolName, args, scriptContext!, obtainedClueIds, currentSceneName)
+          : undefined,
+      })
       const { toolResults: tr, displayMessages: dm } = processToolCalls([tc], ctx, {
         onToolExecuted: turn.handlers.onToolExecuted,
       })

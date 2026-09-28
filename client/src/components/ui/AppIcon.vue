@@ -2,7 +2,7 @@
 /**
  * AppIcon —— 线性图标（T2 基础基件，ADR-0004 设计稿线性 icon 集）。
  * 跨端策略：H5/App 渲染 inline SVG（细线 1.5px，对齐设计稿 Feather 风格）；
- * MP-WEIXIN 等无 SVG 能力端回退到字符符号（保持现状不倒退，小程序非本轮设计重点）。
+ * MP-WEIXIN 等无 SVG 能力端回退到文本符号（不使用平台 emoji，避免彩色/字体漂移）。
  * 尺寸默认 18，颜色继承 currentColor。
  */
 import { computed } from 'vue'
@@ -10,19 +10,19 @@ import { computed } from 'vue'
 defineOptions({ inheritAttrs: false })
 const MP_FALLBACK: Record<string, string> = {
   house: '⌂',
-  'book-open': '📖',
-  sword: '⚔',
-  gear: '⚙',
-  dice: '🎲',
-  scroll: '📜',
-  search: '🔍',
-  users: '👥',
-  close: '✕',
-  play: '▶',
-  trash: '🗑',
+  'book-open': '▤',
+  sword: '†',
+  gear: '◉',
+  dice: '◇',
+  scroll: '▱',
+  search: '⌕',
+  users: '♧',
+  close: '×',
+  play: '▷',
+  trash: '⌫',
   sparkle: '✦',
-  feather: '🪶',
-  x: '✕',
+  feather: '⌁',
+  x: '×',
 }
 
 // 设计稿 1.5px 线性 stroke 图标（24 网格，stroke=currentColor）

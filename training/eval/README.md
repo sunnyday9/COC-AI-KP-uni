@@ -12,13 +12,13 @@
   - `lib/judge.ts` 产出双指标（格式遵循率/裁定正确率）与可分类失败明细：`no_tool_call`（未调工具）/ `wrong_tool`（调错工具）/ `bad_args`（参数错）/ `text_dice`（文字骰点）/ `unparseable`（未知工具名或参数非 JSON，属格式层，对应「调错工具」的解析子类）。
 - `run-eval.ts` — CLI：任意 openai_chat 端点 → 报告 JSON（两数字 + 明细 + 24 工具覆盖 + tokens）。
 - `reports/` — 基线与历次报告落盘。当前基线：`baseline-mimo-v2.5-20260912.json`（M1 提示词改革后刷新）。
-- `test/` — 判定器/请求构建/金样本集守卫的自测（node:test，21 条）。
+- `test/` — 判定器/请求构建/金样本集守卫的自测（node:test，当前 23 条）。
 
 ## 用法
 
 ```bash
 # 自测（无需端点）
-node --import ./training/eval/register-ts.ts --test "training/eval/test/*.test.ts"
+npm run test:training:eval
 
 # 列出样本与覆盖（无需端点）
 node --import ./training/eval/register-ts.ts training/eval/run-eval.ts --list
@@ -53,4 +53,4 @@ OPENCODE_SESSION=eval-$(date +%Y%m%d) EVAL_API_KEY=... node --import ./training/
 
 - 独立工作区：零 npm 依赖，Node ≥24 原生 TS（type stripping）+ `--import` resolve hook（`.js`→`.ts`，仅为复用 server 源码）；不进 server 运行时依赖树，产品行为零改动。
 - `--import` 的路径必须带 `./` 前缀（裸包名会被当包解析）。
-- 本目录（eval/）不在 `training/` 的 tsconfig/vitest 范围内（那是 T2 数据导出器 #38 的地盘）；评测自测走 node:test，互不干扰。
+- 本目录（eval/）不在 `training/` 的 tsconfig/vitest 范围内（那是 T2 数据导出器 #38 的地盘）；评测自测走 node:test，但已通过根目录 `test:training:eval` 纳入 `test:all` 与 CI。

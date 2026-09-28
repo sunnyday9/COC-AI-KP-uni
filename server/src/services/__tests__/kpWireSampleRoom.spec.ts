@@ -14,16 +14,17 @@ vi.mock('../../agent/kpGraph.js', () => ({
   invokeKPAgent: vi.fn(),
   createKPGraph: vi.fn(() => ({})),
 }))
-vi.mock('../kpAgentService.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../kpAgentService.js')>()
-  return {
-    ...actual,
-    buildInvokeLLM: vi.fn(() => async () => ({ content: '' })),
-    getSharedGraph: vi.fn(() => ({})),
-  }
-})
+// The room-chain assertions mock graph execution/LLM below. Keep the agent
+// coordinator itself a light seam too; importing the real provider adapter
+// graph here only adds module-startup latency and is covered by kpWireSample.
+vi.mock('../kpAgentService.js', () => ({
+  buildInvokeLLM: vi.fn(() => async () => ({ content: '' })),
+  getSharedGraph: vi.fn(() => ({})),
+  normalizeMessages: vi.fn((messages: unknown) => messages as never),
+}))
 vi.mock('../settingsService.js', () => ({
   getAiConfig: vi.fn(() => ({ protocol: 'openai_chat' })),
+  getAiSetupIssue: vi.fn(() => null),
   getSettings: vi.fn(() => ({ rag: { supplement: true } })),
 }))
 vi.mock('../roomMemory.js', () => ({
@@ -83,6 +84,12 @@ vi.mock('../../rag/dossier/coverageGaps.js', async () => {
     normalizeText: regions.normalizeText,
   }
 })
+// Prefetch is a separate dossier verification path; this suite asserts wire
+// assembly and deliberately keeps that optional heavy module out of the room
+// turn setup.
+vi.mock('../../rag/dossier/prefetch.js', () => ({
+  runPrefetch: vi.fn(async () => null),
+}))
 
 import { invokeKPAgent } from '../../agent/kpGraph.js'
 import * as roomStorage from '../roomStorage.js'
@@ -102,10 +109,13 @@ async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
 const SNAPSHOT_KEYS = [
   'characters',
   'clues',
+  'contextBudgetChars',
   'ending',
   'kpMemory',
+  'kpSetupRequired',
   'longTermSummary',
   'messages',
+  'pendingTurnMessages',
   'phase',
   'scene',
   'seq',

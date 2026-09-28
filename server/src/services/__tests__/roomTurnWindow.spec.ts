@@ -50,14 +50,35 @@ vi.mock('../kpTurnService.js', () => ({
   }),
 }))
 
+// This spec exercises RoomService's buffering/flush behavior. Keep the
+// knowledge assembly boundary light so a cold RAG/dossier import cannot delay
+// the short timer window under the full Vitest worker fan-out.
+vi.mock('../turnKnowledge.js', () => ({
+  assembleTurnKnowledge: vi.fn(async () => ({
+    ragContext: '',
+    sceneBlock: '',
+    verifyBlock: '',
+    supplement: '',
+    coverage: null,
+    storyName: '',
+    wireInjectionText: '',
+  })),
+  buildStoryLookup: vi.fn(() => undefined),
+}))
+
 import { runKpTurn } from '../kpTurnService.js'
 const runKpTurnMock = vi.mocked(runKpTurn)
+
+// Timer-driven integration checks can be delayed by the repository-wide
+// worker load even though the mocked KP turn itself is immediate.
+const ROOM_WINDOW_TIMEOUT_MS = 15_000
 
 describe('RoomService 回合窗口合并（D4）', () => {
   let room: RoomService
 
   beforeEach(() => {
     _clearRoomRegistryForTests()
+    vi.stubEnv('MOCK_AI', '1')
     room = new RoomService({
       roomId: 'room_test',
       ownerId: 1,
@@ -70,6 +91,7 @@ describe('RoomService 回合窗口合并（D4）', () => {
   afterEach(() => {
     room.dispose()
     _clearRoomRegistryForTests()
+    vi.unstubAllEnvs()
   })
 
   it('窗口内多条玩家消息合并为一次 KP 回合（【玩家】标记）', async () => {
@@ -91,7 +113,7 @@ describe('RoomService 回合窗口合并（D4）', () => {
     expect((call[2] as { activeCharacterId: string | null }).activeCharacterId).toBe('char_b')
     // KP 回复进消息流
     expect(room.getMessages().some((m) => m.role === 'kp' && m.content.includes('KP 回应'))).toBe(true)
-  })
+  }, ROOM_WINDOW_TIMEOUT_MS)
 
   it('窗口超时立即处理；无多人时单条消息等价即时', async () => {
     room.bufferPlayerChat('alice', '我看看门。', null, 1)

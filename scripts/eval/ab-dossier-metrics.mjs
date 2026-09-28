@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { Agent } from 'undici'
 // estTokens/sleep/cleanup 收编共享单源（#64）：三份 estTokens 口径漂移会让跨报告 token 对比失效。
 import { estTokens, sleep, createCleanup } from './lib/harness.mjs'
+import { findJsonArtifact } from './lib/json-artifact.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
@@ -129,10 +130,10 @@ async function main() {
     story.setup.dossierGenRepair = { ...genData, ms: Date.now() - t0 }
     if (!genData?.ok) { console.log(`  [warn] dossier regen failed for ${key}, injection stays 0`); continue }
 
-    // load cached dossier (userId dir may be absent in file name path; find by scriptId suffix)
+    // load cached dossier by the JSON payload's scriptId (artifact names are UUIDs)
     const uidDir = path.join(CACHE_DIR, String(userId ?? '1'))
-    const candidates = fs.readdirSync(uidDir).filter((f) => f.includes(scriptId.replace(/[^\w-]/g, '_')) || f === `${scriptId}.json`)
-    const dp = path.join(uidDir, candidates[0])
+    const dp = findJsonArtifact(uidDir, scriptId, { excludeSuffixes: ['.gaps.json', '.annex.json'] })
+    if (!dp) throw new Error(`dossier cache miss for ${scriptId}`)
     const dossier = JSON.parse(fs.readFileSync(dp, 'utf8'))
     const sceneTokens = {}
     for (const sc of dossier.scenes ?? []) {

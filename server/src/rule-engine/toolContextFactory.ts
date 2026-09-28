@@ -3,7 +3,7 @@
  * 迁自 client/src/services/toolContextFactory.ts（Phase A1 规则引擎下沉）。
  * 纯规则引用改为 shared/coc；update* 回调由调用方（会话/房间执行器）注入。
  */
-import type { ToolHandlerContext } from './types.js'
+import type { NarrativeToolResolution, ToolHandlerContext } from './types.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import { rollD } from '../../../shared/coc/diceService.js'
 import { getSkillName } from '../../../shared/coc/coc7.js'
@@ -32,6 +32,7 @@ export interface ToolContextDeps {
   increaseCthulhuMythos(gain: number): void
   transitionToScene(sceneName: string): void
   addClue(description: string, clueId?: string): void
+  resolveNarrativeToolCall?: (toolName: string, args: Record<string, unknown>) => NarrativeToolResolution
   endGame(ending: { outcome: string; title: string; summary: string; epilogueOptions?: string[]; keyFacts?: string[]; keyTurnIds?: string[] }): void
   generateId(): string
 }
@@ -112,6 +113,7 @@ export function buildToolContext(deps: ToolContextDeps): ToolHandlerContext {
     increaseCthulhuMythos: deps.increaseCthulhuMythos,
     transitionToScene: deps.transitionToScene,
     addClue: deps.addClue,
+    resolveNarrativeToolCall: deps.resolveNarrativeToolCall,
     endGame: deps.endGame,
     generateId: deps.generateId,
   }

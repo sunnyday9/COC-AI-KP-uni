@@ -1,5 +1,11 @@
 # AI Agent Workflow 测试报告
 
+> **历史快照（非当前回归基线）**：本文记录 2026-08-18 客户端工具循环时代的
+> 36/36 真实 LLM 结果。ADR-0002 后 KP 工具循环已下沉服务端，当前黑盒入口为
+> `node test-agent/run-all.mjs`，详见 `test-agent/README.md`；当前协议只允许
+> REST 房间管理与 WS `room:join` / `room:action`，本文中的 `kp:invoke` 只保留
+> 供沿革阅读。
+
 - **测试日期**：2026-08-18（首轮）+ 2026-08-18（修复后回归）
 - **被测系统**：AI-COC-KP（COC 跑团 AI 守秘人，server/ + client/ + shared/ monorepo）
 - **测试方式**：独立测试套件 `test-agent/`（不改项目任何代码），真实 LLM 驱动
@@ -16,6 +22,7 @@
 test-agent/
   fixtures/black-campus.txt     # 剧本夹具（改编自原仓库）
   lib/common.mjs                # 自包含基建：spawn server、HTTP 客户端、WS 客户端、step 运行器
+  room-protocol.mjs             # 当前回归入口：REST + room:* 权威房间旅程
   lib/toolExecutor.mjs          # 模拟客户端工具执行器（格式对齐真实 handler）
   smoke.mjs                     # 连通性冒烟
   scenario-investigate.mjs      # 调查链（12 用例）
@@ -24,7 +31,7 @@ test-agent/
   scenario-save.mjs             # 存档/读档（6 用例；已随 /api/saves* 全链退役删除，#92——下文为史实快照）
   robustness.mjs                # 鲁棒性（8 用例）
   performance.mjs               # 性能测量（5 项）
-  run-all.mjs                   # 统一入口
+  run-all.mjs                   # 当前统一入口（只调 room-protocol.mjs）
   perf-results.json             # 性能数据
 ```
 

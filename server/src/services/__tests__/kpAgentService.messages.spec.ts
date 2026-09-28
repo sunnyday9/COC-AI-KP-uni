@@ -14,6 +14,11 @@ const state = vi.hoisted(() => ({
   calls: [] as { messages: unknown[] }[],
 }))
 
+// The malformed-arguments case still executes the real LangGraph state
+// machine after validation. Its cold-start/provider-free graph path can take
+// longer than Vitest's default under parallel repository-wide runs.
+const REAL_GRAPH_TIMEOUT_MS = 60_000
+
 vi.mock('../aiService.js', () => ({
   chatForAgent: vi.fn(async (_userId: number, params: { messages: unknown[] }) => {
     state.calls.push({ messages: params.messages })
@@ -60,7 +65,7 @@ describe('kp:invoke message validation', () => {
     const serialized = JSON.stringify(state.calls)
     expect(serialized).toContain('"arguments":"{}"')
     expect(result).toBeDefined()
-  })
+  }, REAL_GRAPH_TIMEOUT_MS)
 
   it('rejects tool messages without a string tool_call_id', async () => {
     await expect(

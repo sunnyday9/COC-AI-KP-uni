@@ -18,21 +18,21 @@
  * full story text, replacing per-turn embedding retrieval for dossier rooms.
  * Reads are TTL-cached in memory (mirrors graphStore memory cache pattern).
  *
- * Path safety: dossier file names come from a whitelist-filtered script id
- * (mirrors vectorStore.indexPath); the route layer asserts the id first.
+ * Path safety: dossier artifacts use server-owned UUID filenames. The external
+ * script id remains in the JSON payload and is resolved by metadata scans.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { DOSSIER_DATA_DIR } from '../../config.js'
-import { resolveFileInDir } from '../../utils/pathSafety.js'
+import { assertPathInDir } from '../../utils/pathSafety.js'
+import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../../utils/jsonArtifact.js'
 import {
   parseDossierJson,
-  sanitizeScriptId,
   DOSSIER_MIN_COVERAGE_PCT,
   type StoryDossier,
 } from './schema.js'
 import { findScene as findSceneImpl } from './sceneLookup.js'
-import { deleteGaps, GAPS_VERSION, type SceneCoverage } from './coverageGaps.js'
+import { deleteGaps, loadGaps, GAPS_VERSION, type SceneCoverage } from './coverageGaps.js'
 
 /** TTL for in-memory dossier cache (ms). */
 const CACHE_TTL_MS = 60_000
@@ -48,12 +48,8 @@ function userDir(userId: number): string {
   return path.join(DOSSIER_DATA_DIR, String(userId))
 }
 
-/** Resolve a script id to a file path: whitelist-sanitize to a safe file name
- * then boundary-check the result inside the user dir (白名单 + resolve 边界
- * 双保险——路径穿越不可达). The route layer asserts/sanitizes first. */
-function dossierFile(userId: number, scriptId: string): string {
-  const safe = sanitizeScriptId(scriptId)
-  return resolveFileInDir(userDir(userId), `${safe}.json`, 'dossier file')
+function dossierFiles(userId: number, scriptId: string): string[] {
+  return findJsonArtifactPaths(userDir(userId), scriptId, { excludeSuffixes: ['.gaps.json', '.annex.json'] })
 }
 
 async function ensureDir(userId: number): Promise<string> {
@@ -61,29 +57,36 @@ async function ensureDir(userId: number): Promise<string> {
   return userDir(userId)
 }
 
+function annexFiles(userId: number, scriptId: string): string[] {
+  return findJsonArtifactPaths(userDir(userId), scriptId, { suffix: '.annex.json' })
+}
+
 /* ═══════════════════ Persistence ═══════════════════ */
 
 export async function persist(userId: number, dossier: StoryDossier): Promise<void> {
   await ensureDir(userId)
-  const file = dossierFile(userId, dossier.scriptId)
+  const existing = dossierFiles(userId, dossier.scriptId)
+  const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(userDir(userId))
   await fs.writeFile(file, JSON.stringify(dossier, null, 2), 'utf-8')
+  for (const oldPath of existing) {
+    if (oldPath !== file) await fs.unlink(oldPath).catch(() => undefined)
+  }
   memoryCache.set(cacheKey(userId, dossier.scriptId), { loadedAt: Date.now(), dossier })
 }
 
 export async function deleteDossier(userId: number, scriptId: string): Promise<boolean> {
   memoryCache.delete(cacheKey(userId, scriptId))
-  // annex 是重模块（pdf-lib/aiService/storyService）——轻核静态图不带它；
-  // 删除是冷路径，按仓库既有动态导入风格就地取（执行顺序不变：先清 annex
-  // 再清 gaps 再删档案本体）。
-  const { deleteAnnex } = await import('./annex.js')
-  await deleteAnnex(userId, scriptId)
+  // Annex generation is heavy, but deleting its JSON artifact is a light
+  // filesystem operation. Keep this cleanup path independent from pdf-lib and
+  // provider initialization so deleting a text-only dossier stays immediate.
+  for (const file of annexFiles(userId, scriptId)) await fs.unlink(file).catch(() => undefined)
   await deleteGaps(userId, scriptId)
-  try {
-    await fs.unlink(dossierFile(userId, scriptId))
-    return true
-  } catch {
-    return false
+  const files = dossierFiles(userId, scriptId)
+  let deleted = false
+  for (const file of files) {
+    await fs.unlink(file).then(() => { deleted = true }).catch(() => undefined)
   }
+  return deleted
 }
 
 /** Load a dossier from disk (cached). null when missing/unparsable. */
@@ -91,8 +94,10 @@ export async function loadDossier(userId: number, scriptId: string): Promise<Sto
   const key = cacheKey(userId, scriptId)
   const hit = memoryCache.get(key)
   if (hit && Date.now() - hit.loadedAt < CACHE_TTL_MS) return hit.dossier
+  const [file] = dossierFiles(userId, scriptId)
+  if (!file) return null
   try {
-    const raw = await fs.readFile(dossierFile(userId, scriptId), 'utf-8')
+    const raw = await fs.readFile(file, 'utf-8')
     const dossier = parseDossierJson(raw)
     if (dossier) {
       memoryCache.set(key, { loadedAt: Date.now(), dossier })
@@ -133,9 +138,10 @@ export async function listDossiers(userId: number): Promise<DossierListItem[]> {
   }
   const out: DossierListItem[] = []
   for (const f of entries) {
-    if (!f.endsWith('.json')) continue
+    if (!f.endsWith('.json') || f.endsWith('.gaps.json') || f.endsWith('.annex.json')) continue
     try {
-      const raw = await fs.readFile(path.join(userDir(userId), f), 'utf-8')
+      const file = assertPathInDir(userDir(userId), path.join(userDir(userId), f), 'dossier file')
+      const raw = await fs.readFile(file, 'utf-8')
       const d = parseDossierJson(raw)
       if (!d) continue
       const item: DossierListItem = {
@@ -148,9 +154,9 @@ export async function listDossiers(userId: number): Promise<DossierListItem[]> {
         failedBatches: d.quality?.failedBatches,
       }
       if (d.quality === undefined) {
-        // 旧档案（quality 快照引入前）：读同目录兄弟 .gaps.json 估算覆盖。
-        // 兄弟文件名源自 readdir 磁盘清单（非请求输入），不引入 keyed fs 读。
-        const est = await estimateLegacyCoverage(userDir(userId), f)
+        // 旧档案（quality 快照引入前）：按 JSON 内的 scriptId 找 gaps
+        // artifact；sidecar 文件也使用 UUID 名称，不与主档案靠文件名绑定。
+        const est = estimateLegacyCoverage(await loadGaps(userId, d.scriptId))
         if (est !== undefined) {
           item.coveragePct = est
           item.degraded = est < DOSSIER_MIN_COVERAGE_PCT
@@ -164,19 +170,12 @@ export async function listDossiers(userId: number): Promise<DossierListItem[]> {
   return out.sort((a, b) => b.generatedAt - a.generatedAt)
 }
 
-/** 旧档案覆盖估算：兄弟 .gaps.json 的缺口比（100 - gapPct）。仅信当前算法版本
- *  （v1 的 gapPct 系统性偏高，宁放行不误伤）；无明细/损坏 → undefined（不判定）。 */
-async function estimateLegacyCoverage(dir: string, dossierFileName: string): Promise<number | undefined> {
-  try {
-    const gapsPath = path.join(dir, `${dossierFileName.slice(0, -'.json'.length)}.gaps.json`)
-    const gaps = JSON.parse(await fs.readFile(gapsPath, 'utf-8')) as { storyChars?: number; gapPct?: number; gapsVersion?: number } | null
-    if (!gaps || typeof gaps.storyChars !== 'number' || typeof gaps.gapPct !== 'number') return undefined
-    if ((gaps.gapsVersion ?? 1) < GAPS_VERSION) return undefined
-    if (gaps.storyChars <= 5_000) return undefined // 小剧本不判降质（与快照口径一致）
-    return Math.round((100 - gaps.gapPct) * 10) / 10
-  } catch {
-    return undefined
-  }
+/** 旧档案覆盖估算：仅信当前算法版本；无明细/损坏 → undefined。 */
+function estimateLegacyCoverage(gaps: { storyChars?: number; gapPct?: number; gapsVersion?: number } | null): number | undefined {
+  if (!gaps || typeof gaps.storyChars !== 'number' || typeof gaps.gapPct !== 'number') return undefined
+  if ((gaps.gapsVersion ?? 1) < GAPS_VERSION) return undefined
+  if (gaps.storyChars <= 5_000) return undefined // 小剧本不判降质（与快照口径一致）
+  return Math.round((100 - gaps.gapPct) * 10) / 10
 }
 
 /* ═══════════════════ 质量门提示（#55 产物期） ═══════════════════ */

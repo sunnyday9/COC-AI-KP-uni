@@ -43,6 +43,7 @@ import os from 'node:os'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
+import { findJsonArtifact } from './lib/json-artifact.mjs'
 import { Agent } from 'undici'
 // 注入小节标记单源（#63）：server 注入端与本项目嗅探端的显式接口。直引 server 的
 // TS 常量模块（Node ≥23.6 type stripping，先例 ab-verify-runtime.mjs）——改标题 =
@@ -623,10 +624,8 @@ async function runStory(user, tmpRoot, filePath, opts) {
   let dossier = null
   try {
     const dossierDir = path.join(tmpRoot, 'dossiers', String(user.userId))
-    // 服务端落盘用 sanitizeScriptId（非 [A-Za-z0-9_-一-鿿] → '_'，'.'→'_'）；两种
-    // 文件名都试（P25 修：此前只试原 id → 找不到文件，dossier 注入 token 恒 0）
-    const candidates = [`${up.id}.json`, `${String(up.id).replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_')}.json`]
-    const dp = candidates.map((f) => path.join(dossierDir, f)).find((p) => fs.existsSync(p))
+    // Resolve by stored scriptId; the server owns UUID artifact filenames.
+    const dp = findJsonArtifact(dossierDir, up.id, { excludeSuffixes: ['.gaps.json', '.annex.json'] })
     if (dp) dossier = JSON.parse(fs.readFileSync(dp, 'utf-8'))
     out.setup.dossierScenes = dossier?.scenes?.length ?? 0
   } catch { /* ignore */ }

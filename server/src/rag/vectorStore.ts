@@ -4,8 +4,10 @@
  * Replaces Python rag-service entirely. No external dependencies.
  * Designed for TRPG script chunks (Chinese + English text).
  *
- * Persistence: one JSON file per (userId, scriptId) under
- * RAG_DATA_DIR/<userId>/rag_index/
+ * Persistence: one UUID-named JSON file per (userId, scriptId) under
+ * RAG_DATA_DIR/<userId>/rag_index/. The external script id stays in the JSON
+ * payload and is resolved by scanning stored metadata, never interpolated into
+ * a filesystem path.
  *
  * Migrated from original/ai-trpg-web/electron/rag/vectorStore.mjs.
  * Adjustments (task-4-brief decision 1): data is isolated per user — every
@@ -17,6 +19,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { RAG_DATA_DIR } from '../config.js'
+import { assertPathInDir } from '../utils/pathSafety.js'
+import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../utils/jsonArtifact.js'
 
 /* ------------------------------------------------------------------ */
 /*  Persistence helpers                                                */
@@ -30,33 +34,33 @@ function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
 
-function indexPath(userId: number, scriptId: string): string {
-  const safe = scriptId.replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_')
-  return path.join(getIndexDir(userId), safe + '.json')
-}
-
 function loadIndex(userId: number, scriptId: string): StoredIndex | null {
-  const p = indexPath(userId, scriptId)
-  if (!fs.existsSync(p)) return null
-  try {
-    return JSON.parse(fs.readFileSync(p, 'utf-8')) as StoredIndex
-  } catch {
-    return null
-  }
+  const [p] = findJsonArtifactPaths(getIndexDir(userId), scriptId)
+  if (!p) return null
+  return JSON.parse(fs.readFileSync(p, 'utf-8')) as StoredIndex
 }
 
-function saveIndex(userId: number, scriptId: string, data: unknown): void {
-  ensureDir(getIndexDir(userId))
-  fs.writeFileSync(indexPath(userId, scriptId), JSON.stringify(data), 'utf-8')
+function saveIndex(userId: number, data: StoredIndex): void {
+  const dir = getIndexDir(userId)
+  ensureDir(dir)
+  const existing = findJsonArtifactPaths(dir, data.scriptId)
+  const current = existing.find(isInternalJsonArtifactPath)
+  const target = current ?? createJsonArtifactPath(dir)
+  fs.writeFileSync(target, JSON.stringify(data), 'utf-8')
+
+  // Re-indexing migrates legacy `<scriptId>.json` files to a UUID name and
+  // removes duplicate artifacts for the same external id.
+  for (const oldPath of existing) {
+    if (oldPath !== target && fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+  }
 }
 
 function deleteIndexFile(userId: number, scriptId: string): boolean {
-  const p = indexPath(userId, scriptId)
-  if (fs.existsSync(p)) {
-    fs.unlinkSync(p)
-    return true
+  const paths = findJsonArtifactPaths(getIndexDir(userId), scriptId)
+  for (const filePath of paths) {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
   }
-  return false
+  return paths.length > 0
 }
 
 /* ------------------------------------------------------------------ */
@@ -351,7 +355,7 @@ export async function indexChunks(
     idf: idf,
   }
   memoryCache.set(cacheKey(userId, storyId), idx)
-  saveIndex(userId, storyId, serializeIndex(idx))
+  saveIndex(userId, serializeIndex(idx))
 
   return { ok: true, indexed: docs.length }
 }
@@ -366,12 +370,14 @@ export function listIndexedStories(userId: number): { storyId: string; name: str
   const results: { storyId: string; name: string; chunkCount: number; indexedAt: number }[] = []
   for (let i = 0; i < files.length; i++) {
     try {
-      const raw = fs.readFileSync(path.join(dir, files[i] as string), 'utf-8')
+      const filePath = assertPathInDir(dir, path.join(dir, files[i] as string), 'RAG index file')
+      const raw = fs.readFileSync(filePath, 'utf-8')
       const data = JSON.parse(raw) as StoredIndex
+      if (!data.scriptId) continue
       const docsLen = (data.docs && data.docs.length) ? data.docs.length : 0
       results.push({
-        storyId: data.scriptId || (files[i] as string).replace(/\.json$/, ''),
-        name: data.storyName || data.scriptId || (files[i] as string).replace(/\.json$/, ''),
+        storyId: data.scriptId,
+        name: data.storyName || data.scriptId,
         chunkCount: docsLen,
         indexedAt: data.indexedAt || 0,
       })

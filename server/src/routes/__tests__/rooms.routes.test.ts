@@ -109,6 +109,9 @@ beforeAll(async () => {
 beforeEach(() => {
   _clearRoomRegistryForTests()
   listStoriesMock.mockReturnValue([]) // 每用例重置为「未索引」
+  listDossiersMock.mockResolvedValue([])
+  loadDossierMock.mockResolvedValue(null)
+  loadGapsMock.mockResolvedValue(null)
 })
 
 describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
@@ -190,11 +193,32 @@ describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
     const forbidden = await request(app).delete(`/api/rooms/${roomId}`).set(...auth(tokenB))
     expect(forbidden.status).toBe(409)
 
+    // 活跃实例也必须随解散移出注册表，避免保留快照定时器/事件监听器。
+    getOrCreateRoom(roomId, 1, 'alice')
+
     // 房主解散 → 200；之后 404
     const del = await request(app).delete(`/api/rooms/${roomId}`).set(...auth(tokenA))
     expect(del.status).toBe(200)
+    expect(getRoom(roomId)).toBeNull()
     const after = await request(app).get(`/api/rooms/${roomId}`).set(...auth(tokenA))
     expect(after.status).toBe(404)
+  })
+
+  it('进行中的房间不可被 DELETE 解散', async () => {
+    const created = await request(app).post('/api/rooms').set(...auth(tokenA)).send({})
+    const roomId = (created.body as { roomId: string }).roomId
+    const charId = await createChar(tokenA, '进行中调查员')
+    const bind = await request(app).post(`/api/rooms/${roomId}/character`).set(...auth(tokenA)).send({ characterId: charId })
+    expect(bind.status).toBe(200)
+    listStoriesMock.mockReturnValue([{ storyId: 'story_active', name: '进行中故事', chunkCount: 1, indexedAt: 1 }])
+    provideRagSpoilerMetadata('story_active')
+
+    const start = await request(app).post(`/api/rooms/${roomId}/start`).set(...auth(tokenA)).send({ storyId: 'story_active' })
+    expect(start.status).toBe(200)
+
+    const deleted = await request(app).delete(`/api/rooms/${roomId}`).set(...auth(tokenA))
+    expect(deleted.status).toBe(409)
+    expect((await request(app).get(`/api/rooms/${roomId}`).set(...auth(tokenA))).status).toBe(200)
   })
 
   it('领域收口（ADR-0001）：REST start 活跃实例即时同步；无实例 restore 拿 DB 权威', async () => {

@@ -6,7 +6,8 @@
  *  1. 读取 mimo/opencode LLM 端点配置（环境变量优先，回退到 ZCode 配置）
  *  2. spawn 项目 server（真实 LLM 模式，非 MOCK）+ H5 dev server
  *  3. HTTP 客户端（注册/登录/settings/导入/索引/存档）
- *  4. WS 客户端（kp:invoke 流式帧监听 + 性能计时）
+ *  4. WS 客户端（旧 kp:invoke 兼容代码仅供历史脚本阅读；当前入口使用 room:*
+ *     见 room-protocol.mjs）
  *  5. 浏览器启动 + step 运行器 + UI 辅助
  *
  * 使用：`import { ... } from './lib/common.mjs'`
@@ -217,7 +218,7 @@ export async function saveAiSettings(apiBase, llm, token) {
     '/api/settings',
     {
       ai: {
-        provider: 'openai_compatible',
+        protocol: 'openai_chat',
         baseUrl: llm.baseUrl,
         model: llm.model,
         temperature: 0.7,
@@ -257,6 +258,18 @@ export async function uploadAndIndex(apiBase, fixturePath, token) {
   const idx = await api(apiBase, 'POST', '/api/rag/index', { scriptId: json?.scriptId ?? json?.id }, token)
   if (idx.status !== 200) throw new Error(`index failed (${idx.status}): ${idx.text}`)
   return { upload: json, index: idx.json }
+}
+
+/** Generate dossier + gaps needed by the reveal-scene spoiler gate before rag play starts. */
+export async function generateDossier(apiBase, scriptId, token) {
+  const res = await api(apiBase, 'POST', `/api/dossier/${encodeURIComponent(scriptId)}/generate`, {}, token)
+  if (res.status !== 200 || !res.json?.ok) {
+    throw new Error(`dossier generation failed (${res.status}): ${res.text}`)
+  }
+  if (!Number.isFinite(res.json.truths) || res.json.truths < 1) {
+    throw new Error(`dossier has no reveal truth for spoiler gate: ${res.text}`)
+  }
+  return res
 }
 
 /* ═══════════════════ WS 客户端（kp:invoke 流式） ═══════════════════ */
@@ -401,23 +414,27 @@ export function getResults() {
   return results
 }
 
-export function step(name, fn, timeoutMs = 120_000) {
+export async function step(name, fn, timeoutMs = 120_000) {
   const start = Date.now()
-  return Promise.race([
-    fn(),
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`step 超时 (${timeoutMs}ms)`)), timeoutMs)),
-  ])
-    .then(() => {
-      const ms = Date.now() - start
-      results.push({ name, pass: true, ms })
-      console.log(`  [PASS] ${name} (${ms}ms)`)
-    })
-    .catch(async (err) => {
-      const ms = Date.now() - start
-      results.push({ name, pass: false, ms, error: err.message })
-      console.error(`  [FAIL] ${name} (${ms}ms): ${err.message}`)
-      throw err
-    })
+  let timer
+  try {
+    await Promise.race([
+      Promise.resolve().then(fn),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`step 超时 (${timeoutMs}ms)`)), timeoutMs)
+      }),
+    ])
+    const ms = Date.now() - start
+    results.push({ name, pass: true, ms })
+    console.log(`  [PASS] ${name} (${ms}ms)`)
+  } catch (err) {
+    const ms = Date.now() - start
+    results.push({ name, pass: false, ms, error: err.message })
+    console.error(`  [FAIL] ${name} (${ms}ms): ${err.message}`)
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /** 打印结果汇总（供 run-all 收集） */

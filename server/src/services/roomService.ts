@@ -14,7 +14,7 @@ import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
 import { logger } from '../utils/logging.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
-import { isKpChunkStreamEnabled, isMockAiMode } from '../config.js'
+import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
 // 共用 checkStartGate，差异用 gateFor 表达。startGate 是零 fs/db 运行时依赖的叶子
@@ -69,6 +69,7 @@ export interface RoomSnapshot {
   /** 长期摘要（ADR-0002 上下文收口，服务端持有）。 */
   longTermSummary?: string
   /** 每房间近期对话上下文预算（字符数）；旧快照使用当前服务端配置。 */
+  contextBudgetChars?: number
   /** Pending player actions survive a paused KP turn and server restart. */
   pendingTurnMessages?: PendingTurnMessage[]
   /** True while the current room owner must complete AI settings before KP can run. */
@@ -84,6 +85,7 @@ interface RoomOptions {
   storyOwnerId?: number | null
   turnWindowMs?: number
   workflow?: StoryWorkflow
+  contextBudgetChars?: number
   restore?: RoomSnapshot | null
 }
 
@@ -95,6 +97,11 @@ const ROOM_TTL_MS = 30 * 60_000
 const MAX_EVENT_LOG = 200
 /** 每 N 个 KP 回合刷新一次长期摘要（场景切换也会触发）。 */
 const LONG_TERM_SUMMARY_EVERY_TURNS = 10
+const ROOM_SUMMARY_SOURCE_MAX_CHARS = 12_000
+
+function isValidContextBudget(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
 
 /**
  * 房间侧故事上下文（#73）：runKpTurnForRoom 的 storyContext 通道。房间路径唯一
@@ -149,10 +156,12 @@ export class RoomService {
   private kpMemory: string[] = []
   /** 长期摘要（服务端持有，ADR-0002）。 */
   private longTermSummary = ''
+  private contextBudgetChars: number
   private turnCount = 0
   /** opening 回合已触发标记（实例生命周期内一次；失败不重试内重入）。 */
   private openingStarted = false
   private summarizing = false
+  private summaryRefreshPending = false
   private seq = 0
   private eventCountSinceSnapshot = 0
   private lastSnapshotAt = Date.now()
@@ -178,6 +187,9 @@ export class RoomService {
     this.storyOwnerId = opts.storyOwnerId ?? (this.storyId ? opts.ownerId : null)
     this.turnWindowMs = opts.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
     this.workflow = opts.workflow ?? 'rag'
+    this.contextBudgetChars = isValidContextBudget(opts.contextBudgetChars)
+      ? opts.contextBudgetChars
+      : getRoomContextBudgetChars()
     if (opts.restore) {
       this.phase = opts.restore.phase ?? 'lobby'
       this.storyId = opts.restore.storyId ?? null
@@ -198,6 +210,7 @@ export class RoomService {
       this.workflow = opts.restore.workflow === 'dossier' ? 'dossier' : 'rag'
       this.kpMemory = Array.isArray(opts.restore.kpMemory) ? opts.restore.kpMemory : []
       this.longTermSummary = typeof opts.restore.longTermSummary === 'string' ? opts.restore.longTermSummary : ''
+      if (isValidContextBudget(opts.restore.contextBudgetChars)) this.contextBudgetChars = opts.restore.contextBudgetChars
     }
     this.snapshotTimer = setInterval(() => void this.maybeSnapshot(), SNAPSHOT_EVERY_MS)
     this.snapshotTimer.unref?.()
@@ -235,6 +248,7 @@ export class RoomService {
       workflow: this.workflow === 'dossier' ? 'dossier' : 'rag',
       kpMemory: this.kpMemory,
       longTermSummary: this.longTermSummary,
+      contextBudgetChars: this.contextBudgetChars,
       pendingTurnMessages: [...this.activeTurnBatch, ...this.turnBuffer],
       kpSetupRequired: this.kpSetupRequired,
       updatedAt: Date.now(),
@@ -534,7 +548,13 @@ export class RoomService {
         this.promptInput(knowledge.storyName, this.messages.slice(0, historyEnd)),
         knowledge.ragContext,
         merged,
-        { workflow: this.workflow, sceneBlock: knowledge.sceneBlock, verifyBlock: knowledge.verifyBlock, supplement: knowledge.supplement },
+        {
+          workflow: this.workflow,
+          sceneBlock: knowledge.sceneBlock,
+          verifyBlock: knowledge.verifyBlock,
+          supplement: knowledge.supplement,
+          contextBudgetChars: this.contextBudgetChars,
+        },
       )
       await this.runKpTurnForRoom(
         turnOwnerId,
@@ -733,22 +753,61 @@ export class RoomService {
 
   /** 长期摘要刷新（fire-and-forget；失败保持原摘要）。 */
   private async refreshLongTermSummary(): Promise<void> {
-    if (this.summarizing) return
+    if (this.summarizing) {
+      this.summaryRefreshPending = true
+      return
+    }
     this.summarizing = true
     try {
-      const { summarizeLongTerm } = await import('./roomMemory.js')
-      const recent = this.messages
-        .slice(-20)
-        .map((m) => `${m.role === 'kp' ? '守密人' : '调查员'}: ${String((m as { content?: unknown }).content ?? '')}`)
-        .join('\n')
-      const summary = await summarizeLongTerm(this.ownerId, {
-        recentMessagesText: recent.slice(0, 4000),
-        currentSummary: this.longTermSummary,
-        storyContextText: `当前场景：${this.scene ?? '未知'}；已获线索 ${this.clues.length} 条。`,
-      })
-      if (summary) this.longTermSummary = summary
-    } catch {
-      // 摘要失败保持原值
+      do {
+        this.summaryRefreshPending = false
+        try {
+          const { summarizeLongTerm } = await import('./roomMemory.js')
+          const recentMessages = this.messages.slice(-20)
+          const recent = recentMessages
+            .filter((message) => message.role === 'kp' || message.role === 'player')
+            .map((m) => `${m.role === 'kp' ? '守密人' : '调查员'}: ${String((m as { content?: unknown }).content ?? '')}`)
+            .join('\n')
+          const recentToolResults = recentMessages
+            .filter((message) => message.role === 'system')
+            .map((message) => {
+              const content = String((message as { content?: unknown }).content ?? '')
+              const result = (message as { result?: { skill?: string; roll?: number; target?: number; outcome?: string } }).result
+              const facts = [
+                result?.skill,
+                typeof result?.roll === 'number' ? `骰值=${result.roll}` : undefined,
+                typeof result?.target === 'number' ? `目标=${result.target}` : undefined,
+                result?.outcome,
+              ].filter((fact): fact is string => typeof fact === 'string' && fact.length > 0)
+              return [content, facts.join(' / ')].filter(Boolean).join('；')
+            })
+            .filter(Boolean)
+            .join('\n')
+          const summary = await summarizeLongTerm(this.ownerId, {
+            recentMessagesText: recent.slice(-ROOM_SUMMARY_SOURCE_MAX_CHARS),
+            recentToolResultsText: recentToolResults.slice(-ROOM_SUMMARY_SOURCE_MAX_CHARS),
+            currentSummary: this.longTermSummary,
+            storyContextText: [
+              `当前场景：${this.scene ?? '未知'}`,
+              `已获线索：${this.clues.map((clue) => clue.description).join('、') || '无'}`,
+            ].join('；'),
+          })
+          if (summary && summary !== this.longTermSummary) {
+            const previousSummary = this.longTermSummary
+            this.longTermSummary = summary
+            try {
+              // Keep the previous summary in memory if durable storage fails. The
+              // original transcript remains intact, so a later checkpoint can retry.
+              await this.persistSnapshot()
+            } catch (error) {
+              this.longTermSummary = previousSummary
+              logger.warn('room long-term summary persistence failed', { roomId: this.roomId, error: String(error) })
+            }
+          }
+        } catch {
+          // Summary failures are isolated from player turns and keep the old value.
+        }
+      } while (this.summaryRefreshPending)
     } finally {
       this.summarizing = false
     }
@@ -964,6 +1023,14 @@ export function getOrCreateRoom(
 /** 获取房间（不存在返回 null）。 */
 export function getRoom(roomId: string): RoomService | null {
   return roomRegistry.get(roomId) ?? null
+}
+
+/** Remove a deleted room from the in-memory registry and stop its timers/listeners. */
+function disposeDeletedRoom(roomId: string): void {
+  const room = roomRegistry.get(roomId)
+  if (!room) return
+  room.dispose()
+  roomRegistry.delete(roomId)
 }
 
 /* ═══════════════ 领域入口（ADR-0001：REST/ws 的唯一通道，房间 SQL 不出 roomStorage） ═══════════════ */
@@ -1234,11 +1301,13 @@ export function setRoomTurnWindow(
 export function deleteRoomAsOwner(
   userId: number,
   roomId: string,
-): { ok: true } | { ok: false; reason: 'not-found' | 'not-owner'; message: string } {
+): { ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string } {
   const room = roomStorage.getRoomRow(roomId)
   if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
   if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
+  if (room.phase === 'playing') return { ok: false, reason: 'conflict', message: 'playing rooms cannot be dissolved' }
   roomStorage.deleteRoomRows(roomId)
+  disposeDeletedRoom(roomId)
   return { ok: true }
 }
 
@@ -1325,6 +1394,7 @@ function transferToSuccessorOrDissolve(roomId: string, oldOwnerId: number): void
   const successor = members.find((m) => m.user_id !== oldOwnerId)
   if (!successor) {
     roomStorage.deleteRoomRows(roomId)
+    disposeDeletedRoom(roomId)
     return
   }
   transferOwnerRow(roomId, oldOwnerId, successor.user_id)

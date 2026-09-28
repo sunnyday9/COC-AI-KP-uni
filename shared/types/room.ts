@@ -90,9 +90,11 @@ export interface RoomSnapshot {
   clues: { id: string; description: string }[]
   scene: string | null
   ending: unknown | null
+  turnWindowMs: number
   /** KP is paused until the current owner completes provider setup. */
   kpSetupRequired?: boolean
-  turnWindowMs: number
+  /** Maximum retained conversation history sent to KP for this room, in characters. */
+  contextBudgetChars?: number
   updatedAt: number
 }
 
@@ -112,7 +114,7 @@ export interface RoomListItem {
   updatedAt: number
 }
 
-/** REST /api/rooms/solo 响应——未结束单人局（继续游戏入口，ADR-0002；solo 无邀请码）。 */
+/** REST /api/rooms/solo 响应——未结束单人局（游戏 hub 的 solo 续玩入口，ADR-0002；solo 无邀请码）。 */
 export interface SoloRoomListItem {
   roomId: string
   storyId: string | null

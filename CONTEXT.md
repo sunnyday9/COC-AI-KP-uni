@@ -35,10 +35,10 @@ DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执�
 多人房间 `phase='lobby'` 的形态：成员经邀请码加入、创建并绑定角色卡、就绪；房主选择剧本并开局。等待室可闲聊（消息广播）但**不触发 KP 回合**。代码落点：房间页（`pages/game/rooms/room.vue`）在 lobby 阶段呈现等待室；开局后跳游戏页游玩。
 
 ### 房间剧本（room story）
-多人局共用的剧本：**房主**已导入并索引的故事，`story_id` 存 `rooms` 表；KP 回合全程以房主账号解析剧本与 RAG 上下文（成员无需拥有该故事）。房主只可从**已索引**故事中选择；rag workflow 还要求有可用的档案与 gaps 剧透定位材料（至少一条真相揭晓锚点，且均可评估；见开局门闩），避免无原文或无剧透闸的局开起来。
+多人局共用的剧本：由选中该故事的账号持有，`story_id` 存 `rooms` 表；房主转让后，房间继续用原故事所有者读取剧本与 RAG 索引，当前房主账号提供 AI 配置（成员无需拥有该故事）。房主只可从**已索引**故事中选择；rag workflow 还要求有可用的档案与 gaps 剧透定位材料（至少一条真相揭晓锚点，且均可评估；见开局门闩），避免无原文或无剧透闸的局开起来。
 
 ### 开局门闩（start gate）
-`lobby → playing` 的迁移约束：房主已选剧本 + **每名成员已绑定角色卡**，任一不满足则开局被拒（服务端 409 带缺项提示）。角色卡绑定是硬前提；就绪是软信号。判定单源落点 `server/src/services/startGate.ts`（`checkStartGate`：结束态终态/已选剧本/workflow 可用性/成员绑卡全收编；startRoom 与 createSoloRoom 双入口差异用 `gateFor: 'lobby-start' | 'solo-create'` 表达；dossier「已生成 + 未降质」两个判定共用 dossierCore.listDossiers 的一次 readdir 扫描——消掉原双入口各自的双扫描）。
+`lobby → playing` 的迁移约束：多人房主已选剧本 + **每名成员已绑定角色卡**，任一不满足则开局被拒（服务端 409 带缺项提示）；单人虽无等待室/成员闩，也必须通过同一 workflow artifact 可用性检查。角色卡绑定是多人硬前提；就绪是软信号。判定单源落点 `server/src/services/startGate.ts`（`checkStartGate`：结束态终态/已选剧本/workflow 可用性/成员绑卡全收编；startRoom 与 createSoloRoom 双入口差异用 `gateFor: 'lobby-start' | 'solo-create'` 表达；dossier workflow 要求档案已生成且未降质；rag workflow 要求已索引，并且档案至少含一条 truth revealScene，各真相揭晓点均有匹配的原文锚点）。
 
 ### 就绪（ready）
 成员在等待室表示「已准备好开局」的软信号（与角色卡绑定相对）：房主可借此判断全员到位，但开局不强制等待全员就绪。
@@ -92,9 +92,9 @@ T4（spec #36 / 票 #40 / ADR-0006 决策 4）落点 `training/src/distill/`：�
 档案说不清时的**事实层深挖**：按当前场景锚点窗口取剧本原文片段（≤12k 字符），交一次全新上下文的子阅读器作答，返回结论 + 逐字引用；真相/结局类问句、或命中 `truths[].revealScene` 锚点的结果，标注「仅限 KP 内部裁定」。降级为「未取得」，永不阻断回合。落点 `server/src/rag/dossier/originalLookup.ts`（KP 回合内作为查证工具的执行分派在 `dossierLookupTools.ts`）；服务端可自动触发（预取）。
 
 ### 检索补充层（retrieval supplement）
-RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、具体数字），不承担事实权威。每回合固定检索（递归切块 → 本地嵌入 → top10 → 本地 cross-encoder rerank → top3），以独立小节 `## 原文片段（检索补充·仅作描写素材）` 注入；跨场景块至多 1 条并标注，与 `revealScene` 锚点相交者丢弃。落点 `server/src/rag/`（标准管线，无图）；见 ADR-0007。总开关 `rag.supplement`（默认开）。
+RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、具体数字），不承担事实权威。每回合固定检索（递归切块 → 本地嵌入 → top10 → 本地 cross-encoder rerank → top3），以独立小节 `## 原文片段（检索补充·仅作描写素材）` 注入；跨场景块至多 1 条并标注，与 `revealScene` 锚点相交者丢弃。缺少档案/gaps、truth 层为空、或任一已声明 revealScene 没有有效原文锚点时，两模式均不检索、不注入；rag 开局门闩在索引外也要求至少一条可用揭晓锚点。当前 dossier schema 没有显式的“无剧透”标记，因此 truth 层为空的剧本暂不能进入 rag workflow。该硬闸按 dossier 声明的 revealScene 场景区域判定，不是对所有语义上可能剧透的原文位置做分类；当前 ending schema 没有直接原文揭晓位置，未落在 truth revealScene 区域内的结局原文不由此保证拦截。落点 `server/src/rag/`（标准管线，无图）；见 ADR-0007。总开关 `rag.supplement`（默认开）。
 
-装配有两种模式（检索同一套，闸门不同）：**`supplement`** = 档案房的纹理补充，走"档案重叠剔除 + 场景内优先 + 跨场景限额/前缀"；**`plain`** = rag 房的标准情报块，因没有档案块（按重叠剔除会清空它唯一的知识来源）而只做相关性排序 + 条数/预算截断。**剧透硬闸两模式共有**。
+装配有两种模式（检索同一套，排序闸门不同）：**`supplement`** = 档案房的纹理补充，走"档案重叠剔除 + 场景内优先 + 跨场景限额/前缀"；**`plain`** = rag 房的标准情报块，因没有档案块（按重叠剔除会清空它唯一的知识来源）而只做相关性排序 + 条数/预算截断。两模式都要求 dossier/gaps 有效、至少一条 truth revealScene 锚点可评估，且每条 truth 的揭晓点均能映射到有效原文偏移；缺失、空真相层或不可评估时返回空节。`plain` 开局门闩因此是“索引 + 可用剧透定位材料”，仍保留有完整元数据时的 RAG 检索。当前 schema 无显式 no-spoiler 信号；并且该闸只按已标注揭晓场景窗口过滤，未标注或位于窗口外的语义剧透（包括部分结局段）不保证过滤。
 
 ### 回合知识装配（TurnKnowledge）
 「KP 本回合看到什么知识」的唯一 interface（deep module）：workflow 分派（rag = 玩家发言当 query 的标准检索情报块 `plain` 模式；dossier = 当前场景档案块——含「场景未覆盖」分支——+ 检索补充层 `supplement` 模式）、P27 预取触发（仅玩家回合；opening 不触发）、PREFETCH_TRACE/SUPPLEMENT_TRACE JSONL 落盘、dossier 查证工具供给决策（scene_list/scene_dossier/lexical_search/verify_original——workflow 门在本模块，执行器本体单源落档案域 `rag/dossier/dossierLookupTools.ts` 工厂，此处薄委托）、wire 采样「注入列」拼装（`[sceneBlock, supplement].filter(nonEmpty).join('\n\n') || ragContext`——**全仓唯一口径**，ab-compare 报告按此格式统计注入量）。无状态：房间运行时状态（roomId/ownerId/storyId/scene/玩家合并发言）由 RoomService 在 flushTurn 与 opening 两个回合入口以参数传入（opening 走 `stage:'opening'`：rag query 退化为开场固定 query、补充层 query 退化为纯场景名）。任何失败静默降级为空串，回合不中断。落点 `server/src/services/turnKnowledge.ts`；对知识层实现保持动态 import（Mimosa 门禁安全边界），测「KP 本轮看到什么」只需桩这一个模块。
@@ -106,7 +106,9 @@ RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、
 
 - ADR-0001：房间 schema 只归 RoomService（经 roomStorage）所有，REST/ws 不接触。
 - ADR-0002：单人游戏 = 单成员房间（`kind='solo'`），单人无独立回合协议；kp:turn 一侧全删，上下文注入服务端收口。
-- D-09：外部 id 只进 DB，fs 用 uuid 文件名（Mimosa 污点链断链方案）。
+- D-09：外部 id 不参与 fs 路径；上传文件由 DB 映射到 uuid 文件名，RAG/档案
+  JSON artifact 也使用服务端生成的 uuid 文件名，并按 JSON 元数据解析外部 id。
+  所有文件 sink 同时做 lexical boundary + realpath 校验，拒绝符号链接逃逸。
 - D7/D-10：单进程内存注册表 + 节流快照 + TTL 回收；Redis 是触发条件不是默认。
 - 服务端权威单轨：客户端无规则、无工具循环（`docs/history/ARCHITECTURE-MULTIPLAYER.md` §四）。
 - ADR-0003：LLM 接入协议一等公民（协议模型 / 适配器 / 本地端点不豁免 / Responses 流式策略）。

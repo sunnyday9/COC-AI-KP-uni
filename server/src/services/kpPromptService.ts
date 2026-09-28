@@ -13,6 +13,7 @@ export const MAX_MEMORY_ENTRIES = 30
 const RECENT_TURNS_COUNT = 5
 const RECENT_TURN_ENTRY_LEN = 120
 const CONVERSATION_WINDOW = 18
+const MAX_CONTEXT_SCAN_MESSAGES = 512
 
 /** opening 回合的 RAG 检索词（与旧客户端 requestOpening 同词）。 */
 export const OPENING_RAG_QUERY = '开场 故事背景 场景描述 第一幕'
@@ -226,14 +227,21 @@ export function buildMemoryBlock(kpMemory: string[]): string {
 }
 
 export function buildRecentTurnsBlock(msgs: RoomPromptMessage[], maxTurns: number = RECENT_TURNS_COUNT): string {
-  const filtered = msgs.filter(
-    (m): m is RoomPromptMessage => (m.role === 'kp' || m.role === 'player') && !(m.role === 'kp' && (m as { isStreaming?: boolean }).isStreaming),
-  )
-  if (filtered.length === 0) return ''
+  const recent: RoomPromptMessage[] = []
+  let scanned = 0
+  for (let index = msgs.length - 1; index >= 0 && recent.length < maxTurns * 2 + 1 && scanned < MAX_CONTEXT_SCAN_MESSAGES; index -= 1) {
+    scanned += 1
+    const message = msgs[index]!
+    if ((message.role === 'kp' || message.role === 'player') && !(message.role === 'kp' && (message as { isStreaming?: boolean }).isStreaming)) {
+      recent.push(message)
+    }
+  }
+  if (recent.length === 0) return ''
+  recent.reverse()
   const pairs: string[] = []
-  let i = filtered.length - 1
+  let i = recent.length - 1
   while (i >= 0 && pairs.length < maxTurns) {
-    const kp = filtered[i]
+    const kp = recent[i]
     if (!kp || kp.role !== 'kp') {
       i--
       continue
@@ -242,7 +250,7 @@ export function buildRecentTurnsBlock(msgs: RoomPromptMessage[], maxTurns: numbe
       ('content' in kp ? String(kp.content) : '').trim().slice(0, RECENT_TURN_ENTRY_LEN) +
       (('content' in kp ? String(kp.content) : '').length > RECENT_TURN_ENTRY_LEN ? '…' : '')
     i--
-    const playerMsg = i >= 0 ? filtered[i] : undefined
+    const playerMsg = i >= 0 ? recent[i] : undefined
     if (playerMsg && playerMsg.role === 'player') {
       const playerContent =
         ('content' in playerMsg ? String(playerMsg.content) : '').trim().slice(0, RECENT_TURN_ENTRY_LEN) +
@@ -290,13 +298,17 @@ export interface RoomPromptOpts {
   sceneBlock?: string
   verifyBlock?: string
   supplement?: string
+  /** Maximum characters of recent transcript sent as conversation history. */
+  contextBudgetChars?: number
 }
 
 function buildSystemBody(input: RoomPromptInput, ragContext: string, opts: RoomPromptOpts = {}): string {
   const workflow: StoryWorkflow = opts.workflow ?? 'rag'
   const memoryBlock = buildMemoryBlock(input.kpMemory)
   const longTermBlock = input.longTermSummary ? `\n## 长期记忆（本局至今）\n${input.longTermSummary}\n` : ''
-  const recentTurnsBlock = buildRecentTurnsBlock(input.messages)
+  // RoomService supplies a bounded transcript as conversation messages below;
+  // do not duplicate that same history into the system prompt outside its budget.
+  const recentTurnsBlock = opts.contextBudgetChars === undefined ? buildRecentTurnsBlock(input.messages) : ''
   const knowledgeBlock = buildKnowledgeBlock(workflow, ragContext, opts.sceneBlock ?? '', opts.verifyBlock ?? '', opts.supplement ?? '')
   const stateParts: string[] = []
   if (input.storyName) stateParts.push(`## 故事: ${input.storyName}`)
@@ -311,14 +323,38 @@ function buildSystemBody(input: RoomPromptInput, ragContext: string, opts: RoomP
   return `${baseInstructionsFor(workflow)}${longTermBlock}${memoryBlock}${recentTurnsBlock}${knowledgeBlock}\n\n## 当前状态\n${stateParts.join('\n')}`
 }
 
-function conversationMessages(input: RoomPromptInput): RoomChatMessage[] {
-  return input.messages
-    .filter((m) => (m.role === 'kp' || m.role === 'player') && !(m.role === 'kp' && (m as { isStreaming?: boolean }).isStreaming))
-    .slice(-CONVERSATION_WINDOW)
-    .map((m) => ({
-      role: (m.role === 'player' ? 'user' : 'assistant') as 'user' | 'assistant',
-      content: m.role === 'player' ? `[${m.playerName}] ${m.content}` : m.content,
-    }))
+function compactConversationHistory(input: RoomPromptInput, contextBudgetChars = Number.POSITIVE_INFINITY): RoomPromptMessage[] {
+  const budget = Number.isFinite(contextBudgetChars) ? Math.max(0, Math.floor(contextBudgetChars)) : Number.POSITIVE_INFINITY
+  const recent: RoomPromptMessage[] = []
+  let usedChars = 0
+  let scanned = 0
+  for (let index = input.messages.length - 1; index >= 0 && recent.length < CONVERSATION_WINDOW && scanned < MAX_CONTEXT_SCAN_MESSAGES; index -= 1) {
+    scanned += 1
+    const message = input.messages[index]!
+    if ((message.role !== 'kp' && message.role !== 'player') || (message.role === 'kp' && (message as { isStreaming?: boolean }).isStreaming)) continue
+
+    const prefix = message.role === 'player' ? `[${message.playerName}] ` : ''
+    const messageChars = prefix.length + message.content.length
+    const available = budget - usedChars
+    if (messageChars <= available) {
+      recent.unshift(message)
+      usedChars += messageChars
+      continue
+    }
+    const contentBudget = available - prefix.length
+    if (recent.length === 0 && contentBudget > 0) {
+      recent.unshift({ ...message, content: contentBudget === 1 ? '…' : `…${message.content.slice(-(contentBudget - 1))}` })
+    }
+    break
+  }
+  return recent
+}
+
+function conversationMessages(messages: RoomPromptMessage[]): RoomChatMessage[] {
+  return messages.map((m) => ({
+    role: (m.role === 'player' ? 'user' : 'assistant') as 'user' | 'assistant',
+    content: m.role === 'player' ? `[${m.playerName}] ${m.content}` : m.content,
+  }))
 }
 
 /** 玩家回合：[system, ...近窗对话(不含本批), 合并后的本批行动]。
@@ -330,9 +366,13 @@ export function buildRoomTurnMessages(
   batchUserContent: string,
   opts: RoomPromptOpts = {},
 ): RoomChatMessage[] {
+  // Compact the history once so both the prompt's narrative summary and the
+  // conversation messages have bounded size and bounded scan cost.
+  const compacted = compactConversationHistory(input, opts.contextBudgetChars)
+  const compactedInput = { ...input, messages: compacted }
   return [
-    { role: 'system', content: buildSystemBody(input, ragContext, opts) },
-    ...conversationMessages(input),
+    { role: 'system', content: buildSystemBody(compactedInput, ragContext, opts) },
+    ...conversationMessages(compacted),
     { role: 'user', content: batchUserContent },
   ]
 }

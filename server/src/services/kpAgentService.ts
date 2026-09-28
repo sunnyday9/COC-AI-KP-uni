@@ -1,14 +1,11 @@
-import {
-  createKPGraph,
-  invokeKPAgent,
-  type InvokeLLM,
-  type KpMessage,
-  type KpToolCall,
-  type KpTraceEvent,
+import type {
+  InvokeLLM,
+  KpMessage,
+  KpToolCall,
+  KpTraceEvent,
 } from '../agent/kpGraph.js'
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
-import { chatForAgent } from './aiService.js'
-import { getAiConfig } from './settingsService.js'
+import type { getAiConfig } from './settingsService.js'
 import { BadRequestError, UpstreamError, errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 
@@ -97,6 +94,10 @@ export function buildInvokeLLM(
 ): InvokeLLM {
   const tools = opts.tools ?? COC_KP_TOOLS
   return async (msgs: KpMessage[]) => {
+    // The provider adapters are intentionally loaded on the first real LLM
+    // call. Building a KP turn coordinator must not pay the OpenAI/adapter
+    // module cost when a caller only needs validation or graph wiring.
+    const { chatForAgent } = await import('./aiService.js')
     const isClassifier = isIntentClassifierCall(msgs)
     const isForceTool = isForceToolCall(msgs)
     const canStream = !!opts.stream && !isClassifier && !isForceTool
@@ -128,10 +129,13 @@ export function buildInvokeLLM(
  */
 const GRAPH_CACHE_TTL_MS = 10_000
 
-const graphCache = new Map<string, { graph: ReturnType<typeof createKPGraph>; expiresAt: number }>()
+type KpGraph = ReturnType<typeof import('../agent/kpGraph.js').createKPGraph>
+
+const graphCache = new Map<string, { graph: KpGraph; expiresAt: number }>()
 
 /** Exported for kpTurnService (Phase A2). */
-export function getSharedGraph(invokeLLM: InvokeLLM, userId?: number, stream?: boolean): ReturnType<typeof createKPGraph> {
+export async function getSharedGraph(invokeLLM: InvokeLLM, userId?: number, stream?: boolean): Promise<KpGraph> {
+  const { createKPGraph } = await import('../agent/kpGraph.js')
   if (stream) return createKPGraph(invokeLLM, userId)
   // The key includes the invokeLLM closure: the closure captures the resolved
   // AI config (settings change → new closure → new cache entry), so a config
@@ -253,11 +257,17 @@ export async function invokeKp(userId: number, body: KpInvokeBody): Promise<KpIn
     return { content: '' }
   }
 
+  const { getAiConfig } = await import('./settingsService.js')
   const ai = getAiConfig(userId)
   const invokeLLM = buildInvokeLLM(userId, ai, {})
+  const { invokeKPAgent } = await import('../agent/kpGraph.js')
   let result: Awaited<ReturnType<typeof invokeKPAgent>>
   try {
-    result = await withTimeout(invokeKPAgent(messages, invokeLLM, body?.storyContext ?? null, userId, getSharedGraph(invokeLLM, userId, false)), GRAPH_TIMEOUT_MS, 'KP graph invoke')
+    result = await withTimeout(
+      invokeKPAgent(messages, invokeLLM, body?.storyContext ?? null, userId, await getSharedGraph(invokeLLM, userId, false)),
+      GRAPH_TIMEOUT_MS,
+      'KP graph invoke',
+    )
   } catch (err) {
     logger.warn('KP graph invoke failed', { userId, error: errorMessage(err) })
     throw new UpstreamError(errorMessage(err))
@@ -281,10 +291,16 @@ export async function invokeKpStream(
     return
   }
 
+  const { getAiConfig } = await import('./settingsService.js')
   const ai = getAiConfig(userId)
   const invokeLLM = buildInvokeLLM(userId, ai, { stream: true, onChunk: handlers.onChunk })
+  const { invokeKPAgent } = await import('../agent/kpGraph.js')
   try {
-    const result = await withTimeout(invokeKPAgent(messages, invokeLLM, body?.storyContext ?? null, userId, getSharedGraph(invokeLLM, userId, true)), GRAPH_TIMEOUT_MS, 'KP graph stream')
+    const result = await withTimeout(
+      invokeKPAgent(messages, invokeLLM, body?.storyContext ?? null, userId, await getSharedGraph(invokeLLM, userId, true)),
+      GRAPH_TIMEOUT_MS,
+      'KP graph stream',
+    )
     if (result._traceEvents && result._traceEvents.length > 0) {
       handlers.onTrace(result._traceEvents)
     }

@@ -28,16 +28,15 @@
  */
 import type { ChatBody, ChatMessage, ChatResult, ToolCallResult } from './aiService.js'
 import type { ModelOption } from '../../../shared/constants/providers.js'
-import { classifyIntentByRules, COMBAT_SKILLS } from '../agent/kpGraph.js'
+import { classifyIntentByRules, COMBAT_SKILLS } from '../agent/kpIntent.js'
 
 /* ═══════════════════ Constants ═══════════════════ */
 
 /** Fixed narrative used for plain chat() and default narrative turns. */
 export const MOCK_NARRATIVE = '（测试模式）守秘人回应：你听到了远处的脚步声。'
 
-// 意图词表与战斗技能表均为单源：词表 = kpGraph.classifyIntentByRules 的
-// INTENT_RULES_ORDER（本文件不再手抄词面），战斗技能 = kpGraph.COMBAT_SKILLS
-// （上面的 import）。mock 只负责把意图映射成确定性的工具调用。
+// 意图词表与战斗技能表均来自轻量共享叶子；mock 只负责把意图映射成
+// 确定性的工具调用，不需要加载 LangGraph。
 
 /** Deterministic arguments for each tool name (used by fresh-turn & force calls). */
 const TOOL_ARGS: Record<string, Record<string, unknown>> = {
@@ -260,7 +259,30 @@ export function mockChatForRag(messages?: ChatMessage[]): { content: string } {
   // (3 scenes / 3 clues / 2 NPCs) so the dossier workflow runs end-to-end
   // under MOCK_AI without an LLM.
   const system = messages?.find((m) => m.role === 'system')
+  const userPrompt = messages?.find((m) => m.role === 'user')?.content
   if (system && typeof system.content === 'string' && system.content.includes('结构整理器')) {
+    // room-protocol's black-campus fixture needs a real scene anchor for its spoiler gate.
+    // This excerpt is copied from that fixture so computeCoverageGaps can locate it in source.
+    if (typeof userPrompt === 'string' && userPrompt.includes('潮湿的地下室，墙壁上画满诡异的符号。')) {
+      return {
+        content: JSON.stringify({
+          scenes: [{
+            id: 'scene_basement',
+            name: '地下密室',
+            sceneText:
+              '潮湿的地下室，墙壁上画满诡异的符号。中央石台上躺着一个昏迷的学生，周围是点燃的黑蜡烛与一尊青铜神像——神像的脸与校长办公室照片里的男子一模一样。',
+            description: '校长在地下密室举行仪式，失踪学生被带到石台。',
+          }],
+          truths: [{
+            id: 'truth_ritual',
+            title: '马卡拉在地下密室举行仪式',
+            detail: '校长马卡拉在地下密室进行最后仪式，神像与办公室照片中的男子相同。',
+            revealScene: 'scene_basement',
+          }],
+          endings: [],
+        }),
+      }
+    }
     return {
       content: JSON.stringify({
         scenes: [
@@ -322,6 +344,13 @@ export function mockChatForRag(messages?: ChatMessage[]): { content: string } {
             details: '前馆长的女儿，住在图书馆对面的公寓。',
           },
         ],
+        truths: [{
+          id: 'truth_archive_record',
+          title: '前馆长在1920年失踪且办公室被封存',
+          detail: '档案室卷宗记载，前馆长在1920年失踪，办公室随后被封存，钥匙不知所踪。',
+          revealScene: 'scene_archive',
+        }],
+        endings: [],
         meta: { title: '旧图书馆的铜钥匙' },
       }),
     }

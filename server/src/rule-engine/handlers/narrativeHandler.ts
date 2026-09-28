@@ -10,7 +10,12 @@ export const narrativeHandler: ToolHandler = {
     const ts = Date.now()
 
     if (toolName === 'transition_scene') {
-      const sceneName = String(args.sceneName ?? '')
+      const initialSceneName = String(args.sceneName ?? '')
+      if (!initialSceneName) return { content: 'error: sceneName required', displayMessages: [] }
+      const resolution = context.resolveNarrativeToolCall?.(toolName, args)
+      if (resolution && 'error' in resolution) return { content: `error: ${resolution.error}`, displayMessages: [] }
+      const resolvedArgs = resolution && 'args' in resolution ? resolution.args : args
+      const sceneName = String(resolvedArgs.sceneName ?? initialSceneName)
       if (sceneName) {
         context.transitionToScene(sceneName)
         displayMessages.push({ id, timestamp: ts, role: 'system', content: `场景切换: ${sceneName}` })
@@ -20,8 +25,13 @@ export const narrativeHandler: ToolHandler = {
     }
 
     if (toolName === 'grant_clue') {
-      const description = String(args.description ?? '')
-      const clueId = String(args.clueId ?? '')
+      const initialDescription = String(args.description ?? '')
+      if (!initialDescription) return { content: 'error: description required', displayMessages: [] }
+      const resolution = context.resolveNarrativeToolCall?.(toolName, args)
+      if (resolution && 'error' in resolution) return { content: `error: ${resolution.error}`, displayMessages: [] }
+      const resolvedArgs = resolution && 'args' in resolution ? resolution.args : args
+      const description = String(resolvedArgs.description ?? initialDescription)
+      const clueId = String(resolvedArgs.clueId ?? args.clueId ?? '')
       if (description) {
         context.addClue(description, clueId || undefined)
         displayMessages.push({ id, timestamp: ts, role: 'system', content: `获得线索: ${description}` })

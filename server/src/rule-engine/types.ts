@@ -18,6 +18,12 @@ export interface ToolHandlerResult {
   displayMessages: Message[]
 }
 
+/** Optional server-side story resolution for scripted narrative actions. */
+export type NarrativeToolResolution =
+  | { args: Record<string, unknown> }
+  | { error: string }
+  | null
+
 // Structured result types for common tools (handler JSON content).
 
 export interface MeleeAttackResult {
@@ -121,6 +127,8 @@ export interface ToolHandlerContext {
   /** Session / world. */
   transitionToScene: (sceneName: string) => void
   addClue: (description: string, clueId?: string) => void
+  /** Enforce and canonicalize script-backed scene/clue mutations before applying them. */
+  resolveNarrativeToolCall?: (toolName: string, args: Record<string, unknown>) => NarrativeToolResolution
   /** End game and enter ending UI. */
   endGame: (ending: {
     outcome: string

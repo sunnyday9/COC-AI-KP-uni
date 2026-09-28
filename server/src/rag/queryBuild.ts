@@ -14,7 +14,6 @@
  * 纯函数 + 注入缝：`buildSceneQuery`/`cleanPlayerText`/`shouldRewrite` 无 IO；
  * `retrieveWithRewrite` 的检索与改写都从参数注入，单测不触网不落盘。
  */
-import { chatForRag } from '../services/aiService.js'
 import { assertNonProModel } from './modelGuard.js'
 import type { ChatMessage } from '../services/llm/types.js'
 
@@ -186,8 +185,15 @@ export async function rewriteQuery(
   assertNonProModel(deps.model)
   const llm =
     deps.llm ??
-    ((messages: ChatMessage[], maxTokens: number) =>
-      chatForRag(deps.userId, { messages, temperature: 0, maxTokens, model: deps.model }).then((r) => r.content))
+    (async (messages: ChatMessage[], maxTokens: number) => {
+      // Keep the pure query/retrieval module light. The AI facade imports the
+      // KP graph and LangGraph through the mock provider; loading that graph
+      // while tests (or callers with an injected rewrite) only need query
+      // construction can otherwise block module evaluation in the test
+      // worktree. The default rewrite path still loads the facade lazily.
+      const { chatForRag } = await import('../services/aiService.js')
+      return chatForRag(deps.userId, { messages, temperature: 0, maxTokens, model: deps.model }).then((r) => r.content)
+    })
   const messages: ChatMessage[] = [
     { role: 'system', content: REWRITE_SYSTEM },
     { role: 'user', content: `【场景】${sceneName || '（未知）'}\n【查询】${query}` },

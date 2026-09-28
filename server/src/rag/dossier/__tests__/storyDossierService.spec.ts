@@ -104,6 +104,10 @@ describe('storyDossierService', () => {
     expect(list.length).toBe(1)
     expect(list[0]?.scriptId).toBe(scriptId)
 
+    const artifactFiles = await fs.readdir(path.join(tmpDossier, String(userId)))
+    expect(artifactFiles.some((file) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i.test(file))).toBe(true)
+    expect(artifactFiles.some((file) => file.includes(scriptId))).toBe(false)
+
     await deleteDossier(userId, scriptId)
     expect(await loadDossier(userId, scriptId)).toBeNull()
   })

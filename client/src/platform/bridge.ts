@@ -284,7 +284,7 @@ export class PlatformBridge {
   roomCreateSolo(params: { storyId: string; name: string; sheet: unknown }): Promise<{ ok: boolean; roomId: string; inviteCode: string; characterId: string }> {
     return request('POST', '/api/rooms/solo', params)
   }
-  /** 未结束单人局列表（继续游戏入口）。 */
+  /** 未结束单人局列表（游戏 hub 的 solo 续玩入口）。 */
   roomListSolo(): Promise<SoloRoomListItem[]> {
     return request<SoloRoomListItem[]>('GET', '/api/rooms/solo')
   }

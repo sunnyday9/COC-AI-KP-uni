@@ -68,10 +68,12 @@ describe('rag/vectorStore', () => {
     const r3 = await rag.queryChunks({ userId, query: '霉味', scriptId: storyId, sceneId: '不存在的场景', topK: 2, getEmbedding: embed })
     expect(r3.chunks.length).toBe(0)
 
-    // persisted index file exists under RAG_DATA_DIR/<userId>/rag_index
+    // persisted index file uses an internal UUID, never the external story id
     const idxDir = path.join(tmpUserData, '1', 'rag_index')
     expect(fs.existsSync(idxDir)).toBe(true)
-    expect(fs.readdirSync(idxDir).some((f) => f.includes('故事A'))).toBe(true)
+    const files = fs.readdirSync(idxDir)
+    expect(files.some((f) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i.test(f))).toBe(true)
+    expect(files.some((f) => f.includes('故事A'))).toBe(false)
   })
 
   it('isolates index files between users', async () => {
@@ -108,6 +110,50 @@ describe('rag/vectorStore', () => {
     )
     const r = await rag.queryChunks({ userId, query: '图书馆', scriptId: storyId, topK: 1, getEmbedding: embed })
     expect(r.chunks[0]!.content).toContain('图书馆')
+  })
+
+  it('falls back to TF-IDF when no embedding provider is available', async () => {
+    const rag = await import('../vectorStore.js')
+    const userId = 1
+    const storyId = 'lexical-only'
+    await rag.indexChunks(
+      userId,
+      storyId,
+      [
+        { id: 'library', content: '图书馆的书架后藏着一封密信。', type: 'scene', metadata: {} },
+        { id: 'hospital', content: '医院走廊尽头传来低语。', type: 'scene', metadata: {} },
+      ],
+      {},
+      undefined,
+    )
+
+    const result = await rag.queryChunks({ userId, query: '图书馆 密信', scriptId: storyId, topK: 1 })
+    expect(result.chunks).toHaveLength(1)
+    expect(result.chunks[0]!.id).toBe('library')
+  })
+
+  it('uses lexical similarity for documents whose dense embedding failed', async () => {
+    const rag = await import('../vectorStore.js')
+    const userId = 1
+    const storyId = 'partial-embeddings'
+    const embed = async (text: string) => {
+      if (text.includes('医院')) throw new Error('embedding unavailable')
+      return text.includes('图书馆') ? [1, 0] : [0, 1]
+    }
+    await rag.indexChunks(
+      userId,
+      storyId,
+      [
+        { id: 'library', content: '图书馆的书架后藏着一封密信。', type: 'scene', metadata: {} },
+        { id: 'hospital', content: '医院走廊尽头传来低语。', type: 'scene', metadata: {} },
+      ],
+      {},
+      { getEmbedding: embed },
+    )
+
+    const result = await rag.queryChunks({ userId, query: '医院 走廊', scriptId: storyId, topK: 1, getEmbedding: embed })
+    expect(result.chunks).toHaveLength(1)
+    expect(result.chunks[0]!.id).toBe('hospital')
   })
 
   it('checkHealth reports indexedStoryCount', async () => {

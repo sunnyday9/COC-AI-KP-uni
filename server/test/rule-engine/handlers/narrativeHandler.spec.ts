@@ -22,6 +22,20 @@ describe('narrativeHandler transition_scene', () => {
     expect(r.content).toContain('error')
     expect(r.displayMessages.length).toBe(0)
   })
+
+  it('server-side story guard rejects a locked transition before room mutation', () => {
+    let sceneName = ''
+    const ctx = createMockContext({
+      onTransitionScene: (name) => { sceneName = name },
+      resolveNarrativeToolCall: () => ({ error: 'condition is ambiguous; keep locked' }),
+    })
+
+    const result = narrativeHandler.handle('transition_scene', { sceneName: '地下室' }, ctx)
+
+    expect(sceneName).toBe('')
+    expect(result.content).toContain('condition is ambiguous')
+    expect(result.displayMessages).toHaveLength(0)
+  })
 })
 
 describe('narrativeHandler grant_clue', () => {
@@ -39,6 +53,19 @@ describe('narrativeHandler grant_clue', () => {
     expect(r.content).toContain('error')
     expect(r.content).toContain('description required')
     expect(r.displayMessages).toHaveLength(0)
+  })
+
+  it('uses the canonical scripted clue ID returned by the server-side story resolver', () => {
+    let granted: { description: string; clueId?: string } | null = null
+    const ctx = createMockContext({
+      onAddClue: (description, clueId) => { granted = { description, clueId } },
+      resolveNarrativeToolCall: () => ({ args: { description: '值班记录', clueId: 'note' } }),
+    })
+
+    const result = narrativeHandler.handle('grant_clue', { description: '值班记录' }, ctx)
+
+    expect(granted).toEqual({ description: '值班记录', clueId: 'note' })
+    expect(result.content).toContain('Clue granted')
   })
 })
 

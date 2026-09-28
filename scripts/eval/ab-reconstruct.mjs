@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url'
 import { Agent } from 'undici'
 // parseJudgeJson/sleep/cleanup 收编共享单源（#64）。
 import { parseJudgeJson, sleep, createCleanup } from './lib/harness.mjs'
+import { findJsonArtifact } from './lib/json-artifact.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
@@ -48,7 +49,6 @@ const origFetch = globalThis.fetch
 globalThis.fetch = (url, opts = {}) => origFetch(url, { ...opts, dispatcher })
 
 const arg = (name, dflt) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? dflt
-const sanitize = (s) => String(s).replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_')
 
 const children = []
 let serverLogs = ''
@@ -130,10 +130,13 @@ async function judgeAnswer(storyTitle, probe, answer) {
 }
 
 async function loadCachedDossier(key, probes, storyDir) {
-  // --skip-gen：直接复用 training/eval/dossier-cache/1/<sanitize(file)>.json（不重新生成）
+  // --skip-gen：按 JSON 内的 scriptId 复用缓存档案（不依赖外部 id 作为文件名）
   const file = path.join(storyDir, probes[0].file ?? `${key}.pdf`)
-  const expected = path.join(CACHE_DIR, '1', `${sanitize(path.basename(file))}.json`)
+  const expected = findJsonArtifact(path.join(CACHE_DIR, '1'), path.basename(file), {
+    excludeSuffixes: ['.gaps.json', '.annex.json'],
+  })
   try {
+    if (!expected) throw new Error('cache miss')
     const dossier = JSON.parse(fs.readFileSync(expected, 'utf8'))
     return { dossier, file, cachePath: expected }
   } catch {
@@ -205,12 +208,18 @@ async function main() {
       : path.join(STORY_DIR, probes[0].file ?? `${key}.pdf`)
     if (!fs.existsSync(file)) { console.log(`[skip-missing] ${key}: ${file}`); continue }
 
-    // --skip-gen：复用已缓存的档案（cache/1/<sanitize(file)>.json），只跑探针
+    // --skip-gen：按 JSON 内的 scriptId 复用已缓存档案，只跑探针
     let dossier = null
     let gen = null
     if (arg('skip-gen', '0') === '1') {
-      const cached = path.join(CACHE_DIR, '1', `${sanitize(path.basename(file))}.json`)
-      try { dossier = JSON.parse(fs.readFileSync(cached, 'utf8')); gen = { ok: true, reused: true, from: cached } } catch { /* fall through to gen */ }
+      const cached = findJsonArtifact(path.join(CACHE_DIR, '1'), path.basename(file), {
+        excludeSuffixes: ['.gaps.json', '.annex.json'],
+      })
+      try {
+        if (!cached) throw new Error('cache miss')
+        dossier = JSON.parse(fs.readFileSync(cached, 'utf8'))
+        gen = { ok: true, reused: true, from: cached }
+      } catch { /* fall through to gen */ }
     }
     if (!dossier) {
       const fd = new FormData()
@@ -240,8 +249,9 @@ async function main() {
       }
       // annex 明细（.annex.json：kept/dropReason/pending/merged 审计）随报告存档
       if (annex) {
-        const annexPath = path.join(CACHE_DIR, String(userId ?? '1'), `${sanitize(scriptId)}.annex.json`)
+        const annexPath = findJsonArtifact(path.join(CACHE_DIR, String(userId ?? '1')), scriptId, { suffix: '.annex.json' })
         try {
+          if (!annexPath) throw new Error('annex cache miss')
           story.annexFile = JSON.parse(fs.readFileSync(annexPath, 'utf8'))
         } catch {
           story.annexFile = null
@@ -249,9 +259,13 @@ async function main() {
         }
       }
       // 读落盘档案（v2 JSON 全量）
-      const dossierPath = path.join(CACHE_DIR, String(userId ?? '1'), `${sanitize(scriptId)}.json`)
+      const dossierDir = path.join(CACHE_DIR, String(userId ?? '1'))
       for (let i = 0; i < 10 && !dossier; i++) {
-        try { dossier = JSON.parse(fs.readFileSync(dossierPath, 'utf8')) } catch { await sleep(2000) }
+        try {
+          const dossierPath = findJsonArtifact(dossierDir, scriptId, { excludeSuffixes: ['.gaps.json', '.annex.json'] })
+          if (!dossierPath) throw new Error('dossier cache miss')
+          dossier = JSON.parse(fs.readFileSync(dossierPath, 'utf8'))
+        } catch { await sleep(2000) }
       }
       if (!dossier) { story.error = 'dossier file not found in cache'; console.log('  [warn] dossier cache miss'); continue }
     } else {

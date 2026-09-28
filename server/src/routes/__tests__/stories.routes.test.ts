@@ -14,6 +14,11 @@ function auth(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` }
 }
 
+// PDF RAG extraction initializes the OCR-capable parser even for a fixture
+// with a text layer. Keep this integration test honest without failing on
+// the one-time native/parser startup cost.
+const PDF_EXTRACTION_TIMEOUT_MS = 90_000
+
 async function registerToken(username: string): Promise<string> {
   const res = await request(createApp()).post('/api/auth/register').send({ username, password: TEST_PASSWORD })
   expect(res.status).toBe(200)
@@ -84,7 +89,7 @@ describe('stories routes', () => {
     const rag = await request(app).get('/api/stories/scenario.pdf/rag').set(auth(token))
     expect(rag.status).toBe(200)
     expect(rag.body.content).toContain('Hello COC PDF world')
-  })
+  }, PDF_EXTRACTION_TIMEOUT_MS)
 
   it('rejects unsupported extensions and empty uploads with ok:false (200)', async () => {
     const token = await registerToken('stories_bad')

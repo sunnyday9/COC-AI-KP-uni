@@ -15,7 +15,7 @@ ADR-0004 UI 重设计验收后，多人房间只有「创建/邀请码加入/聊
 2. **lobby 聊天不触发 KP**：等待室保留聊天（社交/房主宣布），但 `phase='lobby'` 时成员消息只广播不入 KP 回合队列；开局（playing）后才触发 KP。
 3. **就绪存 `room_members`**：加 `ready` 列（INTEGER DEFAULT 0，幂等迁移仿 kind 列）；就绪/绑卡变化 → 重发 `room_meta` 广播（wire 零扩展）。就绪是**软信号**。
 4. **开局门闩（硬）**：房主点开始 → 服务端校验「已选已索引剧本 + 每名成员已绑定角色卡」；不满足 → 409 带缺项提示（如「N 名成员未绑定角色卡」）。不等待全员就绪。
-5. **成员治理（REST 领域动作）**：房主踢出 `DELETE /api/rooms/:id/members/:userId`（owner only：删行 + 广播 + 被踢者提示回大厅）；房主主动转让 `POST /api/rooms/:id/transfer`（指定成员成为新 owner）。
+5. **成员治理（REST 领域动作）**：房主踢出 `DELETE /api/rooms/:id/members/:userId`（owner only：删行 + 广播 + 被踢者提示回大厅）；房主主动转让 `POST /api/rooms/:id/transfer`（指定成员成为新 owner）；房间解散仅允许 lobby/ended，playing 房间必须通过正常结局或成员离开流程保留快照。
 6. **房主离开/断线立即转让**：房主主动 leave 或 WS 断线 → **立即**把 owner 转让给剩余最早成员（无宽限期——刷新即易主是已知取舍）；无其他成员 → 房间解散。断线检测复用现有 ws disconnect 事件 + 活跃实例。
 7. **剧本源**：房主只从**已索引**故事中选（未索引不列入候选项）。房间故事 = 房主已索引故事，KP 全程 ownerId 解析（现架构已是，零改动；AI 计费/配置跟随房主是既有事实）。
 8. **队友档案切换**：game 页桌面右栏 + 移动 sheet 加成员切换器（自己/各成员），选中显示对应角色卡（未绑卡显示空态）；数据源 roomStore.characters（服务端已全量推）。

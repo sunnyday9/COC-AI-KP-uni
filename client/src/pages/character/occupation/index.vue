@@ -36,6 +36,7 @@ import {
 } from '../../../../../shared/types/character'
 import { getBridge } from '../../../platform'
 import AppLayout from '../../../components/layout/AppLayout.vue'
+import AppIcon from '../../../components/ui/AppIcon.vue'
 import CharacterSheetCard from '../../../components/domain/CharacterSheetCard.vue'
 
 /** 向导步进：1 选职业 → 2 技能与属性 → 3 兴趣补全+姓名+档案预览 */
@@ -129,11 +130,9 @@ function finishMultiMode(): void {
 /**
  * 背景图（Task 9 分包）：H5 走主包 public 目录；MP 子包页面引用子包内 static。
  */
-// #ifdef H5
-const pageBg = '/static/bg/bg_desk.webp'
-// #endif
+let pageBg = '/static/bg/bg_desk.webp'
 // #ifndef H5
-const pageBg = '/pages/character/static/bg_desk.webp'
+pageBg = '/pages/character/static/bg_desk.webp'
 // #endif
 
 /* ───────────── Step 1：职业选择 ───────────── */
@@ -484,7 +483,7 @@ onLoad((options) => {
               placeholder="搜索职业名称（中文 / 英文）…"
               placeholder-class="gothic-ph"
             />
-            <text class="search-icon">🔍</text>
+            <app-icon name="search" :size="15" class="search-icon" />
           </view>
 
           <view class="filter-row">
@@ -569,7 +568,10 @@ onLoad((options) => {
           <!-- 职业技能 -->
           <view class="gothic-card section-card">
             <view class="section-head">
-              <text class="section-title">⚔ 职业技能</text>
+              <view class="section-title-with-icon">
+                <app-icon name="sword" :size="15" class="section-title-icon" />
+                <text class="section-title">职业技能</text>
+              </view>
               <text class="section-hint">(9 项：70, 60, 60, 50, 50, 50, 40, 40, 40)</text>
             </view>
             <view class="slot-list">
@@ -600,7 +602,10 @@ onLoad((options) => {
           <!-- 属性投掷 -->
           <view class="gothic-card section-card">
             <view class="section-head">
-              <text class="section-title">🎲 属性投掷</text>
+              <view class="section-title-with-icon">
+                <app-icon name="dice" :size="15" class="section-title-icon" />
+                <text class="section-title">属性投掷</text>
+              </view>
               <text class="section-hint">(3d6×5)</text>
             </view>
             <button class="gothic-btn roll-btn" @click="rollAttrs">
@@ -617,7 +622,10 @@ onLoad((options) => {
           <!-- 4 兴趣技能 picker（step2 预选；step3 校验补全） -->
           <view class="gothic-card section-card">
             <view class="section-head">
-              <text class="section-title">✦ 兴趣技能</text>
+              <view class="section-title-with-icon">
+                <app-icon name="sparkle" :size="15" class="section-title-icon" />
+                <text class="section-title">兴趣技能</text>
+              </view>
               <text class="section-hint">(任选 {{ PERSONAL_INTEREST_COUNT }} 项，每项 +{{ PERSONAL_INTEREST_BONUS }}%，可与职业技能重叠叠加)</text>
             </view>
             <view class="slot-list">
@@ -659,7 +667,10 @@ onLoad((options) => {
             <!-- 兴趣技能补全 -->
             <view class="gothic-card section-card">
               <view class="section-head">
-                <text class="section-title">✦ 兴趣技能</text>
+                <view class="section-title-with-icon">
+                  <app-icon name="sparkle" :size="15" class="section-title-icon" />
+                  <text class="section-title">兴趣技能</text>
+                </view>
                 <text class="section-hint">
                   已选 {{ chosenInterestCount }}/{{ PERSONAL_INTEREST_COUNT }}
                   <text v-if="chosenInterestCount < PERSONAL_INTEREST_COUNT" class="section-warn">——还需 {{ PERSONAL_INTEREST_COUNT - chosenInterestCount }} 项</text>
@@ -685,7 +696,10 @@ onLoad((options) => {
             <!-- 调查员姓名 -->
             <view class="gothic-card section-card">
               <view class="section-head">
-                <text class="section-title">✎ 调查员姓名</text>
+                <view class="section-title-with-icon">
+                  <app-icon name="feather" :size="15" class="section-title-icon" />
+                  <text class="section-title">调查员姓名</text>
+                </view>
               </view>
               <input
                 v-model="playerName"
@@ -1081,6 +1095,15 @@ onLoad((options) => {
   gap: 8px;
   margin-bottom: 16px;
   flex-wrap: wrap;
+}
+.section-title-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.section-title-icon {
+  color: var(--c-eld-400);
+  flex-shrink: 0;
 }
 .section-title {
   font-family: $font-display;

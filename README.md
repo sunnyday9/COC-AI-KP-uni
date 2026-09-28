@@ -4,7 +4,7 @@
 
 COC 7th 规则 AI 跑团助手，由原 Electron 单机应用重构而来。服务端（Express + TypeScript）承载 AI 守密人 Agent 的全部规则与记忆：LangGraph 状态机、RAG 剧本检索、SQLite 持久化、WebSocket 实时帧。前端 uni-app（Vue 3 + Pinia），暗色克苏鲁哥特 UI（ADRs 驱动的完整设计令牌体系）。
 
-> 核心玩法闭环：**导入剧本 → RAG 索引 → 创建角色 → 与 AI 守密人对话 → 工具链驱动探索 / 战斗 / SAN 检定 → 线索门控推进剧情 → 结局结算 → 存档 / 读档**。
+> 核心玩法闭环：**导入剧本 → RAG 索引 → 创建角色 → 与 AI 守密人对话 → 工具链驱动探索 / 战斗 / SAN 检定 → 线索门控推进剧情 → 结局结算 → 房间快照持久化与续玩**。
 
 ## 功能总览
 
@@ -20,7 +20,7 @@ COC 7th 规则 AI 跑团助手，由原 Electron 单机应用重构而来。服�
 - **房间治理**：踢出 / 主动转让 / 房主断线立即转让 / 解散，成员被移出有明确提示回大厅；
 - 开局后进入**同一张游戏桌**：桌面三栏（左场景线索 / 中对话流 / 右调查员档案），移动端单栏 + bottom sheet；
 - **队友档案切换**：随时查看任一成员的调查员档案（含未绑卡空态）；
-- KP 回合全程以**房主**的模型 / Key / 剧本解析——房主开房，房主驱动（成员无需任何 AI 配置）。
+- KP 回合使用**当前房主**的模型 / Key，故事文件与 RAG 索引按原故事所有者读取（房主转让后仍可续玩；成员无需任何 AI 配置）。
 
 ### ⚙️ AI 接入：BYOK（Bring Your Own Key）
 - **服务端零 Key 架构**：不持有、不配置任何 LLM Key；每个玩家在设置页填自己的 Key，**AES-256-GCM 加密落库、GET 永不回传**，AI 请求由服务端用玩家自己的 Key 代发；
@@ -64,7 +64,7 @@ AI-COC-KP/
 ├── shared/        # 共享 TS 源码包（COC 规则定义、类型、provider 清单）
 ├── training/      # KP 自训工作区（distill 数据管线 + eval 评测，ADR-0006）
 ├── e2e/           # 端到端旅程（h5 单人 14 步 / rooms 多人 UI 14 步 / multiroom WS 14 步 / dossier 档案 7 步，MOCK_AI）
-├── test-agent/    # Agent 工作流真实 LLM 测试套件（不改项目代码）
+├── test-agent/    # 当前 room:* 协议的真实 LLM 黑盒旅程（历史脚本另有标注）
 ├── tools/         # 微信小程序自动化测试（miniprogram-automator）
 ├── docs/          # ADR、入职指南、部署、API 契约、开发日志、史实归档（history/）
 └── original/      # 原 Electron 项目（只读参考）
@@ -85,7 +85,7 @@ MOCK_AI=1 npm run dev:server   # 后端 :3000（内置确定性 AI，无需任�
 npm run dev:h5                 # 前端 :5175 → 打开 http://localhost:5175
 ```
 
-注册账号 → 设置页可跳过 → 首页「导入故事」→ 导入后索引 → 选故事开跑。多人联机：首页「多人联机」→ 创建房间 → 分享房间码。
+注册账号 → 设置页可跳过 → 首页「导入故事」→ 导入后索引 → 选故事开跑。已有调查从「游戏」tab 继续；多人联机仍可从首页入口进入房间管理。
 
 **接入真实 AI（BYOK）**：启动后打开 设置 → AI 提供商 → 选协议（OpenAI 兼容最通用）→ 填 Base URL / 自己的 API Key → 刷新模型列表并选择 → 保存 → 测试连接 ✓。Key 只存你自己服务端的加密库，随时可玩真实 LLM。
 
@@ -98,28 +98,41 @@ npm run dev:h5                 # 前端 :5175 → 打开 http://localhost:5175
 | 微信小程序 | `npm run build:mp-weixin` | 产物 `client/dist/build/mp-weixin`，微信开发者工具导入 |
 | App | `npx uni build -p app` 或 HBuilderX 云打包 | 需 `VITE_API_BASE` 指向公网 https/wss |
 
-后端环境变量（`server/.env`，全部可选）：
+后端环境变量（`server/.env`；开发环境可选，生产环境必须设置 `JWT_SECRET`）：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `PORT` | `3000` | HTTP / WS 监听端口 |
 | `JWT_SECRET` | `dev-secret-change-me` | JWT 签名 + apiKey 加密密钥派生源，**生产必设** |
 | `MOCK_AI` | 未设置 | `1` = 内置确定性 AI（离线试玩 / E2E），**生产禁用** |
-| `DATA_DIR` / `RAG_DATA_DIR` / `UPLOADS_DIR` / `MODELS_DIR` | `server/data*` | 数据 / RAG / 上传 / 模型缓存目录 |
+| `DATA_DIR` / `RAG_DATA_DIR` / `DOSSIER_DATA_DIR` / `UPLOADS_DIR` / `MODELS_DIR` | `server/data*` | 数据 / RAG / 档案 / 上传 / 模型缓存目录；RAG/档案 artifact 使用 UUID 文件名 |
+| `ROOM_CONTEXT_BUDGET_CHARS` | `12000` | 每个房间保留到 KP 提示词中的近期对话字符上限；较早对话由可恢复的长期摘要承接 |
 
 ## 测试与质量
 
 ```bash
-npm run test:all      # server 811+1skip 用例 + client 106 用例 + training 49 用例（vitest，全绿基线）
+npm run test:all      # server + client + training Vitest + training/eval node:test；用例数以当前 reporter/CI 输出为准
 npm run test:e2e:h5   # H5 单人全旅程 14 步（真实浏览器，MOCK_AI 自启后端）
 node e2e/rooms.journey.mjs      # 多人房间 UI 全链 14 步（双浏览器）
 node e2e/multiroom.journey.mjs  # 多人房间 WS 协议 14 步（双客户端）
 node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 ```
 
+**模型路径冒烟（周度/手动工作流，与普通单测隔离）**：普通 `npm run test:server` 不设置以下开关，因此真实 OCR / reranker 用例默认跳过，不会下载语言数据或模型。手动运行需从 `server/` 目录执行；OCR 使用仓库内的 Tesseract 语言文件，reranker 需已有本地模型缓存，缺失时会报出模型和缓存路径，而不会静默联网：
+
+```bash
+cd server
+REAL_OCR_SMOKE=1 npx vitest run src/rag/__tests__/realOcr.smoke.spec.ts
+MODELS_DIR="$PWD/data/models" RERANK_SMOKE=1 npx vitest run src/rag/__tests__/reranker.spec.ts
+```
+
+`.github/workflows/rag-model-smoke.yml` 每周及手动运行：缓存 `server/data/models`，仅在缓存未命中时预取 reranker，然后以离线模式验证真实分数、排序和 PDF OCR。普通 CI 单测不触发此模型预取。
+
+服务端 Vitest 在 `server/vitest.config.ts` 中默认限制为 4 个 worker；SQLite、PDF/原生解析器与 LangGraph 测试在 WSL 上使用不受限的 CPU 数量会争抢事件循环。需要调整时可显式传入 `npm run test:server -- --maxWorkers=8`。
+
 - **E2E 旅程**覆盖：注册登录 → 导入/索引 → 建卡（选职业/投骰/兴趣）→ 开局 → 侦查（skill_check → grant_clue）/ 战斗（roll_dice → adjust_hp，HP 精确断言）→ 读档恢复；多人全链（建房 → 等待室绑卡/就绪 → 门闩 409 → 开局 → 队友档案切换 → 聊天）；
 - **真实 LLM 冒烟**：`e2e/byok-smoke.mjs`（需自备 Key：`E2E_REAL_API_KEY=sk-... node e2e/byok-smoke.mjs`，验证 settings 加密存储 → 不回传 → models → chat）；
-- **Agent 工作流套件**：`test-agent/`（真实 LLM 驱动，不改项目代码）——调查 / 战斗 / SAN / 门控 / 鲁棒性 / 性能；
+- **Agent 工作流套件**：`node test-agent/run-all.mjs`（真实 LLM 驱动，不改项目代码）——验证当前 REST + `room:*` 权威单轨；旧客户端工具循环报告仅作历史记录；
 - 依赖安全：npm audit 实时核对，server 运行时 high 漏洞 = 0（express 5 + overrides 强升，见 `docs/history/DEPENDENCY-AUDIT-2026-09-04.md`）。
 
 ## 文档索引
@@ -134,6 +147,7 @@ node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 | `docs/DEVELOPMENT-LOG.md` | 实现决策记录（D-01 起，与 ADR 分工的第二决策流） |
 | `docs/DEPLOYMENT.md` | 部署上线指南（含 BYOK 玩家引导、安全基线、回滚） |
 | `docs/api-contract.md` | 前后端 API 契约（唯一接口基准；§10 安全约束） |
+| `test-agent/README.md` | 当前 REST + WebSocket 房间协议旅程与运行方式 |
 
 **指引层**（子目录）：
 
@@ -143,11 +157,12 @@ node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 | `docs/agents/` | Agent 工作流模板（issue tracker / triage 标签 / domain 消费规则） |
 | `docs/experiments/` | append-only 实验证据链（13 份报告 + judge 口径与 P10 教训索引） |
 | `docs/research/` | 外部研究档案（append-only） |
+| `docs/interview/` | 面试准备材料（LLM/Agent 岗题库 + 项目话术，答案以本仓实现为证据） |
 | `docs/history/` | 史实归档层（不再变更的死文件：MIGRATION-PLAN / DEPENDENCY-AUDIT-2026-09-04 / ARCHITECTURE-MULTIPLAYER / PROJECT-ANALYSIS / design/） |
 
 ## 项目状态
 
-- **MVP 完成**：单人 + 多人全功能闭环落地 main；回归全绿（server 811+1skip / client 106 / training 49 / E2E 14×3）；
+- **MVP 完成**：单人 + 多人全功能闭环落地 main；历史回归记录见 `docs/DEVELOPMENT-LOG.md`，当前工作树请以 CI/test runner 实际输出为准；
 - 主要里程碑：Electron → 服务端重构（ADR-0002）→ LLM 协议化（ADR-0003）→ UI 全面重设计（ADR-0004）→ 多人房间（ADR-0005）→ BYOK / 依赖安全收口；
 - 路线图候选（未立项）：流式输出、observer 观战、多人结局、故事共享。
 
@@ -156,7 +171,7 @@ node e2e/dossier.journey.mjs    # 档案旅程 7 步（MOCK_AI 自启后端）
 - **认证**：JWT + bcrypt；WS `?token=` 校验（无效 4001）；房间邀请码 + owner 校验 + 角色卡归属校验；
 - **Key 保护**：AES-256-GCM 加密落库、GET 不回传、服务端代发（BYOK）；
 - **SSRF 防护**：所有出站 URL 过 `outboundUrl.ts`（拒绝 localhost / 私网 / 保留地址，本地端点不豁免）；
-- **路径安全**：外部 id 只进 DB，文件系统只用内部 uuid 文件名（realpath + assertId）；
+- **路径安全**：外部 id 不参与文件名或 fs 路径；上传由 DB 映射，RAG/档案 artifact 通过 JSON 元数据解析；所有文件 sink 做 lexical + realpath 边界校验；
 - **规则服务端权威**：骰子 / 检定 / 伤害全在服务端（防作弊），客户端无规则逻辑；
 - **错误不泄栈**：统一 `{ error }` JSON，未知错误 500 通用文案。
 

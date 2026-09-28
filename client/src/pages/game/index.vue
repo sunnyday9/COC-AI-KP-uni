@@ -21,11 +21,9 @@ const settingsStore = useSettingsStore()
  * 背景图（Task 9 分包）：H5 走主包 public 目录（src/static/bg，H5 仅拷贝该目录）；
  * MP 子包页面引用子包内 static（pages/game/static，WeChat 子包可引用自身资源）。
  */
-// #ifdef H5
-const pageBg = '/static/bg/bg_game.webp'
-// #endif
+let pageBg = '/static/bg/bg_game.webp'
 // #ifndef H5
-const pageBg = '/pages/game/static/bg_game.webp'
+pageBg = '/pages/game/static/bg_game.webp'
 // #endif
 
 /** 页面级故事名（从导航参数带入；服务端权威是 roomStore.storyId）。 */

@@ -255,6 +255,27 @@ describe('roomStore', () => {
     expect(((action!.action as { payload: { content: string } }).payload).content).toBe('我要调查书架')
   })
 
+  it('restores the setup pause from snapshots and sends owner-only retry actions', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: { ...SNAP0, kpSetupRequired: true } })
+    expect(store.kpSetupRequired).toBe(true)
+
+    store.retryKpTurn()
+    const retry = sentFrames().find((frame) => frame.type === 'room:action')
+    expect(retry?.action).toEqual({ type: 'retry_kp' })
+
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'state_patch', payload: { path: 'kpSetupRequired', value: false } })
+    expect(store.kpSetupRequired).toBe(false)
+  })
+
+  it('does not send the retry action for a non-owner', async () => {
+    await joinAndSyncAsMember()
+    expect(store.isOwner).toBe(false)
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'state_patch', payload: { path: 'kpSetupRequired', value: true } })
+    store.retryKpTurn()
+    expect(sentFrames().filter((frame) => frame.type === 'room:action')).toHaveLength(0)
+  })
+
   it('server echo of my own message aligns the optimistic entry and KP reply clears awaitingKp', async () => {
     await joinAndSync()
     store.sendChat('我要调查书架')

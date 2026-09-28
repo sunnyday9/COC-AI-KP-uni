@@ -1,8 +1,19 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import request from 'supertest'
 import { createApp } from './app.js'
 
 describe('app smoke', () => {
+  it.each(['', 'dev-secret-change-me'])('refuses to create the app in production with an unsafe JWT_SECRET (%s)', (secret) => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('JWT_SECRET', secret)
+
+    try {
+      expect(() => createApp()).toThrow('JWT_SECRET must be set to a non-default value in production')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('GET unknown path returns 404 JSON with { error }', async () => {
     const res = await request(createApp()).get('/definitely-not-a-route')
     expect(res.status).toBe(404)

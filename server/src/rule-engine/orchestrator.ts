@@ -15,6 +15,7 @@ import { sanityHandler } from './handlers/sanityHandler.js'
 import { resourceHandler } from './handlers/resourceHandler.js'
 import { narrativeHandler } from './handlers/narrativeHandler.js'
 import { rulesHandler } from './handlers/rulesHandler.js'
+import { logger } from '../utils/logging.js'
 
 const HANDLERS: ToolHandler[] = [
   checkHandler,
@@ -39,7 +40,7 @@ const NAME_TO_HANDLER: Map<string, ToolHandler> = (() => {
 {
   const missing = COC_TOOL_NAMES.filter((name) => !NAME_TO_HANDLER.has(name))
   if (missing.length) {
-    console.warn('[rule-engine] 以下工具在 COC_TOOL_NAMES 中定义但缺少 handler:', missing)
+    logger.warn('rule-engine tools missing handlers', { tools: missing })
   }
 }
 

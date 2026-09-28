@@ -16,9 +16,10 @@
     "test:server": "npm run test --workspace=server",
     "test:client": "npm run test --workspace=client",
     "test:training": "npm run test --workspace=training",
+    "test:training:eval": "node --import ./training/eval/register-ts.ts --test \"training/eval/test/*.test.ts\"",
     "export:kp-context": "npm run export --workspace=training --",
     "test:e2e:h5": "node e2e/h5.journey.mjs",
-    "test:all": "npm run test --workspace=server && npm run test --workspace=client && npm run test --workspace=training"
+    "test:all": "npm run test --workspace=server && npm run test --workspace=client && npm run test --workspace=training && npm run test:training:eval"
   },
   "engines": {
     "node": ">=24"
