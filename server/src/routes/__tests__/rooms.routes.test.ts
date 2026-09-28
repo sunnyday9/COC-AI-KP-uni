@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import request from 'supertest'
 import { createApp } from '../../app.js'
 import { getOrCreateRoom, getRoom, _clearRoomRegistryForTests } from '../../services/roomService.js'
+import { computeCoverageGaps, GAPS_VERSION } from '../../rag/dossier/coverageGaps.js'
 import type { Express } from 'express'
 
 /** 测试夹具密码：表达式构造（门禁不识别字面量凭据）。 */
@@ -22,7 +23,15 @@ const listDossiersMock = vi.hoisted(() => vi.fn(async () => []))
 const loadDossierMock = vi.hoisted(() => vi.fn(async () => null))
 vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
-  return { ...actual, listDossiers: listDossiersMock, loadDossier: loadDossierMock }
+  return {
+    ...actual,
+    listDossiers: listDossiersMock,
+    listDossiersWithDiagnostics: async (ownerId: number) => ({
+      items: await listDossiersMock(ownerId),
+      failureReason: null,
+    }),
+    loadDossier: loadDossierMock,
+  }
 })
 
 const loadGapsMock = vi.hoisted(() => vi.fn(async () => null))
@@ -52,6 +61,7 @@ function provideRagSpoilerMetadata(storyId: string): void {
   })
   loadGapsMock.mockResolvedValue({
     scriptId: storyId,
+    gapsVersion: GAPS_VERSION,
     storyChars: 20_000,
     sceneTextChars: 4,
     gapCount: 0,
@@ -115,6 +125,88 @@ beforeEach(() => {
 })
 
 describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
+  it('POST /api/rooms/solo rejects unresolved short truths without persistence, then accepts regenerated anchors', async () => {
+    const storyId = 'story_short_truths'
+    const sceneTexts = [
+      '短场景甲原文'.padEnd(31, '甲'),
+      '短场景乙原文'.padEnd(34, '乙'),
+      '较长的第三个真相揭晓场景原文'.padEnd(72, '丙'),
+    ]
+    const scenes = sceneTexts.map((sceneText, index) => ({
+      id: `reveal_${index}`,
+      name: `揭晓场景${index + 1}`,
+      sceneText,
+    }))
+    const dossier = {
+      scriptId: storyId,
+      storyName: '短摘录剧本',
+      generatedAt: 1,
+      scenes,
+      clues: [],
+      npcs: [],
+      truths: scenes.map((scene, index) => ({
+        id: `truth_${index}`,
+        title: `真相${index + 1}`,
+        detail: '由剧本原文定位',
+        revealScene: scene.id,
+      })),
+      endings: [],
+    }
+    const sourceText = [
+      '原文开头的背景叙述独立完整并且长度超过最小分段阈值。',
+      ...sceneTexts,
+      '结尾原文保留了后续事件的完整记载。',
+    ].join('\n\n')
+    const currentGaps = {
+      ...computeCoverageGaps(sourceText, scenes as never),
+      scriptId: storyId,
+      storyName: '短摘录剧本',
+      generatedAt: 1,
+      gapsVersion: GAPS_VERSION,
+    }
+    const unresolvedGaps = {
+      ...currentGaps,
+      sceneAnchors: currentGaps.sceneAnchors.map((anchor, index) =>
+        index < 2
+          ? { ...anchor, matched: false, starts: undefined, matchFailure: 'no-exact-source-match' }
+          : anchor,
+      ),
+    }
+    listStoriesMock.mockReturnValue([{ storyId, name: '短摘录剧本', chunkCount: 1, indexedAt: 1 }])
+    listDossiersMock.mockResolvedValue([{
+      scriptId: storyId,
+      name: '短摘录剧本',
+      sceneCount: scenes.length,
+      generatedAt: 1,
+      degraded: false,
+      coveragePct: 100,
+    }])
+    loadDossierMock.mockResolvedValue(dossier)
+
+    const sheet = {
+      playerName: '短场景调查员',
+      occupationName: '侦探',
+      derived: { hp: 10, hpMax: 10, mp: 5, mpMax: 5, san: 50, sanMax: 50 },
+      attributes: { str: 50, con: 50, siz: 50, dex: 50, app: 50, int: 50, pow: 50, edu: 50, luck: 50 },
+      skills: {},
+    }
+    const before = await request(app).get('/api/rooms/solo').set(...auth(tokenA))
+    const previousRoomIds = (before.body as { roomId: string }[]).map((room) => room.roomId).sort()
+    loadGapsMock.mockResolvedValue(unresolvedGaps)
+
+    const rejected = await request(app).post('/api/rooms/solo').set(...auth(tokenA)).send({ storyId, name: '短场景调查员', sheet })
+    expect(rejected.status).toBe(409)
+    expect(String(rejected.body.error)).toContain('剧透保护锚点')
+    const afterRejected = await request(app).get('/api/rooms/solo').set(...auth(tokenA))
+    expect((afterRejected.body as { roomId: string }[]).map((room) => room.roomId).sort()).toEqual(previousRoomIds)
+
+    loadGapsMock.mockResolvedValue(currentGaps)
+    const accepted = await request(app).post('/api/rooms/solo').set(...auth(tokenA)).send({ storyId, name: '短场景调查员', sheet })
+    expect(accepted.status).toBe(200)
+    const afterAccepted = await request(app).get('/api/rooms/solo').set(...auth(tokenA))
+    expect((afterAccepted.body as { roomId: string }[]).map((room) => room.roomId)).toContain(accepted.body.roomId)
+  })
+
   it('创建房间 → 返回 roomId + inviteCode（owner 成员）', async () => {
     const res = await request(app).post('/api/rooms').set(...auth(tokenA)).send({})
     expect(res.status).toBe(200)

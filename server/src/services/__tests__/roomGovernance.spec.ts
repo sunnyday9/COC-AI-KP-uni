@@ -8,6 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getDb } from '../../db/index.js'
+import { GAPS_VERSION } from '../../rag/dossier/coverageGaps.js'
 import {
   _clearRoomRegistryForTests,
   bindRoomCharacter,
@@ -32,7 +33,15 @@ const listDossiersMock = vi.hoisted(() => vi.fn())
 const loadDossierMock = vi.hoisted(() => vi.fn())
 vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
-  return { ...actual, listDossiers: listDossiersMock, loadDossier: loadDossierMock }
+  return {
+    ...actual,
+    listDossiers: listDossiersMock,
+    listDossiersWithDiagnostics: async (ownerId: number) => ({
+      items: await listDossiersMock(ownerId),
+      failureReason: null,
+    }),
+    loadDossier: loadDossierMock,
+  }
 })
 
 const loadGapsMock = vi.hoisted(() => vi.fn())
@@ -80,6 +89,7 @@ function provideRagSpoilerMetadata(storyId: string): void {
   })
   loadGapsMock.mockResolvedValue({
     scriptId: storyId,
+    gapsVersion: GAPS_VERSION,
     storyChars: 20_000,
     sceneTextChars: 4,
     gapCount: 0,

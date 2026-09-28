@@ -140,26 +140,45 @@ export function revealRegions(
 ): { start: number; end: number; sceneId: string; sceneName: string }[] {
   const out: { start: number; end: number; sceneId: string; sceneName: string }[] = []
   for (const truth of dossier?.truths ?? []) {
-    const region = revealRegionForTruth(gaps, dossier, truth)
-    if (region) out.push(region)
+    const result = revealRegionForTruth(gaps, dossier, truth)
+    if (result.ok) out.push(result.region)
   }
   return out
 }
+
+export type SpoilerMetadataFailureReason =
+  | 'missing_dossier'
+  | 'missing_gaps'
+  | 'invalid_gaps'
+  | 'missing_scene_anchors'
+  | 'missing_scenes'
+  | 'missing_truth_metadata'
+  | 'unresolved_truth_scene'
+  | 'no_exact_source_match'
+  | 'ambiguous_short_match'
+  | 'invalid_source_offset'
+
+type RevealRegion = { start: number; end: number; sceneId: string; sceneName: string }
+type RevealRegionResult = { ok: true; region: RevealRegion } | { ok: false; reason: SpoilerMetadataFailureReason }
 
 /** Resolve one truth's declared reveal scene to a usable original-text region. */
 function revealRegionForTruth(
   gaps: CoverageGaps | null,
   dossier: StoryDossier | null,
   truth: unknown,
-): { start: number; end: number; sceneId: string; sceneName: string } | null {
-  if (!gaps || !dossier || !truth || typeof truth !== 'object') return null
+): RevealRegionResult {
+  if (!gaps) return { ok: false, reason: 'missing_gaps' }
+  if (!dossier) return { ok: false, reason: 'missing_dossier' }
+  if (!truth || typeof truth !== 'object') return { ok: false, reason: 'unresolved_truth_scene' }
   const target = String((truth as { revealScene?: unknown }).revealScene ?? '').trim()
-  if (!target || !Array.isArray(gaps.sceneAnchors) || !Array.isArray(dossier.scenes)) return null
+  if (!target || !Array.isArray(gaps.sceneAnchors) || !Array.isArray(dossier.scenes)) {
+    return { ok: false, reason: 'unresolved_truth_scene' }
+  }
 
   const scenesAreUsable = dossier.scenes.every((scene) =>
     !!scene && typeof scene.id === 'string' && !!scene.id && typeof scene.name === 'string' && !!scene.name,
   )
-  if (!scenesAreUsable) return null
+  if (!scenesAreUsable) return { ok: false, reason: 'unresolved_truth_scene' }
 
   const scene = findScene(dossier, target)
   const names = new Set([
@@ -170,17 +189,31 @@ function revealRegionForTruth(
   const anchor = gaps.sceneAnchors.find(
     (item) => names.has(String(item?.id ?? '').toLowerCase()) || names.has(String(item?.name ?? '').toLowerCase()),
   )
-  if (!anchor?.matched || typeof anchor.id !== 'string' || !anchor.id || typeof anchor.name !== 'string' || !anchor.name) return null
+  if (!anchor) {
+    return { ok: false, reason: scene ? 'no_exact_source_match' : 'unresolved_truth_scene' }
+  }
+  if (!anchor.matched) {
+    return {
+      ok: false,
+      reason: anchor.matchFailure === 'ambiguous-short-match' ? 'ambiguous_short_match' : 'no_exact_source_match',
+    }
+  }
+  if (typeof anchor.id !== 'string' || !anchor.id || typeof anchor.name !== 'string' || !anchor.name) {
+    return { ok: false, reason: 'invalid_source_offset' }
+  }
 
   const starts = (Array.isArray(anchor.starts) ? anchor.starts : [])
     .filter((start) => typeof start === 'number' && Number.isFinite(start) && start >= 0 && start < gaps.storyChars)
     .sort((left, right) => left - right)
-  if (!starts.length) return null
+  if (!starts.length) return { ok: false, reason: 'invalid_source_offset' }
   return {
-    start: Math.max(0, starts[0]! - SCENE_REGION_LEAD),
-    end: starts[starts.length - 1]! + SCENE_REGION_SPAN,
-    sceneId: anchor.id,
-    sceneName: anchor.name,
+    ok: true,
+    region: {
+      start: Math.max(0, starts[0]! - SCENE_REGION_LEAD),
+      end: starts[starts.length - 1]! + SCENE_REGION_SPAN,
+      sceneId: anchor.id,
+      sceneName: anchor.name,
+    },
   }
 }
 
@@ -189,18 +222,36 @@ function revealRegionForTruth(
  * A dossier truth without a matched, in-range source anchor is not safe to treat as having
  * no reveal region: doing so would silently allow every retrieved chunk through.
  */
+export function getSpoilerMetadataFailureReason(
+  gaps: CoverageGaps | null,
+  dossier: StoryDossier | null,
+): SpoilerMetadataFailureReason | null {
+  if (!dossier) return 'missing_dossier'
+  if (!gaps) return 'missing_gaps'
+  if (!Number.isFinite(gaps.storyChars) || gaps.storyChars <= 0) return 'invalid_gaps'
+  if (!Array.isArray(gaps.sceneAnchors) || !gaps.sceneAnchors.length) return 'missing_scene_anchors'
+  if (!Array.isArray(dossier.scenes) || !dossier.scenes.length) return 'missing_scenes'
+  // An absent/empty truth layer is not an explicit statement that the story has no spoilers.
+  // There is no no-spoiler marker in the current dossier schema, so require at least one
+  // evaluable reveal region instead of treating a vacuous `.every()` as protected metadata.
+  if (!Array.isArray(dossier.truths) || !dossier.truths.length) return 'missing_truth_metadata'
+  for (const truth of dossier.truths) {
+    const result = revealRegionForTruth(gaps, dossier, truth)
+    if (!result.ok) return result.reason
+  }
+  return null
+}
+
+/**
+ * Whether generated artifacts can evaluate every declared reveal-scene gate.
+ * Keep this boolean wrapper for the runtime assembly API; startGate uses the
+ * reason helper to log a useful internal diagnosis while returning a safe notice.
+ */
 export function hasUsableSpoilerMetadata(
   gaps: CoverageGaps | null,
   dossier: StoryDossier | null,
 ): boolean {
-  if (!gaps || !dossier || !Number.isFinite(gaps.storyChars) || gaps.storyChars <= 0) return false
-  if (!Array.isArray(gaps.sceneAnchors) || !gaps.sceneAnchors.length) return false
-  if (!Array.isArray(dossier.scenes) || !dossier.scenes.length) return false
-  // An absent/empty truth layer is not an explicit statement that the story has no spoilers.
-  // There is no no-spoiler marker in the current dossier schema, so require at least one
-  // evaluable reveal region instead of treating a vacuous `.every()` as protected metadata.
-  if (!Array.isArray(dossier.truths) || !dossier.truths.length) return false
-  return dossier.truths.every((truth) => revealRegionForTruth(gaps, dossier, truth) !== null)
+  return getSpoilerMetadataFailureReason(gaps, dossier) === null
 }
 
 /** 块是否与任一揭晓区域相交（半开区间；零长块不判相交）。 */

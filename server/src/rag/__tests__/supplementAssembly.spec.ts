@@ -13,6 +13,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   assembleSupplement,
+  getSpoilerMetadataFailureReason,
   SUPPLEMENT_HEADING,
   SUPPLEMENT_BUDGET_CHARS,
   MAX_CROSS_SCENE_CHUNKS,
@@ -116,6 +117,26 @@ describe('supplementAssembly: 空输入与降级', () => {
 })
 
 describe('supplementAssembly: 剧透硬闸（revealScene 锚点相交即丢）', () => {
+  it('区分缺失 gaps、未解析揭晓场景、无精确锚点与重复短摘录', () => {
+    expect(getSpoilerMetadataFailureReason(gaps(), null)).toBe('missing_dossier')
+    expect(getSpoilerMetadataFailureReason(null, dossier())).toBe('missing_gaps')
+    expect(getSpoilerMetadataFailureReason(gaps(), dossier([{ revealScene: '未收录场景' }]))).toBe('unresolved_truth_scene')
+
+    const ambiguous = gaps()
+    ambiguous.sceneAnchors = [
+      ...ambiguous.sceneAnchors.filter((anchor) => anchor.id !== 's3'),
+      { id: 's3', name: '终幕', matched: false, matchFailure: 'ambiguous-short-match' } as never,
+    ]
+    expect(getSpoilerMetadataFailureReason(ambiguous, dossier())).toBe('ambiguous_short_match')
+
+    const absent = gaps()
+    absent.sceneAnchors = [
+      ...absent.sceneAnchors.filter((anchor) => anchor.id !== 's3'),
+      { id: 's3', name: '终幕', matched: false, matchFailure: 'no-exact-source-match' } as never,
+    ]
+    expect(getSpoilerMetadataFailureReason(absent, dossier())).toBe('no_exact_source_match')
+  })
+
   it('与 revealScene 区域相交的块被丢弃（即便分最高）', () => {
     const res = assembleSupplement({
       // s2 是真相揭晓场景；块落在 s2 区域内

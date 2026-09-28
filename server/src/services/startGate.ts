@@ -111,15 +111,35 @@ async function loadIndexedStoryIds(ownerId: number): Promise<string[]> {
  * 避免 plain RAG 在没有可执行剧透闸时把原文片段注入 KP。
  */
 async function ragSpoilerMetadataNotice(ownerId: number, storyId: string): Promise<string | null> {
-  const missingNotice = '该剧本缺少可用的剧透保护锚点，请先重新生成档案并完成索引后再开局'
+  const missingNotice = '该剧本缺少可用的剧透保护锚点，请先重新生成档案后再开局'
+  const verificationUnavailableNotice = '暂时无法确认该剧本的剧透保护资料，请稍后重试或联系管理员'
+  const logFailure = async (reason: string, error?: unknown) => {
+    try {
+      const { logger } = await import('../utils/logging.js')
+      logger.warn('rag start gate rejected unusable spoiler metadata', {
+        ownerId,
+        storyId,
+        reason,
+        ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }),
+      })
+    } catch {
+      // Diagnostics must not change whether the start gate permits the room.
+    }
+  }
   try {
     const [dossierCore, coverageGaps, supplement] = await Promise.all([
       import('../rag/dossier/dossierCore.js'),
       import('../rag/dossier/coverageGaps.js'),
       import('../rag/supplementAssembly.js'),
     ])
-    const items = await dossierCore.listDossiers(ownerId)
+    const dossierScan = await dossierCore.listDossiersWithDiagnostics(ownerId, storyId)
+    const items = dossierScan.items
     if (!items.some((item) => item.scriptId === storyId)) {
+      if (dossierScan.failureReason) {
+        await logFailure(dossierScan.failureReason)
+        return dossierScan.failureReason === 'artifact_scan_incomplete' ? verificationUnavailableNotice : missingNotice
+      }
+      await logFailure('missing_dossier')
       return '该剧本尚未生成档案，请先在「我的故事」中生成可用于剧透保护的档案'
     }
     const degradedNotice = dossierCore.dossierGateNotice(items, storyId)
@@ -129,8 +149,26 @@ async function ragSpoilerMetadataNotice(ownerId: number, storyId: string): Promi
       dossierCore.loadDossier(ownerId, storyId),
       coverageGaps.loadGaps(ownerId, storyId),
     ])
-    return supplement.hasUsableSpoilerMetadata(gaps, dossier) ? null : missingNotice
-  } catch {
+    if (!dossier) {
+      await logFailure('artifact_loading_exception')
+      return missingNotice
+    }
+    if (!gaps || !coverageGaps.isCurrentGapsVersion(gaps)) {
+      const artifactFailureReason = gaps
+        ? null
+        : await coverageGaps.getGapsArtifactLoadFailureReason(ownerId, storyId)
+      const reason = artifactFailureReason ?? 'gaps_missing_or_stale'
+      await logFailure(reason)
+      return reason === 'artifact_scan_incomplete' ? verificationUnavailableNotice : missingNotice
+    }
+    const failureReason = supplement.getSpoilerMetadataFailureReason(gaps, dossier)
+    if (failureReason) {
+      await logFailure(failureReason)
+      return missingNotice
+    }
+    return null
+  } catch (error) {
+    await logFailure('artifact_loading_exception', error)
     return missingNotice
   }
 }

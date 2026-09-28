@@ -24,6 +24,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { DOSSIER_DATA_DIR } from '../../config.js'
 import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../../utils/jsonArtifact.js'
+import { assertPathInDir } from '../../utils/pathSafety.js'
 import { type DossierScene } from './schema.js'
 import { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
 
@@ -33,6 +34,8 @@ const MIN_BLOCK_CHARS = 20
 const MAX_BLOCK_CHARS = 900
 /** 覆盖判定窗口长度（逐字匹配样本）。 */
 const MATCH_WINDOW = 40
+/** 短场景文本只有整段唯一命中原文时才可作为锚点。 */
+const MIN_UNIQUE_SHORT_ANCHOR = 24
 /** 每块取样窗口起始偏移（容忍 sceneText 从段中某处开始誊抄/开头被改写）。 */
 const WINDOW_OFFSETS = [0, 40, 80, 120]
 
@@ -48,6 +51,8 @@ export interface SceneAnchor {
   id: string
   name: string
   matched: boolean
+  /** Why the exact source anchor was not resolved (for internal diagnostics). */
+  matchFailure?: 'too-short' | 'no-exact-source-match' | 'ambiguous-short-match'
   /** sceneText 逐字誊抄片段在原文中的位置（可多处——LLM 常在前后加衔接语；
    *  空=无逐字对应，纯改写/摘要，回退时该场景锚不到原文）。 */
   starts?: number[]
@@ -73,12 +78,12 @@ export interface CoverageGapsFile extends CoverageGaps {
   storyName: string
   generatedAt: number
   /** 算法版本（GAPS_VERSION）：落盘结构/语义变更时递增。旧文件缺该字段 =
-   *  版本 1（P26a 之前，gap span 会把紧随的被覆盖块算进缺口 → gapPct 偏高）。 */
+   *  版本 1；版本 2 尚不支持唯一短摘录锚点，需要重新生成才能修复短场景。 */
   gapsVersion?: number
 }
 
-/** 当前 gaps 算法版本。1 = P22 初版；2 = P26a（closeGap 在被覆盖块前收口）。 */
-export const GAPS_VERSION = 2
+/** 当前 gaps 算法版本。1 = P22 初版；2 = P26a；3 = 唯一短摘录锚点。 */
+export const GAPS_VERSION = 3
 
 interface Block {
   start: number
@@ -160,13 +165,43 @@ function findRawOffset(rawText: string, needle: string): number {
   return -1
 }
 
+/** 把去空白后的偏移映射回原文偏移。 */
+function rawOffsetAtNormalizedIndex(rawText: string, normalizedIndex: number): number {
+  let normalizedOffset = 0
+  for (let rawOffset = 0; rawOffset < rawText.length; rawOffset++) {
+    if (/\s/.test(rawText[rawOffset]!)) continue
+    if (normalizedOffset === normalizedIndex) return rawOffset
+    normalizedOffset++
+  }
+  return -1
+}
+
+/** 短摘录必须在去空白后的原文中唯一匹配，避免将重复文字误当成可靠锚点。 */
+function findUniqueRawOffset(
+  rawText: string,
+  needle: string,
+): { offset: number; matchFailure?: SceneAnchor['matchFailure'] } {
+  const normalizedStory = normalizeText(rawText)
+  const first = normalizedStory.indexOf(needle)
+  if (first < 0) return { offset: -1, matchFailure: 'no-exact-source-match' }
+  if (normalizedStory.indexOf(needle, first + 1) >= 0) return { offset: -1, matchFailure: 'ambiguous-short-match' }
+  const offset = rawOffsetAtNormalizedIndex(rawText, first)
+  return offset >= 0 ? { offset } : { offset, matchFailure: 'no-exact-source-match' }
+}
+
 /**
  * sceneText 在原文中的逐字誊抄位置：跨 sceneText 采样（每 120 字一个 40 字窗，
  * 最多 10 个）找命中——LLM 常在誊抄前后加衔接语，只锚头部会大面积漏。
  */
-function anchorStartsOf(rawText: string, sceneText: string): number[] {
+function anchorStartsOf(rawText: string, sceneText: string): { starts: number[]; matchFailure?: SceneAnchor['matchFailure'] } {
   const norm = normalizeText(sceneText)
-  if (norm.length < 10) return []
+  if (norm.length < MIN_UNIQUE_SHORT_ANCHOR) return { starts: [], matchFailure: 'too-short' }
+  if (norm.length >= MIN_UNIQUE_SHORT_ANCHOR && norm.length < MATCH_WINDOW) {
+    const result = findUniqueRawOffset(rawText, norm)
+    return result.offset >= 0
+      ? { starts: [result.offset] }
+      : { starts: [], matchFailure: result.matchFailure }
+  }
   const starts: number[] = []
   const step = 120
   const maxSamples = 10
@@ -178,7 +213,10 @@ function anchorStartsOf(rawText: string, sceneText: string): number[] {
     const hit = findRawOffset(rawText, needle)
     if (hit >= 0) starts.push(hit)
   }
-  return [...new Set(starts)].sort((a, b) => a - b)
+  const uniqueStarts = [...new Set(starts)].sort((a, b) => a - b)
+  return uniqueStarts.length
+    ? { starts: uniqueStarts }
+    : { starts: [], matchFailure: 'no-exact-source-match' }
 }
 
 /**
@@ -224,8 +262,10 @@ export function computeCoverageGaps(storyText: string, scenes: DossierScene[]): 
 
   const gapChars = spans.reduce((sum, s) => sum + s.chars, 0)
   const sceneAnchors: SceneAnchor[] = (scenes ?? []).map((sc) => {
-    const starts = anchorStartsOf(text, sc.sceneText ?? '')
-    return starts.length ? { id: sc.id, name: sc.name, matched: true, starts } : { id: sc.id, name: sc.name, matched: false }
+    const { starts, matchFailure } = anchorStartsOf(text, sc.sceneText ?? '')
+    return starts.length
+      ? { id: sc.id, name: sc.name, matched: true, starts }
+      : { id: sc.id, name: sc.name, matched: false, matchFailure }
   })
   return {
     storyChars: text.length,
@@ -314,6 +354,43 @@ export async function loadGaps(userId: number, scriptId: string): Promise<Covera
   } catch {
     return null
   }
+}
+
+/**
+ * Diagnostic for the RAG start gate. `loadGaps` keeps its established null-on-
+ * failure contract for consumers; this probe distinguishes a missing sidecar
+ * from unreadable, malformed, or invalid matching sidecar files.
+ */
+export async function getGapsArtifactLoadFailureReason(
+  userId: number,
+  scriptId: string,
+): Promise<'artifact_loading_exception' | 'artifact_scan_incomplete' | null> {
+  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  let entries: string[]
+  try {
+    entries = await fs.readdir(dir)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'artifact_scan_incomplete'
+  }
+
+  let scanIncomplete = false
+  for (const fileName of entries) {
+    if (!fileName.endsWith('.gaps.json')) continue
+    let parsed: { scriptId?: unknown; spans?: unknown } | null
+    try {
+      const file = assertPathInDir(dir, path.join(dir, fileName), 'gaps file')
+      parsed = JSON.parse(await fs.readFile(file, 'utf-8')) as { scriptId?: unknown; spans?: unknown } | null
+    } catch {
+      scanIncomplete = true
+      continue
+    }
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.scriptId !== 'string') {
+      scanIncomplete = true
+      continue
+    }
+    if (parsed.scriptId === scriptId && !Array.isArray(parsed.spans)) return 'artifact_loading_exception'
+  }
+  return scanIncomplete ? 'artifact_scan_incomplete' : null
 }
 
 /**

@@ -54,16 +54,18 @@ vi.mock('../ragService.js', () => ({
 }))
 vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
+  const listDossiers = vi.fn(async () => reaperStories.map((scriptId) => ({
+    scriptId,
+    name: 'reaper',
+    sceneCount: 1,
+    generatedAt: 1,
+    degraded: false,
+    coveragePct: 100,
+  })))
   return {
     ...actual,
-    listDossiers: vi.fn(async () => reaperStories.map((scriptId) => ({
-      scriptId,
-      name: 'reaper',
-      sceneCount: 1,
-      generatedAt: 1,
-      degraded: false,
-      coveragePct: 100,
-    }))),
+    listDossiers,
+    listDossiersWithDiagnostics: async () => ({ items: await listDossiers(), failureReason: null }),
     loadDossier: vi.fn(async (_ownerId: number, scriptId: string) => ({
       scriptId,
       storyName: 'reaper',
@@ -82,6 +84,7 @@ vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
     ...actual,
     loadGaps: vi.fn(async (_ownerId: number, scriptId: string) => ({
       scriptId,
+      gapsVersion: actual.GAPS_VERSION,
       storyChars: 20_000,
       sceneTextChars: 4,
       gapCount: 0,

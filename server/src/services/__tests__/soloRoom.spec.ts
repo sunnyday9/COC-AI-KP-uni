@@ -14,6 +14,7 @@ import {
 } from '../roomService.js'
 import { getRoomRow } from '../roomStorage.js'
 import { getDb } from '../../db/index.js'
+import { GAPS_VERSION } from '../../rag/dossier/coverageGaps.js'
 
 const listStoriesMock = vi.hoisted(() => vi.fn())
 vi.mock('../ragService.js', () => ({ listStories: listStoriesMock }))
@@ -22,7 +23,15 @@ const listDossiersMock = vi.hoisted(() => vi.fn())
 const loadDossierMock = vi.hoisted(() => vi.fn())
 vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
-  return { ...actual, listDossiers: listDossiersMock, loadDossier: loadDossierMock }
+  return {
+    ...actual,
+    listDossiers: listDossiersMock,
+    listDossiersWithDiagnostics: async (ownerId: number) => ({
+      items: await listDossiersMock(ownerId),
+      failureReason: null,
+    }),
+    loadDossier: loadDossierMock,
+  }
 })
 
 const loadGapsMock = vi.hoisted(() => vi.fn())
@@ -77,6 +86,7 @@ beforeEach(() => {
   }))
   loadGapsMock.mockImplementation(async (_ownerId: number, scriptId: string) => ({
     scriptId,
+    gapsVersion: GAPS_VERSION,
     storyChars: 20_000,
     sceneTextChars: 4,
     gapCount: 0,

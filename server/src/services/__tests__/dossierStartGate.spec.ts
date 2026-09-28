@@ -12,6 +12,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getDb } from '../../db/index.js'
+import { computeCoverageGaps, GAPS_VERSION } from '../../rag/dossier/coverageGaps.js'
+import { logger } from '../../utils/logging.js'
 import {
   _clearRoomRegistryForTests,
   bindRoomCharacter,
@@ -25,16 +27,29 @@ const listStoriesMock = vi.hoisted(() => vi.fn())
 vi.mock('../ragService.js', () => ({ listStories: listStoriesMock }))
 
 const listDossiersMock = vi.hoisted(() => vi.fn())
+const listDossiersWithDiagnosticsMock = vi.hoisted(() => vi.fn())
 const loadDossierMock = vi.hoisted(() => vi.fn())
 vi.mock('../../rag/dossier/dossierCore.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rag/dossier/dossierCore.js')>()
-  return { ...actual, listDossiers: listDossiersMock, loadDossier: loadDossierMock }
+  return {
+    ...actual,
+    listDossiers: listDossiersMock,
+    listDossiersWithDiagnostics: listDossiersWithDiagnosticsMock,
+    loadDossier: loadDossierMock,
+  }
 })
 
 const loadGapsMock = vi.hoisted(() => vi.fn())
+const getGapsArtifactLoadFailureReasonMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<'artifact_loading_exception' | 'artifact_scan_incomplete' | null> => null),
+)
 vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rag/dossier/coverageGaps.js')>()
-  return { ...actual, loadGaps: loadGapsMock }
+  return {
+    ...actual,
+    loadGaps: loadGapsMock,
+    getGapsArtifactLoadFailureReason: getGapsArtifactLoadFailureReasonMock,
+  }
 })
 
 /** 造一条清单记录（其余字段门闩不读）。 */
@@ -57,6 +72,7 @@ function usableRagDossier(scriptId: string) {
 function usableRagGaps(scriptId: string) {
   return {
     scriptId,
+    gapsVersion: GAPS_VERSION,
     storyChars: 20000,
     sceneTextChars: 4,
     gapCount: 0,
@@ -97,9 +113,14 @@ const MINIMAL_SHEET = {
 
 beforeEach(() => {
   listStoriesMock.mockReturnValue([])
-  listDossiersMock.mockReset()
+  listDossiersMock.mockReset().mockResolvedValue([])
+  listDossiersWithDiagnosticsMock.mockReset().mockImplementation(async (ownerId: number) => ({
+    items: await listDossiersMock(ownerId),
+    failureReason: null,
+  }))
   loadDossierMock.mockReset().mockResolvedValue(null)
   loadGapsMock.mockReset().mockResolvedValue(null)
+  getGapsArtifactLoadFailureReasonMock.mockReset().mockResolvedValue(null)
 })
 
 afterEach(() => {
@@ -230,6 +251,148 @@ describe('#55 createSoloRoom 门闩（solo 出生即 playing，不经 startRoom�
       expect(res.message).toContain('剧透保护锚点')
     }
     expect(getDb().prepare(`SELECT 1 FROM rooms WHERE owner_id = ?`).get(owner)).toBeUndefined()
+  })
+
+  it('过期 sidecar 与重复短摘录维持 fail closed，并记录可区分的内部原因', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const staleOwner = seedUser('so_rag_stale_gaps')
+      listStoriesMock.mockReturnValue([{ storyId: 'story_stale', name: 'x', chunkCount: 1, indexedAt: 1 }])
+      listDossiersMock.mockResolvedValue([item('story_stale', { degraded: false, coveragePct: 54.7 })])
+      loadDossierMock.mockResolvedValue(usableRagDossier('story_stale'))
+      loadGapsMock.mockResolvedValue({ ...usableRagGaps('story_stale'), gapsVersion: GAPS_VERSION - 1 })
+
+      const stale = await createSoloRoom(staleOwner, { storyId: 'story_stale', name: '调查员', sheet: MINIMAL_SHEET })
+      expect(stale.ok).toBe(false)
+      if (!stale.ok) {
+        expect(stale.message).toContain('重新生成档案')
+        expect(stale.message).not.toContain('索引')
+      }
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('rag start gate rejected'),
+        expect.objectContaining({ reason: 'gaps_missing_or_stale' }),
+      )
+
+      const ambiguousOwner = seedUser('so_rag_ambiguous_anchor')
+      listStoriesMock.mockReturnValue([{ storyId: 'story_ambiguous', name: 'x', chunkCount: 1, indexedAt: 1 }])
+      listDossiersMock.mockResolvedValue([item('story_ambiguous', { degraded: false, coveragePct: 54.7 })])
+      loadDossierMock.mockResolvedValue(usableRagDossier('story_ambiguous'))
+      loadGapsMock.mockResolvedValue({
+        ...usableRagGaps('story_ambiguous'),
+        sceneAnchors: [{ id: 'reveal', name: '终幕', matched: false, matchFailure: 'ambiguous-short-match' }],
+      })
+
+      const ambiguous = await createSoloRoom(ambiguousOwner, { storyId: 'story_ambiguous', name: '调查员', sheet: MINIMAL_SHEET })
+      expect(ambiguous.ok).toBe(false)
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('rag start gate rejected'),
+        expect.objectContaining({ reason: 'ambiguous_short_match' }),
+      )
+
+      const exceptionOwner = seedUser('so_rag_gaps_exception')
+      listStoriesMock.mockReturnValue([{ storyId: 'story_exception', name: 'x', chunkCount: 1, indexedAt: 1 }])
+      listDossiersMock.mockResolvedValue([item('story_exception', { degraded: false, coveragePct: 54.7 })])
+      loadDossierMock.mockResolvedValue(usableRagDossier('story_exception'))
+      loadGapsMock.mockRejectedValue(new Error('simulated sidecar read failure'))
+
+      const exception = await createSoloRoom(exceptionOwner, { storyId: 'story_exception', name: '调查员', sheet: MINIMAL_SHEET })
+      expect(exception.ok).toBe(false)
+      if (!exception.ok) expect(exception.message).not.toContain('simulated sidecar read failure')
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('rag start gate rejected'),
+        expect.objectContaining({ reason: 'artifact_loading_exception' }),
+      )
+
+      warn.mockClear()
+      const corruptDossierOwner = seedUser('so_rag_corrupt_dossier')
+      listStoriesMock.mockReturnValue([{ storyId: 'story_corrupt_dossier', name: 'x', chunkCount: 1, indexedAt: 1 }])
+      listDossiersMock.mockResolvedValue([])
+      listDossiersWithDiagnosticsMock.mockResolvedValueOnce({ items: [], failureReason: 'artifact_loading_exception' })
+      const corruptDossier = await createSoloRoom(corruptDossierOwner, {
+        storyId: 'story_corrupt_dossier', name: '调查员', sheet: MINIMAL_SHEET,
+      })
+      expect(corruptDossier.ok).toBe(false)
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('rag start gate rejected'),
+        expect.objectContaining({ reason: 'artifact_loading_exception' }),
+      )
+
+      warn.mockClear()
+      const corruptGapsOwner = seedUser('so_rag_corrupt_gaps')
+      listStoriesMock.mockReturnValue([{ storyId: 'story_corrupt_gaps', name: 'x', chunkCount: 1, indexedAt: 1 }])
+      listDossiersMock.mockResolvedValue([item('story_corrupt_gaps', { degraded: false, coveragePct: 54.7 })])
+      loadDossierMock.mockResolvedValue(usableRagDossier('story_corrupt_gaps'))
+      loadGapsMock.mockResolvedValue(null)
+      getGapsArtifactLoadFailureReasonMock.mockResolvedValue('artifact_loading_exception')
+      const corruptGaps = await createSoloRoom(corruptGapsOwner, {
+        storyId: 'story_corrupt_gaps', name: '调查员', sheet: MINIMAL_SHEET,
+      })
+      expect(corruptGaps.ok).toBe(false)
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('rag start gate rejected'),
+        expect.objectContaining({ reason: 'artifact_loading_exception' }),
+      )
+
+      warn.mockClear()
+      const incompleteScanOwner = seedUser('so_rag_incomplete_scan')
+      listStoriesMock.mockReturnValue([{ storyId: 'story_incomplete_scan', name: 'x', chunkCount: 1, indexedAt: 1 }])
+      listDossiersMock.mockResolvedValue([item('story_incomplete_scan', { degraded: false, coveragePct: 54.7 })])
+      loadDossierMock.mockResolvedValue(usableRagDossier('story_incomplete_scan'))
+      loadGapsMock.mockResolvedValue(null)
+      getGapsArtifactLoadFailureReasonMock.mockResolvedValue('artifact_scan_incomplete')
+      const incompleteScan = await createSoloRoom(incompleteScanOwner, {
+        storyId: 'story_incomplete_scan', name: '调查员', sheet: MINIMAL_SHEET,
+      })
+      expect(incompleteScan.ok).toBe(false)
+      if (!incompleteScan.ok) expect(incompleteScan.message).toContain('暂时无法确认')
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('rag start gate rejected'),
+        expect.objectContaining({ reason: 'artifact_scan_incomplete' }),
+      )
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('唯一的 31/34 字 truth 摘录与长摘录都有锚点 → solo RAG 开局通过门闩', async () => {
+    const owner = seedUser('so_rag_short_truths')
+    const storyId = 'story_rag_short_truths'
+    const sceneTexts = [
+      '短场景甲原文'.padEnd(31, '甲'),
+      '短场景乙原文'.padEnd(34, '乙'),
+      '较长的第三个真相揭晓场景原文'.padEnd(72, '丙'),
+    ]
+    const scenes = sceneTexts.map((sceneText, index) => ({
+      id: `reveal_${index}`,
+      name: `揭晓场景${index + 1}`,
+      sceneText,
+    }))
+    const dossier = {
+      ...usableRagDossier(storyId),
+      scenes,
+      truths: scenes.map((scene, index) => ({
+        id: `truth_${index}`,
+        title: `真相${index + 1}`,
+        detail: '已由来源原文精确定位',
+        revealScene: scene.id,
+      })),
+    }
+    const story = [
+      '原文开头的背景叙述独立完整并且长度超过最小分段阈值。',
+      ...sceneTexts,
+      '结尾原文保留了后续事件的完整记载。',
+    ].join('\n\n')
+    const gaps = { ...computeCoverageGaps(story, scenes as never), gapsVersion: GAPS_VERSION }
+
+    expect(sceneTexts.map((text) => text.length)).toEqual([31, 34, 72])
+    expect(gaps.sceneAnchors.every((anchor) => anchor.matched)).toBe(true)
+    listStoriesMock.mockReturnValue([{ storyId, name: 'x', chunkCount: 1, indexedAt: 1 }])
+    listDossiersMock.mockResolvedValue([item(storyId, { degraded: false, coveragePct: 54.7 })])
+    loadDossierMock.mockResolvedValue(dossier)
+    loadGapsMock.mockResolvedValue(gaps)
+
+    const res = await createSoloRoom(owner, { storyId, name: '调查员', sheet: MINIMAL_SHEET })
+    expect(res.ok).toBe(true)
   })
 
   it('workflow=rag + 已索引且揭晓锚点可用 → ok', async () => {

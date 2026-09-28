@@ -22,6 +22,7 @@ vi.stubEnv('DOSSIER_DATA_DIR', tmpDossier)
 vi.resetModules()
 
 const { generateDossier, loadDossier, listDossiers, deleteDossier, buildSceneBlock, coverageHintLine, VERIFY_ORIGINAL_HINT, renderSceneNotFound, renderSceneUncovered, renderLexicalMiss, findScene, lexicalSearch, splitStorySections, stripCodeFence, persist, dossierGateNotice } = await import('../storyDossierService.js')
+const { listDossiersWithDiagnostics } = await import('../dossierCore.js')
 const { importStory, readStory } = await import('../../../services/storyService.js')
 const { persistGaps, GAPS_VERSION } = await import('../coverageGaps.js')
 const { chatForRag } = await import('../../../services/aiService.js')
@@ -56,6 +57,29 @@ describe('storyDossierService', () => {
   beforeEach(async () => {
     userId = 1
     await fs.mkdir(path.join(tmpUploads, String(userId), 'stories'), { recursive: true })
+  })
+
+  it('reports malformed dossier files as load failures but missing directories as absent', async () => {
+    const userDir = path.join(tmpDossier, String(userId))
+    await fs.mkdir(userDir, { recursive: true })
+    await fs.writeFile(path.join(userDir, 'corrupt.json'), '{', 'utf-8')
+
+    expect(await listDossiersWithDiagnostics(userId, 'missing-story')).toMatchObject({
+      items: [],
+      failureReason: 'artifact_scan_incomplete',
+    })
+    expect(await listDossiersWithDiagnostics(userId + 1, 'missing-story')).toMatchObject({
+      items: [],
+      failureReason: null,
+    })
+
+    await fs.writeFile(path.join(userDir, 'invalid-target.json'), JSON.stringify({ scriptId: 'broken-story' }), 'utf-8')
+    expect(await listDossiersWithDiagnostics(userId, 'broken-story')).toMatchObject({
+      failureReason: 'artifact_loading_exception',
+    })
+    expect(await listDossiersWithDiagnostics(userId, 'another-story')).toMatchObject({
+      failureReason: 'artifact_scan_incomplete',
+    })
   })
 
   afterEach(async () => {

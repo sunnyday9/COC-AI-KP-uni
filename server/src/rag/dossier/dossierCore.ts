@@ -129,45 +129,102 @@ export interface DossierListItem {
 }
 
 /** List a user's generated dossiers (disk scan). */
-export async function listDossiers(userId: number): Promise<DossierListItem[]> {
+async function scanDossiers(userId: number, requestedScriptId?: string): Promise<{
+  items: DossierListItem[]
+  failureReason: 'artifact_loading_exception' | 'artifact_scan_incomplete' | null
+}> {
   let entries: string[]
   try {
     entries = await fs.readdir(userDir(userId))
-  } catch {
-    return []
+  } catch (error) {
+    return {
+      items: [],
+      failureReason: (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'artifact_scan_incomplete',
+    }
   }
   const out: DossierListItem[] = []
+  let failureReason: 'artifact_loading_exception' | 'artifact_scan_incomplete' | null = null
   for (const f of entries) {
     if (!f.endsWith('.json') || f.endsWith('.gaps.json') || f.endsWith('.annex.json')) continue
+    let raw: string
     try {
       const file = assertPathInDir(userDir(userId), path.join(userDir(userId), f), 'dossier file')
-      const raw = await fs.readFile(file, 'utf-8')
-      const d = parseDossierJson(raw)
-      if (!d) continue
-      const item: DossierListItem = {
-        scriptId: d.scriptId,
-        name: d.storyName,
-        sceneCount: d.scenes.length,
-        generatedAt: d.generatedAt,
-        coveragePct: d.quality?.coveragePct,
-        degraded: d.quality?.degraded,
-        failedBatches: d.quality?.failedBatches,
+      raw = await fs.readFile(file, 'utf-8')
+    } catch {
+      // The UUID filename cannot identify which script the unreadable file belongs to.
+      failureReason ??= 'artifact_scan_incomplete'
+      continue
+    }
+
+    let d: StoryDossier | null
+    try {
+      d = parseDossierJson(raw)
+    } catch {
+      d = null
+    }
+    if (!d) {
+      if (!requestedScriptId) continue
+      let storedScriptId: unknown
+      try {
+        storedScriptId = (JSON.parse(raw) as { scriptId?: unknown } | null)?.scriptId
+      } catch {
+        // Corrupt JSON has no reliable script id, so report an incomplete scan.
+        failureReason ??= 'artifact_scan_incomplete'
+        continue
       }
-      if (d.quality === undefined) {
-        // 旧档案（quality 快照引入前）：按 JSON 内的 scriptId 找 gaps
-        // artifact；sidecar 文件也使用 UUID 名称，不与主档案靠文件名绑定。
+      if (requestedScriptId && storedScriptId === requestedScriptId) {
+        failureReason = 'artifact_loading_exception'
+      } else if (typeof storedScriptId !== 'string') {
+        failureReason ??= 'artifact_scan_incomplete'
+      }
+      continue
+    }
+
+    const item: DossierListItem = {
+      scriptId: d.scriptId,
+      name: d.storyName,
+      sceneCount: d.scenes.length,
+      generatedAt: d.generatedAt,
+      coveragePct: d.quality?.coveragePct,
+      degraded: d.quality?.degraded,
+      failedBatches: d.quality?.failedBatches,
+    }
+    if (d.quality === undefined) {
+      // 旧档案（quality 快照引入前）：按 JSON 内的 scriptId 找 gaps
+      // artifact；sidecar 文件也使用 UUID 名称，不与主档案靠文件名绑定。
+      try {
         const est = estimateLegacyCoverage(await loadGaps(userId, d.scriptId))
         if (est !== undefined) {
           item.coveragePct = est
           item.degraded = est < DOSSIER_MIN_COVERAGE_PCT
         }
+      } catch {
+        if (requestedScriptId === d.scriptId) failureReason = 'artifact_loading_exception'
+        continue
       }
-      out.push(item)
-    } catch {
-      // skip unparsable files
     }
+    out.push(item)
   }
-  return out.sort((a, b) => b.generatedAt - a.generatedAt)
+  return { items: out.sort((a, b) => b.generatedAt - a.generatedAt), failureReason }
+}
+
+/**
+ * List a user's generated dossiers. Invalid files retain the established
+ * skip-on-error behavior used by list views.
+ */
+export async function listDossiers(userId: number): Promise<DossierListItem[]> {
+  return (await scanDossiers(userId)).items
+}
+
+/** Same scan as listDossiers, with internal load-failure detail for fail-closed gates. */
+export async function listDossiersWithDiagnostics(
+  userId: number,
+  requestedScriptId: string,
+): Promise<{
+  items: DossierListItem[]
+  failureReason: 'artifact_loading_exception' | 'artifact_scan_incomplete' | null
+}> {
+  return scanDossiers(userId, requestedScriptId)
 }
 
 /** 旧档案覆盖估算：仅信当前算法版本；无明细/损坏 → undefined。 */

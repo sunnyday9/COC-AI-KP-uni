@@ -50,6 +50,10 @@ vi.mock('../../rag/dossier/dossierCore.js', async () => {
     // vitest 对缺失导出抛错（#53 在 kpWireSampleRoom 踩过同一坑），必须显式导出；
     // 本 spec 不测门闩，给健康清单让门闩放行
     listDossiers: vi.fn(async () => [{ scriptId: 'demo.txt', name: '旧图书馆的铜钥匙', sceneCount: 1, generatedAt: 1, degraded: false }]),
+    listDossiersWithDiagnostics: vi.fn(async () => ({
+      items: [{ scriptId: 'demo.txt', name: '旧图书馆的铜钥匙', sceneCount: 1, generatedAt: 1, degraded: false }],
+      failureReason: null,
+    })),
     dossierGateNotice: vi.fn(() => null),
     // #53：mock 必须导出它（vitest 对缺失导出抛错 → 被 fetchDossierContext 的 catch 吞成空块）
     renderSceneUncovered: vi.fn((name: string, names: string[]) => `【场景归属提示】档案未覆盖当前场景「${name}」。档案中的场景：${names.join('、')}。`),
@@ -62,6 +66,7 @@ vi.mock('../../rag/dossier/coverageGaps.js', async (importOriginal) => {
     ...actual,
     loadGaps: vi.fn(async (_ownerId: number, scriptId: string) => ({
       scriptId,
+      gapsVersion: actual.GAPS_VERSION,
       storyChars: 20_000,
       sceneTextChars: 8,
       gapCount: 0,

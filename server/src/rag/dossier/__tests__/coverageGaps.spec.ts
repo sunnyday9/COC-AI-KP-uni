@@ -21,6 +21,7 @@ const {
   loadGaps,
   deleteGaps,
   isCurrentGapsVersion,
+  getGapsArtifactLoadFailureReason,
   GAPS_VERSION,
 } = await import('../coverageGaps.js')
 
@@ -110,6 +111,33 @@ describe('coverageGaps: 覆盖判定 + span 合并', () => {
     void prefixLen
   })
 
+  it('24–39 字的唯一逐字场景可锚定到归一化原文的原始偏移', () => {
+    const sceneText = '事故发生后，旧教学楼的铁门一直从里面锁着，钥匙至今无人找到。'
+    const sourceExcerpt = sceneText.replace('旧教学楼', '旧教学楼\n')
+    const sourceBefore = '原文中此前有另一段独立叙述，完整保留了现场调查时的记录。'
+    const sourceAfter = '档案没有摘录后面的这一段独立原文内容。'
+    const story = `${sourceBefore}\n\n${sourceExcerpt}\n\n${sourceAfter}`
+    const excerptLength = normalizeText(sceneText).length
+    expect(excerptLength).toBeGreaterThanOrEqual(24)
+    expect(excerptLength).toBeLessThan(40)
+
+    const gaps = computeCoverageGaps(story, [{ id: 'short', name: '短场景', sceneText }] as never)
+    const anchor = gaps.sceneAnchors[0]
+    expect(anchor?.matched).toBe(true)
+    expect(anchor?.starts).toContain(story.indexOf('事故'))
+  })
+
+  it('重复的短摘录与未逐字出现的改写场景仍没有可用锚点', () => {
+    const sceneText = '事故发生后，旧教学楼的铁门一直从里面锁着，钥匙至今无人找到。'
+    const repeatedStory = `${'前置背景'.repeat(8)}${sceneText}${'中间叙述'.repeat(8)}${sceneText}`
+    const repeated = computeCoverageGaps(repeatedStory, [{ id: 'repeat', name: '重复', sceneText }] as never)
+    expect(repeated.sceneAnchors[0]).toMatchObject({ id: 'repeat', matched: false })
+
+    const paraphrase = sceneText.replace('旧教学楼', '新教学楼')
+    const rewritten = computeCoverageGaps(paraphrase, [{ id: 'rewrite', name: '改写', sceneText }] as never)
+    expect(rewritten.sceneAnchors[0]).toMatchObject({ id: 'rewrite', matched: false })
+  })
+
   it('归一化对换行/空白不敏感（PDF 排版差异）', () => {
     expect(normalizeText('甲 乙\n丙\t丁')).toBe('甲乙丙丁')
     const st = `第一段很长的话甲乙丙丁戊己庚辛壬癸子丑。\n换行后继续第二行内容依然逐字誊抄进档案场景文本里。`
@@ -195,6 +223,19 @@ describe('coverageGaps: 场景级覆盖度（P26）', () => {
 })
 
 describe('coverageGaps: 落盘往返 + 删除', () => {
+  it('reports malformed sidecars as load failures but missing sidecars as absent', async () => {
+    const userDir = path.join(tmpRoot, 'dossiers', '88')
+    await fs.mkdir(userDir, { recursive: true })
+    await fs.writeFile(path.join(userDir, 'corrupt.gaps.json'), '{', 'utf-8')
+
+    expect(await getGapsArtifactLoadFailureReason(88, 'missing-story')).toBe('artifact_scan_incomplete')
+    expect(await getGapsArtifactLoadFailureReason(89, 'missing-story')).toBeNull()
+
+    await fs.writeFile(path.join(userDir, 'target.gaps.json'), JSON.stringify({ scriptId: 'broken-story', spans: null }), 'utf-8')
+    expect(await getGapsArtifactLoadFailureReason(88, 'broken-story')).toBe('artifact_loading_exception')
+    expect(await getGapsArtifactLoadFailureReason(88, 'another-story')).toBe('artifact_scan_incomplete')
+  })
+
   it('persist/load/delete .gaps.json', async () => {
     const file = {
       scriptId: 'demo.txt',
@@ -215,6 +256,7 @@ describe('coverageGaps: 落盘往返 + 删除', () => {
     // P26：落盘自动打算法版本戳；缺失字段的旧文件按版本 1 判定
     expect(loaded?.gapsVersion).toBe(GAPS_VERSION)
     expect(isCurrentGapsVersion(loaded)).toBe(true)
+    expect(isCurrentGapsVersion({ ...file, gapsVersion: 2 } as never)).toBe(false)
     expect(isCurrentGapsVersion({ ...file, scriptId: 'x', generatedAt: 1 } as never)).toBe(false)
     await deleteGaps(1, 'demo.txt')
     expect(await loadGaps(1, 'demo.txt')).toBeNull()
