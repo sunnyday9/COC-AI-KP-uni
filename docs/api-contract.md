@@ -7,7 +7,7 @@
 > 由 REST + WebSocket 实现，本文节编号沿用至今（§6/§7/§8 等退役节保留注记不重排）。
 > §10 安全约束是 D-09 红线文档：`pathSafety.ts` / `fileNames.ts` 等代码注释引用它，原文逐字节保留。
 > 公开端点包括 `POST /api/auth/register`、`POST /api/auth/login` 及健康探针（§12）。`GET /api/auth/me` 及其余所有 `/api/*` 端点均需要 `Authorization: Bearer <JWT>`。
-> 实挂路由组以 `server/src/app.ts` 为准（9 组，完整清单见 §11）。
+> 各部署模式的实挂路由组以 `server/src/app.ts` 为准，完整清单见 §11。
 
 ## 约定
 
@@ -26,6 +26,7 @@
 | GET | `/api/auth/me` | 当前用户 |
 
 - JWT 鉴权（30 天有效期）；实现：`server/src/routes/auth.routes.ts` + `services/authService.ts` + `middleware/auth.ts`。
+- 两种部署模式均提供这三个端点。共享模式下，通过任一网关签发的 token 可用于同一部署的其他网关。各模式只接受本模式签发的 token。共享模式的注册与登录在用户名含空字符时返回 400。
 
 ## 2. Settings（Task 2）— 替代 electron-store
 
@@ -36,6 +37,7 @@
 
 - 字段形状以 `shared/types/settings.ts` 为准（该文件注释声明镜像本节）；协议一等公民设计（protocol 取代 provider 两级模型）见 ADR-0003。
 - 实现：`server/src/routes/settings.routes.ts` + `services/settingsService.ts`（apiKey 服务端 AES-256 加密存储，GET 不回传）。
+- 两种部署模式均按登录账号读写设置。共享模式的 `PUT` 按字段合并 `ai` 与 `rag`，未提交的字段保留原值。同一账号的并发更新按事务顺序应用，同一字段以最后一次更新为准。本地模式用默认值填充未提交的非密钥字段。两种模式都在省略 `apiKey` 或提交空字符串、旧占位符 `***` 时保留已保存的密钥。
 
 ## 3. AI（Task 2）
 
@@ -139,7 +141,7 @@
 
 ## 11. 实挂路由组一览（与 `server/src/app.ts` 对齐，9 组）
 
-`createApp()` 实际挂载的 9 组路由如下；每组只给「端点存在性 + 代码入口」，请求/响应形状一律以对应 `routes/*.ts` 与 service 实码为准：
+`local`（默认）挂载下表 9 组路由及 §4 的 WebSocket。`shared-accounts` 只挂载第 1、2 组 HTTP 路由。两种模式均提供 §12 的健康探针。启动配置见 [部署指南](DEPLOYMENT.md#61-双网关账号预发布环境113)。
 
 | # | 挂载路径 | 路由文件 | 端点（Path 级） | 导览 |
 |---|---|---|---|---|

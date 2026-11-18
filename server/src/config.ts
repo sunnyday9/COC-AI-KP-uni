@@ -6,6 +6,7 @@ import 'dotenv/config'
 export const PORT = Number(process.env.PORT ?? 3000)
 
 const DEV_JWT_SECRET = 'dev-secret-change-me'
+export const DEPLOYMENT_MODE = process.env.DEPLOYMENT_MODE?.trim() || 'local'
 
 /**
  * Reject an unsafe production configuration before the HTTP app starts.
@@ -13,8 +14,25 @@ const DEV_JWT_SECRET = 'dev-secret-change-me'
  */
 export function assertRuntimeConfig(): void {
   const configuredSecret = process.env.JWT_SECRET?.trim()
+  if (DEPLOYMENT_MODE !== 'local' && DEPLOYMENT_MODE !== 'shared-accounts') {
+    throw new Error('DEPLOYMENT_MODE must be local or shared-accounts')
+  }
   if (process.env.NODE_ENV === 'production' && (!configuredSecret || configuredSecret === DEV_JWT_SECRET)) {
     throw new Error('JWT_SECRET must be set to a non-default value in production')
+  }
+  if (DEPLOYMENT_MODE === 'shared-accounts') {
+    if (!configuredSecret || configuredSecret === DEV_JWT_SECRET) {
+      throw new Error('JWT_SECRET must be set to a non-default value in shared-accounts mode')
+    }
+    const databaseUrl = URL.parse(process.env.DATABASE_URL ?? '')
+    if (
+      !databaseUrl ||
+      !['postgres:', 'postgresql:'].includes(databaseUrl.protocol) ||
+      !databaseUrl.hostname ||
+      !databaseUrl.pathname.slice(1)
+    ) {
+      throw new Error('DATABASE_URL must name a PostgreSQL host and database in shared-accounts mode')
+    }
   }
 }
 

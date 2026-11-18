@@ -36,7 +36,7 @@ Nginx（TLS / WebSocket 升级）
 
 - **单进程即可**：状态在内存（RoomService）+ SQLite 快照。≤100 并发房间无需 Redis。
 - 多主机扩展方案见 [ADR-0010](adr/0010-scale-out-deployment.md)。当前运行形态采用单个游戏进程，可将索引和档案生成隔离到同机子进程。共享房间写入和跨进程事件投递需要 ADR-0010 的后续阶段。
-- 探针：`GET /health/live` 返回进程存活状态。`GET /health/ready` 验证本地数据库可访问。
+- 探针：`GET /health/live` 返回进程存活状态。`GET /health/ready` 验证当前部署使用的数据库可访问。
 
 ## 4. 环境变量
 
@@ -45,6 +45,8 @@ Nginx（TLS / WebSocket 升级）
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `PORT` | 3000 | HTTP/WS 监听端口 |
+| `DEPLOYMENT_MODE` | `local` | `local` 使用 SQLite。预发布环境可用 `shared-accounts` |
+| `DATABASE_URL` | 未设 | `shared-accounts` 必设。两网关使用同一个 PostgreSQL 数据库连接地址 |
 | `DATA_DIR` | 开发：`server/data`；编译：`server/dist/server/data` | SQLite 数据库目录（`ai-kp.db`）；生产请设置为 `dist` 外的持久化绝对路径 |
 | `RAG_DATA_DIR` | 开发：`server/data/rag`；编译：`server/dist/server/data/rag` | RAG 索引文件；生产单独设置为持久化绝对路径，每用户子目录内使用 UUID 文件名 |
 | `DOSSIER_DATA_DIR` | 开发：`server/data/dossiers`；编译：`server/dist/server/data/dossiers` | 档案及 `.gaps.json` / `.annex.json` sidecar；生产单独设置为持久化绝对路径 |
@@ -118,6 +120,21 @@ npm run dev:h5       # :5175（vite dev）
 ```
 
 示例中的目录应由服务账号持有或可写。若生产环境未设置 `JWT_SECRET`，或仍使用开发默认值 `dev-secret-change-me`，服务会在监听端口前退出，不会接受请求。
+
+### 6.1 双网关账号预发布环境（#113）
+
+为此环境准备独立的 PostgreSQL 数据库和登录角色。首次启动时，该角色需要在数据库默认的 schema 中建表。两网关使用同一构建产物，指向同一数据库及 schema。通过服务管理器或密钥管理系统向两进程注入相同的 `DATABASE_URL` 和强随机 `JWT_SECRET`，每套环境使用独立密钥。跨主机连接按数据库的 CA 配置 TLS，使用 `sslmode=verify-full` 验证主机与证书。
+
+在两个终端从仓库根目录分别启动。两网关同机时使用不同的端口，跨主机时端口可相同。
+
+```bash
+NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3000 npm run start --workspace=server
+NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --workspace=server
+```
+
+两个进程会在 HTTP 监听前串行初始化并验证 PostgreSQL 表结构、约束与服务角色权限。`GET /health/ready` 检查该数据库。路由范围与设置行为见 [API 契约](api-contract.md#11-实挂路由组一览与-serversrcappts-对齐9-组)。共享账号与本地 SQLite 各自持有用户和设置，存量迁移留给后续阶段。两网关需保持同一 `JWT_SECRET`，它同时用于 JWT 验证和 BYOK 密钥派生。修改它会使旧 token 和原加密 API Key 失效。
+
+验证时，通过一个网关注册，在另一网关登录，再交叉使用 token 调用 `/api/auth/me` 和读写设置。重启其中任一网关后复查。仓库另提供双网关 HTTP 测试，把 **独立、可销毁** 的 PostgreSQL 测试库连接地址注入 `TEST_SHARED_ACCOUNTS_DATABASE_URL` 后运行 `npm run test --workspace=server -- sharedAccounts.test.ts`。测试角色需能在该库新建临时 schema，测试会写入模拟用户与设置。CI 使用独立的 PostgreSQL 16 容器运行该套件。
 
 ## 7. 上线检查清单
 

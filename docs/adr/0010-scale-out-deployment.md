@@ -52,6 +52,10 @@ Budget active and queued Keeper work separately from imports, with provider-leve
 - The stories endpoint has a paged form alongside the compatibility array. Room membership and stories have indexes for owner-scoped operations.
 - The room runtime bounds active instances, per-room queued actions, and concurrent Keeper turns. It batches concurrent turn snapshot commits, skips periodic writes for unchanged state, and releases retired subscription entries. The server detaches a WebSocket that exceeds the inbound message or outgoing send-buffer limit. These two server-imposed cutoffs clear subscriptions and preserve room ownership. Ordinary disconnects and explicit leaves retain ADR-0005's room governance.
 
+## Shared account staging
+
+The [shared account staging deployment](../DEPLOYMENT.md#61-双网关账号预发布环境113) adds two HTTP gateways backed by PostgreSQL for sign-in and private account settings. It uses the existing HTTP response shapes. Gameplay, story preparation, and existing SQLite data migration remain later rollout stages.
+
 ## Local capacity check
 
 On November 18, the synthetic smoke opened 1,000 playing rooms over 1,000 WebSockets and seeded 1,000,000 story metadata rows. It completed three rounds of one mock Keeper turn per room.

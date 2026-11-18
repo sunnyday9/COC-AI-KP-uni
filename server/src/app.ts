@@ -3,9 +3,10 @@ import { fileURLToPath } from 'node:url'
 import cors from 'cors'
 import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
-import { PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
+import { DEPLOYMENT_MODE, PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
 import { logger } from './utils/logging.js'
 import { getDb } from './db/index.js'
+import { getPostgresPool, initializePostgres } from './db/postgres.js'
 import { startRoomReaper } from './services/roomService.js'
 import { createWsServer } from './ws/index.js'
 import { hasSubscribers } from './ws/roomLedger.js'
@@ -18,6 +19,8 @@ import dossierRoutes from './routes/dossier.routes.js'
 import roomsRoutes from './routes/rooms.routes.js'
 import roomSettingsRoutes from './routes/roomSettings.routes.js'
 import charactersRoutes from './routes/characters.routes.js'
+
+const sharedAccounts = DEPLOYMENT_MODE === 'shared-accounts'
 
 /**
  * Express application factory.
@@ -37,9 +40,10 @@ export function createApp(): Express {
   app.get('/health/live', (_req, res) => {
     res.json({ status: 'ok' })
   })
-  app.get('/health/ready', (_req, res) => {
+  app.get('/health/ready', async (_req, res) => {
     try {
-      getDb().prepare('SELECT 1').get()
+      if (sharedAccounts) await getPostgresPool().query('SELECT 1')
+      else getDb().prepare('SELECT 1').get()
       res.json({ status: 'ready' })
     } catch {
       res.status(503).json({ status: 'unavailable' })
@@ -48,13 +52,15 @@ export function createApp(): Express {
 
   app.use('/api/auth', authRoutes)
   app.use('/api/settings', settingsRoutes)
-  app.use('/api/ai', aiRoutes)
-  app.use('/api/stories', storiesRoutes)
-  app.use('/api/rag', ragRoutes)
-  app.use('/api/dossier', dossierRoutes) // 实验分支：剧本档案 workflow（与 rag 并行）
-  app.use('/api/rooms', roomsRoutes)
-  app.use('/api/rooms', roomSettingsRoutes)
-  app.use('/api/characters', charactersRoutes)
+  if (!sharedAccounts) {
+    app.use('/api/ai', aiRoutes)
+    app.use('/api/stories', storiesRoutes)
+    app.use('/api/rag', ragRoutes)
+    app.use('/api/dossier', dossierRoutes) // 实验分支：剧本档案 workflow（与 rag 并行）
+    app.use('/api/rooms', roomsRoutes)
+    app.use('/api/rooms', roomSettingsRoutes)
+    app.use('/api/characters', charactersRoutes)
+  }
 
   // 404 — unified JSON error shape { error }
   app.use((_req: Request, res: Response) => {
@@ -87,17 +93,19 @@ const isMain =
   process.argv[1] !== undefined &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
-if (isMain) {
+async function startServer(): Promise<void> {
   assertRuntimeConfig()
-  // Apply/validate the SQLite schema before accepting traffic. A failed or
+  // Apply the configured storage schema before accepting traffic. A failed or
   // unsupported migration must abort startup rather than fail on first use.
-  getDb()
+  if (sharedAccounts) await initializePostgres()
+  else getDb()
   const httpServer = createApp().listen(PORT, () => {
     logger.info(`COC AI KP server listening on http://localhost:${PORT}`)
     if (isMockAiMode()) {
       logger.info('MOCK_AI mode enabled — all AI/LLM calls return deterministic mock responses (no API key / no outbound requests)')
     }
   })
+  if (sharedAccounts) return
   createWsServer(httpServer)
   // 房间 TTL 回收（#86）：CONTEXT.md「活跃实例·TTL 回收」与 roomService 头注释
   // 声明的运行时行为在此装配——定期扫描 roomRegistry，把空闲超过 ROOM_TTL_MS
@@ -106,3 +114,5 @@ if (isMain) {
   // 返回句柄已 unref（roomService.startRoomReaper），不阻碍进程退出。
   startRoomReaper(60_000, (roomId) => !hasSubscribers(roomId))
 }
+
+if (isMain) await startServer()

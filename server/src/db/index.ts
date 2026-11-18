@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { DATA_DIR } from '../config.js'
+import { DATA_DIR, DEPLOYMENT_MODE } from '../config.js'
 import { migrateDatabase } from './migrations.js'
 
 let db: DatabaseSync | null = null
@@ -11,6 +11,9 @@ let db: DatabaseSync | null = null
  * Creates DATA_DIR and applies versioned schema migrations before exposing the connection.
  */
 export function getDb(): DatabaseSync {
+  if (DEPLOYMENT_MODE === 'shared-accounts') {
+    throw new Error('SQLite is unavailable in shared-accounts mode')
+  }
   if (!db) {
     fs.mkdirSync(DATA_DIR, { recursive: true })
     const connection = new DatabaseSync(path.join(DATA_DIR, 'ai-kp.db'))
