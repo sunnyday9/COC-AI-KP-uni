@@ -18,48 +18,59 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { RAG_DATA_DIR } from '../config.js'
 import { assertPathInDir } from '../utils/pathSafety.js'
-import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../utils/jsonArtifact.js'
+import { createJsonArtifactPath, isInternalJsonArtifactPath, replaceJsonArtifactSync } from '../utils/jsonArtifact.js'
+import { findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact, storyArtifactDirectory } from '../services/storyArtifacts.js'
+import { BoundedCache } from '../utils/boundedCache.js'
 
 /* ------------------------------------------------------------------ */
 /*  Persistence helpers                                                */
 /* ------------------------------------------------------------------ */
 
 function getIndexDir(userId: number): string {
-  return path.join(RAG_DATA_DIR, String(userId), 'rag_index')
+  return storyArtifactDirectory('index', userId)
 }
 
 function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
 
-function loadIndex(userId: number, scriptId: string): StoredIndex | null {
-  const [p] = findJsonArtifactPaths(getIndexDir(userId), scriptId)
+function loadIndex(userId: number, scriptId: string): { data: StoredIndex; bytes: number } | null {
+  const [p] = findStoryArtifacts('index', userId, scriptId)
   if (!p) return null
-  return JSON.parse(fs.readFileSync(p, 'utf-8')) as StoredIndex
+  try {
+    const raw = fs.readFileSync(p, 'utf-8')
+    const data = JSON.parse(raw) as StoredIndex
+    return data?.scriptId === scriptId ? { data, bytes: Buffer.byteLength(raw) } : null
+  } catch {
+    return null
+  }
 }
 
-function saveIndex(userId: number, data: StoredIndex): void {
+function saveIndex(userId: number, idx: LoadedIndex): number {
   const dir = getIndexDir(userId)
   ensureDir(dir)
-  const existing = findJsonArtifactPaths(dir, data.scriptId)
+  const existing = findStoryArtifacts('index', userId, idx.scriptId)
   const current = existing.find(isInternalJsonArtifactPath)
   const target = current ?? createJsonArtifactPath(dir)
-  fs.writeFileSync(target, JSON.stringify(data), 'utf-8')
+  const json = JSON.stringify(serializeIndex(idx))
+  replaceJsonArtifactSync(target, json)
 
   // Re-indexing migrates legacy `<scriptId>.json` files to a UUID name and
   // removes duplicate artifacts for the same external id.
   for (const oldPath of existing) {
     if (oldPath !== target && fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
   }
+  rememberStoryArtifact('index', userId, idx.scriptId, target)
+  return Buffer.byteLength(json)
 }
 
 function deleteIndexFile(userId: number, scriptId: string): boolean {
-  const paths = findJsonArtifactPaths(getIndexDir(userId), scriptId)
+  const paths = findStoryArtifacts('index', userId, scriptId)
   for (const filePath of paths) {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
   }
+  forgetStoryArtifact('index', userId, scriptId)
   return paths.length > 0
 }
 
@@ -235,7 +246,11 @@ interface LoadedIndex {
 /*  In-memory index (per-user, per-script)                             */
 /* ------------------------------------------------------------------ */
 
-const memoryCache = new Map<string, LoadedIndex>()
+const memoryCache = new BoundedCache<LoadedIndex>(64 * 1024 * 1024)
+
+export function invalidateIndexCache(userId: number, scriptId: string): void {
+  memoryCache.delete(cacheKey(userId, scriptId))
+}
 
 function cacheKey(userId: number, scriptId: string): string {
   return `${userId}:${scriptId}`
@@ -243,9 +258,11 @@ function cacheKey(userId: number, scriptId: string): string {
 
 function getOrLoadIndex(userId: number, scriptId: string): LoadedIndex | null {
   const key = cacheKey(userId, scriptId)
-  if (memoryCache.has(key)) return memoryCache.get(key) ?? null
-  const saved = loadIndex(userId, scriptId)
-  if (saved) {
+  const cached = memoryCache.get(key)
+  if (cached) return cached
+  const file = loadIndex(userId, scriptId)
+  if (file) {
+    const saved = file.data
     // Rehydrate Map shapes (same as the original: tf/tfidf/idf are stored as
     // entry arrays on disk and restored to Maps on load; vector stays number[]).
     for (let i = 0; i < saved.docs.length; i++) {
@@ -261,7 +278,7 @@ function getOrLoadIndex(userId: number, scriptId: string): LoadedIndex | null {
       docs: saved.docs as unknown as IndexDoc[],
       idf: new Map(saved.idf),
     }
-    memoryCache.set(key, loaded)
+    memoryCache.set(key, loaded, file.bytes)
     return loaded
   }
   return null
@@ -354,8 +371,8 @@ export async function indexChunks(
     docs: docs,
     idf: idf,
   }
-  memoryCache.set(cacheKey(userId, storyId), idx)
-  saveIndex(userId, serializeIndex(idx))
+  const bytes = saveIndex(userId, idx)
+  memoryCache.set(cacheKey(userId, storyId), idx, bytes)
 
   return { ok: true, indexed: docs.length }
 }
@@ -363,17 +380,19 @@ export async function indexChunks(
 /**
  * List all indexed stories for a user (reads metadata only).
  */
-export function listIndexedStories(userId: number): { storyId: string; name: string; chunkCount: number; indexedAt: number }[] {
+export function listIndexedStories(userId: number, storyId?: string): { storyId: string; name: string; chunkCount: number; indexedAt: number }[] {
   const dir = getIndexDir(userId)
   if (!fs.existsSync(dir)) return []
-  const files = fs.readdirSync(dir).filter(function (f) { return f.endsWith('.json') })
+  const files = storyId === undefined
+    ? fs.readdirSync(dir).filter((file) => file.endsWith('.json'))
+    : findStoryArtifacts('index', userId, storyId).map((file) => path.basename(file))
   const results: { storyId: string; name: string; chunkCount: number; indexedAt: number }[] = []
   for (let i = 0; i < files.length; i++) {
     try {
       const filePath = assertPathInDir(dir, path.join(dir, files[i] as string), 'RAG index file')
       const raw = fs.readFileSync(filePath, 'utf-8')
       const data = JSON.parse(raw) as StoredIndex
-      if (!data.scriptId) continue
+      if (!data.scriptId || (storyId !== undefined && data.scriptId !== storyId)) continue
       const docsLen = (data.docs && data.docs.length) ? data.docs.length : 0
       results.push({
         storyId: data.scriptId,
@@ -511,7 +530,7 @@ export function checkHealth(userId: number): { status: string; service: string; 
  * used by ragService.
  */
 export function loadIndexFile(userId: number, scriptId: string): StoredIndex | null {
-  return loadIndex(userId, scriptId)
+  return loadIndex(userId, scriptId)?.data ?? null
 }
 
 /* ------------------------------------------------------------------ */

@@ -17,6 +17,7 @@ import {
   getRoomRow,
   updateRoomStart,
   updateRoomStateSnapshot,
+  queueTurnSnapshot,
   updateRoomStateSettings,
   deleteRoomRows,
 } from '../roomStorage.js'
@@ -81,6 +82,22 @@ describe('RoomStorage 持久化原语', () => {
     updateRoomStateSettings(roomId, JSON.stringify({ turnWindowMs: 7 }))
     expect(versionOf(roomId)).toBe(v1)
     expect(JSON.parse(getRoomRow(roomId)!.state)).toEqual({ turnWindowMs: 7 })
+  })
+
+  it('commits queued room snapshots using state captured at write time', async () => {
+    const first = seedRoom('i', 9010, 'rs_iris')
+    const second = seedRoom('j', 9011, 'rs_jack')
+    let turnWindowMs = 5
+    const writes = [
+      queueTurnSnapshot(first, () => ({ seq: 6, stateJson: JSON.stringify({ turnWindowMs }) })),
+      queueTurnSnapshot(second, () => ({ seq: 7, stateJson: '{"seq":7}' })),
+    ]
+    expect(versionOf(first)).toBe(0)
+    turnWindowMs = 10
+    expect(await Promise.all(writes)).toEqual([6, 7])
+    expect(versionOf(first)).toBe(1)
+    expect(JSON.parse(getRoomRow(first)!.state)).toEqual({ turnWindowMs: 10 })
+    expect(JSON.parse(getRoomRow(second)!.state)).toEqual({ seq: 7 })
   })
 
   it('绑定角色卡：一人一卡校验 + 归属查询', () => {

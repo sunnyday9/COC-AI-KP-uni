@@ -35,7 +35,8 @@ Nginx（TLS / WebSocket 升级）
 ```
 
 - **单进程即可**：状态在内存（RoomService）+ SQLite 快照。≤100 并发房间无需 Redis。
-- 多实例触发条件（超出后引入）：活跃房间 > 100 → Redis 会话锁 + 事件总线。
+- 多主机扩展方案见 [ADR-0010](adr/0010-scale-out-deployment.md)。当前运行形态采用单个游戏进程，可将索引和档案生成隔离到同机子进程。共享房间写入和跨进程事件投递需要 ADR-0010 的后续阶段。
+- 探针：`GET /health/live` 返回进程存活状态。`GET /health/ready` 验证本地数据库可访问。
 
 ## 4. 环境变量
 
@@ -51,6 +52,12 @@ Nginx（TLS / WebSocket 升级）
 | `MODELS_DIR` | 开发：`server/data/models`；编译：`server/dist/server/data/models` | 本地嵌入模型缓存；默认可重下载，需跨构建保留时单独设置持久化路径 |
 | `TESSERACT_DATA_DIR` | 开发：`server/assets/tesseract`；编译：`server/dist/server/assets/tesseract` | OCR 语言数据目录；构建会将 checked-in assets 复制到编译目录 |
 | `MAX_UPLOAD_BYTES` | 52428800（50 MiB） | stories 上传大小上限，单位为字节 |
+| `STORY_UPLOAD_CONCURRENCY` | 4 | 每游戏进程同时接收 multipart 上传的上限 |
+| `STORY_PREPARATION_WORKERS` | 0 | 设为 1 时，为每个已准入的索引或档案任务启动同机子进程 |
+| `STORY_PREPARATION_CONCURRENCY` | 2 | 每进程同时处理的索引与档案任务总上限，超限返回 HTTP 503 与 `Retry-After` |
+| `STORY_PREPARATION_TIMEOUT_MS` | 600000 | 隔离任务时限。超时后终止子进程，调用方可重试 |
+| `ROOM_ACTIVE_INSTANCES` | 1024 | 每进程活跃实例的准入上限，请用实际负载确定部署值 |
+| `KP_ACTIVE_TURNS` | 16 | 每进程并行执行的开场及玩家触发的 KP 主回合上限，同房间依序执行 |
 | `JWT_SECRET` | 开发可用本地 fallback | **生产必设且不得使用 `dev-secret-change-me`**（JWT + AES 密钥派生源） |
 | `MOCK_AI` | 未设 | `1` = 无 LLM 测试模式（**生产禁用**） |
 | `ROOM_CONTEXT_BUDGET_CHARS` | 12000 | 每个房间注入 KP 的近期对话字符上限；长期摘要与结构化状态仍会单独注入 |
@@ -88,7 +95,7 @@ Nginx（TLS / WebSocket 升级）
 
 ## 5. 数据库
 
-- 启动时按序运行 `server/src/db/migrations.ts` 中的事务迁移，并在 SQLite `PRAGMA user_version` 记录 schema 版本（当前为 6）；fresh install 与无版本号的旧库都会自动升级。
+- 启动时按序运行 `server/src/db/migrations.ts` 中的事务迁移，并在 SQLite `PRAGMA user_version` 记录 schema 版本（当前为 8）；fresh install 与无版本号的旧库都会自动升级。
 - 所有待执行迁移在一个事务中提交。失败会回滚本次升级并在 HTTP 监听前中止启动，错误包含失败版本与修复/恢复建议；比当前服务更新的数据库版本会被拒绝，服务不会尝试降级。
 - 备份：升级前停止服务，备份 `${DATA_DIR}/ai-kp.db`，以及配置的 `UPLOADS_DIR`、`RAG_DATA_DIR`、`DOSSIER_DATA_DIR` 目录；它们是独立路径，不保证位于 `DATA_DIR` 下。`MODELS_DIR` 是可重下载缓存，可按恢复时间目标选择是否备份。schema 迁移没有自动 down migration，回滚需恢复匹配版本的数据库备份。
 - **无需手动迁移**：存量文件系统剧本首次 list 时自动导入 DB 映射（脚本导入已随 #97 / ADR-0008 scripts 退役摘除）。
@@ -127,6 +134,8 @@ npm run dev:h5       # :5175（vite dev）
 - [ ] H5 构建 + 小程序构建成功
 - [ ] 出网策略放行 LLM 提供商域名（SSRF 守卫会拒绝内网/保留地址）
 - [ ] 反向代理配置 WebSocket 升级（`/ws`）
+
+合成规模测试使用独立临时库和模拟 KP。运行 `node e2e/scale-smoke.mjs`，可用 `SCALE_ROOMS`、`SCALE_STORY_ROWS`、`SCALE_ROUNDS` 和 `SCALE_SPREAD_MS` 调整并发房数、剧本元数据行数、回合批次数和每批发送窗口。报告分别给出玩家消息回显、KP 回复和目录分页的 p95。生产验收应另查真实模型、长对话、活跃导入、重连和故障恢复。
 
 ## 8. 回滚
 

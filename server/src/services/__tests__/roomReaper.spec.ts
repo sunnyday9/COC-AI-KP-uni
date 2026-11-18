@@ -159,12 +159,26 @@ afterEach(() => {
 })
 
 describe('#86 reapStaleRooms — 只清 stale 房', () => {
+  it('skips periodic snapshots for idle rooms and persists the next change', async () => {
+    const room = seedMultiRoom('idle_snapshots')
+    const active = getOrCreateRoom(room.roomId, room.userId, 'idle_snapshots')
+    const version = getRoomRowVersion(room.roomId)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(getRoomRowVersion(room.roomId)).toBe(version)
+    active.submitPlayerChat(room.userId, 'lobby message')
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(getRoomRowVersion(room.roomId)).toBe(version + 1)
+  })
+
   it('超 TTL 空闲的逐出（最终态已落库、可重物化），enqueue 保活的活房保留', async () => {
     const stale = await makeSoloRoom('reaper_stale', 'story_r1')
     const fresh = await makeSoloRoom('reaper_fresh', 'story_r2')
     const staleRoom = getOrCreateRoom(stale.roomId, stale.userId, 'reaper_stale', 'story_r1')
     const freshRoom = getOrCreateRoom(fresh.roomId, fresh.userId, 'reaper_fresh', 'story_r2')
-    staleRoom.submitPlayerChat(stale.userId, 'TTL 回收前的最后一句')
+    staleRoom.appendMessage(
+      { id: 'stale-last-message', timestamp: Date.now(), role: 'player', playerName: 'reaper_stale', content: 'TTL 回收前的最后一句' },
+      { userId: stale.userId, roleName: 'reaper_stale' },
+    )
 
     // 推进到 TTL 之外；fresh 房此刻有动作（enqueue 在入队时 bump lastActivityAt）
     vi.setSystemTime(BASE + TTL_MS + 60_000)

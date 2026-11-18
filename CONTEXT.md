@@ -37,6 +37,9 @@ DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执�
 ### 房间剧本（room story）
 多人局共用的剧本：由选中该故事的账号持有，`story_id` 存 `rooms` 表；房主转让后，房间继续用原故事所有者读取剧本与 RAG 索引，当前房主账号提供 AI 配置（成员无需拥有该故事）。房主只可从**已索引**故事中选择；rag workflow 还要求有可用的档案与 gaps 剧透定位材料（至少一条真相揭晓锚点，且均可评估；见开局门闩），避免无原文或无剧透闸的局开起来。
 
+### 剧本准备（story preparation）
+从用户上传的剧本生成可供开局与回合使用的索引、档案和原文锚点。它有独立的处理状态和容量预算。
+
 ### 开局门闩（start gate）
 `lobby → playing` 的迁移约束：多人房主已选剧本 + **每名成员已绑定角色卡**，任一不满足则开局被拒（服务端 409 带缺项提示）；单人虽无等待室/成员闩，也必须通过同一 workflow artifact 可用性检查。角色卡绑定是多人硬前提；就绪是软信号。判定单源落点 `server/src/services/startGate.ts`（`checkStartGate`：结束态终态/已选剧本/workflow 可用性/成员绑卡全收编；startRoom 与 createSoloRoom 双入口差异用 `gateFor: 'lobby-start' | 'solo-create'` 表达；dossier workflow 要求档案已生成且未降质；rag workflow 要求已索引，并且档案至少含一条 truth revealScene，各真相揭晓点均有匹配的原文锚点）。
 
@@ -44,10 +47,10 @@ DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执�
 成员在等待室表示「已准备好开局」的软信号（与角色卡绑定相对）：房主可借此判断全员到位，但开局不强制等待全员就绪。
 
 ### 房主（owner）
-房间的治理者（`room_members.role='owner'`）：选剧本、开局、踢出成员、转让房主。**房主离开或断线 → 立即转让**给剩余成员（最早加入者优先）；无其他成员则房间解散。
+房间的治理者（`room_members.role='owner'`）：选剧本、开局、踢出成员、转让房主。**房主离开或普通断线 → 立即转让**给剩余成员（最早加入者优先）；无其他成员则房间解散。服务端因 WebSocket 消息大小或发送缓冲超限断开连接时只清理订阅（ADR-0010）。
 
 ### 房主转让（owner transfer）
-房主权限移交：房主主动转让给任一成员，或房主离开/断线时自动转让（无宽限期——刷新即易主是已知取舍）。被转让者成为新 owner 并获得治理权。
+房主权限移交：房主主动转让给任一成员，或房主离开/普通断线时自动转让（无宽限期——刷新即易主是已知取舍）。被转让者成为新 owner 并获得治理权。
 
 ### 踢出（kick）
 房主将某成员移出房间（删除其成员资格并广播）；被踢者客户端提示「已被移出房间」并回大厅。
@@ -86,7 +89,7 @@ KP 回合管线上的唯一新增缝（T1，spec #36 / ADR-0006）：每个真�
 T4（spec #36 / 票 #40 / ADR-0006 决策 4）落点 `training/src/distill/`：教师（DeepSeek V4 Flash）对 context 骨架重放理想回复生成 SFT 语料。关键约定——多步工具链的工具结果由离线规则引擎真实执行（真骰子、真结算，教师不得自拟）；变量块瘦身旁数据侧（对话窗 18→8、记忆 30→12、RAG 取前 4 节、序列 cap ~6k）；validate 过滤与 #42 gate 同源 kpValidation；样本出处标注 `meta.source`（seed=真实骨架重放 / synthetic=rollout 合成 / anchor=金样本裁定锚 / human=人工示范）与 caveat（`rag_lexical_approximation_offline`=离线词面检索近似、`rag_context_unavailable_offline`=重建行无故事情报）。
 
 ### 档案（dossier）
-剧本的结构化预生成摘要：场景（含原文誊抄的 sceneText）/线索/NPC/切换边/事件/真相/结局，生成期由 LLM 从剧本原文抽取落盘，运行时**按当前场景整块注入**取代逐回合检索。事实的**权威来源**——与检索补充层冲突时以档案为准。落点 `server/src/rag/dossier/`；双轨分工见 ADR-0007。生成期质量门（#55）：低覆盖（sceneText 覆盖率 < 30%，仅对 >5000 字符剧本）或分节解析失败 → quality 快照随档案落盘，开局门闩（startRoom / createSoloRoom）据此 409 提示重新生成——**残档不再静默放行**；阈值常量 `DOSSIER_MIN_COVERAGE_PCT` 单源在 schema.ts。模块布局（按重量切两条 seam）：轻查询核 `dossierCore.ts`（持久化/清单/质量门/场景块渲染/纯函数 lookups——查询期消费方动态 import 的目标，只依赖 fs/config/pathSafety 与同目录轻模块）、重生成器 `dossierGenerate.ts`（storyService/aiService/annex/prompts 重依赖链，仅生成期路由）、`storyDossierService.ts` 为纯 re-export 兼容门面（静态引它 = 连带生成链）。
+剧本的结构化预生成摘要：场景（含原文誊抄的 sceneText）/线索/NPC/切换边/事件/真相/结局，生成期由 LLM 从剧本原文抽取落盘，运行时**按当前场景整块注入**取代逐回合检索。事实的**权威来源**——与检索补充层冲突时以档案为准。落点 `server/src/rag/dossier/`；双轨分工见 ADR-0007。生成期质量门（#55）：低覆盖（sceneText 覆盖率 < 30%，仅对 >5000 字符剧本）或分节解析失败 → quality 快照随档案落盘，开局门闩（startRoom / createSoloRoom）据此 409 提示重新生成——**残档不再静默放行**；阈值常量 `DOSSIER_MIN_COVERAGE_PCT` 单源在 schema.ts。模块布局（按重量切两条 seam）：轻查询核 `dossierCore.ts`（持久化/清单/质量门/场景块渲染/纯函数 lookups——查询期消费方动态 import 的目标，通过 `storyArtifacts.ts` 查询 SQLite 产物位置，使用文件与缓存工具及同目录轻模块）、重生成器 `dossierGenerate.ts`（storyService/aiService/annex/prompts 重依赖链，仅生成期路由）、`storyDossierService.ts` 为纯 re-export 兼容门面（静态引它 = 连带生成链）。
 
 ### 原文查证（verify_original）
 档案说不清时的**事实层深挖**：按当前场景锚点窗口取剧本原文片段（≤12k 字符），交一次全新上下文的子阅读器作答，返回结论 + 逐字引用；真相/结局类问句、或命中 `truths[].revealScene` 锚点的结果，标注「仅限 KP 内部裁定」。降级为「未取得」，永不阻断回合。落点 `server/src/rag/dossier/originalLookup.ts`（KP 回合内作为查证工具的执行分派在 `dossierLookupTools.ts`）；服务端可自动触发（预取）。
@@ -109,7 +112,7 @@ RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、
 - D-09：外部 id 不参与 fs 路径；上传文件由 DB 映射到 uuid 文件名，RAG/档案
   JSON artifact 也使用服务端生成的 uuid 文件名，并按 JSON 元数据解析外部 id。
   所有文件 sink 同时做 lexical boundary + realpath 校验，拒绝符号链接逃逸。
-- D7/D-10：单进程内存注册表 + 节流快照 + TTL 回收；Redis 是触发条件不是默认。
+- D7/D-10：当前运行态采用单进程内存注册表、节流快照和 TTL 回收。跨主机方案沿用房间单写者语义，见 ADR-0010。
 - 服务端权威单轨：客户端无规则、无工具循环（`docs/history/ARCHITECTURE-MULTIPLAYER.md` §四）。
 - ADR-0003：LLM 接入协议一等公民（协议模型 / 适配器 / 本地端点不豁免 / Responses 流式策略）。
 - ADR-0007：知识供给双轨——档案为权威框架，标准 RAG 只作纹理补充；放弃 GraphRAG；分块搬服务端；本地 cross-encoder rerank（禁用 pipeline text-classification 取分）。

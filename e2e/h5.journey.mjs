@@ -169,6 +169,7 @@ function spawnServer(tmpRoot) {
       JWT_SECRET: 'e2e-secret-change-me',
       DATA_DIR: path.join(tmpRoot, 'data'),
       RAG_DATA_DIR: path.join(tmpRoot, 'rag'),
+      DOSSIER_DATA_DIR: path.join(tmpRoot, 'dossiers'),
       UPLOADS_DIR: path.join(tmpRoot, 'uploads'),
       MODELS_DIR: path.join(tmpRoot, 'models'),
     },

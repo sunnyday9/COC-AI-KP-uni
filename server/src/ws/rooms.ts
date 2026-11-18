@@ -22,6 +22,7 @@ import { handleOwnerWsDisconnect } from '../services/roomService.js'
 import { cleanupSocket, ensureFanout, planAction, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeSocket } from './roomLedger.js'
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
+import { isTransportReset, sendFrame } from './sendFrame.js'
 
 function send(socket: WebSocket, obj: unknown): void {
   if (socket.readyState !== 1 /* WebSocket.OPEN */) return
@@ -32,14 +33,14 @@ function send(socket: WebSocket, obj: unknown): void {
     logger.warn('room ws send serialization failed, frame dropped', { error: errorMessage(err) })
     return
   }
-  socket.send(frame)
+  sendFrame(socket, frame)
 }
 
 /** 扇出房间事件（全序 seq 已由 RoomService 分配；编码在此，注册表在订阅簿）。 */
 function broadcast(roomId: string, event: RoomEvent, seq: number): void {
   const frame = JSON.stringify({ type: 'room:event', roomId, seq, eventType: event.type, payload: event.payload })
   for (const s of subscribersOf(roomId)) {
-    if (s.readyState === 1) s.send(frame)
+    sendFrame(s, frame)
   }
 }
 
@@ -104,7 +105,8 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
     return
   }
   const room = plan.room
-  void room.enqueue(async () => {
+  const busy = () => send(socket, { type: 'room:error', roomId, error: '房间待处理的操作已满，请稍后重试。' })
+  const task = room.enqueueClientAction(async () => {
     if (action.type === 'chat') {
       const content = String((action.payload as { content?: unknown } | undefined)?.content ?? '').trim()
       if (!content) {
@@ -112,7 +114,7 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
         return
       }
       // 领域方法（ADR-0001）：身份解析/消息流/回合缓冲都在 RoomService 内部
-      room.submitPlayerChat(userId, content)
+      if (!room.submitPlayerChat(userId, content)) busy()
     } else if (action.type === 'retry_kp') {
       const accepted = await room.retryKpTurn(userId)
       if (!accepted) {
@@ -123,14 +125,22 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
       return
     }
   })
+  if (!task) {
+    busy()
+    return
+  }
+  void task.catch((error: unknown) => {
+    logger.warn('room action failed', { roomId, error: errorMessage(error) })
+    send(socket, { type: 'room:error', roomId, error: '房间暂时无法处理该操作，请稍后重试。' })
+  })
 }
 
 /** 连接关闭：清理所有订阅（注册表在订阅簿）。
- *  房主断线 → 领域立即转让给最早成员 / 无成员解散（ADR-0005 无宽限——刷新即易主；
+ *  服务端因消息大小或发送缓冲超限断开连接时只清理订阅。普通房主断线触发转让或解散（ADR-0005；
  *  领域内判定脱机者身份：非 owner 断线不动房间，成员行保留——主动离开走 REST leave）。 */
 export function cleanupSocketRooms(socket: WebSocket, userId?: number | null): void {
   const roomIds = roomIdsOfSocket(socket)
   cleanupSocket(socket)
-  if (!userId) return
+  if (!userId || isTransportReset(socket)) return
   for (const roomId of roomIds) handleOwnerWsDisconnect(roomId, userId)
 }

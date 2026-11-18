@@ -124,10 +124,60 @@ export function updateRoomPhase(roomId: string, phase: RoomPhase): void {
 }
 
 /** 节流快照落库（RoomService.persistSnapshot）：bump version。 */
+const updateSnapshotSql = 'UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE room_id = ?'
+
 export function updateRoomStateSnapshot(roomId: string, stateJson: string): void {
-  getDb()
-    .prepare(`UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE room_id = ?`)
-    .run(stateJson, Date.now(), roomId)
+  getDb().prepare(updateSnapshotSql).run(stateJson, Date.now(), roomId)
+}
+
+type SnapshotWrite = {
+  roomId: string
+  capture: () => { seq: number; stateJson: string }
+  committed: (seq: number) => void
+  failed: (error: unknown) => void
+}
+
+const pendingSnapshots: SnapshotWrite[] = []
+let snapshotFlushScheduled = false
+
+/** Concurrent turns can share a commit. Resolve each write after SQLite commits it. */
+export function queueTurnSnapshot(roomId: string, capture: SnapshotWrite['capture']): Promise<number> {
+  return new Promise((committed, failed) => {
+    pendingSnapshots.push({ roomId, capture, committed, failed })
+    scheduleSnapshotFlush()
+  })
+}
+
+function scheduleSnapshotFlush(): void {
+  if (snapshotFlushScheduled || pendingSnapshots.length === 0) return
+  snapshotFlushScheduled = true
+  setImmediate(() => {
+    snapshotFlushScheduled = false
+    flushTurnSnapshots(pendingSnapshots.splice(0, 32))
+    scheduleSnapshotFlush()
+  })
+}
+
+function flushTurnSnapshots(batch: SnapshotWrite[]): void {
+  try {
+    // Capture the latest state so pending writes preserve settings changed
+    // since the room queued its snapshot.
+    const writes = batch.map((write) => ({ ...write, ...write.capture() }))
+    const db = getDb()
+    const update = db.prepare(updateSnapshotSql)
+    const now = Date.now()
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const write of writes) update.run(write.stateJson, now, write.roomId)
+      db.exec('COMMIT')
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+    for (const write of writes) write.committed(write.seq)
+  } catch (error) {
+    for (const write of batch) write.failed(error)
+  }
 }
 
 /** 设置类小写（setRoomTurnWindow）：不 bump version（与旧路由行为一致）。 */

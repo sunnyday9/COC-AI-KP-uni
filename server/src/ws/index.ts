@@ -4,6 +4,7 @@ import { verifyToken } from '../middleware/auth.js'
 import { logger } from '../utils/logging.js'
 import { registerProgressSocket, unregisterProgressSocket } from './progress.js'
 import { cleanupSocketRooms, handleRoomAction, handleRoomJoin, handleRoomLeave, handleRoomSync } from './rooms.js'
+import { markTransportReset, sendFrame } from './sendFrame.js'
 
 /**
  * WebSocket endpoint `ws://<host>/ws?token=<JWT>` (api-contract §4).
@@ -17,7 +18,7 @@ import { cleanupSocketRooms, handleRoomAction, handleRoomJoin, handleRoomLeave, 
  * - JSON text frames only (no binary frames).
  */
 export function createWsServer(httpServer: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', maxPayload: 128 * 1024 })
 
   wss.on('connection', (socket: WebSocket, req) => {
     let userId: number | null = null
@@ -47,7 +48,7 @@ export function createWsServer(httpServer: Server): WebSocketServer {
       const type = (msg as { type?: unknown }).type
       switch (type) {
         case 'ping':
-          socket.send(JSON.stringify({ type: 'pong' }))
+          sendFrame(socket, '{"type":"pong"}')
           break
         case 'room:join':
           handleRoomJoin(socket, userId as number, msg)
@@ -76,7 +77,9 @@ export function createWsServer(httpServer: Server): WebSocketServer {
       logger.info('ws client disconnected', { userId })
     })
 
-    socket.on('error', (err) => {
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      // ws has already initiated a 1009 close for the inbound message limit.
+      if (err.code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH') markTransportReset(socket)
       unregisterProgressSocket(socket)
       cleanupSocketRooms(socket, userId)
       logger.warn('ws socket error', { userId, error: String(err) })

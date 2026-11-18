@@ -22,9 +22,11 @@ import { getDb } from '../../db/index.js'
 const suite = `ledger_${Date.now()}`
 
 /** 记录 send 帧的假 socket。 */
-function makeFakeSocket(readyState = 1): RoomSubscriber & { sent: string[] } {
+function makeFakeSocket(readyState: RoomSubscriber['readyState'] = 1): RoomSubscriber & { sent: string[] } {
   return {
     readyState,
+    bufferedAmount: 0,
+    terminate() {},
     sent: [],
     send(frame: string) { this.sent.push(frame) },
   }

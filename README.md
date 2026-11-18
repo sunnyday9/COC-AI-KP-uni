@@ -53,7 +53,7 @@ server (Express + TypeScript)
 
 - **规则与记忆全在服务端**（ADR-0002）：客户端无规则、无工具循环、无提示词组装——房间事件流是唯一事实源，重进 / 刷新即恢复；
 - **多端一码**：同一套 Vue 代码跑 H5 / 微信小程序 / App，条件编译处理平台差异；
-- 架构决策全程 ADR 记录（`docs/adr/0001–0009`），术语统一见 `CONTEXT.md`。
+- 架构决策见 `docs/adr/`，术语统一见 `CONTEXT.md`。面向更大规模的部署方案见 [ADR-0010](docs/adr/0010-scale-out-deployment.md)。
 
 ## 目录结构
 
@@ -153,7 +153,7 @@ MODELS_DIR="$PWD/data/models" RERANK_SMOKE=1 npx vitest run src/rag/__tests__/re
 
 | 目录 | 内容 |
 |---|---|
-| `docs/adr/` | 架构决策记录 0001–0009（房间域 / 单人=单成员房 / LLM 协议一等公民 / UI 重设计 / 多人房间流程 / KP 训练框架 / 档案+检索双轨 / 无消费方 REST 面全链退役 / docs 结构单一真源） |
+| `docs/adr/` | 架构决策记录，含房间域、LLM 协议、档案检索、部署与扩容 |
 | `docs/agents/` | Agent 工作流模板（issue tracker / triage 标签 / domain 消费规则） |
 | `docs/experiments/` | append-only 实验证据链（13 份报告 + judge 口径与 P10 教训索引） |
 | `docs/research/` | 外部研究档案（append-only） |

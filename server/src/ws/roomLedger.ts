@@ -11,13 +11,11 @@
  * 规划在这里。wire 帧格式不变。
  */
 import type { RoomEvent, RoomService } from '../services/roomService.js'
-import { getRoom, isRoomMember, joinRoom } from '../services/roomService.js'
+import { getRoom, hasRoomCapacity, isRoomMember, joinRoom } from '../services/roomService.js'
+import type { FrameRecipient } from './sendFrame.js'
 
 /** 订阅者的最小传输面（WebSocket 的结构子集）。readyState === 1 = OPEN。 */
-export interface RoomSubscriber {
-  readonly readyState: number
-  send(frame: string): void
-}
+export type RoomSubscriber = FrameRecipient
 
 /** socket → 订阅的房间集合（一个连接可订阅多房间）。 */
 const socketRooms = new Map<RoomSubscriber, Set<string>>()
@@ -26,7 +24,7 @@ const socketRooms = new Map<RoomSubscriber, Set<string>>()
 const roomSockets = new Map<string, Set<RoomSubscriber>>()
 
 /** 已挂接扇出的 RoomService 实例（防重复 subscribe 产生重复回调）。 */
-const fanoutAttached = new Set<object>()
+const fanoutAttached = new WeakSet<RoomService>()
 
 /* ═══════════════ 订阅注册表 ═══════════════ */
 
@@ -46,8 +44,12 @@ export function subscribeSocket(socket: RoomSubscriber, roomId: string): void {
 }
 
 export function unsubscribeSocket(socket: RoomSubscriber, roomId: string): void {
-  socketRooms.get(socket)?.delete(roomId)
-  roomSockets.get(roomId)?.delete(socket)
+  const rooms = socketRooms.get(socket)
+  rooms?.delete(roomId)
+  if (rooms?.size === 0) socketRooms.delete(socket)
+  const sockets = roomSockets.get(roomId)
+  sockets?.delete(socket)
+  if (sockets?.size === 0) roomSockets.delete(roomId)
 }
 
 /** 连接关闭：清理该 socket 的全部订阅。 */
@@ -55,15 +57,18 @@ export function cleanupSocket(socket: RoomSubscriber): void {
   const rooms = socketRooms.get(socket)
   if (rooms) {
     for (const roomId of rooms) {
-      roomSockets.get(roomId)?.delete(socket)
+      unsubscribeSocket(socket, roomId)
     }
   }
-  socketRooms.delete(socket)
 }
 
 /** 房间当前的订阅者快照（拷贝，扇出时可安全遍历）。 */
 export function subscribersOf(roomId: string): RoomSubscriber[] {
   return [...(roomSockets.get(roomId) ?? [])]
+}
+
+export function hasSubscribers(roomId: string): boolean {
+  return roomSockets.has(roomId)
 }
 
 /** socket 订阅的房间 id 快照（断线清理时枚举——cleanupSocket 会清空注册表，须先取）。 */
@@ -88,6 +93,7 @@ export function planJoin(
   userId: number,
   username: string,
 ): { ok: true; room: RoomService } | { ok: false; error: string } {
+  if (!hasRoomCapacity(roomId)) return { ok: false, error: '服务器活跃房间已满，请稍后重试。' }
   const room = joinRoom(roomId, userId, username)
   if (!room) return { ok: false, error: 'not a room member' }
   return { ok: true, room }

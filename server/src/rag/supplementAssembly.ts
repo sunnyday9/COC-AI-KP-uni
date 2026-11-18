@@ -149,6 +149,7 @@ export function revealRegions(
 export type SpoilerMetadataFailureReason =
   | 'missing_dossier'
   | 'missing_gaps'
+  | 'mismatched_source_revision'
   | 'invalid_gaps'
   | 'missing_scene_anchors'
   | 'missing_scenes'
@@ -228,6 +229,7 @@ export function getSpoilerMetadataFailureReason(
 ): SpoilerMetadataFailureReason | null {
   if (!dossier) return 'missing_dossier'
   if (!gaps) return 'missing_gaps'
+  if (dossier.sourceRevision !== gaps.sourceRevision) return 'mismatched_source_revision'
   if (!Number.isFinite(gaps.storyChars) || gaps.storyChars <= 0) return 'invalid_gaps'
   if (!Array.isArray(gaps.sceneAnchors) || !gaps.sceneAnchors.length) return 'missing_scene_anchors'
   if (!Array.isArray(dossier.scenes) || !dossier.scenes.length) return 'missing_scenes'

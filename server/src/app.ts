@@ -8,6 +8,7 @@ import { logger } from './utils/logging.js'
 import { getDb } from './db/index.js'
 import { startRoomReaper } from './services/roomService.js'
 import { createWsServer } from './ws/index.js'
+import { hasSubscribers } from './ws/roomLedger.js'
 import authRoutes from './routes/auth.routes.js'
 import settingsRoutes from './routes/settings.routes.js'
 import aiRoutes from './routes/ai.routes.js'
@@ -32,6 +33,18 @@ export function createApp(): Express {
 
   app.use(cors())
   app.use(express.json({ limit: '1mb' }))
+
+  app.get('/health/live', (_req, res) => {
+    res.json({ status: 'ok' })
+  })
+  app.get('/health/ready', (_req, res) => {
+    try {
+      getDb().prepare('SELECT 1').get()
+      res.json({ status: 'ready' })
+    } catch {
+      res.status(503).json({ status: 'unavailable' })
+    }
+  })
 
   app.use('/api/auth', authRoutes)
   app.use('/api/settings', settingsRoutes)
@@ -91,5 +104,5 @@ if (isMain) {
   // 的实例落库逐出（不删 DB 行，重进经 getOrCreateRoom 重物化）。只在真实进程
   // 入口启动：createApp() 是 supertest/测试复用入口，不背运行时定时器。
   // 返回句柄已 unref（roomService.startRoomReaper），不阻碍进程退出。
-  startRoomReaper()
+  startRoomReaper(60_000, (roomId) => !hasSubscribers(roomId))
 }

@@ -6,13 +6,13 @@
 > 沿革：原 Electron `window.electronAPI`（见 `original/ai-trpg-web/src/env.d.ts`）的 IPC 面
 > 由 REST + WebSocket 实现，本文节编号沿用至今（§6/§7/§8 等退役节保留注记不重排）。
 > §10 安全约束是 D-09 红线文档：`pathSafety.ts` / `fileNames.ts` 等代码注释引用它，原文逐字节保留。
-> 仅 `POST /api/auth/register` 与 `POST /api/auth/login` 是公开端点；`GET /api/auth/me` 及其余所有 `/api/*` 端点均需要 `Authorization: Bearer <JWT>`；
+> 公开端点包括 `POST /api/auth/register`、`POST /api/auth/login` 及健康探针（§12）。`GET /api/auth/me` 及其余所有 `/api/*` 端点均需要 `Authorization: Bearer <JWT>`。
 > 实挂路由组以 `server/src/app.ts` 为准（9 组，完整清单见 §11）。
 
 ## 约定
 
 - 所有请求/响应体均为 JSON（除文件上传 multipart 与文件下载）。
-- 错误响应统一：`{ "error": string }` + 4xx/5xx 状态码。
+- 业务 API 的错误响应使用 `{ "error": string }` 与 4xx/5xx 状态码。
 - 原 IPC 中的绝对文件路径参数一律替换为服务端生成的 `id`（安全要求，禁止暴露路径）。
 
 ---
@@ -57,6 +57,7 @@
 ### WebSocket（替代原 Electron `onKpStream` / `kp:stream`）
 
 - 端点：`ws://<host>/ws?token=<JWT>`（H5/App）；小程序走 `wss://`；token 无效以 4001 关闭。
+- 客户端发往服务端的单条 WebSocket 消息上限为 128 KiB，跨帧分片按整条消息计。超限时服务端以 1009 关闭连接。服务端因消息大小或发送缓冲超限断开连接时只清理订阅，房主可重连。
 - 心跳：客户端每 30s 发 `{ "type": "ping" }`，服务端回 `{ "type": "pong" }`。
 - 服务端 → 客户端推送：`{ "type": "rag:progress", "payload": {...} }`（RAG 索引进度，Task 4）。
 - 当前房间帧（共享类型见 `shared/types/room.ts`）：
@@ -68,13 +69,14 @@
 
 | Method | Path | 说明 |
 |---|---|---|
-| GET | `/api/stories` | 剧本列表（id 替代原 path） |
+| GET | `/api/stories` | 剧本列表。提供 `limit`（1–100）或 `cursor` 时返回 `{stories, nextCursor}`，无参数时返回原数组。 |
 | GET | `/api/stories/:id` | 读取剧本 |
 | GET | `/api/stories/:id/rag` | 读取供 RAG 解析的原文（服务端解析，含 OCR） |
 | POST | `/api/stories/upload` | 上传导入（multipart `file`） |
 | DELETE | `/api/stories/:id` | 删除剧本 |
 
-- 支持格式、上传上限（见 §10）与异步解析队列等实现细节以 `server/src/routes/stories.routes.ts` + `services/storyService.ts` + `rag/storyParsers.ts` 实码为准。
+- 将返回的 `nextCursor` 用于下一页。上传和剧本准备的并发上限触发 HTTP 503 和 `Retry-After`，同一剧本正在准备时删除或另启准备返回 409。运行参数见 [部署指南](DEPLOYMENT.md)。
+- 支持格式、上传上限（见 §10）与解析细节见 `server/src/routes/stories.routes.ts`、`services/storyService.ts` 和 `rag/storyParsers.ts`。
 
 > 桥接死包装 readStory / readStoryForRag 已于 2026-09-13 退役（#97）：客户端零页面调用方（仅 bridge.test 自引用）。端点现行保留——GET /api/stories/:id/rag 由 e2e dossier journey 直接消费；GET /api/stories/:id 现零非自测消费方（存疑待拍板，#97 票面留档）。
 
@@ -154,3 +156,12 @@
 - 房间解散只允许删除 `lobby` 或已结束房间；`playing` 房间返回 409，避免进行中的快照被 owner 直接删除。
 - KP 回合不占路由组：唯一入口为房间协议（ADR-0002，帧协议细节见 §4）。
 - §6/§7 为退役节：`/api/scripts*`、`/api/saves*` 已不在挂载面。
+
+## 12. 健康探针
+
+以下探针由 `server/src/app.ts` 提供，无需鉴权。
+
+| Method | Path | 响应 |
+|---|---|---|
+| GET | `/health/live` | 200 `{ "status": "ok" }`，进程可响应 |
+| GET | `/health/ready` | 数据库可访问时返回 200 `{ "status": "ready" }`，查询失败时返回 503 `{ "status": "unavailable" }` |

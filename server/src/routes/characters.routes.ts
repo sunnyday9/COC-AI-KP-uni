@@ -52,7 +52,7 @@ router.post('/', (req: AuthRequest, res) => {
     sendError(res, new BadRequestError('sheet required (COCCharacterSheet)'))
     return
   }
-  const id = `char_${crypto.randomUUID().slice(0, 8)}`
+  const id = `char_${crypto.randomUUID()}`
   const db = getDb()
   db.prepare(`INSERT INTO characters (id, user_id, name, sheet, updated_at) VALUES (?, ?, ?, ?, ?)`)
     .run(id, userId, name, JSON.stringify(sheet), Date.now())

@@ -130,12 +130,31 @@ const MIGRATIONS: SchemaMigration[] = [
       // Infer the source only when the account/story pair is unambiguous; otherwise
       // retain the current owner as the conservative legacy fallback.
       database.exec(`
+        CREATE INDEX IF NOT EXISTS idx_stories_story_id ON stories (story_id);
         UPDATE rooms
         SET story_owner_id = (SELECT s.user_id FROM stories s WHERE s.story_id = rooms.story_id LIMIT 1)
         WHERE story_id IS NOT NULL AND story_owner_id IS NULL
           AND (SELECT COUNT(*) FROM stories s WHERE s.story_id = rooms.story_id) = 1;
         UPDATE rooms SET story_owner_id = owner_id
         WHERE story_id IS NOT NULL AND story_owner_id IS NULL;
+      `)
+    },
+  },
+  {
+    version: 8,
+    name: 'index room membership and story artifacts',
+    up(database) {
+      database.exec(`
+        CREATE INDEX IF NOT EXISTS idx_room_members_user ON room_members (user_id, room_id);
+        CREATE INDEX IF NOT EXISTS idx_stories_story_id ON stories (story_id);
+        CREATE INDEX IF NOT EXISTS idx_stories_owner_newest ON stories (user_id, created_at DESC, story_id DESC);
+        CREATE TABLE IF NOT EXISTS story_artifact_locations (
+          user_id INTEGER NOT NULL,
+          story_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          PRIMARY KEY (user_id, story_id, kind)
+        );
       `)
     },
   },

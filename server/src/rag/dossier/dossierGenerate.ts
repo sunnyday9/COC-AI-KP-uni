@@ -13,6 +13,7 @@
  * returns deterministic JSON for dossier prompts (see mockAi.ts), so e2e can
  * run the whole dossier flow without an LLM.
  */
+import { randomUUID } from 'node:crypto'
 import {
   DOSSIER_BATCH_CHARS,
   DOSSIER_SYSTEM_PROMPT,
@@ -218,6 +219,7 @@ export async function generateDossier(
     scriptId,
     storyName: resolved.storyName || raw.name || scriptId,
     generatedAt: Date.now(),
+    sourceRevision: randomUUID(),
     generatedByModel: resolved.generatedByModel || model,
   }
 
@@ -251,6 +253,7 @@ export async function generateDossier(
       scriptId,
       storyName: dossier.storyName,
       generatedAt: Date.now(),
+      sourceRevision: dossier.sourceRevision,
     })
     dossier = { ...dossier, coverageGaps: { count: gaps.gapCount, chars: gaps.gapChars, pct: gaps.gapPct, at: Date.now() } }
     gapsRan = true

@@ -16,6 +16,7 @@ import { sendError } from '../utils/errors.js'
 import { assertId } from '../utils/fileNames.js'
 import * as dossierService from '../rag/dossier/storyDossierService.js'
 import { runIdempotently, validOperationId } from '../services/operationIdempotency.js'
+import { prepareStory } from '../services/storyPreparation.js'
 import { pushRagProgress } from '../ws/progress.js'
 
 const router = Router()
@@ -38,13 +39,16 @@ router.post('/:scriptId/generate', (req: AuthRequest, res) => {
   }
   const body = (req.body ?? {}) as { model?: unknown; annex?: unknown; operationId?: unknown }
   const operationId = validOperationId(body.operationId) ? body.operationId : undefined
-  const run = () => dossierService.generateDossier(userId, scriptId, {
-      model: typeof body.model === 'string' ? body.model : undefined,
-      annex: typeof body.annex === 'boolean' ? body.annex : undefined,
-      onProgress: operationId
-        ? (progress) => pushRagProgress(userId, { ...progress, operation: 'dossier', operationId, scriptId, state: 'running' })
-        : undefined,
-    })
+  const model = typeof body.model === 'string' ? body.model : undefined
+  const annex = typeof body.annex === 'boolean' ? body.annex : undefined
+  const onProgress: NonNullable<Parameters<typeof dossierService.generateDossier>[2]>['onProgress'] = operationId
+    ? (progress) => pushRagProgress(userId, { ...progress, operation: 'dossier', operationId, scriptId, state: 'running' })
+    : undefined
+  const run = () => prepareStory(
+    { kind: 'dossier', userId, storyId: scriptId, model, annex },
+    () => dossierService.generateDossier(userId, scriptId, { model, annex, onProgress }),
+    onProgress,
+  )
   const task = operationId
     ? runIdempotently(`dossier:${userId}:${scriptId}:${operationId}`, run, `dossier:${userId}:${scriptId}`)
     : run()

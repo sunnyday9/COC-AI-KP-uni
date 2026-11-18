@@ -449,7 +449,20 @@ export async function verifyOriginal(
     }
   }
   const storyOwnerId = deps.storyOwnerId ?? deps.userId
-  const cacheKey = `${storyOwnerId}:${deps.scriptId}:${scene}:${question}`
+  const [gaps, dossier] = await Promise.all([
+    (deps.loadGaps ?? (() => loadGaps(storyOwnerId, deps.scriptId)))().catch(() => null),
+    (deps.loadDossier ?? (() => loadDossier(storyOwnerId, deps.scriptId)))().catch(() => null),
+  ])
+  if (gaps?.sourceRevision !== dossier?.sourceRevision) {
+    return {
+      content: renderUnavailable('剧本档案正在更新，请稍后查证'),
+      meta: {
+        ok: false, tier: 'none', spoiler: 'normal', cached: false, chars: 0,
+        reason: 'mismatched-source-revision', durationMs: Date.now() - started,
+      },
+    }
+  }
+  const cacheKey = JSON.stringify([storyOwnerId, deps.scriptId, dossier?.sourceRevision, scene, question])
   const hit = answerCache.get(cacheKey)
   if (hit && now() - hit.at < CACHE_TTL_MS) {
     return { content: hit.content, meta: { ...hit.meta, cached: true, durationMs: Date.now() - started } }
@@ -467,11 +480,6 @@ export async function verifyOriginal(
     answerCache.set(cacheKey, { at: now(), content, meta })
     return { content, meta }
   }
-
-  const [gaps, dossier] = await Promise.all([
-    (deps.loadGaps ?? (() => loadGaps(storyOwnerId, deps.scriptId)))().catch(() => null),
-    (deps.loadDossier ?? (() => loadDossier(storyOwnerId, deps.scriptId)))().catch(() => null),
-  ])
 
   const loc = locateForQuestion(storyText, gaps, dossier, scene || undefined, question, deps.budget ?? DEFAULT_BUDGET)
   if (loc.tier === 'none' || !loc.text) {

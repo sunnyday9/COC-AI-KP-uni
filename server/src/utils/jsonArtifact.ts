@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { assertPathInDir } from './pathSafety.js'
@@ -14,6 +15,29 @@ export interface JsonArtifactSearchOptions {
 /** Create a new server-owned JSON artifact path without using external ids. */
 export function createJsonArtifactPath(rootDir: string, suffix = '.json'): string {
   return assertPathInDir(rootDir, path.join(rootDir, `${randomUUID()}${suffix}`), 'artifact path')
+}
+
+/** Readers continue to see a complete old artifact until the rename commits. */
+export function replaceJsonArtifactSync(file: string, json: string): void {
+  const partial = createJsonArtifactPath(path.dirname(file), '.tmp')
+  try {
+    fs.writeFileSync(partial, json, { encoding: 'utf-8', flag: 'wx' })
+    fs.renameSync(partial, file)
+  } catch (error) {
+    try { fs.unlinkSync(partial) } catch { /* best effort */ }
+    throw error
+  }
+}
+
+export async function replaceJsonArtifact(file: string, json: string): Promise<void> {
+  const partial = createJsonArtifactPath(path.dirname(file), '.tmp')
+  try {
+    await fsp.writeFile(partial, json, { encoding: 'utf-8', flag: 'wx' })
+    await fsp.rename(partial, file)
+  } catch (error) {
+    await fsp.unlink(partial).catch(() => undefined)
+    throw error
+  }
 }
 
 /**

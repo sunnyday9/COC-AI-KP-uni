@@ -26,6 +26,27 @@ async function registerToken(username: string): Promise<string> {
 }
 
 describe('stories routes', () => {
+  it('paginates only the authenticated owner’s catalog and preserves the old list shape', async () => {
+    const owner = await registerToken('stories_page')
+    const outsider = await registerToken('stories_page_outsider')
+    const app = createApp()
+    const uploads = [[owner, 'first.txt'], [owner, 'second.txt'], [outsider, 'secret.txt']] as const
+    for (const [token, name] of uploads) {
+      const upload = await request(app).post('/api/stories/upload').set(auth(token))
+        .attach('file', Buffer.from('story'), name)
+      expect(upload.body.ok).toBe(true)
+    }
+    const page = await request(app).get('/api/stories?limit=1').set(auth(owner))
+    expect(page.status).toBe(200)
+    expect(page.body.stories).toHaveLength(1)
+    const next = await request(app).get('/api/stories').query({ limit: 1, cursor: page.body.nextCursor }).set(auth(owner))
+    expect(next.status).toBe(200)
+    expect(next.body.nextCursor).toBeNull()
+    expect([...page.body.stories, ...next.body.stories].map((story) => story.id).sort()).toEqual(['first.txt', 'second.txt'])
+    expect((await request(app).get('/api/stories').set(auth(owner))).body).toHaveLength(2)
+    expect((await request(app).get('/api/stories?cursor=invalid').set(auth(owner))).status).toBe(400)
+  })
+
   it('requires a token on every endpoint (401 without)', async () => {
     const app = createApp()
     const cases: [string, string][] = [

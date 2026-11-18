@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { sendError } from '../utils/errors.js'
 import * as ragService from '../services/ragService.js'
 import { runIdempotently, validOperationId } from '../services/operationIdempotency.js'
+import { prepareStory, withStoryMutation } from '../services/storyPreparation.js'
 import { pushRagProgress } from '../ws/progress.js'
 
 /**
@@ -38,9 +39,14 @@ router.post('/index', (req: AuthRequest, res) => {
   const body = (req.body ?? {}) as { scriptId?: unknown; operationId?: unknown }
   const scriptId = typeof body.scriptId === 'string' ? body.scriptId : ''
   const operationId = validOperationId(body.operationId) ? body.operationId : undefined
-  const run = () => ragService.index(userId, req.body, operationId
+  const onProgress: Parameters<typeof ragService.index>[2] = operationId
     ? (progress) => pushRagProgress(userId, { ...progress, operation: 'index', operationId, scriptId, state: 'running' })
-    : undefined)
+    : undefined
+  const run = () => prepareStory(
+    { kind: 'index', userId, storyId: scriptId, params: req.body },
+    () => ragService.index(userId, req.body, onProgress),
+    onProgress,
+  )
   const task = operationId
     ? runIdempotently(`index:${userId}:${scriptId}:${operationId}`, run, `index:${userId}:${scriptId}`)
     : run()
@@ -67,11 +73,11 @@ router.post('/index', (req: AuthRequest, res) => {
 
 /** DELETE /api/rag/index/:scriptId — rag:delete. */
 router.delete('/index/:scriptId', (req: AuthRequest, res) => {
-  try {
-    res.json(ragService.deleteIndex(req.userId as number, req.params.scriptId as string))
-  } catch (err) {
-    sendError(res, err)
-  }
+  const userId = req.userId as number
+  const storyId = req.params.scriptId as string
+  void withStoryMutation(userId, storyId, () => ragService.deleteIndex(userId, storyId))
+    .then((result) => res.json(result))
+    .catch((err) => sendError(res, err))
 })
 
 /** POST /api/rag/query — rag:query. */

@@ -150,13 +150,13 @@ export async function index(
 }
 
 /** GET /api/rag/stories — rag:listStories. */
-export function listStories(userId: number): {
+export function listStories(userId: number, storyId?: string): {
   storyId: string
   name: string
   chunkCount: number
   indexedAt: number
 }[] {
-  return vectorStore.listIndexedStories(userId)
+  return vectorStore.listIndexedStories(userId, storyId)
 }
 
 /** DELETE /api/rag/index/:scriptId — rag:delete (vectors only；M1-T7 起无图)。 */

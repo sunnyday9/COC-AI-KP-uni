@@ -4,10 +4,10 @@
  * 拆分约定（架构走查候选 2）：本模块是「轻查询核」，单源承载档案的持久化
  * （persist/load/peek/delete/list，含 #55 质量视图与旧档案覆盖估算）、开局门闩
  * 降质判定（dossierGateNotice）与查询期纯函数 lookups（场景块渲染/词面检索/
- * 场景查找）。依赖白名单只有 node:fs/promises、node:path、config、pathSafety
- * 与同目录轻模块（schema / coverageGaps / sceneLookup）——**不准**静态引入
- * storyService（→ jsdom/pdf-lib 解析链）、aiService、annex、prompts：重生成链
- * 全部在 `./dossierGenerate.js`，只有生成期路由该背那条链。
+ * 场景查找）。查询通过 storyArtifacts 查 SQLite 元数据定位文件，并使用文件、缓存工具
+ * 与同目录轻模块（schema / coverageGaps / sceneLookup）。生成链依赖留在生成器，包括
+ * storyService（→ jsdom/pdf-lib 解析链）、aiService、annex、prompts，由
+ * `./dossierGenerate.js` 的生成期入口加载。
  *
  * 查询期消费方（roomService / supplementService / scriptContext 等）一律动态
  * import 本模块（保持既有动态风格）；`./storyDossierService.ts` 是兼容两半的
@@ -19,13 +19,16 @@
  * Reads are TTL-cached in memory (mirrors graphStore memory cache pattern).
  *
  * Path safety: dossier artifacts use server-owned UUID filenames. The external
- * script id remains in the JSON payload and is resolved by metadata scans.
+ * script id remains in the JSON payload and resolves through the artifact location
+ * index, with metadata scans for legacy files.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { DOSSIER_DATA_DIR } from '../../config.js'
 import { assertPathInDir } from '../../utils/pathSafety.js'
-import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../../utils/jsonArtifact.js'
+import { createJsonArtifactPath, isInternalJsonArtifactPath, replaceJsonArtifact } from '../../utils/jsonArtifact.js'
+import { findRegisteredStoryArtifact, findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact } from '../../services/storyArtifacts.js'
+import { BoundedCache } from '../../utils/boundedCache.js'
 import {
   parseDossierJson,
   DOSSIER_MIN_COVERAGE_PCT,
@@ -37,10 +40,14 @@ import { deleteGaps, loadGaps, GAPS_VERSION, type SceneCoverage } from './covera
 /** TTL for in-memory dossier cache (ms). */
 const CACHE_TTL_MS = 60_000
 
-const memoryCache = new Map<string, { loadedAt: number; dossier: StoryDossier }>()
+const memoryCache = new BoundedCache<{ loadedAt: number; dossier: StoryDossier }>(8 * 1024 * 1024)
 
 function cacheKey(userId: number, scriptId: string): string {
   return `${userId}:${scriptId}`
+}
+
+export function invalidateDossierCache(userId: number, scriptId: string): void {
+  memoryCache.delete(cacheKey(userId, scriptId))
 }
 
 /** Per-user dossier dir (never built from the raw script id). */
@@ -49,16 +56,12 @@ function userDir(userId: number): string {
 }
 
 function dossierFiles(userId: number, scriptId: string): string[] {
-  return findJsonArtifactPaths(userDir(userId), scriptId, { excludeSuffixes: ['.gaps.json', '.annex.json'] })
+  return findStoryArtifacts('dossier', userId, scriptId)
 }
 
 async function ensureDir(userId: number): Promise<string> {
   await fs.mkdir(userDir(userId), { recursive: true })
   return userDir(userId)
-}
-
-function annexFiles(userId: number, scriptId: string): string[] {
-  return findJsonArtifactPaths(userDir(userId), scriptId, { suffix: '.annex.json' })
 }
 
 /* ═══════════════════ Persistence ═══════════════════ */
@@ -67,11 +70,13 @@ export async function persist(userId: number, dossier: StoryDossier): Promise<vo
   await ensureDir(userId)
   const existing = dossierFiles(userId, dossier.scriptId)
   const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(userDir(userId))
-  await fs.writeFile(file, JSON.stringify(dossier, null, 2), 'utf-8')
+  const json = JSON.stringify(dossier, null, 2)
+  await replaceJsonArtifact(file, json)
   for (const oldPath of existing) {
     if (oldPath !== file) await fs.unlink(oldPath).catch(() => undefined)
   }
-  memoryCache.set(cacheKey(userId, dossier.scriptId), { loadedAt: Date.now(), dossier })
+  rememberStoryArtifact('dossier', userId, dossier.scriptId, file)
+  memoryCache.set(cacheKey(userId, dossier.scriptId), { loadedAt: Date.now(), dossier }, Buffer.byteLength(json))
 }
 
 export async function deleteDossier(userId: number, scriptId: string): Promise<boolean> {
@@ -79,13 +84,15 @@ export async function deleteDossier(userId: number, scriptId: string): Promise<b
   // Annex generation is heavy, but deleting its JSON artifact is a light
   // filesystem operation. Keep this cleanup path independent from pdf-lib and
   // provider initialization so deleting a text-only dossier stays immediate.
-  for (const file of annexFiles(userId, scriptId)) await fs.unlink(file).catch(() => undefined)
+  for (const file of findStoryArtifacts('annex', userId, scriptId)) await fs.unlink(file).catch(() => undefined)
+  forgetStoryArtifact('annex', userId, scriptId)
   await deleteGaps(userId, scriptId)
   const files = dossierFiles(userId, scriptId)
   let deleted = false
   for (const file of files) {
     await fs.unlink(file).then(() => { deleted = true }).catch(() => undefined)
   }
+  forgetStoryArtifact('dossier', userId, scriptId)
   return deleted
 }
 
@@ -99,8 +106,8 @@ export async function loadDossier(userId: number, scriptId: string): Promise<Sto
   try {
     const raw = await fs.readFile(file, 'utf-8')
     const dossier = parseDossierJson(raw)
-    if (dossier) {
-      memoryCache.set(key, { loadedAt: Date.now(), dossier })
+    if (dossier?.scriptId === scriptId) {
+      memoryCache.set(key, { loadedAt: Date.now(), dossier }, Buffer.byteLength(raw))
       return dossier
     }
   } catch {
@@ -135,7 +142,10 @@ async function scanDossiers(userId: number, requestedScriptId?: string): Promise
 }> {
   let entries: string[]
   try {
-    entries = await fs.readdir(userDir(userId))
+    const registered = requestedScriptId === undefined
+      ? undefined
+      : findRegisteredStoryArtifact('dossier', userId, requestedScriptId)
+    entries = registered ? [path.basename(registered)] : await fs.readdir(userDir(userId))
   } catch (error) {
     return {
       items: [],
@@ -180,6 +190,7 @@ async function scanDossiers(userId: number, requestedScriptId?: string): Promise
       continue
     }
 
+    if (requestedScriptId !== undefined && d.scriptId !== requestedScriptId) continue
     const item: DossierListItem = {
       scriptId: d.scriptId,
       name: d.storyName,

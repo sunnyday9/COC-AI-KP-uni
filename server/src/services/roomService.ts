@@ -16,6 +16,7 @@ import { logger } from '../utils/logging.js'
 import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
 import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
+import { acquireKpTurn } from './kpAdmission.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
 // 共用 checkStartGate，差异用 gateFor 表达。startGate 是零 fs/db 运行时依赖的叶子
 // （dossierCore/ragService 知识层走其内部动态 import，唯一静态运行时依赖是零依赖
@@ -95,6 +96,7 @@ const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
 /** 事件日志环形容量（Phase C1：重连增量窗口；超出 → 全量快照兜底）。 */
 const MAX_EVENT_LOG = 200
+const MAX_PENDING_PLAYER_ACTIONS = 32
 /** 每 N 个 KP 回合刷新一次长期摘要（场景切换也会触发）。 */
 const LONG_TERM_SUMMARY_EVERY_TURNS = 10
 const ROOM_SUMMARY_SOURCE_MAX_CHARS = 12_000
@@ -160,13 +162,17 @@ export class RoomService {
   private turnCount = 0
   /** opening 回合已触发标记（实例生命周期内一次；失败不重试内重入）。 */
   private openingStarted = false
+  private openingInFlight = false
+  private readonly lifetime = new AbortController()
+  private get disposed(): boolean { return this.lifetime.signal.aborted }
   private summarizing = false
   private summaryRefreshPending = false
   private seq = 0
-  private eventCountSinceSnapshot = 0
+  private persistedSeq = 0
   private lastSnapshotAt = Date.now()
   private lastActivityAt = Date.now()
   private queue: Promise<unknown> = Promise.resolve()
+  private queuedClientActions = 0
   private readonly listeners = new Set<(event: RoomEvent, seq: number) => void>()
   /** 事件日志（Phase C1）：带 seq 的增量事件，环形保留最近 MAX_EVENT_LOG 条。 */
   private eventLog: { seq: number; event: RoomEvent }[] = []
@@ -212,7 +218,12 @@ export class RoomService {
       this.longTermSummary = typeof opts.restore.longTermSummary === 'string' ? opts.restore.longTermSummary : ''
       if (isValidContextBudget(opts.restore.contextBudgetChars)) this.contextBudgetChars = opts.restore.contextBudgetChars
     }
-    this.snapshotTimer = setInterval(() => void this.maybeSnapshot(), SNAPSHOT_EVERY_MS)
+    this.persistedSeq = this.seq
+    this.snapshotTimer = setInterval(() => {
+      void this.maybeSnapshot().catch((error: unknown) => {
+        logger.warn('periodic room snapshot failed', { roomId: this.roomId, error: String(error) })
+      })
+    }, SNAPSHOT_EVERY_MS)
     this.snapshotTimer.unref?.()
   }
 
@@ -231,7 +242,10 @@ export class RoomService {
   getCharacters(): ReadonlyMap<string, COCCharacterSheet> { return this.characters }
   getClues(): readonly { id: string; description: string }[] { return this.clues }
   getEnding(): unknown { return this.ending }
-  isStale(): boolean { return Date.now() - this.lastActivityAt > ROOM_TTL_MS }
+  isStale(): boolean {
+    return !this.turnFlushing && !this.openingInFlight && this.queuedClientActions === 0 &&
+      Date.now() - this.lastActivityAt > ROOM_TTL_MS
+  }
 
   /** 序列化快照（落库/重连全量）。 */
   snapshot(): RoomSnapshot {
@@ -273,9 +287,14 @@ export class RoomService {
     return run
   }
 
+  enqueueClientAction(task: () => Promise<void>): Promise<void> | null {
+    if (this.disposed || this.queuedClientActions >= MAX_PENDING_PLAYER_ACTIONS) return null
+    this.queuedClientActions++
+    return this.enqueue(task).finally(() => { this.queuedClientActions-- })
+  }
+
   private emit(event: RoomEvent): void {
     this.seq += 1
-    this.eventCountSinceSnapshot += 1
     // 事件日志（环形缓冲，Phase C1 重连增量）：保留最近 MAX_EVENT_LOG 条。
     this.eventLog.push({ seq: this.seq, event })
     if (this.eventLog.length > MAX_EVENT_LOG) {
@@ -419,7 +438,7 @@ export class RoomService {
     }
     if (this.phase === 'playing') {
       void this.refreshOwnerAiSetupStatus().then((ready) => {
-        if (ready && this.turnBuffer.length > 0) void this.flushTurn()
+        if (ready && this.turnBuffer.length > 0) this.startBufferedTurn()
       })
     }
   }
@@ -455,17 +474,19 @@ export class RoomService {
 
   /** 玩家聊天（领域方法，ADR-0001）：解析身份 → 消息流广播 →（playing 才）进回合缓冲。
    *  Phase gate（ADR-0005）：lobby 等待室聊天只广播不触发 KP 回合。 */
-  submitPlayerChat(userId: number, content: string): void {
+  submitPlayerChat(userId: number, content: string): boolean {
+    if (this.phase === 'playing' && this.turnBuffer.length >= MAX_PENDING_PLAYER_ACTIONS) return false
     const username = roomStorage.usernameOf(userId) ?? `user_${userId}`
     const characterId = roomStorage.memberCharacterId(this.roomId, userId)
     this.appendMessage(
       { id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'player', playerName: username, content },
       { userId, roleName: username },
     )
-    if (this.phase !== 'playing') return
+    if (this.phase !== 'playing') return true
     // Phase B6 + D4：玩家消息触发 KP 回合——回合窗口合并；行动者 = 成员绑定的角色卡。
     // 单人房间 = 单成员（FR-M9）；turnWindowMs=0 时立即处理（严格排队）。
     this.bufferPlayerChat(username, content, characterId, userId)
+    return true
   }
 
   /** 玩家消息进回合缓冲（聊天即时广播；KP 回合等窗口超时合并执行）。 */
@@ -475,21 +496,27 @@ export class RoomService {
     // setRoomTurnWindow 一次写库 + 同步实例；快照 restore 是重启兜底。
     // turnWindowMs=0 → 严格排队：每条消息立即触发 KP 回合（无合并延迟）
     if (this.turnWindowMs <= 0) {
-      void this.flushTurn()
+      this.startBufferedTurn()
       return
     }
     if (!this.turnTimer) {
       this.turnTimer = setTimeout(() => {
         this.turnTimer = null
-        void this.flushTurn()
+        this.startBufferedTurn()
       }, this.turnWindowMs)
       this.turnTimer.unref?.()
     }
   }
 
+  private startBufferedTurn(): void {
+    void this.flushTurn().catch((error: unknown) => {
+      logger.warn('room turn interrupted', { roomId: this.roomId, error: String(error) })
+    })
+  }
+
   /** 合并缓冲内玩家消息 → 一次 KP 回合（窗口超时/严格排队时调用）。 */
   async flushTurn(): Promise<void> {
-    if (this.turnFlushing) return
+    if (this.turnFlushing || this.openingInFlight || this.disposed) return
     // 结束态是终态（#54）：end_game 之后不再消费任何缓冲消息。
     if (this.isEnded()) {
       this.turnBuffer = []
@@ -498,7 +525,11 @@ export class RoomService {
     if (this.turnBuffer.length === 0) return
 
     this.turnFlushing = true
+    let release: (() => void) | null = null
+    let interrupted = false
     try {
+      release = await acquireKpTurn(this.lifetime.signal)
+      if (!release || this.disposed || this.isEnded()) return
       // Check the successor's own provider setup before consuming queued player actions.
       // When missing, keep the full batch in the persisted snapshot for an explicit retry.
       if (!(await this.refreshOwnerAiSetupStatus())) {
@@ -511,7 +542,8 @@ export class RoomService {
       const batch = this.turnBuffer
       this.turnBuffer = []
       this.activeTurnBatch = batch
-      await this.persistSnapshot()
+      const historyEnd = Math.max(0, this.messages.length - batch.length)
+      await this.persistTurnSnapshot()
       if (this.turnTimer) {
         clearTimeout(this.turnTimer)
         this.turnTimer = null
@@ -523,7 +555,6 @@ export class RoomService {
       const merged = batch.map((b) => `【${b.username}】${b.content}`).join('\n')
       const activeCharacterId = batch[batch.length - 1]?.characterId ?? null
       const allowedCharacterIds = new Set(batch.map((b) => b.characterId).filter((id): id is string => !!id))
-      const historyEnd = Math.max(0, this.messages.length - batch.length)
       const { assembleTurnKnowledge } = await import('./turnKnowledge.js')
       const knowledge = await assembleTurnKnowledge({
         workflow: this.workflow,
@@ -564,8 +595,9 @@ export class RoomService {
         (chunk) => this.emitKpChunk(chunk),
         allowedCharacterIds,
         knowledge.wireInjectionText,
-        () => this.ownerId === turnOwnerId,
+        () => !this.disposed && this.ownerId === turnOwnerId,
         () => {
+          if (this.disposed) return
           this.turnBuffer = [...batch, ...this.turnBuffer]
           this.activeTurnBatch = []
           void this.refreshOwnerAiSetupStatus()
@@ -574,25 +606,30 @@ export class RoomService {
         },
       )
       this.activeTurnBatch = []
-      await this.persistSnapshot()
+      if (!this.disposed) await this.persistTurnSnapshot()
+    } catch (error) {
+      interrupted = true
+      throw error
     } finally {
+      release?.()
       this.turnFlushing = false
-      if (this.activeTurnBatch.length > 0) {
+      if (!this.disposed && this.activeTurnBatch.length > 0) {
         this.turnBuffer = [...this.activeTurnBatch, ...this.turnBuffer]
         this.activeTurnBatch = []
         void this.persistSnapshot().catch((error) => logger.warn('room interrupted turn recovery persistence failed', { roomId: this.roomId, error: String(error) }))
       }
-      if (this.isEnded()) {
+      if (this.disposed || this.isEnded()) {
         this.turnBuffer = []
       } else if (!this.kpSetupRequired && this.turnBuffer.length > 0) {
         // Messages arriving while a healthy turn is running are flushed next.
-        if (this.turnWindowMs <= 0) {
-          void this.flushTurn()
+        if (!interrupted && this.turnWindowMs <= 0) {
+          this.startBufferedTurn()
         } else {
+          if (this.turnTimer) clearTimeout(this.turnTimer)
           this.turnTimer = setTimeout(() => {
             this.turnTimer = null
-            void this.flushTurn()
-          }, this.turnWindowMs)
+            this.startBufferedTurn()
+          }, interrupted ? Math.max(this.turnWindowMs, 1_000) : this.turnWindowMs)
           this.turnTimer.unref?.()
         }
       }
@@ -857,7 +894,7 @@ export class RoomService {
     if (userId !== this.ownerId || !roomStorage.isRoomMember(this.roomId, userId) || this.phase !== 'playing') return false
     if (!(await this.refreshOwnerAiSetupStatus())) return true
     if (this.turnBuffer.length > 0) {
-      void this.flushTurn()
+      this.startBufferedTurn()
       return true
     }
     const hasNarrative = this.messages.some((message) => message.role === 'player' || message.role === 'kp')
@@ -867,8 +904,10 @@ export class RoomService {
 
   /** opening（ADR-0002）：startRoom / 首次 join 时触发一次，失败不阻塞进入。 */
   beginOpeningIfPending(): void {
-    if (this.openingStarted || this.phase !== 'playing' || this.messages.some((message) => message.role === 'player' || message.role === 'kp')) return
+    if (this.disposed || this.openingStarted || this.openingInFlight || this.turnFlushing || this.phase !== 'playing' ||
+        this.messages.some((message) => message.role === 'player' || message.role === 'kp')) return
     this.openingStarted = true
+    this.openingInFlight = true
     void this.runOpeningTurn()
   }
 
@@ -879,7 +918,11 @@ export class RoomService {
    * 由 getOrCreateRoom 的 syncFromDb 装载后才会调用本方法（懒激活顺序保证）。
    */
   private async runOpeningTurn(): Promise<void> {
+    let release: (() => void) | null = null
+    let retryOpening = false
     try {
+      release = await acquireKpTurn(this.lifetime.signal)
+      if (!release || this.disposed || this.phase !== 'playing') return
       const setupOwnerId = this.ownerId
       if (!(await this.refreshOwnerAiSetupStatus())) {
         this.openingStarted = false
@@ -887,9 +930,7 @@ export class RoomService {
       }
       if (this.ownerId !== setupOwnerId) {
         this.openingStarted = false
-        void this.refreshOwnerAiSetupStatus().then((ready) => {
-          if (ready) this.beginOpeningIfPending()
-        })
+        retryOpening = true
         return
       }
       const turnOwnerId = this.ownerId
@@ -908,9 +949,7 @@ export class RoomService {
       })
       if (this.ownerId !== turnOwnerId) {
         this.openingStarted = false
-        void this.refreshOwnerAiSetupStatus().then((ready) => {
-          if (ready) this.beginOpeningIfPending()
-        })
+        retryOpening = true
         return
       }
       const chatMessages = buildRoomOpeningMessages(this.promptInput(knowledge.storyName, this.messages), knowledge.ragContext, {
@@ -929,38 +968,55 @@ export class RoomService {
           undefined,
           // wire 采样注入列：与 flushTurn 同口径（单源在 TurnKnowledge）
           knowledge.wireInjectionText,
-          () => this.ownerId === turnOwnerId,
+          () => !this.disposed && this.ownerId === turnOwnerId,
           () => {
             this.openingStarted = false
-            void this.refreshOwnerAiSetupStatus().then((ready) => {
-              if (ready) this.beginOpeningIfPending()
-            })
+            retryOpening = !this.disposed
           },
         ),
       )
     } catch (err) {
       // opening 失败不阻塞（ADR-0002）——保留可见日志（此前全吞难排查）
       logger.warn('room opening turn failed', { roomId: this.roomId, ownerId: this.ownerId, error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      release?.()
+      this.openingInFlight = false
+      if (this.turnBuffer.length > 0 && !this.kpSetupRequired && !this.turnTimer) {
+        this.startBufferedTurn()
+      } else if (retryOpening) {
+        this.beginOpeningIfPending()
+      }
     }
   }
 
   /* ═══════════════ 快照 / 回收 ═══════════════ */
 
   private async maybeSnapshot(): Promise<void> {
-    if (this.eventCountSinceSnapshot >= SNAPSHOT_EVERY_N_EVENTS || Date.now() - this.lastSnapshotAt >= SNAPSHOT_EVERY_MS) {
+    const events = this.seq - this.persistedSeq
+    if (events > 0 && (events >= SNAPSHOT_EVERY_N_EVENTS || Date.now() - this.lastSnapshotAt >= SNAPSHOT_EVERY_MS)) {
       await this.persistSnapshot()
     }
   }
 
   /** 落库快照（rooms.state）。 */
   async persistSnapshot(): Promise<void> {
-    this.eventCountSinceSnapshot = 0
-    this.lastSnapshotAt = Date.now()
     roomStorage.updateRoomStateSnapshot(this.roomId, serializeRoomState(this.snapshot()))
+    this.persistedSeq = this.seq
+    this.lastSnapshotAt = Date.now()
+  }
+
+  private async persistTurnSnapshot(): Promise<void> {
+    const seq = await roomStorage.queueTurnSnapshot(this.roomId, () => ({
+      seq: this.seq,
+      stateJson: serializeRoomState(this.snapshot()),
+    }))
+    this.persistedSeq = Math.max(this.persistedSeq, seq)
+    this.lastSnapshotAt = Date.now()
   }
 
   /** 停止定时器（房间回收时调用）。 */
   dispose(): void {
+    this.lifetime.abort()
     if (this.snapshotTimer) clearInterval(this.snapshotTimer)
     this.snapshotTimer = null
     this.clearTurnWindow()
@@ -971,6 +1027,12 @@ export class RoomService {
 /* ═══════════════ 房间注册表（进程内单例） ═══════════════ */
 
 const roomRegistry = new Map<string, RoomService>()
+
+export function hasRoomCapacity(roomId: string): boolean {
+  const configured = Number(process.env.ROOM_ACTIVE_INSTANCES ?? 1024)
+  const limit = Number.isSafeInteger(configured) && configured > 0 ? configured : 1024
+  return roomRegistry.has(roomId) || roomRegistry.size < limit
+}
 
 /** 获取或创建房间（owner 建房）。 */
 export function getOrCreateRoom(
@@ -1088,7 +1150,7 @@ export function createRoom(
   storyId: string | null,
   opts: { workflow?: unknown } = {},
 ): { roomId: string; inviteCode: string } {
-  const roomId = `room_${crypto.randomUUID().slice(0, 8)}`
+  const roomId = `room_${crypto.randomUUID()}`
   const inviteCode = ensureUniqueInviteCode()
   roomStorage.insertRoom(roomId, userId, inviteCode, storyId)
   roomStorage.insertMember(roomId, userId, 'owner')
@@ -1129,13 +1191,13 @@ export async function createSoloRoom(
   // 无结束态/已选剧本/绑卡闩——房间行尚未存在，一体动作自己在下面的同一事务里绑卡。
   const gate = await checkStartGate({ gateFor: 'solo-create', storyId, ownerId: userId, workflow: input?.workflow })
   if (!gate.ok) return gate
-  const characterId = `char_${crypto.randomUUID().slice(0, 8)}`
+  const characterId = `char_${crypto.randomUUID()}`
   // 一体动作的六次写库包进事务：中途失败整体回滚，不留孤儿角色卡/房间
   const db = roomStorage.tx()
   db.exec('BEGIN')
   try {
     roomStorage.insertCharacter(characterId, userId, name, JSON.stringify(sheet))
-    const roomId = `room_${crypto.randomUUID().slice(0, 8)}`
+    const roomId = `room_${crypto.randomUUID()}`
     const inviteCode = ensureUniqueInviteCode()
     roomStorage.insertRoom(roomId, userId, inviteCode, storyId, 'solo')
     roomStorage.insertMember(roomId, userId, 'owner')
@@ -1455,9 +1517,9 @@ export function isRoomMember(roomId: string, userId: number): boolean {
 }
 
 /** 回收过期房间（TTL 扫描，进程启动时定期调用）。 */
-export function reapStaleRooms(): void {
+export function reapStaleRooms(canEvict: (roomId: string) => boolean = () => true): void {
   for (const [id, room] of roomRegistry) {
-    if (room.isStale()) {
+    if (canEvict(id) && room.isStale()) {
       // 装配级错误安全（#86）：persistSnapshot 内是 better-sqlite3 同步 UPDATE，
       // 抛错会变成 rejected promise 经 finally 透传——无 catch 即 unhandledRejection
       // （Node ≥15 默认崩进程）。catch 只记日志；dispose/逐出仍在 finally 执行，
@@ -1474,11 +1536,11 @@ export function reapStaleRooms(): void {
 }
 
 /** 定期回收（测试可注入间隔；默认 60s）。 */
-export function startRoomReaper(intervalMs = 60_000): NodeJS.Timeout {
+export function startRoomReaper(intervalMs = 60_000, canEvict?: (roomId: string) => boolean): NodeJS.Timeout {
   // interval 回调整体 try/catch（#86 装配级）：同步异常不让 interval 打崩进程。
   const t = setInterval(() => {
     try {
-      reapStaleRooms()
+      reapStaleRooms(canEvict)
     } catch (err) {
       logger.error('room reaper scan failed', { error: String(err) })
     }
