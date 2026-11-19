@@ -136,7 +136,7 @@ async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
 
 /** 驱动一个档案房回合；`scene = null` → 不设场景（新局形态）。 */
 async function runTurn(roomId: string, scene: string | null): Promise<RoomService> {
-  roomStorage.insertRoom(roomId, 7, `INV-${roomId}`, null)
+  await roomStorage.insertRoom(roomId, 7, `INV-${roomId}`, null)
   const room = new RoomService({ roomId, ownerId: 7, ownerName: 'alice', turnWindowMs: 0, workflow: 'dossier' })
   room.startGame('demo.txt')
   if (scene !== null) room.setScene(scene)

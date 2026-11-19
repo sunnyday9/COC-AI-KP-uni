@@ -20,8 +20,8 @@
  * userGraphStore（A3 延后特性，与 GraphRAG 不是一回事）2026-09-12 经用户拍板**退役**：
  * 零回合路径消费方，需要时从 git 历史取回。
  */
-import { getSettings, getAiConfig } from './settingsService.js'
-import { isMockAiMode } from '../config.js'
+import { getSettings, getAiConfig, getGatewaySettings, getSharedAiConfig } from './settingsService.js'
+import { isMockAiMode, SHARED_ROOMS_ENABLED } from '../config.js'
 import type { AppSettings } from '../../../shared/types/settings.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError } from '../utils/errors.js'
@@ -49,12 +49,12 @@ async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
     // uses its TF-IDF retrieval baseline when dense embeddings are unavailable.
     return null
   }
-  const settings = getSettings(userId)
+  const settings = SHARED_ROOMS_ENABLED ? await getGatewaySettings(userId) : getSettings(userId)
   const rag = (settings.rag || {}) as NonNullable<AppSettings["rag"]>
   const provider = rag.provider === 'api' ? 'api' : 'builtin'
 
   if (provider === 'api') {
-    const ai = getAiConfig(userId)
+    const ai = SHARED_ROOMS_ENABLED ? await getSharedAiConfig(userId) : getAiConfig(userId)
     const baseUrl = (ai.baseUrl || '').trim()
     const apiKey = ai.apiKey && ai.apiKey !== '***' ? ai.apiKey : null
     if (baseUrl && apiKey) {

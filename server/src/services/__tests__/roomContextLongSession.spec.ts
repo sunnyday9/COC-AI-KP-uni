@@ -129,7 +129,7 @@ async function createPlayingRoom(username: string) {
     sheet,
   })
   if (!created.ok) throw new Error(created.message)
-  const room = joinRoom(created.roomId, userId, username)
+  const room = await joinRoom(created.roomId, userId, username)
   if (!room) throw new Error('expected room membership')
   await vi.waitFor(() => expect(state.turnCalls).toBe(1)) // Opening is the first KP call.
   return { userId, roomId: created.roomId, room }
@@ -148,7 +148,7 @@ describe('RoomService long-session context', () => {
 
     for (let turn = 1; turn <= turnCount; turn += 1) {
       const expectedCalls = state.turnCalls + 1
-      room.submitPlayerChat(userId, `turn-${turn}-unique-marker ${'调查旧档案'.repeat(24)}`)
+      await room.submitPlayerChat(userId, `turn-${turn}-unique-marker ${'调查旧档案'.repeat(24)}`)
       await vi.waitFor(() => expect(state.turnCalls).toBe(expectedCalls))
 
       const prompt = state.prompts.at(-1)!
@@ -169,7 +169,7 @@ describe('RoomService long-session context', () => {
     expect(fullTranscriptStillAvailable).toBe(true)
 
     _clearRoomRegistryForTests()
-    const restored = getOrCreateRoom(roomId, userId, `context_${turnCount}`)
+    const restored = await getOrCreateRoom(roomId, userId, `context_${turnCount}`)
     expect(restored.snapshot().longTermSummary).toBe(expectedSummary)
     expect(restored.snapshot().contextBudgetChars).toBe(CONTEXT_BUDGET_CHARS)
     expect(restored.snapshot().scene).toBe('旧图书馆')
@@ -183,7 +183,7 @@ describe('RoomService long-session context', () => {
 
     for (let turn = 1; turn <= 10; turn += 1) {
       const expectedCalls = state.turnCalls + 1
-      room.submitPlayerChat(userId, `failure-test-turn-${turn}`)
+      await room.submitPlayerChat(userId, `failure-test-turn-${turn}`)
       await vi.waitFor(() => expect(state.turnCalls).toBe(expectedCalls))
     }
 

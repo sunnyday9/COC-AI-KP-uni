@@ -22,6 +22,7 @@
  * 会话回填注意：kpTurnService 对工具结果做摘要 + 600 字符截断，本模块渲染上限
  * MAX_CONTENT_CHARS=580，保证 KP 看到的内容不被砍。
  */
+import { SHARED_ROOMS_ENABLED } from '../../config.js'
 import { chatForRag } from '../../services/aiService.js'
 import { readStoryForRag } from '../../services/storyService.js'
 import { loadGaps, SCENE_REGION_LEAD, SCENE_REGION_SPAN, type CoverageGaps } from './coverageGaps.js'
@@ -411,6 +412,7 @@ function parseAnswer(raw: string): { answer: string; quote: string; found: boole
 
 /** 默认原文读取：readStoryForRag + 进程内 TTL 缓存（PDF OCR 很贵，逐次读不可行）。 */
 async function defaultLoadStoryText(userId: number, scriptId: string, now: () => number): Promise<string | null> {
+  if (SHARED_ROOMS_ENABLED) return null
   const key = `${userId}:${scriptId}`
   const hit = textCache.get(key)
   if (hit && now() - hit.at < CACHE_TTL_MS) return hit.text

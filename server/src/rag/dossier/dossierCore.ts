@@ -24,10 +24,9 @@
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { DOSSIER_DATA_DIR } from '../../config.js'
 import { assertPathInDir } from '../../utils/pathSafety.js'
 import { createJsonArtifactPath, isInternalJsonArtifactPath, replaceJsonArtifact } from '../../utils/jsonArtifact.js'
-import { findRegisteredStoryArtifact, findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact } from '../../services/storyArtifacts.js'
+import { findRegisteredStoryArtifact, findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact, storyArtifactDirectory } from '../../services/storyArtifacts.js'
 import { BoundedCache } from '../../utils/boundedCache.js'
 import {
   parseDossierJson,
@@ -52,7 +51,7 @@ export function invalidateDossierCache(userId: number, scriptId: string): void {
 
 /** Per-user dossier dir (never built from the raw script id). */
 function userDir(userId: number): string {
-  return path.join(DOSSIER_DATA_DIR, String(userId))
+  return storyArtifactDirectory('dossier', userId)
 }
 
 function dossierFiles(userId: number, scriptId: string): string[] {

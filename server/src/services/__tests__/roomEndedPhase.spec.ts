@@ -143,24 +143,24 @@ describe('#54 end_game 落库 phase 列', () => {
     if (!created.ok) return
 
     // 结束前：正常在列
-    expect(listSoloRoomsForUser(userId).map((r) => r.roomId)).toContain(created.roomId)
+    expect((await listSoloRoomsForUser(userId)).map((r) => r.roomId)).toContain(created.roomId)
 
-    const room = getOrCreateRoom(created.roomId, userId, 'ended_alice', 'story_e1')
+    const room = await getOrCreateRoom(created.roomId, userId, 'ended_alice', 'story_e1')
     const events: unknown[] = []
     const unsubscribe = room.subscribe((event) => events.push(event))
-    room.setEnding(ENDING)
+    await room.setEnding(ENDING)
 
     // ① 权威列落库
-    expect(getRoomRow(created.roomId)!.phase).toBe('ended')
+    expect((await getRoomRow(created.roomId))!.phase).toBe('ended')
     expect(room.snapshot().ending).toEqual(ENDING)
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'state_patch', payload: { path: 'ending', value: ENDING } }),
       expect.objectContaining({ type: 'room_meta', payload: expect.objectContaining({ phase: 'ended' }) }),
     ]))
     // ② 继续游戏入口不再列出（listSoloRoomsForUser 的 WHERE phase != 'ended'）
-    expect(listSoloRoomsForUser(userId).map((r) => r.roomId)).not.toContain(created.roomId)
+    expect((await listSoloRoomsForUser(userId)).map((r) => r.roomId)).not.toContain(created.roomId)
     // ③ 房间详情报 ended（getRoomDetail 读的就是这一列）
-    const detail = getRoomDetail(userId, created.roomId)
+    const detail = await getRoomDetail(userId, created.roomId)
     expect(detail.ok).toBe(true)
     if (detail.ok) expect(detail.detail.phase).toBe('ended')
 
@@ -176,23 +176,23 @@ describe('#54 end_game 落库 phase 列', () => {
 
     // 正对照：playing 房的一条消息**确实**触发一次 KP 回合（证明桩接线有效，
     // 否则下面的"零调用"断言可能只是因为实现压根没被接上）
-    const live = getOrCreateRoom(created.roomId, userId, 'ended_bob', 'story_e2')
-    live.submitPlayerChat(userId, '我先四处看看。')
+    const live = await getOrCreateRoom(created.roomId, userId, 'ended_bob', 'story_e2')
+    await live.submitPlayerChat(userId, '我先四处看看。')
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1), { timeout: 3_000 })
-    live.setEnding(ENDING)
+    await live.setEnding(ENDING)
     await live.persistSnapshot()
     live.dispose()
     runKpTurnMock.mockClear()
 
     // 模拟进程重启：清注册表后重新物化（列优先 restore）
     _clearRoomRegistryForTests()
-    const restored = getOrCreateRoom(created.roomId, userId, 'ended_bob')
+    const restored = await getOrCreateRoom(created.roomId, userId, 'ended_bob')
     try {
       expect(restored.getPhase()).toBe('ended')
       expect(restored.getEnding()).toEqual(ENDING)
       expect(restored.snapshot().ending).toEqual(ENDING)
       // 结束态下玩家消息只进聊天流，**不触发 KP 回合**（等一段确定的时间再看计数）
-      restored.submitPlayerChat(userId, '我还想继续调查。')
+      await restored.submitPlayerChat(userId, '我还想继续调查。')
       await new Promise((r) => setTimeout(r, 200))
       expect(runKpTurnMock).not.toHaveBeenCalled()
     } finally {
@@ -210,11 +210,11 @@ describe('#54 end_game 落库 phase 列', () => {
       .prepare(`UPDATE rooms SET state = ?, phase = 'playing' WHERE room_id = ?`)
       .run(JSON.stringify({ seq: 1, phase: 'playing', storyId: 'story_e3', messages: [], characters: {}, clues: [], scene: null, ending: ENDING, turnWindowMs: 0, updatedAt: Date.now() }), created.roomId)
 
-    const room = getOrCreateRoom(created.roomId, userId, 'ended_carol')
+    const room = await getOrCreateRoom(created.roomId, userId, 'ended_carol')
     try {
       expect(room.getPhase()).toBe('ended')
-      expect(getRoomRow(created.roomId)!.phase).toBe('ended') // 回写生效
-      expect(listSoloRoomsForUser(userId).map((r) => r.roomId)).not.toContain(created.roomId)
+      expect((await getRoomRow(created.roomId))!.phase).toBe('ended') // 回写生效
+      expect((await listSoloRoomsForUser(userId)).map((r) => r.roomId)).not.toContain(created.roomId)
     } finally {
       room.dispose()
     }
@@ -236,6 +236,6 @@ describe('#54 end_game 落库 phase 列', () => {
       expect(res.reason).toBe('conflict')
       expect(res.message).toContain('已结束')
     }
-    expect(getRoomRow(roomId)!.phase).toBe('ended')
+    expect((await getRoomRow(roomId))!.phase).toBe('ended')
   })
 })

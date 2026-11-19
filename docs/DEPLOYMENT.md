@@ -144,7 +144,17 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 只有写入对象成功并提交 PostgreSQL 事务后，目录才会公开该条目。每次上传拥有新的不可变原文修订。已确认失败会尝试清理该次上传的对象。若提交回执未知或客户端断线，请刷新目录确认后再上传。同一文件名可重复上传并得到不同 ID，上传接口不根据名称或内容去重。提交状态不明、进程崩溃或存储清理失败可能留下孤儿对象。清理孤儿时，应先暂停上传并核对 PostgreSQL 中所有活跃和已删除记录的修订，保留仍被引用的原文。删除先写入墓碑并保留原文修订，以支持后续房间固定修订。请勿按对象年龄批量过期。
 
-共享目录页支持上传、翻页和选中预览。本地首页和多人等待室也按页列出已索引故事。两处通过 SQLite 索引查询目录元数据，首次读取或原子替换索引文件后会重新导入该账号的本地索引清单，包括旧版文件。此阶段的目录提供原文，剧本准备、开局及房间固定原文和制品修订由后续阶段提供。本地 SQLite 和本地文件部署行为不变。`/health/ready` 继续检查 PostgreSQL；应另外用合成文件验证私有对象存储的读写。仓库提供双网关测试，向 `TEST_SHARED_STORIES_DATABASE_URL` 注入独立、可销毁的 PostgreSQL 测试库，并向 `TEST_SHARED_STORIES_S3` 注入独立、可销毁私有桶的 JSON 配置（字段为 `bucket`、`region`、可选 `endpoint`、可选布尔值 `forcePathStyle`、包含 SDK 凭据字段的 `credentials`），随后运行 `npm run test --workspace=server -- sharedStories.test.ts`。测试会写入合成账号、文件和目录元数据，也会列举桶中该测试账号的对象验证清理。
+共享目录页支持上传、翻页和选中预览。本地首页和多人等待室也按页列出已索引故事。两处通过 SQLite 索引查询目录元数据，首次读取或原子替换索引文件后会重新导入该账号的本地索引清单，包括旧版文件。共享目录提供原文。直接从共享目录准备剧本、开局及固定原文和制品修订由后续阶段提供。本地 SQLite 和本地文件部署行为不变。`/health/ready` 继续检查 PostgreSQL；应另外用合成文件验证私有对象存储的读写。仓库提供双网关测试，向 `TEST_SHARED_STORIES_DATABASE_URL` 注入独立、可销毁的 PostgreSQL 测试库，并向 `TEST_SHARED_STORIES_S3` 注入独立、可销毁私有桶的 JSON 配置（字段为 `bucket`、`region`、可选 `endpoint`、可选布尔值 `forcePathStyle`、包含 SDK 凭据字段的 `credentials`），随后运行 `npm run test --workspace=server -- sharedStories.test.ts`。测试会写入合成账号、文件和目录元数据，也会列举桶中该测试账号的对象验证清理。
+
+### 6.3 单进程共享房间预发布（#115）
+
+在 PostgreSQL 账号预发布配置上，为唯一的游戏进程另设 `ENABLE_SHARED_ROOMS=1` 和 `SHARED_ROOM_FIXTURE_DIR=<隔离的绝对路径>`。该进程提供既有房间、角色卡 REST 和 `/ws` 协议，并在启动时持有 PostgreSQL 会话锁。同库的其他账号网关可继续提供账号和设置，房间请求和 WebSocket 全部发往持锁的游戏进程。数据库负责保留账号、房间、成员、角色卡与房间快照。配置预发布账号自己的 BYOK 设置，或使用 `MOCK_AI=1` 进行无外部请求的演练。
+
+由操作员把已准备的测试剧本复制到专用目录，按 PostgreSQL 账号 ID 归属。档案及其 sidecar 放在 `<dir>/dossiers/<account-id>/`，索引放在 `<dir>/rag/<account-id>/rag_index/`。文件使用服务端生成的 UUID 文件名与现有 JSON 格式。此处只读，房间开局仍检查对应 workflow 所需的产物。原文查证、wire 训练采样、共享原文与产物版本留待后续阶段。SQLite 的数据和产物目录必须与预发布夹具分开。
+
+共享房间在发送玩家聊天回显前提交待处理行动。守秘人回合（含开场）的角色卡、场景、线索、结局、消息及消耗的行动一同提交，随后广播事件。进程在回合提交前终止时，重启从完整快照继续待处理行动。
+
+使用独立的临时 PostgreSQL 数据库设置 `TEST_SHARED_ROOMS_DATABASE_URL`，在仓库根目录运行 `npm run test:server -- src/routes/sharedRooms.test.ts`。测试用同一套既有 REST 和 WebSocket 协议覆盖 SQLite 与 PostgreSQL 的建房、游戏进程重启、房主及剧本归属、角色卡与待处理回合。当前共享房间部署仅面向受控的单游戏进程预发布。
 
 ## 7. 上线检查清单
 

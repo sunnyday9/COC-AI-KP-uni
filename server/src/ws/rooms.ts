@@ -45,13 +45,13 @@ function broadcast(roomId: string, event: RoomEvent, seq: number): void {
 }
 
 /** 处理 room:join — 成员资格 → 订阅 → 全量快照。 */
-export function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown): void {
+export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown): Promise<void> {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
   if (!roomId) {
     send(socket, { type: 'room:error', roomId: '', error: 'roomId required' })
     return
   }
-  const plan = planJoin(roomId, userId, `user_${userId}`)
+  const plan = await planJoin(roomId, userId, `user_${userId}`)
   if (!plan.ok) {
     send(socket, { type: 'room:error', roomId, error: plan.error })
     return
@@ -59,6 +59,7 @@ export function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown):
   const room = plan.room
   // 扇出挂接：RoomService 事件 → 房间订阅组（幂等由订阅簿保证）
   ensureFanout(room, (event, seq) => broadcast(roomId, event, seq))
+  if (socket.readyState !== 1) return
   subscribeSocket(socket, roomId)
   // 全量快照（加入时）
   send(socket, { type: 'room:state', roomId, snapshot: room.snapshot(), seq: room.getSeq() })
@@ -71,10 +72,10 @@ export function handleRoomLeave(socket: WebSocket, roomId: string): void {
 }
 
 /** 处理 room:sync — 订阅簿规划增量/全量；编码在本层。 */
-export function handleRoomSync(socket: WebSocket, userId: number, raw: unknown): void {
+export async function handleRoomSync(socket: WebSocket, userId: number, raw: unknown): Promise<void> {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
   const lastSeq = Number((raw as { lastSeq?: unknown }).lastSeq ?? 0)
-  const plan = planSync(roomId, userId, lastSeq)
+  const plan = await planSync(roomId, userId, lastSeq)
   if (plan.kind === 'error') {
     send(socket, { type: 'room:error', roomId, error: plan.error })
     return
@@ -92,39 +93,41 @@ export function handleRoomSync(socket: WebSocket, userId: number, raw: unknown):
 }
 
 /** 处理 room:action — 聊天（触发 KP 回合）/ 表态，串行入队（RoomService.enqueue）。 */
-export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown): void {
+export async function handleRoomAction(socket: WebSocket, userId: number, raw: unknown): Promise<void> {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
   const action = (raw as { action?: unknown }).action as { type?: string; payload?: unknown } | undefined
   if (!roomId || !action?.type) {
     send(socket, { type: 'room:error', roomId, error: 'roomId and action.type required' })
     return
   }
-  const plan = planAction(roomId, userId)
+  const plan = await planAction(roomId, userId)
   if (!plan.ok) {
     send(socket, { type: 'room:error', roomId, error: plan.error })
     return
   }
   const room = plan.room
   const busy = () => send(socket, { type: 'room:error', roomId, error: '房间待处理的操作已满，请稍后重试。' })
-  const task = room.enqueueClientAction(async () => {
-    if (action.type === 'chat') {
-      const content = String((action.payload as { content?: unknown } | undefined)?.content ?? '').trim()
-      if (!content) {
-        send(socket, { type: 'room:error', roomId, error: 'chat content required' })
-        return
-      }
-      // 领域方法（ADR-0001）：身份解析/消息流/回合缓冲都在 RoomService 内部
-      if (!room.submitPlayerChat(userId, content)) busy()
-    } else if (action.type === 'retry_kp') {
-      const accepted = await room.retryKpTurn(userId)
-      if (!accepted) {
-        send(socket, { type: 'room:error', roomId, error: '只有当前房主可以重试 KP。' })
-      }
-    } else {
-      send(socket, { type: 'room:error', roomId, error: `unknown action type: ${action.type}` })
+  let task: Promise<unknown> | null
+  if (action.type === 'chat') {
+    const content = String((action.payload as { content?: unknown } | undefined)?.content ?? '').trim()
+    if (!content) {
+      send(socket, { type: 'room:error', roomId, error: 'chat content required' })
       return
     }
-  })
+    task = room.queuePlayerChat(userId, content)?.then((result) => {
+      if (result === 'busy') busy()
+      if (result === 'not-member') send(socket, { type: 'room:error', roomId, error: 'not a room member' })
+    }) ?? null
+  } else if (action.type === 'retry_kp') {
+    task = room.enqueueClientAction(async () => {
+      if (!await room.retryKpTurn(userId)) {
+        send(socket, { type: 'room:error', roomId, error: '只有当前房主可以重试 KP。' })
+      }
+    })
+  } else {
+    send(socket, { type: 'room:error', roomId, error: `unknown action type: ${action.type}` })
+    return
+  }
   if (!task) {
     busy()
     return
@@ -138,9 +141,9 @@ export function handleRoomAction(socket: WebSocket, userId: number, raw: unknown
 /** 连接关闭：清理所有订阅（注册表在订阅簿）。
  *  服务端因消息大小或发送缓冲超限断开连接时只清理订阅。普通房主断线触发转让或解散（ADR-0005；
  *  领域内判定脱机者身份：非 owner 断线不动房间，成员行保留——主动离开走 REST leave）。 */
-export function cleanupSocketRooms(socket: WebSocket, userId?: number | null): void {
+export async function cleanupSocketRooms(socket: WebSocket, userId?: number | null): Promise<void> {
   const roomIds = roomIdsOfSocket(socket)
   cleanupSocket(socket)
   if (!userId || isTransportReset(socket)) return
-  for (const roomId of roomIds) handleOwnerWsDisconnect(roomId, userId)
+  await Promise.all(roomIds.map((roomId) => handleOwnerWsDisconnect(roomId, userId)))
 }

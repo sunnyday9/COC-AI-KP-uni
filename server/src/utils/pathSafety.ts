@@ -53,6 +53,14 @@ function realpathWithMissingTail(candidatePath: string): string {
   }
 }
 
+/** Check both configured names and resolved paths, including symlinked parents. */
+export function pathsOverlap(first: string, second: string): boolean {
+  const realFirst = realpathWithMissingTail(first)
+  const realSecond = realpathWithMissingTail(second)
+  return isSubpath(first, second) || isSubpath(second, first)
+    || isSubpath(realFirst, realSecond) || isSubpath(realSecond, realFirst)
+}
+
 export function assertPathInDir(rootDir: string, candidatePath: string, label = 'path'): string {
   if (!isNonEmptyString(candidatePath)) throw new Error(`${label} must be a non-empty string`)
   const root = path.resolve(rootDir)

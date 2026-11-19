@@ -3,10 +3,11 @@ import { fileURLToPath } from 'node:url'
 import cors from 'cors'
 import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
-import { DEPLOYMENT_MODE, PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
+import { DEPLOYMENT_MODE, SHARED_ROOMS_ENABLED, PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
 import { logger } from './utils/logging.js'
 import { getDb } from './db/index.js'
 import { getPostgresPool, initializePostgres } from './db/postgres.js'
+import { initializeSingleProcessRooms } from './db/postgresRoomsSchema.js'
 import { startRoomReaper } from './services/roomService.js'
 import { createWsServer } from './ws/index.js'
 import { hasSubscribers } from './ws/roomLedger.js'
@@ -62,6 +63,8 @@ export function createApp(): Express {
     app.use('/api/stories', storiesRoutes)
     app.use('/api/rag', ragRoutes)
     app.use('/api/dossier', dossierRoutes) // 实验分支：剧本档案 workflow（与 rag 并行）
+  }
+  if (!sharedAccounts || SHARED_ROOMS_ENABLED) {
     app.use('/api/rooms', roomsRoutes)
     app.use('/api/rooms', roomSettingsRoutes)
     app.use('/api/characters', charactersRoutes)
@@ -102,15 +105,17 @@ async function startServer(): Promise<void> {
   assertRuntimeConfig()
   // Apply the configured storage schema before accepting traffic. A failed or
   // unsupported migration must abort startup rather than fail on first use.
-  if (sharedAccounts) await initializePostgres(Boolean(getStoryObjectStore()))
-  else getDb()
+  if (sharedAccounts) {
+    await initializePostgres(Boolean(getStoryObjectStore()))
+    if (SHARED_ROOMS_ENABLED) await initializeSingleProcessRooms()
+  } else getDb()
   const httpServer = createApp().listen(PORT, () => {
     logger.info(`COC AI KP server listening on http://localhost:${PORT}`)
     if (isMockAiMode()) {
       logger.info('MOCK_AI mode enabled — all AI/LLM calls return deterministic mock responses (no API key / no outbound requests)')
     }
   })
-  if (sharedAccounts) return
+  if (sharedAccounts && !SHARED_ROOMS_ENABLED) return
   createWsServer(httpServer)
   // 房间 TTL 回收（#86）：CONTEXT.md「活跃实例·TTL 回收」与 roomService 头注释
   // 声明的运行时行为在此装配——定期扫描 roomRegistry，把空闲超过 ROOM_TTL_MS

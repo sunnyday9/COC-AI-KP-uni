@@ -22,9 +22,8 @@
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { DOSSIER_DATA_DIR } from '../../config.js'
 import { createJsonArtifactPath, isInternalJsonArtifactPath, replaceJsonArtifact } from '../../utils/jsonArtifact.js'
-import { findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact } from '../../services/storyArtifacts.js'
+import { findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact, storyArtifactDirectory } from '../../services/storyArtifacts.js'
 import { assertPathInDir } from '../../utils/pathSafety.js'
 import { type DossierScene } from './schema.js'
 import { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
@@ -335,7 +334,7 @@ function gapsFiles(userId: number, scriptId: string): string[] {
 }
 
 export async function persistGaps(userId: number, gaps: CoverageGapsFile): Promise<void> {
-  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  const dir = storyArtifactDirectory('gaps', userId)
   await fs.mkdir(dir, { recursive: true })
   const existing = gapsFiles(userId, gaps.scriptId)
   const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(dir, '.gaps.json')
@@ -368,7 +367,7 @@ export async function getGapsArtifactLoadFailureReason(
   userId: number,
   scriptId: string,
 ): Promise<'artifact_loading_exception' | 'artifact_scan_incomplete' | null> {
-  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  const dir = storyArtifactDirectory('gaps', userId)
   let entries: string[]
   try {
     entries = await fs.readdir(dir)

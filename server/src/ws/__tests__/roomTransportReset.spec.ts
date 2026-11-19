@@ -21,8 +21,8 @@ it.each([
   )
   addUser.run(ownerId, 'ws_cutoff_host')
   addUser.run(successorId, 'ws_cutoff_successor')
-  const { roomId, inviteCode } = createRoom(ownerId, null)
-  if (hasSuccessor) expect(joinRoomByInviteCode(successorId, inviteCode)).toMatchObject({ ok: true })
+  const { roomId, inviteCode } = await createRoom(ownerId, null)
+  if (hasSuccessor) expect(await joinRoomByInviteCode(successorId, inviteCode)).toMatchObject({ ok: true })
 
   const server = createServer()
   const wss = createWsServer(server)
@@ -57,7 +57,7 @@ it.each([
     expect(code).toBe(cutoff === 'message size' ? 1009 : 1006)
 
     expect(hasSubscribers(roomId)).toBe(false)
-    expect(getRoomDetail(ownerId, roomId)).toMatchObject({ ok: true, detail: { ownerId } })
+    expect(await getRoomDetail(ownerId, roomId)).toMatchObject({ ok: true, detail: { ownerId } })
 
     const rejoined = await connectToRoom()
     const closed = Promise.all([once(rejoined.client, 'close'), once(rejoined.peer, 'close')])
@@ -65,9 +65,9 @@ it.each([
     await closed
     expect(hasSubscribers(roomId)).toBe(false)
     if (hasSuccessor) {
-      expect(getRoomDetail(successorId, roomId)).toMatchObject({ ok: true, detail: { ownerId: successorId } })
+      expect(await getRoomDetail(successorId, roomId)).toMatchObject({ ok: true, detail: { ownerId: successorId } })
     } else {
-      expect(getRoomDetail(ownerId, roomId)).toMatchObject({ ok: false, reason: 'not-found' })
+      expect(await getRoomDetail(ownerId, roomId)).toMatchObject({ ok: false, reason: 'not-found' })
     }
   } finally {
     for (const peer of wss.clients) peer.terminate()

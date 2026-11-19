@@ -28,12 +28,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PDFDocument, PDFName, PDFRawStream, PDFDict, PDFObject, decodePDFRawStream } from 'pdf-lib'
-import { DOSSIER_DATA_DIR } from '../../config.js'
 import { chatForRag } from '../../services/aiService.js'
 import { getAiConfig } from '../../services/settingsService.js'
 import { readStoryFileBytes } from '../../services/storyService.js'
 import { createJsonArtifactPath, isInternalJsonArtifactPath, replaceJsonArtifact } from '../../utils/jsonArtifact.js'
-import { findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact } from '../../services/storyArtifacts.js'
+import { findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact, storyArtifactDirectory } from '../../services/storyArtifacts.js'
 import { BadRequestError } from '../../utils/errors.js'
 import type { ChatMessage } from '../../services/llm/types.js'
 import {
@@ -486,7 +485,7 @@ function annexFiles(userId: number, scriptId: string): string[] {
 }
 
 export async function persistAnnex(userId: number, annex: AnnexFile): Promise<void> {
-  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  const dir = storyArtifactDirectory('annex', userId)
   await fs.mkdir(dir, { recursive: true })
   const existing = annexFiles(userId, annex.scriptId)
   const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(dir, '.annex.json')

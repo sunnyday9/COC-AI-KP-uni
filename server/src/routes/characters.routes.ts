@@ -9,37 +9,18 @@
  * 端点全仓零直接消费方（仅路由自测）。
  */
 import { Router } from 'express'
-import crypto from 'node:crypto'
 import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError, BadRequestError } from '../utils/errors.js'
-import { getDb } from '../db/index.js'
+import { createCharacter, listCharactersForUser } from '../services/roomService.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 
 const router = Router()
 
 router.use(requireAuth)
 
-interface CharacterRow {
-  id: string
-  user_id: number
-  name: string
-  sheet: string
-  updated_at: number
-}
-
-function toCharacter(row: CharacterRow): { id: string; name: string; sheet: COCCharacterSheet; updatedAt: number } {
-  let sheet: COCCharacterSheet
-  try {
-    sheet = JSON.parse(row.sheet) as COCCharacterSheet
-  } catch {
-    sheet = {} as COCCharacterSheet
-  }
-  return { id: row.id, name: row.name, sheet, updatedAt: row.updated_at }
-}
-
 /** POST /api/characters — 创建角色卡。 */
-router.post('/', (req: AuthRequest, res) => {
+router.post('/', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const body = (req.body ?? {}) as { name?: unknown; sheet?: unknown }
   const name = String(body.name ?? '').trim()
@@ -52,20 +33,14 @@ router.post('/', (req: AuthRequest, res) => {
     sendError(res, new BadRequestError('sheet required (COCCharacterSheet)'))
     return
   }
-  const id = `char_${crypto.randomUUID()}`
-  const db = getDb()
-  db.prepare(`INSERT INTO characters (id, user_id, name, sheet, updated_at) VALUES (?, ?, ?, ?, ?)`)
-    .run(id, userId, name, JSON.stringify(sheet), Date.now())
-  res.json({ ok: true, id, name })
+  const character = await createCharacter(userId, name, sheet)
+  res.json({ ok: true, ...character })
 })
 
 /** GET /api/characters — 我的角色卡列表。 */
-router.get('/', (req: AuthRequest, res) => {
+router.get('/', async (req: AuthRequest, res) => {
   const userId = req.userId as number
-  const rows = getDb()
-    .prepare(`SELECT id, user_id, name, sheet, updated_at FROM characters WHERE user_id = ? ORDER BY updated_at DESC`)
-    .all(userId) as unknown as CharacterRow[]
-  res.json(rows.map(toCharacter))
+  res.json(await listCharactersForUser(userId))
 })
 
 export default router

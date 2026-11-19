@@ -50,10 +50,11 @@ jobs:
         env:
           npm_config_fund: 'false'
 
-      - name: Server tests (SQLite and shared accounts)
+      - name: Server tests (SQLite and PostgreSQL)
         run: npm run test:server
         env:
           TEST_SHARED_ACCOUNTS_DATABASE_URL: postgresql://aikp_test:ci-fixture-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/aikp_shared_accounts_test
+          TEST_SHARED_ROOMS_DATABASE_URL: postgresql://aikp_test:ci-fixture-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/aikp_shared_accounts_test
 
       - name: Test agent room protocol journeys (MOCK_AI)
         run: node test-agent/run-all.mjs

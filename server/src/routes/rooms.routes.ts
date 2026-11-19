@@ -46,50 +46,47 @@ function sendDomainError(
 }
 
 /** POST /api/rooms — 创建房间（单人模式 = 隐式建房，FR-M9）。body.workflow 可选（实验分支双轨）。 */
-router.post('/', (req: AuthRequest, res) => {
+router.post('/', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const username = (req as AuthRequest & { user?: { username?: string } }).user?.username ?? `user_${userId}`
   const body = (req.body ?? {}) as { storyId?: unknown; workflow?: unknown }
   const storyId = body.storyId
-  const { roomId, inviteCode } = createRoom(userId, typeof storyId === 'string' ? storyId : null, { workflow: body.workflow })
+  const { roomId, inviteCode } = await createRoom(userId, typeof storyId === 'string' ? storyId : null, { workflow: body.workflow })
   res.json({ ok: true, roomId, inviteCode, ownerId: userId, ownerName: username })
 })
 
 /** GET /api/rooms — 我的房间列表。 */
-router.get('/', (req: AuthRequest, res) => {
-  res.json(listRoomsForUser(req.userId as number))
+router.get('/', async (req: AuthRequest, res) => {
+  res.json(await listRoomsForUser(req.userId as number))
 })
 
 /** POST /api/rooms/solo — 单人开局一体动作（ADR-0002：落角色卡 + 建 solo 房 + 绑卡 + start）。
  *  可选 body.workflow（实验分支双轨：'dossier' 走剧本档案，缺省 rag=现状）。 */
-router.post('/solo', (req: AuthRequest, res) => {
+router.post('/solo', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const body = (req.body ?? {}) as { storyId?: unknown; name?: unknown; sheet?: unknown; workflow?: unknown }
-  void createSoloRoom(userId, { storyId: body.storyId, name: body.name, sheet: body.sheet, workflow: body.workflow })
-    .then((result) => {
-      if (!result.ok) {
-        sendDomainError(res, result)
-        return
-      }
-      res.json({ ok: true, roomId: result.roomId, inviteCode: result.inviteCode, characterId: result.characterId })
-    })
-    .catch((err) => sendError(res, err))
+  const result = await createSoloRoom(userId, { storyId: body.storyId, name: body.name, sheet: body.sheet, workflow: body.workflow })
+  if (!result.ok) {
+    sendDomainError(res, result)
+    return
+  }
+  res.json({ ok: true, roomId: result.roomId, inviteCode: result.inviteCode, characterId: result.characterId })
 })
 
 /** GET /api/rooms/solo — 未结束单人局列表（游戏 hub 的 solo 续玩）。 */
-router.get('/solo', (req: AuthRequest, res) => {
-  res.json(listSoloRoomsForUser(req.userId as number))
+router.get('/solo', async (req: AuthRequest, res) => {
+  res.json(await listSoloRoomsForUser(req.userId as number))
 })
 
 /** POST /api/rooms/join — 邀请码加入。 */
-router.post('/join', (req: AuthRequest, res) => {
+router.post('/join', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const inviteCode = String((req.body as { inviteCode?: unknown } | undefined)?.inviteCode ?? '').trim().toUpperCase()
   if (!/^[A-Z0-9]{6}$/.test(inviteCode)) {
     sendError(res, new BadRequestError('invalid invite code'))
     return
   }
-  const result = joinRoomByInviteCode(userId, inviteCode)
+  const result = await joinRoomByInviteCode(userId, inviteCode)
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -98,10 +95,10 @@ router.post('/join', (req: AuthRequest, res) => {
 })
 
 /** GET /api/rooms/:id — 房间详情（成员/阶段/剧本）。 */
-router.get('/:id', (req: AuthRequest, res) => {
+router.get('/:id', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
-  const result = getRoomDetail(userId, roomId)
+  const result = await getRoomDetail(userId, roomId)
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -123,11 +120,11 @@ router.post('/:id/start', async (req: AuthRequest, res) => {
 })
 
 /** POST /api/rooms/:id/character — 绑定角色卡到房间（一人一卡，Phase B4）。 */
-router.post('/:id/character', (req: AuthRequest, res) => {
+router.post('/:id/character', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const charId = String((req.body as { characterId?: unknown } | undefined)?.characterId ?? '')
-  const result = bindRoomCharacter(userId, roomId, charId)
+  const result = await bindRoomCharacter(userId, roomId, charId)
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -136,11 +133,11 @@ router.post('/:id/character', (req: AuthRequest, res) => {
 })
 
 /** POST /api/rooms/:id/ready — 成员就绪/取消（ADR-0005 等待室软信号；body { ready }）。 */
-router.post('/:id/ready', (req: AuthRequest, res) => {
+router.post('/:id/ready', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const ready = (req.body as { ready?: unknown } | undefined)?.ready === true
-  const result = setMemberReady(userId, roomId, ready)
+  const result = await setMemberReady(userId, roomId, ready)
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -149,10 +146,10 @@ router.post('/:id/ready', (req: AuthRequest, res) => {
 })
 
 /** POST /api/rooms/:id/leave — 成员主动离开（删行+广播；owner 离开→转让/解散）。 */
-router.post('/:id/leave', (req: AuthRequest, res) => {
+router.post('/:id/leave', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
-  const result = leaveRoomAsMember(userId, roomId)
+  const result = await leaveRoomAsMember(userId, roomId)
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -161,7 +158,7 @@ router.post('/:id/leave', (req: AuthRequest, res) => {
 })
 
 /** DELETE /api/rooms/:id/members/:userId — 房主踢出成员（owner only）。 */
-router.delete('/:id/members/:userId', (req: AuthRequest, res) => {
+router.delete('/:id/members/:userId', async (req: AuthRequest, res) => {
   const callerUserId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const targetUserId = Number(req.params.userId)
@@ -169,7 +166,7 @@ router.delete('/:id/members/:userId', (req: AuthRequest, res) => {
     sendError(res, new BadRequestError('invalid userId'))
     return
   }
-  const result = kickRoomMember(callerUserId, roomId, targetUserId)
+  const result = await kickRoomMember(callerUserId, roomId, targetUserId)
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -178,7 +175,7 @@ router.delete('/:id/members/:userId', (req: AuthRequest, res) => {
 })
 
 /** POST /api/rooms/:id/transfer — 房主主动转让（body { userId } → 新 owner）。 */
-router.post('/:id/transfer', (req: AuthRequest, res) => {
+router.post('/:id/transfer', async (req: AuthRequest, res) => {
   const callerUserId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const targetUserId = Number((req.body as { userId?: unknown } | undefined)?.userId)
@@ -186,7 +183,7 @@ router.post('/:id/transfer', (req: AuthRequest, res) => {
     sendError(res, new BadRequestError('invalid userId'))
     return
   }
-  const result = transferOwnership(callerUserId, roomId, targetUserId)
+  const result = await transferOwnership(callerUserId, roomId, targetUserId)
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -195,10 +192,10 @@ router.post('/:id/transfer', (req: AuthRequest, res) => {
 })
 
 /** DELETE /api/rooms/:id — 房主解散。 */
-router.delete('/:id', (req: AuthRequest, res) => {
+router.delete('/:id', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
-  const result = deleteRoomAsOwner(userId, roomId)
+  const result = await deleteRoomAsOwner(userId, roomId)
   if (!result.ok) {
     sendDomainError(res, result)
     return

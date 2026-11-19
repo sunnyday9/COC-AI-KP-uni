@@ -88,14 +88,17 @@ export function ensureFanout(room: RoomService, listener: (event: RoomEvent, seq
 /* ═══════════════ 帧规划（纯决策，wire 帧编码在 adapter） ═══════════════ */
 
 /** join 规划：成员资格（领域）→ 实例（不存在则 materialize——懒激活）。 */
-export function planJoin(
+export async function planJoin(
   roomId: string,
   userId: number,
   username: string,
-): { ok: true; room: RoomService } | { ok: false; error: string } {
+): Promise<{ ok: true; room: RoomService } | { ok: false; error: string }> {
   if (!hasRoomCapacity(roomId)) return { ok: false, error: '服务器活跃房间已满，请稍后重试。' }
-  const room = joinRoom(roomId, userId, username)
-  if (!room) return { ok: false, error: 'not a room member' }
+  const room = await joinRoom(roomId, userId, username)
+  if (!room) return {
+    ok: false,
+    error: hasRoomCapacity(roomId) ? 'not a room member' : '\u670d\u52a1\u5668\u6d3b\u8dc3\u623f\u95f4\u5df2\u6ee1\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002',
+  }
   return { ok: true, room }
 }
 
@@ -105,8 +108,8 @@ export type SyncPlan =
   | { kind: 'delta'; room: RoomService; events: { seq: number; event: RoomEvent }[] }
 
 /** sync 规划：成员 gate → 活跃性 → 增量/全量（getEventsSince null 或空 = 缺口过大/无增量 → 全量兜底）。 */
-export function planSync(roomId: string, userId: number, lastSeq: number): SyncPlan {
-  if (!roomId || !isRoomMember(roomId, userId)) return { kind: 'error', error: 'not a room member' }
+export async function planSync(roomId: string, userId: number, lastSeq: number): Promise<SyncPlan> {
+  if (!roomId || !await isRoomMember(roomId, userId)) return { kind: 'error', error: 'not a room member' }
   const room = getRoom(roomId)
   if (!room) return { kind: 'error', error: 'room not active' }
   const deltas = room.getEventsSince(lastSeq)
@@ -115,11 +118,11 @@ export function planSync(roomId: string, userId: number, lastSeq: number): SyncP
 }
 
 /** action 规划：成员 gate → 活跃实例（动作串行入队由调用方在实例上执行）。 */
-export function planAction(
+export async function planAction(
   roomId: string,
   userId: number,
-): { ok: true; room: RoomService } | { ok: false; error: string } {
-  if (!roomId || !isRoomMember(roomId, userId)) return { ok: false, error: 'not a room member' }
+): Promise<{ ok: true; room: RoomService } | { ok: false; error: string }> {
+  if (!roomId || !await isRoomMember(roomId, userId)) return { ok: false, error: 'not a room member' }
   const room = getRoom(roomId)
   if (!room) return { ok: false, error: 'room not active' }
   return { ok: true, room }

@@ -54,7 +54,7 @@ Budget active and queued Keeper work separately from imports, with provider-leve
 
 ## Shared account staging
 
-The [shared account staging deployment](../DEPLOYMENT.md#61-双网关账号预发布环境113) adds two HTTP gateways backed by PostgreSQL for sign-in and private account settings. It uses the existing HTTP response shapes. Gameplay, story preparation, and existing SQLite data migration remain later rollout stages.
+The [shared account staging deployment](../DEPLOYMENT.md#61-双网关账号预发布环境113) adds two HTTP gateways backed by PostgreSQL for sign-in and private account settings. It uses the existing HTTP response shapes. The opt-in [shared room staging process](../DEPLOYMENT.md#62-单进程共享房间预发布115) stores room, membership and character state in PostgreSQL and restores solo and multiplayer rooms over the existing protocol. It uses prepared fixture files under a separate root. Shared source preparation and revision pinning, SQLite data migration, and fenced room workers remain later rollout stages.
 
 ## Local capacity check
 

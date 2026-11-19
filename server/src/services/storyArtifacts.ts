@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { DOSSIER_DATA_DIR, RAG_DATA_DIR } from '../config.js'
+import { DOSSIER_DATA_DIR, RAG_DATA_DIR, SHARED_ROOMS_ENABLED, SHARED_ROOM_FIXTURE_DIR } from '../config.js'
 import { getDb } from '../db/index.js'
 import { findJsonArtifactPaths, isInternalJsonArtifactPath } from '../utils/jsonArtifact.js'
 import { assertPathInDir } from '../utils/pathSafety.js'
@@ -11,6 +11,13 @@ const suffixes = { index: '.json', dossier: '.json', gaps: '.gaps.json', annex: 
 const dossierSidecars = [suffixes.gaps, suffixes.annex]
 
 export function storyArtifactDirectory(kind: ArtifactKind, userId: number): string {
+  if (SHARED_ROOMS_ENABLED) {
+    const root = SHARED_ROOM_FIXTURE_DIR!
+    const directory = kind === 'index'
+      ? path.join(root, 'rag', String(userId), 'rag_index')
+      : path.join(root, 'dossiers', String(userId))
+    return assertPathInDir(root, directory, 'shared room fixture')
+  }
   return kind === 'index'
     ? path.join(RAG_DATA_DIR, String(userId), 'rag_index')
     : path.join(DOSSIER_DATA_DIR, String(userId))
@@ -18,6 +25,7 @@ export function storyArtifactDirectory(kind: ArtifactKind, userId: number): stri
 
 /** Look up an existing registered file without scanning the artifact directory. */
 export function findRegisteredStoryArtifact(kind: ArtifactKind, userId: number, storyId: string): string | undefined {
+  if (SHARED_ROOMS_ENABLED) return undefined
   const db = getDb()
   const row = db.prepare(
     'SELECT file_name FROM story_artifact_locations WHERE user_id = ? AND story_id = ? AND kind = ?',
@@ -37,7 +45,7 @@ export function findStoryArtifacts(kind: ArtifactKind, userId: number, storyId: 
     suffix: suffixes[kind],
     excludeSuffixes: kind === 'dossier' ? dossierSidecars : undefined,
   })
-  if (files.length === 1 && isInternalJsonArtifactPath(files[0]!)) {
+  if (!SHARED_ROOMS_ENABLED && files.length === 1 && isInternalJsonArtifactPath(files[0]!)) {
     rememberStoryArtifact(kind, userId, storyId, files[0]!)
   }
   return files

@@ -30,63 +30,63 @@ function versionOf(roomId: string): number {
   return (getDb().prepare(`SELECT version FROM rooms WHERE room_id = ?`).get(roomId) as { version: number }).version
 }
 
-function seedRoom(tag: string, ownerId: number, username: string): string {
+async function seedRoom(tag: string, ownerId: number, username: string): Promise<string> {
   const roomId = `${suite}_${tag}`
-  insertRoom(roomId, ownerId, `INV${tag}`.slice(0, 6).padEnd(6, 'X'), null)
+  await insertRoom(roomId, ownerId, `INV${tag}`.slice(0, 6).padEnd(6, 'X'), null)
   getDb().prepare(`INSERT OR IGNORE INTO users (id, username, password_hash, created_at) VALUES (?, ?, 'x', ?)`).run(ownerId, username, Date.now())
-  insertMember(roomId, ownerId, 'owner')
+  await insertMember(roomId, ownerId, 'owner')
   return roomId
 }
 
 describe('RoomStorage 持久化原语', () => {
-  it('insertRoom + insertMember → 详情行与成员可见', () => {
-    const roomId = seedRoom('a', 9001, 'rs_alice')
-    const row = getRoomRow(roomId)
+  it('insertRoom + insertMember → 详情行与成员可见', async () => {
+    const roomId = await seedRoom('a', 9001, 'rs_alice')
+    const row = await getRoomRow(roomId)
     expect(row?.owner_id).toBe(9001)
     expect(row?.phase).toBe('lobby')
     expect(JSON.parse(row!.state)).toEqual({})
-    expect(isRoomMember(roomId, 9001)).toBe(true)
-    expect(isRoomMember(roomId, 9999)).toBe(false)
-    expect(memberRole(roomId, 9001)).toBe('owner')
-    const members = listMembers(roomId)
+    expect(await isRoomMember(roomId, 9001)).toBe(true)
+    expect(await isRoomMember(roomId, 9999)).toBe(false)
+    expect(await memberRole(roomId, 9001)).toBe('owner')
+    const members = await listMembers(roomId)
     expect(members).toHaveLength(1)
     expect(members[0]).toMatchObject({ user_id: 9001, role: 'owner', character_id: null })
   })
 
-  it('findRoomIdByInviteCode 唯一定位', () => {
-    const roomId = seedRoom('b', 9002, 'rs_bob')
-    expect(findRoomIdByInviteCode(`INVb`.padEnd(6, 'X'))).toBe(roomId)
-    expect(findRoomIdByInviteCode('ZZZZZZ')).toBeNull()
+  it('findRoomIdByInviteCode 唯一定位', async () => {
+    const roomId = await seedRoom('b', 9002, 'rs_bob')
+    expect(await findRoomIdByInviteCode(`INVb`.padEnd(6, 'X'))).toBe(roomId)
+    expect(await findRoomIdByInviteCode('ZZZZZZ')).toBeNull()
   })
 
-  it('listRoomsForUser 只列我参与的房间（按 updated_at 倒序）', () => {
-    const mine = seedRoom('c', 9003, 'rs_carol')
-    const other = seedRoom('d', 9004, 'rs_dave')
-    const ids = listRoomsForUser(9003).map((r) => r.roomId)
+  it('listRoomsForUser 只列我参与的房间（按 updated_at 倒序）', async () => {
+    const mine = await seedRoom('c', 9003, 'rs_carol')
+    const other = await seedRoom('d', 9004, 'rs_dave')
+    const ids = (await listRoomsForUser(9003)).map((r) => r.roomId)
     expect(ids).toContain(mine)
     expect(ids).not.toContain(other)
   })
 
-  it('updateRoomStart 置 playing + story_id 列', () => {
-    const roomId = seedRoom('e', 9005, 'rs_eve')
-    updateRoomStart(roomId, 'story.md', 9005)
-    expect(getRoomRow(roomId)).toMatchObject({ phase: 'playing', story_id: 'story.md', story_owner_id: 9005 })
+  it('updateRoomStart 置 playing + story_id 列', async () => {
+    const roomId = await seedRoom('e', 9005, 'rs_eve')
+    await updateRoomStart(roomId, 'story.md', 9005)
+    expect(await getRoomRow(roomId)).toMatchObject({ phase: 'playing', story_id: 'story.md', story_owner_id: 9005 })
   })
 
-  it('快照落库 bump version；设置类小写不 bump', () => {
-    const roomId = seedRoom('f', 9006, 'rs_frank')
+  it('快照落库 bump version；设置类小写不 bump', async () => {
+    const roomId = await seedRoom('f', 9006, 'rs_frank')
     const v0 = versionOf(roomId)
-    updateRoomStateSnapshot(roomId, JSON.stringify({ turnWindowMs: 5 }))
+    await updateRoomStateSnapshot(roomId, JSON.stringify({ turnWindowMs: 5 }))
     const v1 = versionOf(roomId)
     expect(v1).toBe(v0 + 1)
-    updateRoomStateSettings(roomId, JSON.stringify({ turnWindowMs: 7 }))
+    await updateRoomStateSettings(roomId, JSON.stringify({ turnWindowMs: 7 }))
     expect(versionOf(roomId)).toBe(v1)
-    expect(JSON.parse(getRoomRow(roomId)!.state)).toEqual({ turnWindowMs: 7 })
+    expect(JSON.parse((await getRoomRow(roomId))!.state)).toEqual({ turnWindowMs: 7 })
   })
 
   it('commits queued room snapshots using state captured at write time', async () => {
-    const first = seedRoom('i', 9010, 'rs_iris')
-    const second = seedRoom('j', 9011, 'rs_jack')
+    const first = await seedRoom('i', 9010, 'rs_iris')
+    const second = await seedRoom('j', 9011, 'rs_jack')
     let turnWindowMs = 5
     const writes = [
       queueTurnSnapshot(first, () => ({ seq: 6, stateJson: JSON.stringify({ turnWindowMs }) })),
@@ -96,27 +96,27 @@ describe('RoomStorage 持久化原语', () => {
     turnWindowMs = 10
     expect(await Promise.all(writes)).toEqual([6, 7])
     expect(versionOf(first)).toBe(1)
-    expect(JSON.parse(getRoomRow(first)!.state)).toEqual({ turnWindowMs: 10 })
-    expect(JSON.parse(getRoomRow(second)!.state)).toEqual({ seq: 7 })
+    expect(JSON.parse((await getRoomRow(first))!.state)).toEqual({ turnWindowMs: 10 })
+    expect(JSON.parse((await getRoomRow(second))!.state)).toEqual({ seq: 7 })
   })
 
-  it('绑定角色卡：一人一卡校验 + 归属查询', () => {
-    const roomId = seedRoom('g', 9007, 'rs_grace')
+  it('绑定角色卡：一人一卡校验 + 归属查询', async () => {
+    const roomId = await seedRoom('g', 9007, 'rs_grace')
     getDb()
       .prepare(`INSERT INTO characters (id, user_id, name, sheet, updated_at) VALUES (?, ?, ?, ?, ?)`)
       .run('char_rs_g', 9007, '格蕾丝', '{}', Date.now())
-    expect(boundMemberOf(roomId, 'char_rs_g', 9008)).toBeNull()
-    bindMemberCharacter(roomId, 9007, 'char_rs_g')
-    expect(memberCharacterId(roomId, 9007)).toBe('char_rs_g')
-    expect(boundMemberOf(roomId, 'char_rs_g', 9008)).toBe(9007)
-    expect(boundMemberOf(roomId, 'char_rs_g', 9007)).toBeNull()
+    expect(await boundMemberOf(roomId, 'char_rs_g', 9008)).toBeNull()
+    await bindMemberCharacter(roomId, 9007, 'char_rs_g')
+    expect(await memberCharacterId(roomId, 9007)).toBe('char_rs_g')
+    expect(await boundMemberOf(roomId, 'char_rs_g', 9008)).toBe(9007)
+    expect(await boundMemberOf(roomId, 'char_rs_g', 9007)).toBeNull()
   })
 
-  it('deleteRoomRows 级联清成员', () => {
-    const roomId = seedRoom('h', 9008, 'rs_hank')
-    insertMember(roomId, 9009, 'member')
-    deleteRoomRows(roomId)
-    expect(getRoomRow(roomId)).toBeUndefined()
-    expect(isRoomMember(roomId, 9008)).toBe(false)
+  it('deleteRoomRows 级联清成员', async () => {
+    const roomId = await seedRoom('h', 9008, 'rs_hank')
+    await insertMember(roomId, 9009, 'member')
+    await deleteRoomRows(roomId)
+    expect(await getRoomRow(roomId)).toBeUndefined()
+    expect(await isRoomMember(roomId, 9008)).toBe(false)
   })
 })

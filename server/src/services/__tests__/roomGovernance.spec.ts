@@ -124,120 +124,120 @@ describe('ready（就绪软信号，room_members.ready 列）', () => {
   let owner: number
   let memberA: number
 
-  beforeEach(() => {
+  beforeEach(async () => {
     listStoriesMock.mockReturnValue([])
     owner = seedUser('ready_owner')
     memberA = seedUser('ready_a')
-    const created = createRoom(owner, null)
+    const created = await createRoom(owner, null)
     roomId = created.roomId
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
   })
 
-  it('成员就绪 → ready=1；取消 → 0', () => {
-    expect(setMemberReady(memberA, roomId, true).ok).toBe(true)
+  it('成员就绪 → ready=1；取消 → 0', async () => {
+    expect((await setMemberReady(memberA, roomId, true)).ok).toBe(true)
     expect(memberRow(roomId, memberA).ready).toBe(1)
-    expect(setMemberReady(memberA, roomId, false).ok).toBe(true)
+    expect((await setMemberReady(memberA, roomId, false)).ok).toBe(true)
     expect(memberRow(roomId, memberA).ready).toBe(0)
   })
 
-  it('owner 设置就绪 → not-owner 拒绝（owner 无 ready 语义，role 列不动）', () => {
-    const res = setMemberReady(owner, roomId, true)
+  it('owner 设置就绪 → not-owner 拒绝（owner 无 ready 语义，role 列不动）', async () => {
+    const res = await setMemberReady(owner, roomId, true)
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.reason).toBe('not-owner')
     expect(memberRow(roomId, owner).ready).toBe(0)
   })
 
-  it('非成员设置就绪 → not-found', () => {
-    const res = setMemberReady(seedUser('ready_out'), roomId, true)
+  it('非成员设置就绪 → not-found', async () => {
+    const res = await setMemberReady(seedUser('ready_out'), roomId, true)
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.reason).toBe('not-found')
   })
 })
 
 describe('leave（成员主动离开）', () => {
-  it('成员 leave → 删行 + 房间存活；owner leave → 转让给最早成员', () => {
+  it('成员 leave → 删行 + 房间存活；owner leave → 转让给最早成员', async () => {
     const owner = seedUser('lv_owner')
     const memberA = seedUser('lv_a')
     const memberB = seedUser('lv_b')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
-    joinRoomByInviteCode(memberB, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
+    await joinRoomByInviteCode(memberB, created.inviteCode)
 
-    const left = leaveRoomAsMember(memberA, created.roomId)
+    const left = await leaveRoomAsMember(memberA, created.roomId)
     expect(left.ok).toBe(true)
     expect(getDb().prepare(`SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?`).get(created.roomId, memberA)).toBeUndefined()
     expect(getDb().prepare(`SELECT owner_id FROM rooms WHERE room_id = ?`).get(created.roomId)).toMatchObject({ owner_id: owner })
 
     // owner 离开（有成员）→ 转让给最早成员（rowid 序 = 先加入者 memberB）
-    const ownerLeft = leaveRoomAsMember(owner, created.roomId)
+    const ownerLeft = await leaveRoomAsMember(owner, created.roomId)
     expect(ownerLeft.ok).toBe(true)
     expect(getDb().prepare(`SELECT owner_id FROM rooms WHERE room_id = ?`).get(created.roomId)).toMatchObject({ owner_id: memberB })
     expect(memberRow(created.roomId, owner).role).toBe('member')
     expect(memberRow(created.roomId, memberB).role).toBe('owner')
   })
 
-  it('owner leave 且无其他成员 → 房间解散（rooms/room_members 行删除）', () => {
+  it('owner leave 且无其他成员 → 房间解散（rooms/room_members 行删除）', async () => {
     const owner = seedUser('lv_solo_owner')
-    const created = createRoom(owner, null)
-    const res = leaveRoomAsOwner(owner, created.roomId)
+    const created = await createRoom(owner, null)
+    const res = await leaveRoomAsOwner(owner, created.roomId)
     expect(res.ok).toBe(true)
     expect(getDb().prepare(`SELECT 1 FROM rooms WHERE room_id = ?`).get(created.roomId)).toBeUndefined()
     expect(getDb().prepare(`SELECT 1 FROM room_members WHERE room_id = ?`).get(created.roomId)).toBeUndefined()
   })
 
-  it('非成员 leave → not-found', () => {
+  it('非成员 leave → not-found', async () => {
     const owner = seedUser('lv_owner2')
-    const created = createRoom(owner, null)
-    const res = leaveRoomAsMember(seedUser('lv_out'), created.roomId)
+    const created = await createRoom(owner, null)
+    const res = await leaveRoomAsMember(seedUser('lv_out'), created.roomId)
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.reason).toBe('not-found')
   })
 })
 
 describe('kick（房主踢出）', () => {
-  it('owner 踢出成员 → 删行；房主不变', () => {
+  it('owner 踢出成员 → 删行；房主不变', async () => {
     const owner = seedUser('kk_owner')
     const memberA = seedUser('kk_a')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
 
-    const kicked = kickRoomMember(owner, created.roomId, memberA)
+    const kicked = await kickRoomMember(owner, created.roomId, memberA)
     expect(kicked.ok).toBe(true)
     expect(getDb().prepare(`SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?`).get(created.roomId, memberA)).toBeUndefined()
     expect(getDb().prepare(`SELECT owner_id FROM rooms WHERE room_id = ?`).get(created.roomId)).toMatchObject({ owner_id: owner })
   })
 
-  it('非 owner 踢出 → not-owner；踢自己 → bad-request；踢非成员 → not-found', () => {
+  it('非 owner 踢出 → not-owner；踢自己 → bad-request；踢非成员 → not-found', async () => {
     const owner = seedUser('kk_owner2')
     const memberA = seedUser('kk_a2')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
 
-    const forbidden = kickRoomMember(memberA, created.roomId, owner)
+    const forbidden = await kickRoomMember(memberA, created.roomId, owner)
     expect(forbidden.ok).toBe(false)
     if (!forbidden.ok) expect(forbidden.reason).toBe('not-owner')
-    const self = kickRoomMember(owner, created.roomId, owner)
+    const self = await kickRoomMember(owner, created.roomId, owner)
     expect(self.ok).toBe(false)
     if (!self.ok) expect(self.reason).toBe('bad-request')
-    const absent = kickRoomMember(owner, created.roomId, seedUser('kk_out'))
+    const absent = await kickRoomMember(owner, created.roomId, seedUser('kk_out'))
     expect(absent.ok).toBe(false)
     if (!absent.ok) expect(absent.reason).toBe('not-found')
   })
 })
 
 describe('房主转让后的剧本来源身份', () => {
-  it('直接转让与断线自动继位都保留已选剧本的来源账号', () => {
+  it('直接转让与断线自动继位都保留已选剧本的来源账号', async () => {
     const owner = seedUser('story_source_owner')
     const directSuccessor = seedUser('story_source_direct')
     const autoSuccessor = seedUser('story_source_auto')
-    const created = createRoom(owner, 'story_shared')
-    joinRoomByInviteCode(directSuccessor, created.inviteCode)
-    joinRoomByInviteCode(autoSuccessor, created.inviteCode)
+    const created = await createRoom(owner, 'story_shared')
+    await joinRoomByInviteCode(directSuccessor, created.inviteCode)
+    await joinRoomByInviteCode(autoSuccessor, created.inviteCode)
 
-    expect(transferOwnership(owner, created.roomId, directSuccessor).ok).toBe(true)
+    expect((await transferOwnership(owner, created.roomId, directSuccessor)).ok).toBe(true)
     expect(getDb().prepare('SELECT story_owner_id FROM rooms WHERE room_id = ?').get(created.roomId)).toEqual({ story_owner_id: owner })
 
-    handleOwnerWsDisconnect(created.roomId, directSuccessor)
+    await handleOwnerWsDisconnect(created.roomId, directSuccessor)
     // The original owner remains the earliest member after the direct handoff,
     // so automatic disconnect succession returns ownership to that row.
     expect(getDb().prepare('SELECT owner_id, story_owner_id FROM rooms WHERE room_id = ?').get(created.roomId)).toEqual({ owner_id: owner, story_owner_id: owner })
@@ -245,44 +245,44 @@ describe('房主转让后的剧本来源身份', () => {
 })
 
 describe('transfer（房主主动转让）', () => {
-  it('转让 → rooms.owner_id + 双行 role 翻转；旧 owner 留房降为 member', () => {
+  it('转让 → rooms.owner_id + 双行 role 翻转；旧 owner 留房降为 member', async () => {
     const owner = seedUser('tr_owner')
     const memberA = seedUser('tr_a')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
 
-    const transferred = transferOwnership(owner, created.roomId, memberA)
+    const transferred = await transferOwnership(owner, created.roomId, memberA)
     expect(transferred.ok).toBe(true)
     expect(getDb().prepare(`SELECT owner_id FROM rooms WHERE room_id = ?`).get(created.roomId)).toMatchObject({ owner_id: memberA })
     expect(memberRow(created.roomId, memberA).role).toBe('owner')
     expect(memberRow(created.roomId, owner).role).toBe('member')
   })
 
-  it('非 owner 转让 → not-owner；转让给自己 → bad-request；转让非成员 → not-found', () => {
+  it('非 owner 转让 → not-owner；转让给自己 → bad-request；转让非成员 → not-found', async () => {
     const owner = seedUser('tr_owner2')
     const memberA = seedUser('tr_a2')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
 
-    const forbidden = transferOwnership(memberA, created.roomId, owner)
+    const forbidden = await transferOwnership(memberA, created.roomId, owner)
     expect(forbidden.ok).toBe(false)
     if (!forbidden.ok) expect(forbidden.reason).toBe('not-owner')
-    const self = transferOwnership(owner, created.roomId, owner)
+    const self = await transferOwnership(owner, created.roomId, owner)
     expect(self.ok).toBe(false)
     if (!self.ok) expect(self.reason).toBe('bad-request')
-    const absent = transferOwnership(owner, created.roomId, seedUser('tr_out'))
+    const absent = await transferOwnership(owner, created.roomId, seedUser('tr_out'))
     expect(absent.ok).toBe(false)
     if (!absent.ok) expect(absent.reason).toBe('not-found')
   })
 
-  it('转让后活跃实例 owner 跟随 DB（KP/RAG 解析账号 = 现任 owner）', () => {
+  it('转让后活跃实例 owner 跟随 DB（KP/RAG 解析账号 = 现任 owner）', async () => {
     const owner = seedUser('tr_inst_owner')
     const memberA = seedUser('tr_inst_a')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
     // 物化实例（懒激活先于转让）
-    const room = getOrCreateRoom(created.roomId, owner, 'tr_inst_owner')
-    expect(transferOwnership(owner, created.roomId, memberA).ok).toBe(true)
+    const room = await getOrCreateRoom(created.roomId, owner, 'tr_inst_owner')
+    expect((await transferOwnership(owner, created.roomId, memberA)).ok).toBe(true)
     // RoomService.syncFromDb 随 syncActiveRoom 执行 → 实例 owner 已是新 owner
     expect((room as unknown as { ownerId: number }).ownerId).toBe(memberA)
     room.dispose()
@@ -294,8 +294,8 @@ describe('开局门闩（ADR-0005 start gate）', () => {
     listStoriesMock.mockReturnValue([])
     const owner = seedUser('gate_owner')
     const memberA = seedUser('gate_a')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
 
     const noStory = await startRoom(owner, created.roomId, '')
     expect(noStory.ok).toBe(false)
@@ -321,13 +321,13 @@ describe('开局门闩（ADR-0005 start gate）', () => {
     provideRagSpoilerMetadata('story_gate_ok')
     const owner = seedUser('gate_ok_owner')
     const memberA = seedUser('gate_ok_a')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
 
     const charOwner = seedChar(owner, 'ok_owner')
     const charA = seedChar(memberA, 'ok_a')
-    expect(bindRoomCharacter(owner, created.roomId, charOwner).ok).toBe(true)
-    expect(bindRoomCharacter(memberA, created.roomId, charA).ok).toBe(true)
+    expect((await bindRoomCharacter(owner, created.roomId, charOwner)).ok).toBe(true)
+    expect((await bindRoomCharacter(memberA, created.roomId, charA)).ok).toBe(true)
 
     const started = await startRoom(owner, created.roomId, 'story_gate_ok')
     expect(started.ok).toBe(true)
@@ -339,8 +339,8 @@ describe('开局门闩（ADR-0005 start gate）', () => {
     listStoriesMock.mockReturnValue([])
     const owner = seedUser('gate_nowner')
     const memberA = seedUser('gate_nowner_a')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
     const res = await startRoom(memberA, created.roomId, 'x')
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.reason).toBe('not-owner')
@@ -351,13 +351,13 @@ describe('phase gate（lobby 禁 KP）', () => {
   it('lobby 聊天只广播不入回合缓冲：消息流有玩家消息，无 KP 回合被触发', async () => {
     const owner = seedUser('pg_owner')
     const memberA = seedUser('pg_a')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
-    const room: RoomService = getRoom(created.roomId) ?? getOrCreateRoom(created.roomId, owner, 'pg_owner')
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
+    const room: RoomService = getRoom(created.roomId) ?? await getOrCreateRoom(created.roomId, owner, 'pg_owner')
 
     let appended = 0
     room.subscribe((ev) => { if (ev.type === 'message_appended') appended += 1 })
-    room.submitPlayerChat(memberA, 'lobby 闲聊')
+    await room.submitPlayerChat(memberA, 'lobby 闲聊')
     expect(appended).toBe(1)
     expect(room.getMessages()).toHaveLength(1)
     // 若 phase gate 失效，turnWindowMs=0（严格排队）会立即 flush → 触碰 LLM（本 spec 未桩）
@@ -374,46 +374,46 @@ describe('playing 锁房（ADR-0005 invite 拒绝）', () => {
     provideRagSpoilerMetadata('story_lock_z')
     const owner = seedUser('lock_owner')
     const memberA = seedUser('lock_a')
-    const created = createRoom(owner, null)
+    const created = await createRoom(owner, null)
     const charOwner = seedChar(owner, 'lock_oc')
     const charA = seedChar(memberA, 'lock_ac')
-    bindRoomCharacter(owner, created.roomId, charOwner)
-    joinRoomByInviteCode(memberA, created.inviteCode)
-    bindRoomCharacter(memberA, created.roomId, charA)
+    await bindRoomCharacter(owner, created.roomId, charOwner)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
+    await bindRoomCharacter(memberA, created.roomId, charA)
     expect((await startRoom(owner, created.roomId, 'story_lock_z')).ok).toBe(true)
 
-    const res = joinRoomByInviteCode(seedUser('lock_out'), created.inviteCode)
+    const res = await joinRoomByInviteCode(seedUser('lock_out'), created.inviteCode)
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.reason).toBe('conflict')
   })
 })
 
 describe('房主 WS 断线转让（handleOwnerWsDisconnect）', () => {
-  it('owner 断线（有其他成员）→ 立即转让最早成员', () => {
+  it('owner 断线（有其他成员）→ 立即转让最早成员', async () => {
     const owner = seedUser('dc_owner')
     const memberA = seedUser('dc_a')
     const memberB = seedUser('dc_b')
-    const created = createRoom(owner, null)
-    joinRoomByInviteCode(memberA, created.inviteCode)
-    joinRoomByInviteCode(memberB, created.inviteCode)
+    const created = await createRoom(owner, null)
+    await joinRoomByInviteCode(memberA, created.inviteCode)
+    await joinRoomByInviteCode(memberB, created.inviteCode)
 
-    handleOwnerWsDisconnect(created.roomId, owner)
+    await handleOwnerWsDisconnect(created.roomId, owner)
     expect(getDb().prepare(`SELECT owner_id FROM rooms WHERE room_id = ?`).get(created.roomId)).toMatchObject({ owner_id: memberA })
     expect(memberRow(created.roomId, owner).role).toBe('member')
     expect(memberRow(created.roomId, memberA).role).toBe('owner')
   })
 
-  it('owner 断线（无其他成员）→ 解散；非 owner 断线 → 不动房间', () => {
+  it('owner 断线（无其他成员）→ 解散；非 owner 断线 → 不动房间', async () => {
     const owner = seedUser('dc_owner2')
-    const created = createRoom(owner, null)
-    handleOwnerWsDisconnect(created.roomId, owner)
+    const created = await createRoom(owner, null)
+    await handleOwnerWsDisconnect(created.roomId, owner)
     expect(getDb().prepare(`SELECT 1 FROM rooms WHERE room_id = ?`).get(created.roomId)).toBeUndefined()
 
     const owner3 = seedUser('dc_owner3')
     const memberA3 = seedUser('dc_a3')
-    const created3 = createRoom(owner3, null)
-    joinRoomByInviteCode(memberA3, created3.inviteCode)
-    handleOwnerWsDisconnect(created3.roomId, memberA3)
+    const created3 = await createRoom(owner3, null)
+    await joinRoomByInviteCode(memberA3, created3.inviteCode)
+    await handleOwnerWsDisconnect(created3.roomId, memberA3)
     expect(getDb().prepare(`SELECT owner_id FROM rooms WHERE room_id = ?`).get(created3.roomId)).toMatchObject({ owner_id: owner3 })
   })
 })

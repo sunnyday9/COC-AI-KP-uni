@@ -153,7 +153,16 @@ export async function getGatewaySettings(userId: number): Promise<AppSettings> {
  * apiKey. Never exposed through HTTP.
  */
 export function getAiConfig(userId: number): AppSettings['ai'] {
-  const raw = readRow(userId)
+  return decryptedAiConfig(userId, readRow(userId))
+}
+
+export async function getSharedAiConfig(userId: number): Promise<AppSettings['ai']> {
+  const row = await readPostgresSettings(userId)
+  if (row === undefined) throw new UnauthorizedError('user not found')
+  return decryptedAiConfig(userId, parseRow(row, userId))
+}
+
+function decryptedAiConfig(userId: number, raw: Record<string, unknown> | null): AppSettings['ai'] {
   const merged = mergeDefaults(raw ?? {})
   const ai: AppSettings['ai'] = {
     protocol: merged.ai.protocol,
@@ -175,7 +184,14 @@ export function getAiConfig(userId: number): AppSettings['ai'] {
 
 /** Return a setup instruction when the user's current KP settings cannot start a turn. */
 export function getAiSetupIssue(userId: number): string | null {
-  const ai = getAiConfig(userId)
+  return aiSetupIssue(getAiConfig(userId))
+}
+
+export async function getSharedAiSetupIssue(userId: number): Promise<string | null> {
+  return aiSetupIssue(await getSharedAiConfig(userId))
+}
+
+function aiSetupIssue(ai: AppSettings['ai']): string | null {
   if (!ai.model?.trim()) return '请在设置中选择或输入 KP 模型。'
   const effectiveBaseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(ai.protocol)).trim().replace(/\/+$/, '')
   try {

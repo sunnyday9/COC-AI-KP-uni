@@ -1,15 +1,85 @@
-/**
- * RoomStorage — 房间领域持久化 adapter（架构评审候选 2 / ADR-0001）。
- *
- * 拥有 rooms / room_members 两张表的**全部** SQL：RoomService 的领域方法是它的
- * 唯一调用方，REST 路由与 ws 层不接触房间表结构。users/characters 表的少量
- * 邻接读写（username 解析、角色卡归属/sheet、createSoloRoom 一体动作的角色卡
- * 落库）也在此，供领域方法组装领域对象。
- * 外部 id 只作为 DB 键进入查询（D-09 DB 映射：不落 fs 路径）。
- */
+import type { SQLInputValue } from 'node:sqlite'
+import { types, type PoolClient } from 'pg'
 import { getDb } from '../db/index.js'
+import { getPostgresPool, inPostgresTransaction, postgresError } from '../db/postgres.js'
+import { SHARED_ROOMS_ENABLED } from '../config.js'
 import { parseRoomState } from './roomStateCodec.js'
 import type { RoomPhase } from '../../../shared/types/room.js'
+
+// The room backend is selected once per process. All room/member/character
+// transactions keep the same connection and never cross account stores.
+interface Statement {
+  sql: string
+  values: SQLInputValue[]
+}
+
+const statement = (sql: string, ...values: SQLInputValue[]): Statement => ({ sql, values })
+
+const roomTypes = {
+  getTypeParser(oid: number) {
+    if (oid === types.builtins.INT8) {
+      return (value: string) => {
+        const integer = Number(value)
+        if (!Number.isSafeInteger(integer)) throw new Error('Room storage integer exceeds safe range')
+        return integer
+      }
+    }
+    return types.getTypeParser(oid)
+  },
+}
+
+function pgQuery(command: Statement) {
+  let index = 0
+  return { text: command.sql.replace(/\?/g, () => `$${++index}`), values: command.values, types: roomTypes }
+}
+
+type Row = Record<string, unknown>
+
+async function readAll<T extends Row>(sql: string, ...values: SQLInputValue[]): Promise<T[]> {
+  if (!SHARED_ROOMS_ENABLED) return getDb().prepare(sql).all(...values) as unknown as T[]
+  try {
+    return (await getPostgresPool().query<T>(pgQuery(statement(sql, ...values)))).rows
+  } catch (error) {
+    throw postgresError(error)
+  }
+}
+
+async function readOne<T extends Row>(sql: string, ...values: SQLInputValue[]): Promise<T | undefined> {
+  return (await readAll<T>(sql, ...values))[0]
+}
+
+async function writeAll(commands: Statement[]): Promise<void> {
+  if (SHARED_ROOMS_ENABLED) {
+    const execute = async (client: Pick<PoolClient, 'query'>) => {
+      for (const command of commands) await client.query(pgQuery(command))
+    }
+    try {
+      if (commands.length > 1) await inPostgresTransaction(execute)
+      else await execute(getPostgresPool())
+    } catch (error) {
+      throw postgresError(error)
+    }
+    return
+  }
+
+  const db = getDb()
+  if (commands.length === 1) {
+    const command = commands[0]!
+    db.prepare(command.sql).run(...command.values)
+    return
+  }
+
+  // Keep the full SQLite transaction in one synchronous turn, even though
+  // the public adapter contract returns promises.
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    for (const command of commands) db.prepare(command.sql).run(...command.values)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
 
 export interface RoomRow {
   room_id: string
@@ -28,7 +98,6 @@ export interface RoomMemberRow {
   username: string
   role: string
   character_id: string | null
-  /** 就绪（等待室软信号，ADR-0005）；SQLite 列存储为 0/1。 */
   ready: number
 }
 
@@ -40,17 +109,30 @@ export interface RoomListItemRow {
   updatedAt: number
 }
 
-/** solo 房间列表行（继续游戏；无 inviteCode——solo 不用邀请码入房）。 */
 export interface SoloRoomListItemRow {
   roomId: string
   storyId: string | null
   phase: string
   updatedAt: number
-  /** 进度摘要 = 消息流最后一条的非玩家侧内容截断（首页展示用）。 */
   preview: string
 }
 
-/* ═══════════════ rooms 表 ═══════════════ */
+function insertRoomSql(
+  roomId: string,
+  ownerId: number,
+  inviteCode: string,
+  storyId: string | null,
+  kind: 'multi' | 'solo',
+  phase: RoomPhase,
+  state: string,
+): Statement {
+  const now = Date.now()
+  return statement(
+    `INSERT INTO rooms (room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, version, updated_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    roomId, ownerId, inviteCode, storyId, storyId ? ownerId : null, kind, phase, state, now, now,
+  )
+}
 
 export function insertRoom(
   roomId: string,
@@ -58,76 +140,95 @@ export function insertRoom(
   inviteCode: string,
   storyId: string | null,
   kind: 'multi' | 'solo' = 'multi',
-): void {
-  const now = Date.now()
-  getDb()
-    .prepare(`INSERT INTO rooms (room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, version, updated_at, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, 'lobby', '{}', 0, ?, ?)`)
-    .run(roomId, ownerId, inviteCode, storyId, storyId ? ownerId : null, kind, now, now)
+): Promise<void> {
+  return writeAll([insertRoomSql(roomId, ownerId, inviteCode, storyId, kind, 'lobby', '{}')])
 }
 
-export function inviteCodeExists(code: string): boolean {
-  return !!getDb().prepare(`SELECT 1 FROM rooms WHERE invite_code = ?`).get(code)
+function ownerMember(roomId: string, userId: number, characterId: string | null): Statement {
+  return statement(
+    `INSERT INTO room_members (room_id, user_id, role, character_id) VALUES (?, ?, 'owner', ?)`,
+    roomId, userId, characterId,
+  )
 }
 
-export function findRoomIdByInviteCode(inviteCode: string): string | null {
-  const row = getDb().prepare(`SELECT room_id FROM rooms WHERE invite_code = ?`).get(inviteCode) as
-    | { room_id: string }
-    | undefined
+export function insertMultiplayerRoom(roomId: string, userId: number, code: string, storyId: string | null, state: string): Promise<void> {
+  return writeAll([insertRoomSql(roomId, userId, code, storyId, 'multi', 'lobby', state), ownerMember(roomId, userId, null)])
+}
+
+export function insertSoloRoom(
+  roomId: string, userId: number, code: string, storyId: string, state: string,
+  character: { id: string; name: string; sheet: string },
+): Promise<void> {
+  return writeAll([
+    insertCharacterSql(character.id, userId, character.name, character.sheet),
+    insertRoomSql(roomId, userId, code, storyId, 'solo', 'playing', state),
+    ownerMember(roomId, userId, character.id),
+  ])
+}
+
+export async function inviteCodeExists(code: string): Promise<boolean> {
+  return !!(await readOne('SELECT 1 FROM rooms WHERE invite_code = ?', code))
+}
+
+export async function findRoomIdByInviteCode(code: string): Promise<string | null> {
+  const row = await readOne<{ room_id: string }>('SELECT room_id FROM rooms WHERE invite_code = ?', code)
   return row?.room_id ?? null
 }
 
-/** 房间列表（ADR-0002：solo 房间不出现在房间列表——继续游戏走 listSoloRoomsForUser）。 */
-export function listRoomsForUser(userId: number): RoomListItemRow[] {
-  const rows = getDb()
-    .prepare(`SELECT r.room_id, r.invite_code, r.story_id, r.phase, r.updated_at
-              FROM rooms r JOIN room_members m ON r.room_id = m.room_id
-              WHERE m.user_id = ? AND r.kind != 'solo' ORDER BY r.updated_at DESC`)
-    .all(userId) as { room_id: string; invite_code: string; story_id: string | null; phase: string; updated_at: number }[]
+interface ListedRoom extends Row {
+  room_id: string
+  invite_code: string
+  story_id: string | null
+  phase: string
+  updated_at: number
+  state: string
+}
+
+export async function listRoomsForUser(userId: number): Promise<RoomListItemRow[]> {
+  const rows = await readAll<ListedRoom>(
+    `SELECT r.room_id, r.invite_code, r.story_id, r.phase, r.updated_at
+     FROM rooms r JOIN room_members m ON r.room_id = m.room_id
+     WHERE m.user_id = ? AND r.kind != 'solo' ORDER BY r.updated_at DESC`, userId,
+  )
   return rows.map((r) => ({ roomId: r.room_id, inviteCode: r.invite_code, storyId: r.story_id, phase: r.phase, updatedAt: r.updated_at }))
 }
 
-/** 未结束 solo 房间列表（游戏 hub 的 solo 续玩入口，ADR-0002）。 */
-export function listSoloRoomsForUser(userId: number): SoloRoomListItemRow[] {
-  const rows = getDb()
-    .prepare(`SELECT r.room_id, r.story_id, r.phase, r.updated_at, r.state
-              FROM rooms r JOIN room_members m ON r.room_id = m.room_id
-              WHERE m.user_id = ? AND r.kind = 'solo' AND r.phase != 'ended' ORDER BY r.updated_at DESC`)
-    .all(userId) as { room_id: string; story_id: string | null; phase: string; updated_at: number; state: string }[]
+export async function listSoloRoomsForUser(userId: number): Promise<SoloRoomListItemRow[]> {
+  const rows = await readAll<ListedRoom>(
+    `SELECT r.room_id, r.story_id, r.phase, r.updated_at, r.state
+     FROM rooms r JOIN room_members m ON r.room_id = m.room_id
+     WHERE m.user_id = ? AND r.kind = 'solo' AND r.phase != 'ended' ORDER BY r.updated_at DESC`, userId,
+  )
   return rows.map((r) => {
-    let preview = ''
-    // rooms.state 经 codec 容错解析（#61）：脏 JSON/JSON null → 摘要留空（原语义）
     const msgs = parseRoomState<{ messages?: { role: string; content?: unknown }[] }>(r.state)?.messages
-    const last = Array.isArray(msgs) ? msgs[msgs.length - 1] : undefined
-    if (last && typeof last.content === 'string') preview = last.content.slice(0, 50)
+    const last = Array.isArray(msgs) ? msgs.at(-1) : undefined
+    const preview = typeof last?.content === 'string' ? last.content.slice(0, 50) : ''
     return { roomId: r.room_id, storyId: r.story_id, phase: r.phase, updatedAt: r.updated_at, preview }
   })
 }
 
-export function getRoomRow(roomId: string): RoomRow | undefined {
-  return getDb()
-    .prepare(`SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, created_at FROM rooms WHERE room_id = ?`)
-    .get(roomId) as RoomRow | undefined
+export function getRoomRow(roomId: string): Promise<RoomRow | undefined> {
+  return readOne<RoomRow & Row>(
+    'SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, created_at FROM rooms WHERE room_id = ?', roomId,
+  )
 }
 
-export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number): void {
-  getDb()
-    .prepare(`UPDATE rooms SET story_id = ?, story_owner_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`)
-    .run(storyId, storyOwnerId, Date.now(), roomId)
+export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number): Promise<void> {
+  return writeAll([statement(
+    `UPDATE rooms SET story_id = ?, story_owner_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`,
+    storyId, storyOwnerId, Date.now(), roomId,
+  )])
 }
 
-/** 房间阶段落库（#54）：`rooms.phase` 列是「房间详情 / 继续游戏列表 / restore」的
- *  唯一真源，内存态变更必须同步写列——否则结束的局仍挂在首页入口，重启后还会被
- *  列优先的 restore 复活成进行中。 */
-export function updateRoomPhase(roomId: string, phase: RoomPhase): void {
-  getDb().prepare(`UPDATE rooms SET phase = ?, updated_at = ? WHERE room_id = ?`).run(phase, Date.now(), roomId)
+export function updateRoomPhase(roomId: string, phase: RoomPhase): Promise<void> {
+  return writeAll([statement('UPDATE rooms SET phase = ?, updated_at = ? WHERE room_id = ?', phase, Date.now(), roomId)])
 }
 
-/** 节流快照落库（RoomService.persistSnapshot）：bump version。 */
 const updateSnapshotSql = 'UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE room_id = ?'
 
-export function updateRoomStateSnapshot(roomId: string, stateJson: string): void {
-  getDb().prepare(updateSnapshotSql).run(stateJson, Date.now(), roomId)
+export function updateRoomStateSnapshot(roomId: string, stateJson: string, phase?: 'ended'): Promise<void> {
+  const sql = phase ? "UPDATE rooms SET phase = 'ended', state = ?, version = version + 1, updated_at = ? WHERE room_id = ?" : updateSnapshotSql
+  return writeAll([statement(sql, stateJson, Date.now(), roomId)])
 }
 
 type SnapshotWrite = {
@@ -140,7 +241,7 @@ type SnapshotWrite = {
 const pendingSnapshots: SnapshotWrite[] = []
 let snapshotFlushScheduled = false
 
-/** Concurrent turns can share a commit. Resolve each write after SQLite commits it. */
+/** Concurrent turns share a commit. Each write resolves after the database commits it. */
 export function queueTurnSnapshot(roomId: string, capture: SnapshotWrite['capture']): Promise<number> {
   return new Promise((committed, failed) => {
     pendingSnapshots.push({ roomId, capture, committed, failed })
@@ -151,158 +252,131 @@ export function queueTurnSnapshot(roomId: string, capture: SnapshotWrite['captur
 function scheduleSnapshotFlush(): void {
   if (snapshotFlushScheduled || pendingSnapshots.length === 0) return
   snapshotFlushScheduled = true
-  setImmediate(() => {
+  setImmediate(async () => {
+    await flushTurnSnapshots(pendingSnapshots.splice(0, 32))
     snapshotFlushScheduled = false
-    flushTurnSnapshots(pendingSnapshots.splice(0, 32))
     scheduleSnapshotFlush()
   })
 }
 
-function flushTurnSnapshots(batch: SnapshotWrite[]): void {
+async function flushTurnSnapshots(batch: SnapshotWrite[]): Promise<void> {
   try {
-    // Capture the latest state so pending writes preserve settings changed
-    // since the room queued its snapshot.
+    // Capture the latest state so writes preserve settings changed while queued.
     const writes = batch.map((write) => ({ ...write, ...write.capture() }))
-    const db = getDb()
-    const update = db.prepare(updateSnapshotSql)
     const now = Date.now()
-    db.exec('BEGIN IMMEDIATE')
-    try {
-      for (const write of writes) update.run(write.stateJson, now, write.roomId)
-      db.exec('COMMIT')
-    } catch (error) {
-      db.exec('ROLLBACK')
-      throw error
-    }
+    await writeAll(writes.map((write) => statement(updateSnapshotSql, write.stateJson, now, write.roomId)))
     for (const write of writes) write.committed(write.seq)
   } catch (error) {
     for (const write of batch) write.failed(error)
   }
 }
 
-/** 设置类小写（setRoomTurnWindow）：不 bump version（与旧路由行为一致）。 */
-export function updateRoomStateSettings(roomId: string, stateJson: string): void {
-  getDb().prepare(`UPDATE rooms SET state = ?, updated_at = ? WHERE room_id = ?`).run(stateJson, Date.now(), roomId)
+export function updateRoomStateSettings(roomId: string, stateJson: string): Promise<void> {
+  return writeAll([statement('UPDATE rooms SET state = ?, updated_at = ? WHERE room_id = ?', stateJson, Date.now(), roomId)])
 }
 
-export function deleteRoomRows(roomId: string): void {
-  getDb().prepare(`DELETE FROM room_members WHERE room_id = ?`).run(roomId)
-  getDb().prepare(`DELETE FROM rooms WHERE room_id = ?`).run(roomId)
+export function deleteRoomRows(roomId: string): Promise<void> {
+  return writeAll([
+    statement('DELETE FROM room_members WHERE room_id = ?', roomId),
+    statement('DELETE FROM rooms WHERE room_id = ?', roomId),
+  ])
 }
 
-/** 共享连接（事务用：BEGIN/COMMIT/ROLLBACK 包住同连接上的顺序写）。 */
-export function tx(): ReturnType<typeof getDb> {
-  return getDb()
+export function insertMember(roomId: string, userId: number, role: 'owner' | 'member'): Promise<void> {
+  return writeAll([role === 'owner' ? ownerMember(roomId, userId, null) : statement(
+    `INSERT INTO room_members (room_id, user_id, role, character_id) VALUES (?, ?, 'member', NULL)
+     ON CONFLICT (room_id, user_id) DO NOTHING`, roomId, userId,
+  )])
 }
 
-/* ═══════════════ room_members 表 ═══════════════ */
-
-export function insertMember(roomId: string, userId: number, role: 'owner' | 'member'): void {
-  if (role === 'owner') {
-    getDb().prepare(`INSERT INTO room_members (room_id, user_id, role, character_id) VALUES (?, ?, 'owner', NULL)`).run(roomId, userId)
-  } else {
-    getDb().prepare(`INSERT OR IGNORE INTO room_members (room_id, user_id, role, character_id) VALUES (?, ?, 'member', NULL)`).run(roomId, userId)
-  }
+export async function isRoomMember(roomId: string, userId: number): Promise<boolean> {
+  return !!(await readOne('SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?', roomId, userId))
 }
 
-export function isRoomMember(roomId: string, userId: number): boolean {
-  return !!getDb().prepare(`SELECT 1 FROM room_members WHERE room_id = ? AND user_id = ?`).get(roomId, userId)
-}
-
-export function memberRole(roomId: string, userId: number): string | null {
-  const row = getDb().prepare(`SELECT role FROM room_members WHERE room_id = ? AND user_id = ?`).get(roomId, userId) as
-    | { role: string }
-    | undefined
+export async function memberRole(roomId: string, userId: number): Promise<string | null> {
+  const row = await readOne<{ role: string }>('SELECT role FROM room_members WHERE room_id = ? AND user_id = ?', roomId, userId)
   return row?.role ?? null
 }
 
-/** 成员列表（JOIN users；列名为 snake_case，由调用方映射 camelCase）。加入顺序由 rowid 保证（与 listMembersOrdered 一致）。 */
-export function listMembers(roomId: string): RoomMemberRow[] {
-  return getDb()
-    .prepare(`SELECT m.user_id, m.role, m.character_id, m.ready, u.username
-              FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ?`)
-    .all(roomId) as unknown as RoomMemberRow[]
+const memberSelect = `SELECT m.user_id, m.role, m.character_id, m.ready, u.username
+                      FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ?`
+
+export function listMembers(roomId: string): Promise<RoomMemberRow[]> {
+  return readAll<RoomMemberRow & Row>(memberSelect, roomId)
 }
 
-export function memberCharacterId(roomId: string, userId: number): string | null {
-  const rows = getDb()
-    .prepare(`SELECT character_id FROM room_members WHERE room_id = ? AND user_id = ?`)
-    .all(roomId, userId) as unknown as { character_id: string | null }[]
-  return rows[0]?.character_id ?? null
+export async function memberCharacterId(roomId: string, userId: number): Promise<string | null> {
+  const row = await readOne<{ character_id: string | null }>('SELECT character_id FROM room_members WHERE room_id = ? AND user_id = ?', roomId, userId)
+  return row?.character_id ?? null
 }
 
-export function bindMemberCharacter(roomId: string, userId: number, characterId: string): void {
-  getDb().prepare(`UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?`).run(characterId, roomId, userId)
+export function bindMemberCharacter(roomId: string, userId: number, characterId: string): Promise<void> {
+  return writeAll([statement('UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?', characterId, roomId, userId)])
 }
 
-/** 一人一卡校验：该角色卡在本房间内已被其他成员绑定 → 返回其 userId。 */
-export function boundMemberOf(roomId: string, characterId: string, exceptUserId: number): number | null {
-  const rows = getDb()
-    .prepare(`SELECT user_id FROM room_members WHERE room_id = ? AND character_id = ? AND user_id != ?`)
-    .all(roomId, characterId, exceptUserId) as unknown as { user_id: number }[]
-  return rows[0]?.user_id ?? null
+export async function boundMemberOf(roomId: string, characterId: string, exceptUserId: number): Promise<number | null> {
+  const row = await readOne<{ user_id: number }>(
+    'SELECT user_id FROM room_members WHERE room_id = ? AND character_id = ? AND user_id != ?', roomId, characterId, exceptUserId,
+  )
+  return row?.user_id ?? null
 }
 
-/** 设置成员就绪状态（就绪/取消，ADR-0005 软信号；owner 行不动——房主无 ready 语义）。 */
-export function setMemberReady(roomId: string, userId: number, ready: boolean): void {
-  getDb()
-    .prepare(`UPDATE room_members SET ready = ? WHERE room_id = ? AND user_id = ? AND role = 'member'`)
-    .run(ready ? 1 : 0, roomId, userId)
+export function setMemberReady(roomId: string, userId: number, ready: boolean): Promise<void> {
+  return writeAll([statement(
+    `UPDATE room_members SET ready = ? WHERE room_id = ? AND user_id = ? AND role = 'member'`, ready ? 1 : 0, roomId, userId,
+  )])
 }
 
-/** 房主转让（ADR-0005）：新 owner 行 role='owner' 且 ready 清零；旧 owner 行降为 member。
- *  写库事务内完成（一升一降原子）。 */
-export function transferRoomOwnership(roomId: string, oldOwnerId: number, newOwnerId: number): void {
-  const db = getDb()
-  db.exec('BEGIN')
-  try {
-    db.prepare(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`).run(roomId, oldOwnerId)
-    db.prepare(`UPDATE room_members SET role = 'owner', ready = 0 WHERE room_id = ? AND user_id = ?`).run(roomId, newOwnerId)
-    db.prepare(`UPDATE rooms SET owner_id = ? WHERE room_id = ?`).run(newOwnerId, roomId)
-    db.exec('COMMIT')
-  } catch (err) {
-    db.exec('ROLLBACK')
-    throw err
-  }
+export function transferRoomOwnership(roomId: string, oldOwnerId: number, newOwnerId: number): Promise<void> {
+  return writeAll([
+    statement(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`, roomId, oldOwnerId),
+    statement(`UPDATE room_members SET role = 'owner', ready = 0 WHERE room_id = ? AND user_id = ?`, roomId, newOwnerId),
+    statement('UPDATE rooms SET owner_id = ? WHERE room_id = ?', newOwnerId, roomId),
+  ])
 }
 
-/** 删除成员行（主动离开/房主踢出，ADR-0005；owner 离开不删行——房主离开 = 转让/解散）。 */
-export function deleteMemberRow(roomId: string, userId: number): void {
-  getDb().prepare(`DELETE FROM room_members WHERE room_id = ? AND user_id = ?`).run(roomId, userId)
+export function deleteMemberRow(roomId: string, userId: number): Promise<void> {
+  return writeAll([statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, userId)])
 }
 
-/** 成员列表（JOIN users；按加入顺序——房主断线转让取「最早成员」）。 */
-export function listMembersOrdered(roomId: string): RoomMemberRow[] {
-  return getDb()
-    .prepare(`SELECT m.room_id, m.user_id, m.role, m.character_id, m.ready, u.username
-              FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ? ORDER BY m.rowid ASC`)
-    .all(roomId) as unknown as RoomMemberRow[]
+export function listMembersOrdered(roomId: string): Promise<RoomMemberRow[]> {
+  const order = SHARED_ROOMS_ENABLED ? 'm.join_order' : 'm.rowid'
+  return readAll<RoomMemberRow & Row>(`${memberSelect} ORDER BY ${order} ASC`, roomId)
 }
 
-/* ═══════════════ 邻接只读（users / characters；供领域方法组装领域对象） ═══════════════ */
-
-/** username 解析（chat 领域方法用）。 */
-export function usernameOf(userId: number): string | null {
-  const row = getDb().prepare(`SELECT username FROM users WHERE id = ?`).get(userId) as { username: string } | undefined
+export async function usernameOf(userId: number): Promise<string | null> {
+  const row = await readOne<{ username: string }>('SELECT username FROM users WHERE id = ?', userId)
   return row?.username ?? null
 }
 
-/** 角色卡归属（bind 校验：仅本人）。 */
-export function characterOwnerUserId(characterId: string): number | null {
-  const rows = getDb().prepare(`SELECT user_id FROM characters WHERE id = ?`).all(characterId) as unknown as { user_id: number }[]
-  return rows[0]?.user_id ?? null
+export async function characterOwnerUserId(characterId: string): Promise<number | null> {
+  const row = await readOne<{ user_id: number }>('SELECT user_id FROM characters WHERE id = ?', characterId)
+  return row?.user_id ?? null
 }
 
-/** 角色卡落库（createSoloRoom 一体动作；id 由领域方法生成）。 */
-export function insertCharacter(characterId: string, userId: number, name: string, sheetJson: string): void {
-  getDb().prepare(`INSERT INTO characters (id, user_id, name, sheet, updated_at) VALUES (?, ?, ?, ?, ?)`).run(characterId, userId, name, sheetJson, Date.now())
+function insertCharacterSql(id: string, userId: number, name: string, sheet: string): Statement {
+  return statement('INSERT INTO characters (id, user_id, name, sheet, updated_at) VALUES (?, ?, ?, ?, ?)', id, userId, name, sheet, Date.now())
 }
 
-/** 房间角色组绑定（sheet 从 characters 表加载——syncFromDb 用）。 */
-export function boundCharacterSheets(roomId: string): { characterId: string; userId: number; sheet: string }[] {
-  const rows = getDb()
-    .prepare(`SELECT m.character_id, m.user_id, c.sheet FROM room_members m
-              JOIN characters c ON c.id = m.character_id WHERE m.room_id = ? AND m.character_id IS NOT NULL`)
-    .all(roomId) as unknown as { character_id: string; user_id: number; sheet: string }[]
+export function insertCharacter(id: string, userId: number, name: string, sheet: string): Promise<void> {
+  return writeAll([insertCharacterSql(id, userId, name, sheet)])
+}
+
+export interface CharacterRow extends Row {
+  id: string
+  name: string
+  sheet: string
+  updated_at: number
+}
+
+export function listCharactersForUser(userId: number): Promise<CharacterRow[]> {
+  return readAll<CharacterRow>('SELECT id, name, sheet, updated_at FROM characters WHERE user_id = ? ORDER BY updated_at DESC', userId)
+}
+
+export async function boundCharacterSheets(roomId: string): Promise<{ characterId: string; userId: number; sheet: string }[]> {
+  const rows = await readAll<{ character_id: string; user_id: number; sheet: string }>(
+    `SELECT m.character_id, m.user_id, c.sheet FROM room_members m
+     JOIN characters c ON c.id = m.character_id WHERE m.room_id = ? AND m.character_id IS NOT NULL`, roomId,
+  )
   return rows.map((b) => ({ characterId: b.character_id, userId: b.user_id, sheet: b.sheet }))
 }

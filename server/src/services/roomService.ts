@@ -13,8 +13,8 @@
 import crypto from 'node:crypto'
 import * as roomStorage from './roomStorage.js'
 import { logger } from '../utils/logging.js'
-import { createCharacterMutatorFactory } from '../rule-engine/characterMutators.js'
-import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode } from '../config.js'
+import { createCharacterMutatorFactory, type CharacterEnding } from '../rule-engine/characterMutators.js'
+import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, SHARED_ROOMS_ENABLED } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 import { acquireKpTurn } from './kpAdmission.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
@@ -137,6 +137,7 @@ export class RoomService {
   readonly roomId: string
   /** 现任房主（转让/断线易主后随 syncFromDb 更新——KP/RAG/记忆全程跟随现任 owner）。 */
   private ownerId: number
+  private ownershipVersion = 0
   private ownerName: string
 
   private phase: RoomPhase = 'lobby'
@@ -287,7 +288,7 @@ export class RoomService {
     return run
   }
 
-  enqueueClientAction(task: () => Promise<void>): Promise<void> | null {
+  enqueueClientAction<T>(task: () => Promise<T>): Promise<T> | null {
     if (this.disposed || this.queuedClientActions >= MAX_PENDING_PLAYER_ACTIONS) return null
     this.queuedClientActions++
     return this.enqueue(task).finally(() => { this.queuedClientActions-- })
@@ -350,15 +351,14 @@ export class RoomService {
   }
 
   /** 结局（state_patch + phase 变更）。 */
-  setEnding(ending: unknown): void {
+  setEnding(ending: unknown): Promise<void> {
     this.ending = ending
     this.phase = 'ended'
-    this.persistPhase('ended')
     this.emit({ type: 'state_patch', payload: { path: 'ending', value: ending } })
-    this.emit({ type: 'room_meta', payload: { phase: 'ended', turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
+    this.emit({ type: 'room_meta', payload: { phase: 'ended', turnWindowMs: this.turnWindowMs, members: this.members } })
     // Endings are terminal state. Persist them immediately instead of waiting
     // for the normal event-count/time snapshot threshold.
-    void this.persistSnapshot().catch((err) => {
+    return this.persistSnapshot().catch((err) => {
       logger.warn('room ending snapshot failed', { roomId: this.roomId, error: err instanceof Error ? err.message : String(err) })
     })
   }
@@ -367,35 +367,28 @@ export class RoomService {
   setPhase(phase: RoomPhase): void {
     this.phase = phase
     this.persistPhase(phase)
-    this.emit({ type: 'room_meta', payload: { phase, turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
+    this.emit({ type: 'room_meta', payload: { phase, turnWindowMs: this.turnWindowMs, members: this.members } })
   }
 
-  /** 阶段落库（#54）：`rooms.phase` 列是详情 / 继续游戏列表 / restore 的真源，
-   *  内存变更必须写列——否则结束的局仍挂在首页入口，重启后还会被复活成进行中。
-   *  写失败只记日志：阶段广播已经发生，回合/游玩流程不该因一次写失败中断。 */
   private persistPhase(phase: RoomPhase): void {
-    try {
-      roomStorage.updateRoomPhase(this.roomId, phase)
-    } catch (err) {
-      logger.error('room phase persistence failed', { roomId: this.roomId, phase, error: err instanceof Error ? err.message : String(err) })
-    }
+    void withRoomCommand(this.roomId, () => roomStorage.updateRoomPhase(this.roomId, phase)).catch((error) => {
+      logger.error('room phase persistence failed', { roomId: this.roomId, phase, error: String(error) })
+    })
   }
 
-  /** 广播成员列表（room_meta）——成员加入/离开/绑定角色/就绪后调用（Phase C2 / ADR-0005）。 */
+  private members: RoomMember[] = []
+
+  /** Broadcast the current membership and retain it for standalone phase events. */
   broadcastMembers(members: RoomMember[]): void {
+    this.members = members
     this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members } })
-  }
-
-  /** 从 DB 加载成员列表（room_meta 事件携带真实 members，避免清空客户端列表——审查修复）。 */
-  private membersFromDb(): RoomMember[] {
-    return roomStorage.listMembers(this.roomId).map(memberRowToInfo)
   }
 
   /** 设置回合窗口（房主控制，B6）；0 = 严格排队。广播 room_meta 全员可见。 */
   setTurnWindowMs(ms: number): void {
     const clamped = Math.max(0, Math.min(60_000, Math.floor(ms)))
     this.turnWindowMs = clamped
-    this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
+    this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members: this.members } })
   }
 
   getTurnWindowMs(): number {
@@ -407,7 +400,7 @@ export class RoomService {
     this.storyId = storyId
     this.storyOwnerId = storyOwnerId
     this.phase = 'playing'
-    this.emit({ type: 'room_meta', payload: { phase: 'playing', turnWindowMs: this.turnWindowMs, members: this.membersFromDb() } })
+    this.emit({ type: 'room_meta', payload: { phase: 'playing', turnWindowMs: this.turnWindowMs, members: this.members } })
   }
 
   /**
@@ -415,32 +408,44 @@ export class RoomService {
    * REST start/绑定角色只写 DB，此处把 storyId/phase/characters map 同步进内存实例，
    * 使 KP 回合拿到剧本上下文、多角色分派拿到角色组。
    */
-  syncFromDb(): void {
-    const r = roomStorage.getRoomRow(this.roomId)
+  async syncFromDb(): Promise<void> {
+    const r = await roomStorage.getRoomRow(this.roomId)
     if (!r) return
+    const [members, sheets] = await Promise.all([
+      roomStorage.listMembers(this.roomId), roomStorage.boundCharacterSheets(this.roomId),
+    ])
+    this.members = members.map(memberRowToInfo)
     if (typeof r.story_id === 'string') this.storyId = r.story_id
     this.storyOwnerId = typeof r.story_id === 'string' ? (r.story_owner_id ?? r.owner_id) : null
-    if (typeof r.phase === 'string' && (r.phase === 'lobby' || r.phase === 'playing' || r.phase === 'ended')) {
+    if (this.phase !== 'ended' && (r.phase === 'lobby' || r.phase === 'playing' || r.phase === 'ended')) {
       this.phase = r.phase
     }
     // 房主跟随 DB（ADR-0005 转让/断线易主）：KP/RAG/记忆解析账号 = 现任 owner
-    if (r.owner_id !== this.ownerId) {
-      this.ownerId = r.owner_id
-      this.ownerName = roomStorage.usernameOf(r.owner_id) ?? `user_${r.owner_id}`
-    }
+    this.updateOwner(r.owner_id)
     // 角色组：从 DB 绑定关系加载 sheet（characters 表是 sheet 权威）
-    for (const b of roomStorage.boundCharacterSheets(this.roomId)) {
+    for (const b of sheets) {
+      this.characterOwner.set(b.characterId, b.userId)
+      if (this.characters.has(b.characterId)) continue
       try {
         const sheet = JSON.parse(b.sheet) as COCCharacterSheet
         this.characters.set(b.characterId, sheet)
-        this.characterOwner.set(b.characterId, b.userId)
       } catch { /* 脏 sheet 忽略 */ }
     }
     if (this.phase === 'playing') {
       void this.refreshOwnerAiSetupStatus().then((ready) => {
         if (ready && this.turnBuffer.length > 0) this.startBufferedTurn()
+      }).catch((error) => {
+        logger.warn('room AI setup status persistence failed', { roomId: this.roomId, ownerId: this.ownerId, error: String(error) })
       })
     }
+  }
+
+  /** Apply a committed transfer before an older Keeper turn can publish new effects. */
+  updateOwner(ownerId: number): void {
+    if (ownerId === this.ownerId) return
+    this.ownerId = ownerId
+    this.ownershipVersion += 1
+    this.ownerName = this.members.find((member) => member.userId === ownerId)?.username ?? `user_${ownerId}`
   }
 
   /** 绑定角色卡（成员 → 房间角色组，Phase B4/B6）。 */
@@ -474,27 +479,50 @@ export class RoomService {
 
   /** 玩家聊天（领域方法，ADR-0001）：解析身份 → 消息流广播 →（playing 才）进回合缓冲。
    *  Phase gate（ADR-0005）：lobby 等待室聊天只广播不触发 KP 回合。 */
-  submitPlayerChat(userId: number, content: string): boolean {
+  async submitPlayerChat(userId: number, content: string): Promise<boolean> {
+    const [username, characterId] = await Promise.all([
+      roomStorage.usernameOf(userId).then((name) => name ?? `user_${userId}`),
+      roomStorage.memberCharacterId(this.roomId, userId),
+    ])
+    if (this.disposed) return false
     if (this.phase === 'playing' && this.turnBuffer.length >= MAX_PENDING_PLAYER_ACTIONS) return false
-    const username = roomStorage.usernameOf(userId) ?? `user_${userId}`
-    const characterId = roomStorage.memberCharacterId(this.roomId, userId)
-    this.appendMessage(
-      { id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'player', playerName: username, content },
-      { userId, roleName: username },
-    )
-    if (this.phase !== 'playing') return true
-    // Phase B6 + D4：玩家消息触发 KP 回合——回合窗口合并；行动者 = 成员绑定的角色卡。
-    // 单人房间 = 单成员（FR-M9）；turnWindowMs=0 时立即处理（严格排队）。
-    this.bufferPlayerChat(username, content, characterId, userId)
+    const message: Message = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: Date.now(), role: 'player', playerName: username, content,
+    }
+    const author = { userId, roleName: username }
+    const pending = this.phase === 'playing' ? { username, content, characterId, authorUserId: userId } : null
+    if (SHARED_ROOMS_ENABLED) {
+      const snapshot = this.snapshot()
+      snapshot.messages = [...snapshot.messages, message]
+      if (pending) snapshot.pendingTurnMessages = [...(snapshot.pendingTurnMessages ?? []), pending]
+      await this.commitCheckpoint(snapshot, [{ type: 'message_appended', payload: { message, author } }], () => {
+        this.messages = snapshot.messages
+        if (pending) this.turnBuffer.push(pending)
+      })
+      if (pending) this.scheduleBufferedTurn()
+    } else {
+      this.appendMessage(message, author)
+      if (pending) this.bufferPlayerChat(username, content, characterId, userId)
+    }
     return true
   }
 
-  /** 玩家消息进回合缓冲（聊天即时广播；KP 回合等窗口超时合并执行）。 */
+  /** Check membership at execution time in the same actor slot as the chat. */
+  queuePlayerChat(userId: number, content: string): Promise<'accepted' | 'busy' | 'not-member'> | null {
+    return this.enqueueClientAction(() => withRoomCommand(this.roomId, async () => {
+      if (!await roomStorage.isRoomMember(this.roomId, userId)) return 'not-member'
+      return (await this.submitPlayerChat(userId, content)) ? 'accepted' : 'busy'
+    }))
+  }
+
+  /** Buffer a player message and schedule Keeper processing. */
   bufferPlayerChat(username: string, content: string, characterId: string | null, authorUserId: number): void {
     this.turnBuffer.push({ username, content, characterId, authorUserId })
-    // turnWindowMs 由活跃实例唯一持有（ADR-0001）：房主设置经领域方法
-    // setRoomTurnWindow 一次写库 + 同步实例；快照 restore 是重启兜底。
-    // turnWindowMs=0 → 严格排队：每条消息立即触发 KP 回合（无合并延迟）
+    this.scheduleBufferedTurn()
+  }
+
+  private scheduleBufferedTurn(): void {
     if (this.turnWindowMs <= 0) {
       this.startBufferedTurn()
       return
@@ -606,7 +634,7 @@ export class RoomService {
         },
       )
       this.activeTurnBatch = []
-      if (!this.disposed) await this.persistTurnSnapshot()
+      if (!SHARED_ROOMS_ENABLED && !this.disposed) await this.persistTurnSnapshot()
     } catch (error) {
       interrupted = true
       throw error
@@ -698,29 +726,73 @@ export class RoomService {
     // 工具在回合执行中才被调用，场景切换/房主转让可能发生在同回合内）。
     const { buildStoryLookup } = await import('./turnKnowledge.js')
     const characterMap = this.getCharacterMap()
+    const draft = SHARED_ROOMS_ENABLED ? {
+      characters: structuredClone(characterMap),
+      changedCharacters: new Set<string>(),
+      clues: [...this.clues],
+      scene: this.scene,
+      ending: null as CharacterEnding | null,
+      events: [] as RoomEvent[],
+      content: '',
+      ownerChanged: false,
+    } : null
 
-    // 变更应用器工厂（评审候选 1：15 个 sheet 变更语义唯一实现在 rule-engine/characterMutators；
-    // onSheetMutated → state_patch 广播，world 三回调接房间状态方法）
+    const stage = (event: RoomEvent) => {
+      if (draft) draft.events.push(event)
+      else this.emit(event)
+    }
+    const append = (message: Message, roleName: string) => {
+      const author = { userId: ownerUserId, roleName }
+      if (draft) stage({ type: 'message_appended', payload: { message, author } })
+      else this.appendMessage(message, author)
+    }
     const mutatorFactory = createCharacterMutatorFactory({
-      resolveSheet: (id) => (id ? this.characters.get(id) : null) ?? null,
+      resolveSheet: (id) => (id ? (draft ? draft.characters[id] : this.characters.get(id)) : null) ?? null,
       onSheetMutated: (id, sheet) => {
-        if (id) this.emit({ type: 'state_patch', payload: { path: `characters.${id}`, value: sheet } })
+        if (!id) return
+        draft?.changedCharacters.add(id)
+        stage({ type: 'state_patch', payload: { path: `characters.${id}`, value: draft ? structuredClone(sheet) : sheet } })
       },
-      transitionToScene: (sceneName) => this.setScene(sceneName),
-      addClue: (description, clueId) => this.addClue(description, clueId),
-      endGame: (ending) => this.setEnding(ending),
+      transitionToScene: (sceneName) => {
+        if (!draft) {
+          this.setScene(sceneName)
+          return
+        }
+        draft.scene = sceneName
+        stage({ type: 'state_patch', payload: { path: 'scene', value: sceneName } })
+      },
+      addClue: (description, clueId) => {
+        if (!draft) {
+          this.addClue(description, clueId)
+          return
+        }
+        if (draft.clues.some((clue) => clue.id === clueId || clue.description === description)) return
+        draft.clues = [...draft.clues, { id: clueId ?? `clue_${crypto.randomUUID()}`, description }]
+        stage({ type: 'state_patch', payload: { path: 'clues', value: draft.clues } })
+      },
+      endGame: (ending) => {
+        if (!draft) {
+          void this.setEnding(ending)
+          return
+        }
+        draft.ending = ending
+        stage({ type: 'state_patch', payload: { path: 'ending', value: ending } })
+      },
     })
 
     await runKpTurn(
       ownerUserId,
       { messages, storyContext },
       {
-        characters: characterMap,
+        characters: draft?.characters ?? characterMap,
         activeCharacterId,
         mutatorFactory,
         allowedCharacterIds, // D5：归属校验（窗口内行动者可用的角色卡集）
         isOwnerCurrent,
-        onOwnerChanged,
+        onOwnerChanged: () => {
+          if (draft) draft.ownerChanged = true
+          onOwnerChanged?.()
+        },
         sampling: { roomId: this.roomId, storyId: this.storyId, ragContext }, // T1 wire 采样（唯一新缝）
         storyLookup: buildStoryLookup({ // dossier workflow 查证工具（rag = undefined）
           roomId: this.roomId,
@@ -728,35 +800,87 @@ export class RoomService {
           getOwnerId: () => this.ownerId,
           getStoryOwnerId: () => this.storyOwnerId ?? this.ownerId,
           getStoryId: () => this.storyId,
-          getScene: () => this.scene,
+          getScene: () => draft ? draft.scene : this.scene,
         }),
         handlers: {
-          onChunk,
+          onChunk: draft ? (chunk) => {
+            if (isKpChunkStreamEnabled() && chunk) stage({ type: 'kp_chunk', payload: { content: chunk } })
+          } : onChunk,
           onEnd: (result) => {
             // KP 回复追加消息流
             if (result.content?.trim()) {
-              this.appendMessage(
+              append(
                 { id: `kp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'kp', content: result.content },
-                { userId: ownerUserId, roleName: 'KP' },
+                'KP',
               )
               // 回合后记忆编排（fire-and-forget，ADR-0002 上下文收口）
-              void this.rememberTurn(result.content)
+              if (draft) draft.content = result.content
+              else void this.rememberTurn(result.content)
             }
             // 工具展示消息（骰子/系统提示）追加消息流
             for (const dm of result.displayMessages ?? []) {
-              this.appendMessage(dm as Message, { userId: ownerUserId, roleName: 'KP' })
+              append(dm as Message, 'KP')
             }
           },
           onError: () => {
             // 回合失败可见化：系统消息进流（同时供客户端清除「KP 推进中」占位）
-            this.appendMessage(
+            append(
               { id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'system', content: 'KP 回合失败，请稍后重试。' },
-              { userId: ownerUserId, roleName: 'system' },
+              'system',
             )
           },
         },
       },
     )
+    if (!draft || draft.ownerChanged) return
+
+    const committed = await withRoomCommand(this.roomId, async () => {
+      if (this.disposed || !isOwnerCurrent()) return false
+      const snapshot = this.snapshot()
+      const sceneChanged = draft.scene !== snapshot.scene
+      const ended = draft.ending !== null
+      const events = draft.events.flatMap((event): RoomEvent[] => {
+        if (event.type === 'state_patch' && event.payload.path === 'ending') {
+          return [event, { type: 'room_meta', payload: {
+            phase: 'ended', turnWindowMs: snapshot.turnWindowMs, members: this.members,
+          } }]
+        }
+        return [event]
+      })
+      snapshot.phase = ended ? 'ended' : snapshot.phase
+      snapshot.ending = ended ? draft.ending : snapshot.ending
+      snapshot.scene = draft.scene
+      snapshot.clues = draft.clues
+      for (const id of draft.changedCharacters) snapshot.characters[id] = draft.characters[id]!
+      snapshot.messages = [...snapshot.messages, ...events.flatMap((event) =>
+        event.type === 'message_appended' ? [event.payload.message] : [],
+      )]
+      snapshot.pendingTurnMessages = ended ? [] : [...this.turnBuffer]
+      const checkpointMemory = draft.content
+        ? this.appendFallbackTurnMemory(draft.content)
+        : this.kpMemory
+      snapshot.kpMemory = checkpointMemory
+
+      await this.commitCheckpoint(snapshot, events, () => {
+        this.phase = snapshot.phase
+        this.ending = snapshot.ending
+        this.scene = snapshot.scene
+        this.clues = snapshot.clues
+        this.characters = new Map(Object.entries(snapshot.characters))
+        this.messages = snapshot.messages
+        this.activeTurnBatch = []
+        this.kpMemory = checkpointMemory
+        if (ended) this.clearTurnWindow()
+      })
+      if (draft.content) {
+        this.recordCompletedTurn()
+        void this.refineSharedTurnMemory(ownerUserId, draft.content, checkpointMemory)
+      }
+      if (sceneChanged) void this.refreshLongTermSummary()
+      return true
+    })
+    if (!committed) onOwnerChanged?.()
+
   }
 
   /* ═══════════════ 回合记忆与提示词投影（ADR-0002，服务端收口） ═══════════════ */
@@ -775,15 +899,44 @@ export class RoomService {
   }
 
   /** 回合后记忆：先落截断兜底条目，抽取成功后替换；上限 MAX_MEMORY_ENTRIES（与旧客户端编排同语义）。 */
+  private appendFallbackTurnMemory(content: string): string[] {
+    return [...this.kpMemory, `${content.slice(0, 80)}…`].slice(-MAX_MEMORY_ENTRIES)
+  }
+
   private async rememberTurn(content: string): Promise<void> {
-    this.kpMemory = [...this.kpMemory, `${content.slice(0, 80)}…`].slice(-MAX_MEMORY_ENTRIES)
+    this.kpMemory = this.appendFallbackTurnMemory(content)
     try {
       const { extractMemoryPoints } = await import('./roomMemory.js')
       const points = await extractMemoryPoints(this.ownerId, content)
       this.kpMemory = [...this.kpMemory.slice(0, -1), ...points].slice(-MAX_MEMORY_ENTRIES)
     } catch {
-      // 兜底条目已在
+      // The fallback remains in memory.
     }
+    this.recordCompletedTurn()
+  }
+
+  private async refineSharedTurnMemory(ownerId: number, content: string, checkpointMemory: string[]): Promise<void> {
+    const ownershipVersion = this.ownershipVersion
+    try {
+      const { extractMemoryPoints } = await import('./roomMemory.js')
+      if (this.disposed || this.ownershipVersion !== ownershipVersion) return
+      const points = await extractMemoryPoints(ownerId, content)
+      if (points.length === 1 && points[0] === checkpointMemory.at(-1)) return
+      await withRoomCommand(this.roomId, async () => {
+        // Keep the committed fallback if this result belongs to a previous
+        // host or a newer turn has already added its own memory.
+        if (this.disposed || this.ownershipVersion !== ownershipVersion || this.kpMemory !== checkpointMemory) return
+        const snapshot = this.snapshot()
+        snapshot.kpMemory = [...checkpointMemory.slice(0, -1), ...points].slice(-MAX_MEMORY_ENTRIES)
+        await this.writeSnapshot(snapshot)
+        this.kpMemory = snapshot.kpMemory
+      })
+    } catch (error) {
+      logger.warn('room turn memory refinement failed', { roomId: this.roomId, error: String(error) })
+    }
+  }
+
+  private recordCompletedTurn(): void {
     this.turnCount += 1
     if (this.turnCount % LONG_TERM_SUMMARY_EVERY_TURNS === 0) void this.refreshLongTermSummary()
   }
@@ -851,39 +1004,61 @@ export class RoomService {
   }
 
   private async refreshOwnerAiSetupStatus(): Promise<boolean> {
-    // aiService deliberately bypasses account settings in deterministic mock mode.
-    if (isMockAiMode()) {
-      this.setKpSetupRequired(null)
-      return true
+    const ownerId = this.ownerId
+    let issue: string | null = null
+    // The deterministic mock deliberately bypasses provider settings.
+    if (!isMockAiMode()) {
+      try {
+        const settings = await import('./settingsService.js')
+        issue = SHARED_ROOMS_ENABLED ? await settings.getSharedAiSetupIssue(ownerId) : settings.getAiSetupIssue(ownerId)
+      } catch (error) {
+        logger.warn('room owner AI setup check failed', { roomId: this.roomId, ownerId, error: String(error) })
+        issue = '无法读取当前房主的 AI 设置，请检查设置后重试。'
+      }
     }
-    let issue: string | null
-    try {
-      const { getAiSetupIssue } = await import('./settingsService.js')
-      issue = getAiSetupIssue(this.ownerId)
-    } catch (error) {
-      logger.warn('room owner AI setup check failed', { roomId: this.roomId, ownerId: this.ownerId, error: String(error) })
-      issue = '无法读取当前房主的 AI 设置，请检查设置后重试。'
+    if (SHARED_ROOMS_ENABLED) {
+      const applied = await withRoomCommand(this.roomId, async () => {
+        if (this.disposed) return true
+        if (this.ownerId !== ownerId) return false
+        await this.setKpSetupRequired(issue)
+        return true
+      })
+      if (!applied) return this.refreshOwnerAiSetupStatus()
+    } else {
+      if (this.ownerId !== ownerId) return this.refreshOwnerAiSetupStatus()
+      await this.setKpSetupRequired(issue)
     }
-    this.setKpSetupRequired(issue)
     return issue === null
   }
 
-  private setKpSetupRequired(issue: string | null): void {
+  private async setKpSetupRequired(issue: string | null): Promise<void> {
     const required = issue !== null
     if (this.kpSetupRequired === required) return
-    this.kpSetupRequired = required
-    this.emit({ type: 'state_patch', payload: { path: 'kpSetupRequired', value: required } })
-    if (required) {
-      this.appendMessage(
-        {
-          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          timestamp: Date.now(),
-          role: 'system',
-          content: `KP 已暂停：${issue} 待处理的玩家行动已保留。配置后请房主点击“重试 KP”。`,
-        },
-        { userId: this.ownerId, roleName: 'system' },
-      )
+    const patch: RoomEvent = { type: 'state_patch', payload: { path: 'kpSetupRequired', value: required } }
+    const message: Message | null = issue === null ? null : {
+      id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: Date.now(),
+      role: 'system',
+      content: `KP 已暂停：${issue} 待处理的玩家行动已保留。配置后请房主点击“重试 KP”。`,
     }
+    const author = { userId: this.ownerId, roleName: 'system' }
+    if (SHARED_ROOMS_ENABLED) {
+      const snapshot = this.snapshot()
+      const events: RoomEvent[] = [patch]
+      snapshot.kpSetupRequired = required
+      if (message) {
+        snapshot.messages = [...snapshot.messages, message]
+        events.push({ type: 'message_appended', payload: { message, author } })
+      }
+      await this.commitCheckpoint(snapshot, events, () => {
+        this.kpSetupRequired = required
+        this.messages = snapshot.messages
+      })
+      return
+    }
+    this.kpSetupRequired = required
+    this.emit(patch)
+    if (message) this.appendMessage(message, author)
     void this.persistSnapshot().catch((error) => {
       logger.warn('room AI setup status persistence failed', { roomId: this.roomId, ownerId: this.ownerId, error: String(error) })
     })
@@ -891,7 +1066,7 @@ export class RoomService {
 
   /** Current owner can resume the preserved opening or queued player actions after setup. */
   async retryKpTurn(userId: number): Promise<boolean> {
-    if (userId !== this.ownerId || !roomStorage.isRoomMember(this.roomId, userId) || this.phase !== 'playing') return false
+    if (!await roomStorage.isRoomMember(this.roomId, userId) || userId !== this.ownerId || this.phase !== 'playing') return false
     if (!(await this.refreshOwnerAiSetupStatus())) return true
     if (this.turnBuffer.length > 0) {
       this.startBufferedTurn()
@@ -976,6 +1151,9 @@ export class RoomService {
         ),
       )
     } catch (err) {
+      // A shared opening whose checkpoint failed has not been published.
+      // Leave it eligible for the next explicit retry or join.
+      if (SHARED_ROOMS_ENABLED) this.openingStarted = false
       // opening 失败不阻塞（ADR-0002）——保留可见日志（此前全吞难排查）
       logger.warn('room opening turn failed', { roomId: this.roomId, ownerId: this.ownerId, error: err instanceof Error ? err.message : String(err) })
     } finally {
@@ -1000,12 +1178,31 @@ export class RoomService {
 
   /** 落库快照（rooms.state）。 */
   async persistSnapshot(): Promise<void> {
-    roomStorage.updateRoomStateSnapshot(this.roomId, serializeRoomState(this.snapshot()))
-    this.persistedSeq = this.seq
+    await withRoomCommand(this.roomId, () => this.writeSnapshot())
+  }
+
+  /** Persist a complete transition before making it visible to clients. Requires the room command slot. */
+  private async commitCheckpoint(snapshot: RoomSnapshot, events: RoomEvent[], install: () => void): Promise<void> {
+    snapshot.seq = this.seq + events.length
+    await this.writeSnapshot(snapshot)
+    install()
+    for (const event of events) this.emit(event)
+  }
+
+  async writeSnapshot(snapshot = this.snapshot()): Promise<void> {
+    if (this.disposed) return
+    await roomStorage.updateRoomStateSnapshot(
+      this.roomId, serializeRoomState(snapshot), snapshot.phase === 'ended' ? 'ended' : undefined,
+    )
+    this.persistedSeq = Math.max(this.persistedSeq, snapshot.seq)
     this.lastSnapshotAt = Date.now()
   }
 
   private async persistTurnSnapshot(): Promise<void> {
+    if (SHARED_ROOMS_ENABLED) {
+      await this.persistSnapshot()
+      return
+    }
     const seq = await roomStorage.queueTurnSnapshot(this.roomId, () => ({
       seq: this.seq,
       stateJson: serializeRoomState(this.snapshot()),
@@ -1027,25 +1224,48 @@ export class RoomService {
 /* ═══════════════ 房间注册表（进程内单例） ═══════════════ */
 
 const roomRegistry = new Map<string, RoomService>()
+const roomsActivating = new Set<string>()
+const roomCommands = new Map<string | symbol, Promise<unknown>>()
+const roomCreationSlot = Symbol('room creation')
+
+/** Hold the same room's command slot across database I/O without blocking other rooms. */
+function withRoomCommand<T>(roomId: string | symbol, command: () => Promise<T>): Promise<T> {
+  const previous = roomCommands.get(roomId)
+  const run = async () => {
+    try { await previous } catch { /* failures do not block later commands */ }
+    return command()
+  }
+  const next = run().finally(() => {
+    if (roomCommands.get(roomId) === next) roomCommands.delete(roomId)
+  })
+  roomCommands.set(roomId, next)
+  return next
+}
 
 export function hasRoomCapacity(roomId: string): boolean {
   const configured = Number(process.env.ROOM_ACTIVE_INSTANCES ?? 1024)
   const limit = Number.isSafeInteger(configured) && configured > 0 ? configured : 1024
-  return roomRegistry.has(roomId) || roomRegistry.size < limit
+  return roomRegistry.has(roomId) || roomsActivating.has(roomId) || roomRegistry.size + roomsActivating.size < limit
 }
 
 /** 获取或创建房间（owner 建房）。 */
 export function getOrCreateRoom(
+  roomId: string, ownerId: number, ownerName: string, storyId?: string | null,
+): Promise<RoomService> {
+  return withRoomCommand(roomId, () => materializeRoom(roomId, ownerId, ownerName, storyId))
+}
+
+async function materializeRoom(
   roomId: string,
   ownerId: number,
   ownerName: string,
   storyId?: string | null,
-): RoomService {
+): Promise<RoomService> {
   let room = roomRegistry.get(roomId)
   if (!room) {
     // DB 权威：列（story_id/phase）优先于 state 快照（审查修复 #1：
     // REST start 只更新列，实例 restore 必须拿到最新 storyId/phase）
-    const r = roomStorage.getRoomRow(roomId)
+    const r = await roomStorage.getRoomRow(roomId)
     let restore: RoomSnapshot | null = null
     if (r?.state) restore = parseRoomState<RoomSnapshot>(r.state)
     if (restore) {
@@ -1057,7 +1277,7 @@ export function getOrCreateRoom(
       // 故它非空即可反推 ended——否则这些房间重启后仍被复活成进行中。
       if (restore.ending != null && restore.phase === 'playing') {
         restore.phase = 'ended'
-        try { roomStorage.updateRoomPhase(roomId, 'ended') } catch { /* 自愈失败不阻断物化 */ }
+        try { await roomStorage.updateRoomPhase(roomId, 'ended') } catch { /* 自愈失败不阻断物化 */ }
       }
     } else if (r) {
       restore = {
@@ -1073,11 +1293,14 @@ export function getOrCreateRoom(
         updatedAt: Date.now(),
       }
     }
-    room = new RoomService({ roomId, ownerId, ownerName, storyId: typeof r?.story_id === 'string' ? r.story_id : storyId, storyOwnerId: r?.story_owner_id ?? (typeof r?.story_id === 'string' ? r.owner_id : null), restore })
-    roomRegistry.set(roomId, room)
+    room = new RoomService({ roomId, ownerId: r?.owner_id ?? ownerId, ownerName: (r ? await roomStorage.usernameOf(r.owner_id) : null) ?? ownerName, storyId: typeof r?.story_id === 'string' ? r.story_id : storyId, storyOwnerId: r?.story_owner_id ?? (typeof r?.story_id === 'string' ? r.owner_id : null), restore })
     // 对账（ADR-0001）：物化即列优先同步——列（story_id/phase）已入 restore，
     // 绑定角色组从 DB 装载（createSoloRoom 先绑后 join、TTL 回收重进都依赖此步）。
-    room.syncFromDb()
+    try { await room.syncFromDb() } catch (error) {
+      room.dispose()
+      throw error
+    }
+    roomRegistry.set(roomId, room)
   }
   return room
 }
@@ -1108,28 +1331,28 @@ function generateInviteCode(): string {
   return code
 }
 
-function ensureUniqueInviteCode(): string {
+async function ensureUniqueInviteCode(): Promise<string> {
   for (let attempt = 0; attempt < 10; attempt++) {
     const code = generateInviteCode()
-    if (!roomStorage.inviteCodeExists(code)) return code
+    if (!await roomStorage.inviteCodeExists(code)) return code
   }
   throw new Error('failed to generate unique invite code')
 }
 
 /** 若房间有活跃实例：DB 权威状态同步 + 成员广播（REST 写路径的领域内对账）。 */
-function syncActiveRoom(roomId: string): void {
+async function syncActiveRoom(roomId: string): Promise<void> {
   const room = getRoom(roomId)
   if (!room) return
-  room.syncFromDb()
-  broadcastMemberMeta(roomId)
+  await room.syncFromDb()
+  await broadcastMemberMeta(roomId)
 }
 
 /** 广播 DB 权威成员列表（成员加入/绑定后）。 */
-function broadcastMemberMeta(roomId: string): void {
+async function broadcastMemberMeta(roomId: string): Promise<void> {
   const room = getRoom(roomId)
   if (!room) return
   room.broadcastMembers(
-    roomStorage.listMembers(roomId).map(memberRowToInfo),
+    (await roomStorage.listMembers(roomId)).map(memberRowToInfo),
   )
 }
 
@@ -1149,25 +1372,23 @@ export function createRoom(
   userId: number,
   storyId: string | null,
   opts: { workflow?: unknown } = {},
-): { roomId: string; inviteCode: string } {
-  const roomId = `room_${crypto.randomUUID()}`
-  const inviteCode = ensureUniqueInviteCode()
-  roomStorage.insertRoom(roomId, userId, inviteCode, storyId)
-  roomStorage.insertMember(roomId, userId, 'owner')
-  // lobby 期即定 workflow（开局门闩/实例物化按它校验），存 state。
-  if (sanitizeWorkflow(opts.workflow) === 'dossier') {
-    roomStorage.updateRoomStateSettings(roomId, serializeRoomState({ workflow: 'dossier' }))
-  }
-  return { roomId, inviteCode }
+): Promise<{ roomId: string; inviteCode: string }> {
+  return withRoomCommand(roomCreationSlot, async () => {
+    const roomId = `room_${crypto.randomUUID()}`
+    const inviteCode = await ensureUniqueInviteCode()
+    const state = serializeRoomState(sanitizeWorkflow(opts.workflow) === 'dossier' ? { workflow: 'dossier' } : {})
+    await roomStorage.insertMultiplayerRoom(roomId, userId, inviteCode, storyId, state)
+    return { roomId, inviteCode }
+  })
 }
 
 /** GET /api/rooms —— 我的房间列表。 */
-export function listRoomsForUser(userId: number): roomStorage.RoomListItemRow[] {
+export function listRoomsForUser(userId: number): Promise<roomStorage.RoomListItemRow[]> {
   return roomStorage.listRoomsForUser(userId)
 }
 
 /** GET /api/rooms/solo —— 未结束单人局列表（游戏 hub 的 solo 续玩入口，ADR-0002）。 */
-export function listSoloRoomsForUser(userId: number): roomStorage.SoloRoomListItemRow[] {
+export function listSoloRoomsForUser(userId: number): Promise<roomStorage.SoloRoomListItemRow[]> {
   return roomStorage.listSoloRoomsForUser(userId)
 }
 
@@ -1191,76 +1412,67 @@ export async function createSoloRoom(
   // 无结束态/已选剧本/绑卡闩——房间行尚未存在，一体动作自己在下面的同一事务里绑卡。
   const gate = await checkStartGate({ gateFor: 'solo-create', storyId, ownerId: userId, workflow: input?.workflow })
   if (!gate.ok) return gate
-  const characterId = `char_${crypto.randomUUID()}`
-  // 一体动作的六次写库包进事务：中途失败整体回滚，不留孤儿角色卡/房间
-  const db = roomStorage.tx()
-  db.exec('BEGIN')
-  try {
-    roomStorage.insertCharacter(characterId, userId, name, JSON.stringify(sheet))
+  return withRoomCommand(roomCreationSlot, async () => {
+    const characterId = `char_${crypto.randomUUID()}`
     const roomId = `room_${crypto.randomUUID()}`
-    const inviteCode = ensureUniqueInviteCode()
-    roomStorage.insertRoom(roomId, userId, inviteCode, storyId, 'solo')
-    roomStorage.insertMember(roomId, userId, 'owner')
-    roomStorage.bindMemberCharacter(roomId, userId, characterId)
-    // 出生即 playing（列权威）；turnWindowMs=0 进 state（ADR-0002：solo 恒严格排队，restore 时实例取 0）。
-    // workflow（实验分支）一并进 state——实例物化时经 snapshot restore 读到。
-    // 懒激活保持：REST 建房只持久化，不激活实例。
-    roomStorage.updateRoomStart(roomId, storyId, userId)
-    roomStorage.updateRoomStateSettings(roomId, serializeRoomState(workflow === 'dossier' ? { turnWindowMs: 0, workflow: 'dossier' } : { turnWindowMs: 0 }))
-    db.exec('COMMIT')
+    const inviteCode = await ensureUniqueInviteCode()
+    const state = serializeRoomState(workflow === 'dossier' ? { turnWindowMs: 0, workflow } : { turnWindowMs: 0 })
+    await roomStorage.insertSoloRoom(roomId, userId, inviteCode, storyId, state, { id: characterId, name, sheet: JSON.stringify(sheet) })
     return { ok: true, roomId, inviteCode, characterId }
-  } catch (err) {
-    db.exec('ROLLBACK')
-    throw err
-  }
+  })
 }
 
 /** POST /api/rooms/join —— 邀请码加入（幂等：INSERT OR IGNORE）。
  *  ADR-0005：playing 后锁房——开局后邀请码不可再加入（observer 旁观留后续）。 */
-export function joinRoomByInviteCode(
+export async function joinRoomByInviteCode(
   userId: number,
   inviteCode: string,
-): { ok: true; roomId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string } {
-  const roomId = roomStorage.findRoomIdByInviteCode(inviteCode)
+): Promise<{ ok: true; roomId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string }> {
+  const roomId = await roomStorage.findRoomIdByInviteCode(inviteCode)
   if (!roomId) return { ok: false, reason: 'not-found', message: 'room not found' }
-  const room = roomStorage.getRoomRow(roomId)
-  if (room && room.phase !== 'lobby') {
-    return { ok: false, reason: 'conflict', message: 'room already started' }
-  }
-  roomStorage.insertMember(roomId, userId, 'member')
-  broadcastMemberMeta(roomId)
-  return { ok: true, roomId }
+  return withRoomCommand(roomId, async () => {
+    const room = await roomStorage.getRoomRow(roomId)
+    if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+    if (room.phase !== 'lobby') {
+      return { ok: false, reason: 'conflict', message: 'room already started' }
+    }
+    await roomStorage.insertMember(roomId, userId, 'member')
+    await broadcastMemberMeta(roomId)
+    return { ok: true, roomId }
+  })
 }
 
 /** GET /api/rooms/:id —— 房间详情（成员可见；非成员与不存在同样 404，语义同旧路由）。 */
-export function getRoomDetail(
+export async function getRoomDetail(
   userId: number,
   roomId: string,
-): { ok: true; detail: Record<string, unknown> } | { ok: false; reason: 'not-found'; message: string } {
-  if (!roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
-  const room = roomStorage.getRoomRow(roomId)
-  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
-  // rooms.state 经 codec 容错解析（#61）：脏 JSON → {}；成功值原样透传（含 JSON null，原语义）
-  const state: unknown = parseRoomStateOr(room.state, {})
-  return {
-    ok: true,
-    detail: {
-      roomId: room.room_id,
-      inviteCode: room.invite_code,
-      storyId: room.story_id,
-      phase: room.phase,
-      ownerId: room.owner_id,
-      members: roomStorage.listMembers(roomId).map((m) => ({
-        userId: m.user_id,
-        username: m.username,
-        role: m.role,
-        characterId: m.character_id,
-        ready: !!m.ready,
-      })),
-      state,
-      createdAt: room.created_at,
-    },
-  }
+): Promise<{ ok: true; detail: Record<string, unknown> } | { ok: false; reason: 'not-found'; message: string }> {
+  return withRoomCommand(roomId, async () => {
+    if (!await roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
+    const room = await roomStorage.getRoomRow(roomId)
+    if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+    // rooms.state 经 codec 容错解析（#61）：脏 JSON → {}；成功值原样透传（含 JSON null，原语义）
+    const state: unknown = parseRoomStateOr(room.state, {})
+    return {
+      ok: true,
+      detail: {
+        roomId: room.room_id,
+        inviteCode: room.invite_code,
+        storyId: room.story_id,
+        phase: room.phase,
+        ownerId: room.owner_id,
+        members: (await roomStorage.listMembers(roomId)).map((m) => ({
+          userId: m.user_id,
+          username: m.username,
+          role: m.role,
+          characterId: m.character_id,
+          ready: !!m.ready,
+        })),
+        state,
+        createdAt: room.created_at,
+      },
+    }
+  })
 }
 
 /** POST /api/rooms/:id/start —— 房主开始游戏。开局门闩（ADR-0005）判定单源在
@@ -1274,55 +1486,81 @@ export async function startRoom(
   roomId: string,
   storyId: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string }> {
-  const g = governanceGate(userId, roomId)
-  if (!g.ok) return g
-  if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
-  // 开局门闩（唯一判定落点 startGate）：入口只喂房间行摘要 + 成员行摘要 + 归属，
-  // 判定（含 rooms.state workflow 解析与分派）全在门内。
-  // Reuse the persisted source when the selected story is unchanged; a newly
-  // selected story belongs to the current owner who selected it.
-  const storyOwnerId = storyId === g.room.story_id && g.room.story_owner_id !== null
-    ? g.room.story_owner_id
-    : g.room.owner_id
-  const gate = await checkStartGate({
-    gateFor: 'lobby-start',
-    storyId,
-    ownerId: storyOwnerId,
-    room: { phase: g.room.phase, state: g.room.state },
-    members: roomStorage.listMembers(roomId).map((m) => ({ characterId: m.character_id, username: m.username })),
+  return withRoomCommand(roomId, async () => {
+    const g = await governanceGate(userId, roomId)
+    if (!g.ok) return g
+    if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
+    // 开局门闩（唯一判定落点 startGate）：入口只喂房间行摘要 + 成员行摘要 + 归属，
+    // 判定（含 rooms.state workflow 解析与分派）全在门内。
+    // Reuse the persisted source when the selected story is unchanged; a newly
+    // selected story belongs to the current owner who selected it.
+    const storyOwnerId = storyId === g.room.story_id && g.room.story_owner_id !== null
+      ? g.room.story_owner_id
+      : g.room.owner_id
+    const gate = await checkStartGate({
+      gateFor: 'lobby-start',
+      storyId,
+      ownerId: storyOwnerId,
+      room: { phase: g.room.phase, state: g.room.state },
+      members: (await roomStorage.listMembers(roomId)).map((m) => ({ characterId: m.character_id, username: m.username })),
+    })
+    if (!gate.ok) return gate
+    if (getRoom(roomId)?.isEnded()) return { ok: false, reason: 'conflict', message: '\u5bf9\u5c40\u5df2\u7ed3\u675f\uff0c\u65e0\u6cd5\u91cd\u65b0\u5f00\u59cb' }
+    await roomStorage.updateRoomStart(roomId, storyId, storyOwnerId)
+    await syncActiveRoom(roomId)
+    // opening 回合（ADR-0002）：实例已激活则立即触发；未激活时随首次 join 触发（懒激活保持）。
+    getRoom(roomId)?.beginOpeningIfPending()
+    return { ok: true }
   })
-  if (!gate.ok) return gate
-  roomStorage.updateRoomStart(roomId, storyId, storyOwnerId)
-  syncActiveRoom(roomId)
-  // opening 回合（ADR-0002）：实例已激活则立即触发；未激活时随首次 join 触发（懒激活保持）。
-  getRoom(roomId)?.beginOpeningIfPending()
-  return { ok: true }
+}
+
+export async function createCharacter(userId: number, name: string, sheet: COCCharacterSheet): Promise<{ id: string; name: string }> {
+  const id = `char_${crypto.randomUUID()}`
+  await roomStorage.insertCharacter(id, userId, name, JSON.stringify(sheet))
+  return { id, name }
+}
+
+export async function listCharactersForUser(userId: number): Promise<{
+  id: string; name: string; sheet: COCCharacterSheet; updatedAt: number
+}[]> {
+  const rows = await roomStorage.listCharactersForUser(userId)
+  return rows.map((row) => {
+    let sheet: COCCharacterSheet
+    try {
+      sheet = JSON.parse(row.sheet) as COCCharacterSheet
+    } catch {
+      sheet = {} as COCCharacterSheet
+    }
+    return { id: row.id, name: row.name, sheet, updatedAt: row.updated_at }
+  })
 }
 
 /** POST /api/rooms/:id/character —— 绑定角色卡（一人一卡，Phase B4）。 */
-export function bindRoomCharacter(
+export async function bindRoomCharacter(
   userId: number,
   roomId: string,
   characterId: string,
-): { ok: true; roomId: string; characterId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string } {
-  if (!roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
-  if (roomStorage.characterOwnerUserId(characterId) !== userId) {
-    return { ok: false, reason: 'not-found', message: 'character not found' }
-  }
-  if (roomStorage.boundMemberOf(roomId, characterId, userId) !== null) {
-    return { ok: false, reason: 'conflict', message: 'character already bound to another member' }
-  }
-  roomStorage.bindMemberCharacter(roomId, userId, characterId)
-  syncActiveRoom(roomId)
-  // T4 #31：换绑后广播新绑定卡 sheet（room_meta 只带 member.characterId；
-  // characters.<id> 走 state_patch——客户端档案区/队友卡依赖此通道）。
-  // 定向发本卡：幂等（绑同卡重复调用也只会同步一份权威 sheet）。
-  const active = getRoom(roomId)
-  const sheet = active?.getCharacter(characterId) ?? null
-  if (active && sheet) {
-    active.emitSheetPatch(characterId, sheet)
-  }
-  return { ok: true, roomId, characterId }
+): Promise<{ ok: true; roomId: string; characterId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string }> {
+  return withRoomCommand(roomId, async () => {
+    if (!await roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
+    if (await roomStorage.characterOwnerUserId(characterId) !== userId) {
+      return { ok: false, reason: 'not-found', message: 'character not found' }
+    }
+    if (await roomStorage.boundMemberOf(roomId, characterId, userId) !== null) {
+      return { ok: false, reason: 'conflict', message: 'character already bound to another member' }
+    }
+    await roomStorage.bindMemberCharacter(roomId, userId, characterId)
+    await syncActiveRoom(roomId)
+    // T4 #31：换绑后广播新绑定卡 sheet（room_meta 只带 member.characterId；
+    // characters.<id> 走 state_patch——客户端档案区/队友卡依赖此通道）。
+    // 定向发本卡：幂等（绑同卡重复调用也只会同步一份权威 sheet）。
+    const active = getRoom(roomId)
+    const sheet = active?.getCharacter(characterId) ?? null
+    if (active && sheet) {
+      active.emitSheetPatch(characterId, sheet)
+    }
+    return { ok: true, roomId, characterId }
+  })
 }
 
 /** 校验回合窗口值（0..60000），非法返回 null。 */
@@ -1333,44 +1571,48 @@ function sanitizeTurnWindowMs(value: unknown): number | null {
 }
 
 /** PUT /api/rooms/:id/settings —— 房主改 turnWindowMs（写库 + 活跃实例立即生效并广播）。 */
-export function setRoomTurnWindow(
+export async function setRoomTurnWindow(
   userId: number,
   roomId: string,
   rawTurnWindowMs: unknown,
-): { ok: true; turnWindowMs?: number } | { ok: false; reason: 'not-found' | 'not-owner' | 'bad-request'; message: string } {
-  const room = roomStorage.getRoomRow(roomId)
-  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
-  if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can change room settings' }
-  // ADR-0002：solo 房间回合窗口恒为 0（单成员无需合并缓冲），不可设置
-  if (room.kind === 'solo') return { ok: false, reason: 'bad-request', message: 'solo rooms have a fixed turn window of 0' }
-  // rooms.state 经 codec 容错解析（#61）：脏 JSON → {}；成功值原样（含 JSON null/原始值，
-  // 后续赋值/写回按现状表现，不附加对象守卫）
-  const state = parseRoomStateOr(room.state, {}) as Record<string, unknown>
-  let ms: number | undefined
-  if (rawTurnWindowMs !== undefined) {
-    const sanitized = sanitizeTurnWindowMs(rawTurnWindowMs)
-    if (sanitized === null) return { ok: false, reason: 'bad-request', message: 'turnWindowMs must be 0..60000' }
-    state.turnWindowMs = sanitized
-    ms = sanitized
-  }
-  roomStorage.updateRoomStateSettings(roomId, serializeRoomState(state))
-  const active = getRoom(roomId)
-  if (active && typeof ms === 'number') active.setTurnWindowMs(ms)
-  return { ok: true, turnWindowMs: ms }
+): Promise<{ ok: true; turnWindowMs?: number } | { ok: false; reason: 'not-found' | 'not-owner' | 'bad-request'; message: string }> {
+  return withRoomCommand(roomId, async () => {
+    const room = await roomStorage.getRoomRow(roomId)
+    if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+    if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can change room settings' }
+    // ADR-0002：solo 房间回合窗口恒为 0（单成员无需合并缓冲），不可设置
+    if (room.kind === 'solo') return { ok: false, reason: 'bad-request', message: 'solo rooms have a fixed turn window of 0' }
+    // rooms.state 经 codec 容错解析（#61）：脏 JSON → {}；成功值原样（含 JSON null/原始值，
+    // 后续赋值/写回按现状表现，不附加对象守卫）
+    const state = parseRoomStateOr(room.state, {}) as Record<string, unknown>
+    let ms: number | undefined
+    if (rawTurnWindowMs !== undefined) {
+      const sanitized = sanitizeTurnWindowMs(rawTurnWindowMs)
+      if (sanitized === null) return { ok: false, reason: 'bad-request', message: 'turnWindowMs must be 0..60000' }
+      state.turnWindowMs = sanitized
+      ms = sanitized
+    }
+    await roomStorage.updateRoomStateSettings(roomId, serializeRoomState(state))
+    const active = getRoom(roomId)
+    if (active && typeof ms === 'number') active.setTurnWindowMs(ms)
+    return { ok: true, turnWindowMs: ms }
+  })
 }
 
 /** DELETE /api/rooms/:id —— 房主解散。 */
-export function deleteRoomAsOwner(
+export async function deleteRoomAsOwner(
   userId: number,
   roomId: string,
-): { ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string } {
-  const room = roomStorage.getRoomRow(roomId)
-  if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
-  if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
-  if (room.phase === 'playing') return { ok: false, reason: 'conflict', message: 'playing rooms cannot be dissolved' }
-  roomStorage.deleteRoomRows(roomId)
-  disposeDeletedRoom(roomId)
-  return { ok: true }
+): Promise<{ ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string }> {
+  return withRoomCommand(roomId, async () => {
+    const room = await roomStorage.getRoomRow(roomId)
+    if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+    if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
+    if (room.phase === 'playing') return { ok: false, reason: 'conflict', message: 'playing rooms cannot be dissolved' }
+    await roomStorage.deleteRoomRows(roomId)
+    disposeDeletedRoom(roomId)
+    return { ok: true }
+  })
 }
 
 /* ═══════════════ 等待室治理（ADR-0005：就绪/离开/踢出/转让/门闩） ═══════════════ */
@@ -1385,134 +1627,163 @@ export interface RoomGovernanceFail {
 /** 房间治理约束统一入口（成员资格 / 房主判定 / kind）。
  *  - 治理动作只对多人房（kind='multi'）有意义；
  *  - 房间不存在、调用者非成员、被操作者非成员 → not-found（与既有成员可见语义一致）。 */
-function governanceGate(
+async function governanceGate(
   userId: number,
   roomId: string,
   targetUserId?: number,
-): { ok: true; room: roomStorage.RoomRow; callerRole: string | null } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string } {
-  const room = roomStorage.getRoomRow(roomId)
+): Promise<{ ok: true; room: roomStorage.RoomRow; callerRole: string | null } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string }> {
+  const room = await roomStorage.getRoomRow(roomId)
   if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
   if (room.kind !== 'multi') return { ok: false, reason: 'conflict', message: 'governance actions require a multiplayer room' }
   if (targetUserId !== undefined) {
-    if (!roomStorage.memberRole(roomId, targetUserId)) return { ok: false, reason: 'not-found', message: 'member not found' }
+    if (!await roomStorage.memberRole(roomId, targetUserId)) return { ok: false, reason: 'not-found', message: 'member not found' }
   }
-  const callerRole = roomStorage.memberRole(roomId, userId)
+  const callerRole = await roomStorage.memberRole(roomId, userId)
   if (!callerRole) return { ok: false, reason: 'not-found', message: 'room not found' }
   return { ok: true, room, callerRole }
 }
 
 /** POST /api/rooms/:id/ready —— 成员就绪/取消（ADR-0005 软信号；owner 不持有 ready）。
  *  role='member' 的 UPDATE 天然保护 owner；重复设置幂等。就绪在开局（playing）后无意义，忽略之。 */
-export function setMemberReady(
+export async function setMemberReady(
   userId: number,
   roomId: string,
   ready: boolean,
-): { ok: true } | RoomGovernanceFail {
-  const g = governanceGate(userId, roomId)
-  if (!g.ok) return g
-  if (g.callerRole === 'owner') return { ok: false, reason: 'not-owner', message: 'only members can toggle ready' }
-  if (g.room.phase !== 'lobby') return { ok: true } // playing 后就绪无意义：幂等成功
-  roomStorage.setMemberReady(roomId, userId, ready)
-  syncActiveRoom(roomId)
-  return { ok: true }
+): Promise<{ ok: true } | RoomGovernanceFail> {
+  return withRoomCommand(roomId, async () => {
+    const g = await governanceGate(userId, roomId)
+    if (!g.ok) return g
+    if (g.callerRole === 'owner') return { ok: false, reason: 'not-owner', message: 'only members can toggle ready' }
+    if (g.room.phase !== 'lobby') return { ok: true } // playing 后就绪无意义：幂等成功
+    await roomStorage.setMemberReady(roomId, userId, ready)
+    await syncActiveRoom(roomId)
+    return { ok: true }
+  })
 }
 
 /** POST /api/rooms/:id/leave —— 成员主动离开（删行 + 广播；owner 离开走转让/解散）。
  *  替代旧 ws room:leave 只退订不删行（成员列表只增不减的缺口，ADR-0005）。 */
-export function leaveRoomAsMember(
+export async function leaveRoomAsMember(
   userId: number,
   roomId: string,
-): { ok: true } | RoomGovernanceFail {
-  const g = governanceGate(userId, roomId)
-  if (!g.ok) return g
-  if (g.callerRole === 'owner') return leaveRoomAsOwner(userId, roomId)
-  roomStorage.deleteMemberRow(roomId, userId)
-  broadcastMemberMeta(roomId)
-  return { ok: true }
+): Promise<{ ok: true } | RoomGovernanceFail> {
+  return withRoomCommand(roomId, async () => {
+    const g = await governanceGate(userId, roomId)
+    if (!g.ok) return g
+    if (g.callerRole === 'owner') {
+      await transferToSuccessorOrDissolve(roomId, userId)
+      return { ok: true }
+    }
+    await roomStorage.deleteMemberRow(roomId, userId)
+    await broadcastMemberMeta(roomId)
+    return { ok: true }
+  })
 }
 
 /** 房主离开的领域动作：还有成员 → 立即转让给最早成员（rowid 序）；否则解散（ADR-0005 无宽限）。 */
-export function leaveRoomAsOwner(
+export async function leaveRoomAsOwner(
   userId: number,
   roomId: string,
-): { ok: true } | RoomGovernanceFail {
-  const g = governanceGate(userId, roomId)
-  if (!g.ok) return g
-  if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
-  transferToSuccessorOrDissolve(roomId, userId)
-  return { ok: true }
+): Promise<{ ok: true } | RoomGovernanceFail> {
+  return withRoomCommand(roomId, async () => {
+    const g = await governanceGate(userId, roomId)
+    if (!g.ok) return g
+    if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
+    await transferToSuccessorOrDissolve(roomId, userId)
+    return { ok: true }
+  })
 }
 
 /** 转让房主行写库（新 owner 行 role='owner' + ready 清零；旧 owner 行降为 member 且留在房内）。 */
-function transferOwnerRow(roomId: string, oldOwnerId: number, newOwnerId: number): void {
-  roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId)
+async function transferOwnerRow(roomId: string, oldOwnerId: number, newOwnerId: number): Promise<void> {
+  await roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId)
+  getRoom(roomId)?.updateOwner(newOwnerId)
 }
 
 /** ADR-0005 继位策略单源（决策 6）：还有其他成员 → 立即转让给最早成员（rowid 序）；否则解散房间行。
  *  转让后对活跃实例做 DB→广播对账（syncActiveRoom）；解散路径行已删、无实例对账。
  *  调用方（REST leaveRoomAsOwner / WS handleOwnerWsDisconnect）各持前置 gate，进入时调用者即 multi 房主。 */
-function transferToSuccessorOrDissolve(roomId: string, oldOwnerId: number): void {
-  const members = roomStorage.listMembersOrdered(roomId)
+async function transferToSuccessorOrDissolve(roomId: string, oldOwnerId: number): Promise<void> {
+  const members = await roomStorage.listMembersOrdered(roomId)
   const successor = members.find((m) => m.user_id !== oldOwnerId)
   if (!successor) {
-    roomStorage.deleteRoomRows(roomId)
+    await roomStorage.deleteRoomRows(roomId)
     disposeDeletedRoom(roomId)
     return
   }
-  transferOwnerRow(roomId, oldOwnerId, successor.user_id)
-  syncActiveRoom(roomId)
+  await transferOwnerRow(roomId, oldOwnerId, successor.user_id)
+  await syncActiveRoom(roomId)
 }
 
 /** DELETE /api/rooms/:id/members/:userId —— 房主踢出成员（owner only；删行 + 广播；不可踢自己/owner）。 */
-export function kickRoomMember(
+export async function kickRoomMember(
   callerUserId: number,
   roomId: string,
   targetUserId: number,
-): { ok: true } | RoomGovernanceFail {
-  const g = governanceGate(callerUserId, roomId, targetUserId)
-  if (!g.ok) return g
-  if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can kick members' }
-  if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'owner cannot kick themselves' }
-  roomStorage.deleteMemberRow(roomId, targetUserId)
-  broadcastMemberMeta(roomId)
-  return { ok: true }
+): Promise<{ ok: true } | RoomGovernanceFail> {
+  return withRoomCommand(roomId, async () => {
+    const g = await governanceGate(callerUserId, roomId, targetUserId)
+    if (!g.ok) return g
+    if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can kick members' }
+    if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'owner cannot kick themselves' }
+    await roomStorage.deleteMemberRow(roomId, targetUserId)
+    await broadcastMemberMeta(roomId)
+    return { ok: true }
+  })
 }
 
 /** POST /api/rooms/:id/transfer —— 房主主动转让给指定成员（新 owner 获得治理权）。 */
-export function transferOwnership(
+export async function transferOwnership(
   callerUserId: number,
   roomId: string,
   targetUserId: number,
-): { ok: true } | RoomGovernanceFail {
-  const g = governanceGate(callerUserId, roomId, targetUserId)
-  if (!g.ok) return g
-  if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can transfer ownership' }
-  if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'target is already the owner' }
-  transferOwnerRow(roomId, callerUserId, targetUserId)
-  syncActiveRoom(roomId)
-  return { ok: true }
+): Promise<{ ok: true } | RoomGovernanceFail> {
+  return withRoomCommand(roomId, async () => {
+    const g = await governanceGate(callerUserId, roomId, targetUserId)
+    if (!g.ok) return g
+    if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can transfer ownership' }
+    if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'target is already the owner' }
+    await transferOwnerRow(roomId, callerUserId, targetUserId)
+    await syncActiveRoom(roomId)
+    return { ok: true }
+  })
 }
 
 /** 房主 WS 断线（无 REST 语义）：立即转让给最早成员 / 无其他成员解散（ADR-0005 无宽限）。
  *  供 ws 层断线事件调用——仅当脱机的正是当前 owner 时执行（非 owner 断线不动房间；
  *  刷新即易主是已知取舍）。solo 房主断线不转让（单人房主=唯一成员，solo 无等待室）。 */
-export function handleOwnerWsDisconnect(roomId: string, userId: number): void {
-  const room = roomStorage.getRoomRow(roomId)
-  if (!room || room.phase === 'ended') return
-  if (room.kind !== 'multi' || room.owner_id !== userId) return
-  transferToSuccessorOrDissolve(roomId, userId)
+export async function handleOwnerWsDisconnect(roomId: string, userId: number): Promise<void> {
+  return withRoomCommand(roomId, async () => {
+    const room = await roomStorage.getRoomRow(roomId)
+    if (!room || room.phase === 'ended' || getRoom(roomId)?.isEnded()) return
+    if (room.kind !== 'multi' || room.owner_id !== userId) return
+    await transferToSuccessorOrDissolve(roomId, userId)
+  })
 }
 
 /** WS join：校验成员资格并返回活跃实例（不存在则 materialize——懒激活）。 */
-export function joinRoom(roomId: string, userId: number, username: string): RoomService | null {
-  if (!roomStorage.isRoomMember(roomId, userId)) return null
-  const room = getRoom(roomId) ?? getOrCreateRoom(roomId, userId, username)
-  room.beginOpeningIfPending()
-  return room
+export async function joinRoom(roomId: string, userId: number, username: string): Promise<RoomService | null> {
+  return withRoomCommand(roomId, async () => {
+    if (!await roomStorage.isRoomMember(roomId, userId)) return null
+    const active = getRoom(roomId)
+    if (active) {
+      active.beginOpeningIfPending()
+      return active
+    }
+    if (!hasRoomCapacity(roomId)) return null
+    roomsActivating.add(roomId)
+    try {
+      const room = await materializeRoom(roomId, userId, username)
+      room.beginOpeningIfPending()
+      return room
+    } finally {
+      roomsActivating.delete(roomId)
+    }
+  })
 }
 
 /** WS 成员资格 gate（sync/action 帧用）。 */
-export function isRoomMember(roomId: string, userId: number): boolean {
+export function isRoomMember(roomId: string, userId: number): Promise<boolean> {
   return roomStorage.isRoomMember(roomId, userId)
 }
 
@@ -1520,17 +1791,17 @@ export function isRoomMember(roomId: string, userId: number): boolean {
 export function reapStaleRooms(canEvict: (roomId: string) => boolean = () => true): void {
   for (const [id, room] of roomRegistry) {
     if (canEvict(id) && room.isStale()) {
-      // 装配级错误安全（#86）：persistSnapshot 内是 better-sqlite3 同步 UPDATE，
-      // 抛错会变成 rejected promise 经 finally 透传——无 catch 即 unhandledRejection
-      // （Node ≥15 默认崩进程）。catch 只记日志；dispose/逐出仍在 finally 执行，
-      // reap 语义零改动。
-      void room
-        .persistSnapshot()
-        .finally(() => {
+      // Recheck after taking the command slot, since a join or action may
+      // have arrived while the previous snapshot or membership write ran.
+      void withRoomCommand(id, async () => {
+        if (roomRegistry.get(id) !== room || !canEvict(id) || !room.isStale()) return
+        try {
+          await room.writeSnapshot()
+        } finally {
           room.dispose()
           roomRegistry.delete(id)
-        })
-        .catch((err: unknown) => logger.error('room reaper persistSnapshot failed', { roomId: id, error: String(err) }))
+        }
+      }).catch((err: unknown) => logger.error('room reaper persistSnapshot failed', { roomId: id, error: String(err) }))
     }
   }
 }

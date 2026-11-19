@@ -18,11 +18,11 @@ const router = Router()
 router.use(requireAuth)
 
 /** PUT /api/rooms/:id/settings — 房主修改回合窗口。 */
-router.put('/:id/settings', (req: AuthRequest, res) => {
+router.put('/:id/settings', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const rawTurnWindowMs = (req.body as { turnWindowMs?: unknown } | undefined)?.turnWindowMs
-  const result = setRoomTurnWindow(userId, roomId, rawTurnWindowMs)
+  const result = await setRoomTurnWindow(userId, roomId, rawTurnWindowMs)
   if (!result.ok) {
     if (result.reason === 'not-found') sendError(res, new NotFoundError(result.message))
     else if (result.reason === 'not-owner') sendError(res, new ConflictError(result.message))

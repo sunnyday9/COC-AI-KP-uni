@@ -118,14 +118,14 @@ describe('dossier workflow 房间链路', () => {
     const created = await createSoloRoom(owner, { storyId: 'demo.txt', name: '调查员A', sheet: MINIMAL_SHEET, workflow: 'dossier' })
     expect(created.ok).toBe(true)
     if (!created.ok) return
-    const row = roomStorage.getRoomRow(created.roomId)
+    const row = await roomStorage.getRoomRow(created.roomId)
     const state = JSON.parse(row?.state || '{}') as { workflow?: string; turnWindowMs?: number }
     expect(state.workflow).toBe('dossier')
     // state 里 turnWindowMs 仍在
     expect(state.turnWindowMs).toBe(0)
 
     // 物化实例 → workflow 从 restore 读入
-    const room = getRoom(created.roomId) ?? getOrCreateRoom(created.roomId, owner, 'owner')
+    const room = getRoom(created.roomId) ?? await getOrCreateRoom(created.roomId, owner, 'owner')
     expect(room.getWorkflow()).toBe('dossier')
     expect(room.getStoryId()).toBe('demo.txt')
     // snapshot round-trip
@@ -138,10 +138,10 @@ describe('dossier workflow 房间链路', () => {
     const created = await createSoloRoom(owner, { storyId: 'demo.txt', name: '调查员B', sheet: MINIMAL_SHEET })
     expect(created.ok).toBe(true)
     if (!created.ok) return
-    const row = roomStorage.getRoomRow(created.roomId)
+    const row = await roomStorage.getRoomRow(created.roomId)
     const state = JSON.parse(row?.state || '{}') as { workflow?: string; turnWindowMs?: number }
     expect(state.workflow).toBeUndefined()
-    const room = getRoom(created.roomId) ?? getOrCreateRoom(created.roomId, owner, 'owner')
+    const room = getRoom(created.roomId) ?? await getOrCreateRoom(created.roomId, owner, 'owner')
     expect(room.getWorkflow()).toBe('rag')
     room.dispose()
   })
