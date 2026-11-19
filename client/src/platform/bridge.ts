@@ -23,6 +23,7 @@ import type {
   AuthResult,
   BridgeUser,
   IndexedStory,
+  IndexedStoryPage,
   Platform,
   RagGetIndexResult,
   RAGContextParams,
@@ -31,6 +32,7 @@ import type {
   StoryDossierGenerateResult,
   StoryDossierSummary,
   StoryOperationProgress,
+  StoryCatalogPage,
 } from '../../../shared/types/bridge'
 import { getBaseUrl, getPlatform, joinApiUrl } from './config'
 import { clearToken, emitUnauthorized, getToken, setToken } from './token'
@@ -254,6 +256,15 @@ export class PlatformBridge {
   roomStart(roomId: string, storyId: string): Promise<{ ok: boolean }> {
     return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/start`, { storyId })
   }
+  listStoryPage(cursor?: string): Promise<StoryCatalogPage> {
+    const query = cursor ? `limit=50&cursor=${encodeURIComponent(cursor)}` : 'limit=50'
+    return request<StoryCatalogPage>('GET', `/api/stories?${query}`)
+  }
+
+  readStory(id: string, preview = false): Promise<{ name: string; content: string; truncated?: boolean }> {
+    return request('GET', `/api/stories/${encodeURIComponent(id)}${preview ? '?preview=1' : ''}`)
+  }
+
   /** B6 房主控制：修改回合窗口（0..60000，0=严格排队）。 */
   roomSetTurnWindow(roomId: string, turnWindowMs: number): Promise<{ ok: boolean; turnWindowMs?: number }> {
     return request('PUT', `/api/rooms/${encodeURIComponent(roomId)}/settings`, { turnWindowMs })
@@ -341,6 +352,12 @@ export class PlatformBridge {
   ragListStories(): Promise<IndexedStory[]> {
     return request<IndexedStory[]>('GET', '/api/rag/stories')
   }
+
+  ragListStoryPage(cursor?: string): Promise<IndexedStoryPage> {
+    const query = cursor ? `limit=50&cursor=${encodeURIComponent(cursor)}` : 'limit=50'
+    return request<IndexedStoryPage>('GET', `/api/rag/stories?${query}`)
+  }
+
 
   dossierList(): Promise<StoryDossierSummary[]> {
     return request<StoryDossierSummary[]>('GET', '/api/dossier')

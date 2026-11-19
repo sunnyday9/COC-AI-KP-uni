@@ -149,6 +149,8 @@ export async function index(
   return { ok: result.ok, indexed: result.indexed ?? 0, error: result.error, warning: result.warning }
 }
 
+export { listIndexedStoryPage } from '../rag/indexedStoryPages.js'
+
 /** GET /api/rag/stories — rag:listStories. */
 export function listStories(userId: number, storyId?: string): {
   storyId: string

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { indexStory } from '../services/ragService'
-import { getBridge } from '../platform'
+import { getBridge, getToken } from '../platform'
 
 /**
  * 差异说明（Task 7，简报决策 4）：原 StoryFile 为 `{ name, path }`（Electron
@@ -21,16 +21,90 @@ export const useStoryStore = defineStore('story', () => {
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
-  async function loadStories() {
+  const nextCursor = ref<string | null>(null)
+  const canPrepare = ref(true)
+  const selectedStoryId = ref<string | null>(null)
+  const selectedStory = ref<(StoryFile & { content: string; truncated?: boolean }) | null>(null)
+  const isSelecting = ref(false)
+  const selectionError = ref<string | null>(null)
+  let listRevision = 0
+  let selectionRevision = 0
+
+  function clearSelection() {
+    selectionRevision++
+    selectedStoryId.value = null
+    selectedStory.value = null
+    isSelecting.value = false
+    selectionError.value = null
+  }
+
+  function resetLibrary() {
+    listRevision++
+    storyFiles.value = []
+    nextCursor.value = null
+    isLoading.value = false
+    error.value = null
+    clearSelection()
+  }
+
+  async function loadPage(cursor?: string) {
+    const revision = ++listRevision
+    const token = getToken()
+    const isCurrent = () => revision === listRevision && token === getToken()
     try {
       isLoading.value = true
       error.value = null
-      storyFiles.value = await getBridge().listStories()
+      const page = await getBridge().listStoryPage(cursor)
+      if (!isCurrent()) return
+      storyFiles.value = cursor ? [...storyFiles.value, ...page.stories] : page.stories
+      nextCursor.value = page.nextCursor
+      canPrepare.value = page.canPrepare !== false
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load stories'
+      if (isCurrent()) error.value = e instanceof Error ? e.message : '无法加载故事'
     } finally {
-      isLoading.value = false
+      if (isCurrent()) isLoading.value = false
     }
+  }
+
+  async function loadStories() {
+    resetLibrary()
+    await loadPage()
+  }
+
+  async function loadMoreStories() {
+    if (nextCursor.value && !isLoading.value) await loadPage(nextCursor.value)
+  }
+
+  async function selectStory(id: string) {
+    clearSelection()
+    selectedStoryId.value = id
+    const revision = selectionRevision
+    const token = getToken()
+    const isCurrent = () => revision === selectionRevision && token === getToken()
+    try {
+      isSelecting.value = true
+      const story = await getBridge().readStory(id, true)
+      if (isCurrent()) selectedStory.value = { id, ...story }
+    } catch (e) {
+      if (isCurrent()) selectionError.value = e instanceof Error ? e.message : '无法读取故事'
+    } finally {
+      if (isCurrent()) isSelecting.value = false
+    }
+  }
+
+  /** Explicit batch indexing still processes every local story. */
+  async function listAllStories(): Promise<StoryFile[]> {
+    const token = getToken()
+    const stories: StoryFile[] = []
+    let cursor: string | undefined
+    do {
+      const page = await getBridge().listStoryPage(cursor)
+      if (token !== getToken()) throw new Error('登录状态已更改')
+      if (page.canPrepare === false) throw new Error('此网关尚未开放剧本准备')
+      stories.push(...page.stories)
+      cursor = page.nextCursor ?? undefined
+    } while (cursor)
+    return stories
   }
 
   /**
@@ -73,10 +147,10 @@ export const useStoryStore = defineStore('story', () => {
   }
 
   async function indexAllStories(): Promise<{ ok: boolean; total: number; errors: string[] }> {
-    await loadStories()
+    const stories = await listAllStories()
     const errors: string[] = []
     let total = 0
-    for (const story of storyFiles.value) {
+    for (const story of stories) {
       const result = await indexStoryForRag(story.id)
       if (result.ok) {
         total += result.indexed || 0
@@ -91,7 +165,18 @@ export const useStoryStore = defineStore('story', () => {
     storyFiles,
     isLoading,
     error,
+    nextCursor,
+    canPrepare,
+    selectedStory,
+    selectedStoryId,
+    isSelecting,
+    selectionError,
+    resetLibrary,
+    clearSelection,
+    selectStory,
     loadStories,
+    loadMoreStories,
+    listAllStories,
     importStory,
     deleteStory,
     indexStoryForRag,

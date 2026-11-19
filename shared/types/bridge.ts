@@ -40,6 +40,18 @@ export interface RAGQueryParams {
   topK?: number
 }
 
+export interface StoryCatalogPage {
+  stories: { id: string; name: string }[]
+  nextCursor: string | null
+  /** False on shared gateways before durable preparation is available. */
+  canPrepare?: boolean
+}
+
+export interface IndexedStoryPage {
+  stories: IndexedStory[]
+  nextCursor: string | null
+}
+
 export interface IndexedStory {
   storyId: string
   name: string

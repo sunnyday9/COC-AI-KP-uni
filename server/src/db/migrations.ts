@@ -158,6 +158,28 @@ const MIGRATIONS: SchemaMigration[] = [
       `)
     },
   },
+  {
+    version: 9,
+    name: 'add indexed story catalog pages',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS indexed_story_catalog (
+          user_id INTEGER NOT NULL,
+          story_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          chunk_count INTEGER NOT NULL,
+          indexed_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, story_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_indexed_story_catalog_owner
+          ON indexed_story_catalog (user_id, indexed_at DESC, story_id DESC);
+        CREATE TABLE IF NOT EXISTS indexed_story_catalog_state (
+          user_id INTEGER PRIMARY KEY,
+          stamp TEXT NOT NULL
+        );
+      `)
+    },
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS.at(-1)!.version

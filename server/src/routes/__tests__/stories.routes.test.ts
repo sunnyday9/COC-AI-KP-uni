@@ -4,6 +4,9 @@
  * Uploads go to the per-worker temp UPLOADS_DIR (test/setup.ts). The PDF
  * case uses an in-memory pdf-lib fixture (no OCR — text layer only).
  */
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { UPLOADS_DIR } from '../../config.js'
 import { describe, expect, it } from 'vitest'
 import request from 'supertest'
 import { createApp } from '../../app.js'
@@ -45,6 +48,27 @@ describe('stories routes', () => {
     expect([...page.body.stories, ...next.body.stories].map((story) => story.id).sort()).toEqual(['first.txt', 'second.txt'])
     expect((await request(app).get('/api/stories').set(auth(owner))).body).toHaveLength(2)
     expect((await request(app).get('/api/stories?cursor=invalid').set(auth(owner))).status).toBe(400)
+  })
+
+  it('advances a cursor taken from an imported legacy filename', async () => {
+    const app = createApp()
+    const token = await registerToken('stories_legacy_cursor')
+    const account = await request(app).get('/api/auth/me').set(auth(token))
+    expect(account.status).toBe(200)
+    const dir = join(UPLOADS_DIR, String(account.body.user.id), 'stories')
+    await mkdir(dir, { recursive: true })
+    const legacyName = 'z'.repeat(125) + '..old.txt'
+    await writeFile(join(dir, legacyName), 'legacy story')
+    const uploaded = await request(app).post('/api/stories/upload').set(auth(token))
+      .attach('file', Buffer.from('current story'), 'current.txt')
+    expect(uploaded.body.ok).toBe(true)
+
+    const first = await request(app).get('/api/stories?limit=1').set(auth(token))
+    expect(first.status).toBe(200)
+    expect(first.body.stories).toEqual([{ id: legacyName, name: legacyName }])
+    const next = await request(app).get('/api/stories').query({ limit: 1, cursor: first.body.nextCursor }).set(auth(token))
+    expect(next.status).toBe(200)
+    expect(next.body).toEqual({ stories: [{ id: 'current.txt', name: 'current.txt' }], nextCursor: null })
   })
 
   it('requires a token on every endpoint (401 without)', async () => {

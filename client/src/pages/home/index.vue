@@ -1,25 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted } from 'vue'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { listIndexedStories, type IndexedStory } from '../../services/ragService'
+import type { IndexedStory } from '../../services/ragService'
+import { useIndexedStoryPages } from '../../composables/useIndexedStoryPages'
 import AppLayout from '../../components/layout/AppLayout.vue'
 import AppIcon from '../../components/ui/AppIcon.vue'
 import Button from '../../components/ui/Button.vue'
 
 const settingsStore = useSettingsStore()
 
-const stories = ref<IndexedStory[]>([])
-const isLoading = ref(false)
+const { stories, nextCursor, isLoading, error, refresh, loadMore } = useIndexedStoryPages()
 
-async function loadStories() {
-  isLoading.value = true
-  try {
-    stories.value = await listIndexedStories()
-  } catch { stories.value = [] }
-  finally { isLoading.value = false }
-}
-
-onMounted(() => { loadStories() })
+onMounted(() => { void refresh() })
 
 function goToSetup(story: IndexedStory) {
   uni.navigateTo({ url: `/pages/character/occupation/index?storyId=${encodeURIComponent(story.storyId)}&storyName=${encodeURIComponent(story.name)}` })
@@ -112,8 +104,16 @@ function goSettings() {
             </view>
           </view>
 
+          <view v-if="error" class="gothic-card empty-card">
+            <text class="empty-hint" role="alert">{{ error }}</text>
+            <button v-if="!nextCursor" class="gothic-btn empty-btn" @click="refresh">重试</button>
+          </view>
+          <button v-if="nextCursor" class="gothic-btn empty-btn" :disabled="isLoading" @click="loadMore">
+            {{ isLoading ? '加载中...' : '加载更多故事' }}
+          </button>
+
           <!-- 空态 -->
-          <view v-else-if="!isLoading" class="gothic-card empty-card">
+          <view v-if="!isLoading && !error && !stories.length" class="gothic-card empty-card">
             <view class="empty-divider ink-divider" />
             <text class="empty-quote">"书架上空无一物..."</text>
             <text class="empty-hint">调查员，请先导入并索引故事文件</text>

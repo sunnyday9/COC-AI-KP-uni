@@ -99,7 +99,11 @@ router.post('/context', (req: AuthRequest, res) => {
 /** GET /api/rag/stories — rag:listStories. */
 router.get('/stories', (req: AuthRequest, res) => {
   try {
-    res.json(ragService.listStories(req.userId as number))
+    const { limit, cursor } = req.query
+    const userId = req.userId as number
+    res.json(limit === undefined && cursor === undefined
+      ? ragService.listStories(userId)
+      : ragService.listIndexedStoryPage(userId, limit, cursor))
   } catch (err) {
     sendError(res, err)
   }

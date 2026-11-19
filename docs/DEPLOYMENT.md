@@ -97,7 +97,7 @@ Nginx（TLS / WebSocket 升级）
 
 ## 5. 数据库
 
-- 启动时按序运行 `server/src/db/migrations.ts` 中的事务迁移，并在 SQLite `PRAGMA user_version` 记录 schema 版本（当前为 8）；fresh install 与无版本号的旧库都会自动升级。
+- 启动时按序运行 `server/src/db/migrations.ts` 中的事务迁移，并在 SQLite `PRAGMA user_version` 记录 schema 版本（当前为 9）；fresh install 与无版本号的旧库都会自动升级。
 - 所有待执行迁移在一个事务中提交。失败会回滚本次升级并在 HTTP 监听前中止启动，错误包含失败版本与修复/恢复建议；比当前服务更新的数据库版本会被拒绝，服务不会尝试降级。
 - 备份：升级前停止服务，备份 `${DATA_DIR}/ai-kp.db`，以及配置的 `UPLOADS_DIR`、`RAG_DATA_DIR`、`DOSSIER_DATA_DIR` 目录；它们是独立路径，不保证位于 `DATA_DIR` 下。`MODELS_DIR` 是可重下载缓存，可按恢复时间目标选择是否备份。schema 迁移没有自动 down migration，回滚需恢复匹配版本的数据库备份。
 - **无需手动迁移**：存量文件系统剧本首次 list 时自动导入 DB 映射（脚本导入已随 #97 / ADR-0008 scripts 退役摘除）。
@@ -135,6 +135,16 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 两个进程会在 HTTP 监听前串行初始化并验证 PostgreSQL 表结构、约束与服务角色权限。`GET /health/ready` 检查该数据库。路由范围与设置行为见 [API 契约](api-contract.md#11-实挂路由组一览与-serversrcappts-对齐9-组)。共享账号与本地 SQLite 各自持有用户和设置，存量迁移留给后续阶段。两网关需保持同一 `JWT_SECRET`，它同时用于 JWT 验证和 BYOK 密钥派生。修改它会使旧 token 和原加密 API Key 失效。
 
 验证时，通过一个网关注册，在另一网关登录，再交叉使用 token 调用 `/api/auth/me` 和读写设置。重启其中任一网关后复查。仓库另提供双网关 HTTP 测试，把 **独立、可销毁** 的 PostgreSQL 测试库连接地址注入 `TEST_SHARED_ACCOUNTS_DATABASE_URL` 后运行 `npm run test --workspace=server -- sharedAccounts.test.ts`。测试角色需能在该库新建临时 schema，测试会写入模拟用户与设置。CI 使用独立的 PostgreSQL 16 容器运行该套件。
+
+### 6.2 双网关私有剧本目录（#114）
+
+在第 6.1 节的两进程中额外注入相同的 `STORY_S3_BUCKET` 和 `STORY_S3_REGION`。自建 S3 兼容服务可设 `STORY_S3_ENDPOINT`（跨主机使用 HTTPS）及 `STORY_S3_FORCE_PATH_STYLE=true`。四个变量均未设置时仍使用第 6.1 节的账号配置。设置任一变量时，启动会检查必填配置。通过 AWS SDK 默认凭据链提供服务角色，可注入 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY` 和可选的 `AWS_SESSION_TOKEN`。存储桶及网关凭据仅限该环境，关闭公开访问，服务角色只需对 `stories/*` 具有 `PutObject`、`GetObject`、`DeleteObject` 权限。两网关使用同一 PostgreSQL schema 和私有桶。
+
+上传经网关的临时目录流式落盘，验证整个 multipart 请求后以已知长度流式写入私有对象。网关不在内存保留完整上传。临时盘应容纳每网关最多 `STORY_UPLOAD_CONCURRENCY`（默认 4）乘 `MAX_UPLOAD_BYTES`（默认 50 MiB）的在途数据，并为文件系统预留空间。异常退出遗留的 `aikp-story-upload-*` 目录可在网关停机后清理。读取及下载接口见 [API 契约](api-contract.md)。
+
+只有写入对象成功并提交 PostgreSQL 事务后，目录才会公开该条目。每次上传拥有新的不可变原文修订。已确认失败会尝试清理该次上传的对象。若提交回执未知或客户端断线，请刷新目录确认后再上传。同一文件名可重复上传并得到不同 ID，上传接口不根据名称或内容去重。提交状态不明、进程崩溃或存储清理失败可能留下孤儿对象。清理孤儿时，应先暂停上传并核对 PostgreSQL 中所有活跃和已删除记录的修订，保留仍被引用的原文。删除先写入墓碑并保留原文修订，以支持后续房间固定修订。请勿按对象年龄批量过期。
+
+共享目录页支持上传、翻页和选中预览。本地首页和多人等待室也按页列出已索引故事。两处通过 SQLite 索引查询目录元数据，首次读取或原子替换索引文件后会重新导入该账号的本地索引清单，包括旧版文件。此阶段的目录提供原文，剧本准备、开局及房间固定原文和制品修订由后续阶段提供。本地 SQLite 和本地文件部署行为不变。`/health/ready` 继续检查 PostgreSQL；应另外用合成文件验证私有对象存储的读写。仓库提供双网关测试，向 `TEST_SHARED_STORIES_DATABASE_URL` 注入独立、可销毁的 PostgreSQL 测试库，并向 `TEST_SHARED_STORIES_S3` 注入独立、可销毁私有桶的 JSON 配置（字段为 `bucket`、`region`、可选 `endpoint`、可选布尔值 `forcePathStyle`、包含 SDK 凭据字段的 `credentials`），随后运行 `npm run test --workspace=server -- sharedStories.test.ts`。测试会写入合成账号、文件和目录元数据，也会列举桶中该测试账号的对象验证清理。
 
 ## 7. 上线检查清单
 

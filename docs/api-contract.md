@@ -72,7 +72,8 @@
 | Method | Path | 说明 |
 |---|---|---|
 | GET | `/api/stories` | 剧本列表。提供 `limit`（1–100）或 `cursor` 时返回 `{stories, nextCursor}`，无参数时返回原数组。 |
-| GET | `/api/stories/:id` | 读取剧本 |
+| GET | `/api/stories/:id` | 读取剧本文本（`{ name, content }`）。共享目录支持 `?preview=1` 返回 `{ name, content, truncated }`。 |
+| GET | `/api/stories/:id/source` | 共享剧本目录启用时，由网关流式返回原始文件附件。 |
 | GET | `/api/stories/:id/rag` | 读取供 RAG 解析的原文（服务端解析，含 OCR） |
 | POST | `/api/stories/upload` | 上传导入（multipart `file`） |
 | DELETE | `/api/stories/:id` | 删除剧本 |
@@ -80,7 +81,9 @@
 - 将返回的 `nextCursor` 用于下一页。上传和剧本准备的并发上限触发 HTTP 503 和 `Retry-After`，同一剧本正在准备时删除或另启准备返回 409。运行参数见 [部署指南](DEPLOYMENT.md)。
 - 支持格式、上传上限（见 §10）与解析细节见 `server/src/routes/stories.routes.ts`、`services/storyService.ts` 和 `rag/storyParsers.ts`。
 
-> 桥接死包装 readStory / readStoryForRag 已于 2026-09-13 退役（#97）：客户端零页面调用方（仅 bridge.test 自引用）。端点现行保留——GET /api/stories/:id/rag 由 e2e dossier journey 直接消费；GET /api/stories/:id 现零非自测消费方（存疑待拍板，#97 票面留档）。
+启用共享剧本目录时，分页结果附加 `canPrepare: false`，故事管理页据此只提供原文浏览、上传和删除。`GET /api/stories/:id/rag` 仅在本地模式挂载。共享目录的读取和下载需验证账号归属，跨账号请求返回 404，下载由网关传输，不返回对象存储 URL。共享目录删除后，列表和读取接口不再返回该条目。重复使用同一文件名上传会获得新 ID 并保留之前的原文修订。
+
+共享预览最多返回 16,000 个 UTF-16 代码单元。纯文本预览从对象存储读取前 64 KiB；需要解析的文档超过 8 MiB 时返回 413，故事管理页提供文本预览，原始附件由通过身份验证的 `GET /api/stories/:id/source` 提供。每网关最多并发四次剧本文本读取，超限返回 503 和 `Retry-After`。
 
 ## 6. 剧本库脚本（Task 4，原 scripts 库）（已退役，#97）
 
@@ -100,7 +103,7 @@
 | DELETE | `/api/rag/index/:scriptId` | 删除索引 |
 | POST | `/api/rag/query` | 检索查询 |
 | POST | `/api/rag/context` | 组装检索上下文（标准管线，无图扩展） |
-| GET | `/api/rag/stories` | 已索引剧本列表 |
+| GET | `/api/rag/stories` | 已索引剧本列表。提供 `limit`（1–100）或 `cursor` 时返回 `{stories, nextCursor}`，按索引时间和故事 ID 降序翻页。无参数仍返回原数组。 |
 | GET | `/api/rag/index/:scriptId` | 索引详情 |
 
 > `/api/rag/story-overview` 已于 2026-09-13 退役（#91 B 桶「全链退役」拍板，#93）：服务端路由 / `ragService.storyOverview` / `vectorStore.getStoryOverview` 与路由自测段一并删除；客户端 bridge 方法已于 #85 删除。本节编号保留不重排（§8 被 server 路由注释引用）。
@@ -114,9 +117,9 @@
 | Bridge 方法 | 后端调用 |
 |---|---|
 | getSettings / setSettings | GET/PUT `/api/settings` |
-| listStories / importStory / deleteStory | `/api/stories*` |
+| listStories / listStoryPage / readStory / importStory / deleteStory | `/api/stories*` |
 | aiChat / aiListModels | POST `/api/ai/chat`、GET `/api/ai/models` |
-| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragGetIndex / ragTestEmbedding | `/api/rag*` |
+| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragListStoryPage / ragGetIndex / ragTestEmbedding | `/api/rag*` |
 | roomCreate / roomList / roomCreateSolo / roomListSolo / roomJoin / roomDetail / roomStart / roomDelete | `/api/rooms*`（`roomListSolo` 由「游戏」调查 hub 用于 solo 续玩） |
 | roomSetTurnWindow | PUT `/api/rooms/:id/settings` |
 | roomBindCharacter / roomSetReady / roomLeave / roomKickMember / roomTransfer | `/api/rooms/:id/*` 房间治理端点 |
@@ -126,7 +129,7 @@
 | connectWs / sendRoomFrame / onRoomFrame / onReconnect | `/ws` 房间帧与客户端重连订阅，具体帧见 §4 |
 | platform | `'h5' \| 'mp-weixin' \| 'app'` |
 
-> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002）；存档/读档语义由房间快照与重新进入房间取代，`/api/saves*` 已按 §7 退役（#60 删除 listSaves/readSave/writeSave bridge 方法，#92 删除服务端链路）。scripts 与 story 读取的桥接死包装（readScript / saveScript / saveScriptToLibrary / deleteScript / readStory / readStoryForRag）与 setImportFilePath 已于 #97 删除（readStoryForRag 对应端点 §5 现行保留，e2e 直接消费）。
+> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002）；存档/读档语义由房间快照与重新进入房间取代，`/api/saves*` 已按 §7 退役（#60 删除 listSaves/readSave/writeSave bridge 方法，#92 删除服务端链路）。原 scripts 桥接方法与 setImportFilePath 已于 #97 删除。故事管理页通过 readStory 调用 §5 的共享预览。readStoryForRag 的 bridge 包装已退役，本地端点由 e2e 直接调用。
 
 ## 10. 通用约定
 
@@ -141,14 +144,14 @@
 
 ## 11. 实挂路由组一览（与 `server/src/app.ts` 对齐，9 组）
 
-`local`（默认）挂载下表 9 组路由及 §4 的 WebSocket。`shared-accounts` 只挂载第 1、2 组 HTTP 路由。两种模式均提供 §12 的健康探针。启动配置见 [部署指南](DEPLOYMENT.md#61-双网关账号预发布环境113)。
+`local`（默认）挂载下表 9 组路由及 §4 的 WebSocket。`shared-accounts` 挂载第 1、2 组 HTTP 路由。配置私有对象存储后，同时挂载第 4 组共享目录路由（原文下载可用，RAG 解析路由留在本地模式）。两种模式均提供 §12 的健康探针。启动配置见 [部署指南](DEPLOYMENT.md#61-双网关账号预发布环境113)。
 
 | # | 挂载路径 | 路由文件 | 端点（Path 级） | 导览 |
 |---|---|---|---|---|
 | 1 | `/api/auth` | `auth.routes.ts` | POST `/register`、POST `/login`、GET `/me` | §1 |
 | 2 | `/api/settings` | `settings.routes.ts` | GET `/`、PUT `/` | §2 |
 | 3 | `/api/ai` | `ai.routes.ts` | POST `/chat`、GET `/models` | §3 |
-| 4 | `/api/stories` | `stories.routes.ts` | GET `/`、POST `/upload`、GET `/:id`、GET `/:id/rag`、DELETE `/:id` | §5 |
+| 4 | `/api/stories` | `stories.routes.ts`（本地）、`sharedStories.routes.ts`（共享） | GET `/`、POST `/upload`、GET `/:id`、DELETE `/:id`；本地 GET `/:id/rag`，共享 GET `/:id/source` | §5 |
 | 5 | `/api/rag` | `rag.routes.ts` | GET `/health`、POST `/test-embedding`、POST `/index`、DELETE `/index/:scriptId`、POST `/query`、POST `/context`、GET `/stories`、GET `/index/:scriptId` | §8 |
 | 6 | `/api/dossier` | `dossier.routes.ts` | GET `/`、POST `/:scriptId/generate` | 档案 workflow（与 rag 并行）；叙述见 ONBOARDING-GUIDE §7 |
 | 7 | `/api/rooms` | `rooms.routes.ts` | POST `/`、GET `/`、POST `/solo`、GET `/solo`、POST `/join`、GET `/:id`、POST `/:id/start`・`/:id/character`・`/:id/ready`・`/:id/leave`・`/:id/transfer`、DELETE `/:id`、DELETE `/:id/members/:userId` | 房间治理 REST（帧协议见 §4） |

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import { migrateDatabase } from './migrations.js'
+import { CURRENT_SCHEMA_VERSION, migrateDatabase } from './migrations.js'
 
 const LEGACY_SCHEMA_SQL = readFileSync(new URL('../../test/fixtures/db/legacy-v0.sql', import.meta.url), 'utf8')
 const VERSIONLESS_CURRENT_SQL = readFileSync(new URL('../../test/fixtures/db/versionless-current.sql', import.meta.url), 'utf8')
@@ -78,12 +78,12 @@ describe('SQLite schema migrations', () => {
       migrateDatabase(database)
       migrateDatabase(database)
 
-      expect(userVersion(database)).toBe(8)
+      expect(userVersion(database)).toBe(CURRENT_SCHEMA_VERSION)
       const tables = database
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .all()
         .map((row) => (row as { name: string }).name)
-      expect(tables).toEqual(['characters', 'kp_wire_samples', 'room_members', 'rooms', 'settings', 'stories', 'story_artifact_locations', 'users'])
+      expect(tables).toEqual(['characters', 'indexed_story_catalog', 'indexed_story_catalog_state', 'kp_wire_samples', 'room_members', 'rooms', 'settings', 'stories', 'story_artifact_locations', 'users'])
       expect(columns(database, 'stories')).toContain('file_path')
       expect(columns(database, 'rooms')).toContain('kind')
       expect(columns(database, 'rooms')).toContain('story_owner_id')
@@ -102,7 +102,7 @@ describe('SQLite schema migrations', () => {
       database.exec("UPDATE rooms SET owner_id = 12 WHERE room_id = 'room-old'")
       migrateDatabase(database)
 
-      expect(userVersion(database)).toBe(8)
+      expect(userVersion(database)).toBe(CURRENT_SCHEMA_VERSION)
       expect(columns(database, 'stories')).toContain('file_path')
       expect(columns(database, 'rooms')).toContain('kind')
       expect(columns(database, 'rooms')).toContain('story_owner_id')
@@ -145,7 +145,7 @@ describe('SQLite schema migrations', () => {
       migrateDatabase(database)
       migrateDatabase(database)
 
-      expect(userVersion(database)).toBe(8)
+      expect(userVersion(database)).toBe(CURRENT_SCHEMA_VERSION)
       expect(database.prepare("SELECT file_path FROM stories WHERE story_id = 'story-current'").get())
         .toEqual({ file_path: '/legacy/story.txt' })
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'uq_kp_wire_samples_room_seq'").get())
@@ -193,7 +193,7 @@ describe('SQLite schema migrations', () => {
     try {
       database.exec('PRAGMA user_version = 99')
 
-      expect(() => migrateDatabase(database)).toThrow(/version 99.*newer.*8/i)
+      expect(() => migrateDatabase(database)).toThrow(new RegExp(`version 99.*newer.*${CURRENT_SCHEMA_VERSION}`, 'i'))
       expect(userVersion(database)).toBe(99)
     } finally {
       database.close()
@@ -215,7 +215,7 @@ describe('SQLite schema migrations', () => {
       for (const directory of [freshDir, legacyDir]) {
         const database = new DatabaseSync(path.join(directory, 'ai-kp.db'))
         try {
-          expect(userVersion(database)).toBe(8)
+          expect(userVersion(database)).toBe(CURRENT_SCHEMA_VERSION)
         } finally {
           database.close()
         }
@@ -238,7 +238,7 @@ describe('SQLite schema migrations', () => {
 
       expect(startup.ready).toBe(false)
       expect(startup.code).not.toBe(0)
-      expect(startup.output).toMatch(/version 99.*newer.*8/i)
+      expect(startup.output).toMatch(new RegExp(`version 99.*newer.*${CURRENT_SCHEMA_VERSION}`, 'i'))
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

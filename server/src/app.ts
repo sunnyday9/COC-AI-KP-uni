@@ -14,6 +14,9 @@ import authRoutes from './routes/auth.routes.js'
 import settingsRoutes from './routes/settings.routes.js'
 import aiRoutes from './routes/ai.routes.js'
 import storiesRoutes from './routes/stories.routes.js'
+import { createSharedStoriesRouter } from './routes/sharedStories.routes.js'
+import { createSharedStoryCatalog } from './services/sharedStoryCatalog.js'
+import { getStoryObjectStore } from './services/storyObjectStorage.js'
 import ragRoutes from './routes/rag.routes.js'
 import dossierRoutes from './routes/dossier.routes.js'
 import roomsRoutes from './routes/rooms.routes.js'
@@ -52,6 +55,8 @@ export function createApp(): Express {
 
   app.use('/api/auth', authRoutes)
   app.use('/api/settings', settingsRoutes)
+  const storyStorage = sharedAccounts ? getStoryObjectStore() : undefined
+  if (storyStorage) app.use('/api/stories', createSharedStoriesRouter(createSharedStoryCatalog(storyStorage)))
   if (!sharedAccounts) {
     app.use('/api/ai', aiRoutes)
     app.use('/api/stories', storiesRoutes)
@@ -97,7 +102,7 @@ async function startServer(): Promise<void> {
   assertRuntimeConfig()
   // Apply the configured storage schema before accepting traffic. A failed or
   // unsupported migration must abort startup rather than fail on first use.
-  if (sharedAccounts) await initializePostgres()
+  if (sharedAccounts) await initializePostgres(Boolean(getStoryObjectStore()))
   else getDb()
   const httpServer = createApp().listen(PORT, () => {
     logger.info(`COC AI KP server listening on http://localhost:${PORT}`)

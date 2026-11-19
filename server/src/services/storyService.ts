@@ -27,7 +27,8 @@ import { getDb } from '../db/index.js'
 import { assertId, assertStoredFilePath, generateFilePath, isInternalUuidFileName, sanitizeFilename } from '../utils/fileNames.js'
 import { readFileOr404, unlinkOr404 } from '../utils/fsSafe.js'
 import { assertPathInDir, resolveFileInDir } from '../utils/pathSafety.js'
-import { BadRequestError, NotFoundError } from '../utils/errors.js'
+import { NotFoundError } from '../utils/errors.js'
+import { parseStoryPage, formatStoryPage, type StoryPageRow } from './storyPagination.js'
 import { BoundedCache } from '../utils/boundedCache.js'
 
 /** Story extensions — mirrors STORY_EXTENSIONS in fileHandlers.cjs verbatim. */
@@ -162,28 +163,12 @@ export async function listStories(userId: number): Promise<StoryListItem[]> {
   return rows.map((r) => ({ name: r.name, id: r.story_id }))
 }
 
-function decodeStoryCursor(cursor: unknown): [number, string] | null {
-  if (cursor === undefined) return null
-  try {
-    if (typeof cursor !== 'string' || !/^[A-Za-z0-9_-]{1,800}$/.test(cursor)) throw new Error()
-    const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8'))
-    if (!Array.isArray(value) || value.length !== 2 || !Number.isSafeInteger(value[0]) || typeof value[1] !== 'string' || !value[1]) {
-      throw new Error()
-    }
-    return [value[0], value[1]]
-  } catch {
-    throw new BadRequestError('invalid story cursor')
-  }
-}
-
 export async function listStoryPage(
   userId: number,
   rawLimit: unknown,
   rawCursor: unknown,
 ): Promise<{ stories: StoryListItem[]; nextCursor: string | null }> {
-  const limit = rawLimit === undefined ? 50 : typeof rawLimit === 'string' && /^\d{1,3}$/.test(rawLimit) ? Number(rawLimit) : 0
-  if (limit < 1 || limit > 100) throw new BadRequestError('story limit must be between 1 and 100')
-  const cursor = decodeStoryCursor(rawCursor)
+  const { limit, cursor } = parseStoryPage(rawLimit, rawCursor)
   await syncLegacyStories(userId)
   const query = getDb().prepare(`
     SELECT story_id, name, created_at FROM stories WHERE user_id = ?
@@ -191,14 +176,7 @@ export async function listStoryPage(
     ORDER BY created_at DESC, story_id DESC LIMIT ?
   `)
   const bounds = cursor ? [userId, ...cursor, limit + 1] : [userId, limit + 1]
-  const rows = query.all(...bounds) as { story_id: string; name: string; created_at: number }[]
-  const last = rows[limit - 1]
-  return {
-    stories: rows.slice(0, limit).map((row) => ({ id: row.story_id, name: row.name })),
-    nextCursor: rows.length > limit && last
-      ? Buffer.from(JSON.stringify([last.created_at, last.story_id])).toString('base64url')
-      : null,
-  }
+  return formatStoryPage(query.all(...bounds) as unknown as StoryPageRow[], limit)
 }
 
 /** file:readStory — raw text for txt/md/json, parsed text for pdf/docx/epub/html. */
@@ -208,33 +186,23 @@ export async function readStory(userId: number, id: string): Promise<{ name: str
   // fs 只用 DB 内部 file_path；就近守卫：必须落在 storiesDir 内。
   const safePath = assertPathInDir(storiesDir(userId), resolveFileInDir(storiesDir(userId), filePath, 'story file'), 'story file (sink)')
   const ext = path.extname(safePath).toLowerCase()
-  if (ext === '.pdf') {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    const pdfData = await pdfParse(dataBuffer)
-    return { name, content: pdfData.text }
-  }
-  if (['.docx', '.epub'].includes(ext)) {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    try {
-      const storyParsers = await import('../rag/storyParsers.js')
-      const text = await storyParsers.parseByExtension(ext, dataBuffer)
-      return { name, content: text || '' }
-    } catch {
-      return { name, content: '' }
-    }
-  }
-  if (['.html', '.htm'].includes(ext)) {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    try {
-      const storyParsers = await import('../rag/storyParsers.js')
-      const text = await storyParsers.parseByExtension(ext, dataBuffer.toString('utf-8'))
-      return { name, content: text || '' }
-    } catch {
-      return { name, content: '' }
-    }
-  }
   const dataBuffer = await readFileOr404(safePath, 'story')
-  return { name, content: dataBuffer.toString('utf-8') }
+  return { name, content: await parseStoryContent(ext, dataBuffer) }
+}
+
+/** Parse a source for the existing story read API without running preparation. */
+export async function parseStoryContent(ext: string, dataBuffer: Buffer): Promise<string> {
+  if (ext === '.pdf') return (await pdfParse(dataBuffer)).text
+  if (['.docx', '.epub', '.html', '.htm'].includes(ext)) {
+    try {
+      const storyParsers = await import('../rag/storyParsers.js')
+      const source = ['.html', '.htm'].includes(ext) ? dataBuffer.toString('utf-8') : dataBuffer
+      return await storyParsers.parseByExtension(ext, source) || ''
+    } catch {
+      return ''
+    }
+  }
+  return dataBuffer.toString('utf-8')
 }
 
 /**
