@@ -5,6 +5,7 @@ import { NotFoundError, UpstreamError } from '../utils/errors.js'
 import { sanitizeFilename } from '../utils/fileNames.js'
 import { STORY_EXTENSIONS, parseStoryContent } from './storyService.js'
 import { parseStoryPage, formatStoryPage, type StoryPageRow } from './storyPagination.js'
+import { formatPreparationStatus, latestPreparationJoin, STORY_PREPARATION_ENABLED } from './sharedStoryPreparation.js'
 import type { getStoryObjectStore } from './storyObjectStorage.js'
 
 type ObjectStore = NonNullable<ReturnType<typeof getStoryObjectStore>>
@@ -26,7 +27,7 @@ interface StoryRecord {
   extension: string
 }
 
-function sourceKey(ownerId: number, revision: string): string {
+export function sourceKey(ownerId: number | string, revision: string): string {
   return `stories/${ownerId}/sources/${revision}`
 }
 
@@ -127,12 +128,23 @@ export function createSharedStoryCatalog(storage: ObjectStore) {
 
     async listPage(ownerId: number, rawLimit: unknown, rawCursor: unknown) {
       const { limit, cursor } = parseStoryPage(rawLimit, rawCursor)
-      const result = await getPostgresPool().query<StoryPageRow>(`
-        SELECT story_id, name, created_at FROM story_catalog WHERE owner_id = $1 AND deleted_at IS NULL
-        ${cursor ? 'AND (created_at, story_id) < ($3, $4)' : ''}
-        ORDER BY created_at DESC, story_id DESC LIMIT $2
+      const prepare = STORY_PREPARATION_ENABLED
+      const result = await getPostgresPool().query<StoryPageRow & Parameters<typeof formatPreparationStatus>[0]>(`
+        SELECT catalog.story_id, catalog.name, catalog.created_at
+          ${prepare ? ', catalog.active_preparation_revision, preparation.*' : ''}
+        FROM story_catalog catalog ${prepare ? latestPreparationJoin : ''}
+        WHERE catalog.owner_id = $1 AND catalog.deleted_at IS NULL
+        ${cursor ? 'AND (catalog.created_at, catalog.story_id) < ($3, $4)' : ''}
+        ORDER BY catalog.created_at DESC, catalog.story_id DESC LIMIT $2
       `, cursor ? [ownerId, limit + 1, ...cursor] : [ownerId, limit + 1]).catch((error) => { throw postgresError(error) })
-      return { ...formatStoryPage(result.rows, limit), canPrepare: false }
+      const page = formatStoryPage(result.rows, limit)
+      if (!prepare) return { ...page, canPrepare: false }
+      return {
+        ...page,
+        canPrepare: true,
+        preparationMode: 'durable',
+        stories: page.stories.map((story, index) => ({ ...story, preparation: formatPreparationStatus(result.rows[index]!) })),
+      }
     },
 
     openSource,

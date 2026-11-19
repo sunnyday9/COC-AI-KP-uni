@@ -215,34 +215,21 @@ export async function readStoryForRag(userId: number, id: string): Promise<{ nam
   const { filePath, name } = await resolveStoryFilePath(userId, id)
   const safePath = assertPathInDir(storiesDir(userId), resolveFileInDir(storiesDir(userId), filePath, 'story file'), 'story file (sink)')
   const ext = path.extname(safePath).toLowerCase()
-  if (['.docx', '.epub'].includes(ext)) {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    try {
-      const storyParsers = await import('../rag/storyParsers.js')
-      const text = await storyParsers.parseByExtension(ext, dataBuffer)
-      return { name, content: text || '' }
-    } catch {
-      return { name, content: '' }
-    }
-  }
-  if (['.html', '.htm'].includes(ext)) {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    try {
-      const storyParsers = await import('../rag/storyParsers.js')
-      const text = await storyParsers.parseByExtension(ext, dataBuffer.toString('utf-8'))
-      return { name, content: text || '' }
-    } catch {
-      return { name, content: '' }
-    }
-  }
-  if (ext !== '.pdf') {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    return { name, content: dataBuffer.toString('utf-8') }
-  }
   const dataBuffer = await readFileOr404(safePath, 'story')
-  const storyParsers = await import('../rag/storyParsers.js')
-  const mainText = await storyParsers.parsePdfWithOcr(dataBuffer)
-  return { name, content: mainText }
+  return { name, content: await parseStoryContentForPreparation(ext, dataBuffer) }
+}
+
+/** Shared source parsing for local indexing and the durable worker. */
+export async function parseStoryContentForPreparation(ext: string, dataBuffer: Buffer, requireComplete = false): Promise<string> {
+  if (ext === '.pdf') {
+    const { parsePdfWithOcr } = await import('../rag/storyParsers.js')
+    return parsePdfWithOcr(dataBuffer, { requireComplete })
+  }
+  if (ext === '.epub' && requireComplete) {
+    const { parseEpub } = await import('../rag/storyParsers.js')
+    return parseEpub(dataBuffer, true)
+  }
+  return parseStoryContent(ext, dataBuffer)
 }
 
 /**

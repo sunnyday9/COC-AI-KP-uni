@@ -6,6 +6,7 @@ import type { IndexedStory } from '../../../shared/types/bridge'
 export function useIndexedStoryPages() {
   const stories = ref<IndexedStory[]>([])
   const nextCursor = ref<string | null>(null)
+  const canStartInvestigation = ref(true)
   const isLoading = ref(false)
   const error = ref<string | null>(null)
   let revision = 0
@@ -19,6 +20,7 @@ export function useIndexedStoryPages() {
       if (request !== revision) return
       stories.value = cursor ? [...stories.value, ...page.stories] : page.stories
       nextCursor.value = page.nextCursor
+      canStartInvestigation.value = page.canStartInvestigation !== false
     } catch {
       if (request === revision) error.value = '无法加载已索引故事'
     } finally {
@@ -36,5 +38,5 @@ export function useIndexedStoryPages() {
     if (nextCursor.value && !isLoading.value) await loadPage(nextCursor.value)
   }
 
-  return { stories, nextCursor, isLoading, error, refresh, loadMore }
+  return { stories, nextCursor, canStartInvestigation, isLoading, error, refresh, loadMore }
 }

@@ -3,6 +3,7 @@ import { Readable } from 'node:stream'
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
@@ -54,6 +55,22 @@ function createObjectStore({ Bucket, ...options }: ObjectStoreConfig) {
         throw new UpstreamError('story object upload failed')
       } finally {
         stream.destroy()
+      }
+    },
+
+    async putArtifact(key: string, bytes: Buffer, sha256: string, signal: AbortSignal): Promise<void> {
+      const abortSignal = AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+      try {
+        await s3.send(new PutObjectCommand({
+          Bucket, Key: key, Body: bytes, ContentLength: bytes.length, IfNoneMatch: '*',
+          Metadata: { sha256 }, ContentType: 'application/octet-stream',
+        }), { abortSignal })
+        const object = await s3.send(new HeadObjectCommand({ Bucket, Key: key }), { abortSignal })
+        if (object.ContentLength !== bytes.length || object.Metadata?.sha256 !== sha256) {
+          throw new Error('artifact verification failed')
+        }
+      } catch {
+        throw new UpstreamError('prepared story object upload failed')
       }
     },
 

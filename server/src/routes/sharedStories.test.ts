@@ -1,17 +1,24 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { createServer as createHttpServer, type ServerResponse } from 'node:http'
+import { createServer as createHttpServer, request as proxyRequest, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3'
+import { DeleteObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { Pool } from 'pg'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { getPostgresPool } from '../db/postgres.js'
+import { loadActivePreparedStory } from '../services/preparedStoryStorage.js'
+import { makePdfWithTextAndEmbeddedImages } from '../../test/helpers/pdfFixture.js'
 
 const databaseUrl = process.env.TEST_SHARED_STORIES_DATABASE_URL
 const s3Fixture = process.env.TEST_SHARED_STORIES_S3
+const fixtureObjectStore = JSON.parse(s3Fixture ?? '{}')
+const fixtureEndpoint = URL.parse(fixtureObjectStore.endpoint ?? '')
+const canInjectStorageFault = fixtureObjectStore.forcePathStyle === true
+  && fixtureEndpoint?.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(fixtureEndpoint.hostname)
 const secret = randomBytes(32).toString('hex')
 const password = randomBytes(15).toString('hex')
 const children: ChildProcess[] = []
@@ -33,9 +40,9 @@ async function freePort(): Promise<number> {
   })
 }
 
-async function startGateway(port: number, dir: string, endpointOverride?: string): Promise<string> {
+function startProcess(entry: string, dir: string, endpointOverride?: string, prepare = false, port?: number): ChildProcess {
   const objectStore = JSON.parse(s3Fixture!)
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/app.ts'], {
+  const child = spawn(process.execPath, ['--import', 'tsx', entry], {
     env: {
       ...process.env,
       TEST_SHARED_STORIES_DATABASE_URL: undefined,
@@ -44,7 +51,10 @@ async function startGateway(port: number, dir: string, endpointOverride?: string
       DATABASE_URL: databaseUrl,
       JWT_SECRET: secret,
       NODE_ENV: 'production',
-      PORT: String(port),
+      STORY_PREPARATION_ENABLED: prepare ? '1' : '0',
+      PORT: port === undefined ? undefined : String(port),
+      MOCK_AI: '1',
+      STORY_PREPARATION_LEASE_MS: '3000',
       DATA_DIR: join(storageDir, dir, 'data'),
       UPLOADS_DIR: join(storageDir, dir, 'uploads'),
       MAX_UPLOAD_BYTES: String(1024 * 1024),
@@ -57,8 +67,22 @@ async function startGateway(port: number, dir: string, endpointOverride?: string
       AWS_SESSION_TOKEN: undefined,
     },
     stdio: 'ignore',
+    windowsHide: true,
   })
   children.push(child)
+  return child
+}
+
+async function stopProcess(child: ChildProcess, signal?: NodeJS.Signals): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await new Promise<void>((resolve) => {
+    child.once('exit', () => resolve())
+    child.kill(signal)
+  })
+}
+
+async function startGateway(port: number, dir: string, endpointOverride?: string, prepare = false): Promise<string> {
+  const child = startProcess('src/app.ts', dir, endpointOverride, prepare, port)
   const url = `http://127.0.0.1:${port}`
   for (let i = 0; i < 100 && child.exitCode === null; i++) {
     const response = await fetch(`${url}/health/ready`, { signal: AbortSignal.timeout(1_000) }).catch(() => null)
@@ -83,7 +107,7 @@ async function account(url: string) {
   return response.body as { token: string; user: { id: number } }
 }
 
-function upload(url: string, token: string, name: string, content: string) {
+function upload(url: string, token: string, name: string, content: BlobPart) {
   const form = new FormData()
   form.append('file', new Blob([content]), name)
   return call(url, '/api/stories/upload', token, 'POST', form)
@@ -92,6 +116,15 @@ function upload(url: string, token: string, name: string, content: string) {
 describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP gateways', () => {
   beforeAll(async () => {
     storageDir = await mkdtemp(join(tmpdir(), 'aikp-shared-story-http-'))
+    const { bucket, region, endpoint, forcePathStyle, credentials } = JSON.parse(s3Fixture!)
+    vi.stubEnv('DATABASE_URL', databaseUrl)
+    vi.stubEnv('STORY_S3_BUCKET', bucket)
+    vi.stubEnv('STORY_S3_REGION', region)
+    vi.stubEnv('STORY_S3_ENDPOINT', endpoint)
+    vi.stubEnv('STORY_S3_FORCE_PATH_STYLE', forcePathStyle === undefined ? undefined : String(forcePathStyle))
+    vi.stubEnv('AWS_ACCESS_KEY_ID', credentials.accessKeyId)
+    vi.stubEnv('AWS_SECRET_ACCESS_KEY', credentials.secretAccessKey)
+    vi.stubEnv('AWS_SESSION_TOKEN', undefined)
     const firstPort = await freePort()
     const secondPort = await freePort()
     const gateways = await Promise.all([startGateway(firstPort, 'first'), startGateway(secondPort, 'second')])
@@ -100,13 +133,9 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
   }, 25_000)
 
   afterAll(async () => {
-    await Promise.all(children.map((child) => {
-      if (child.exitCode !== null || child.signalCode !== null) return
-      return new Promise<void>((resolve) => {
-        child.once('exit', () => resolve())
-        child.kill()
-      })
-    }))
+    await Promise.all(children.map((child) => stopProcess(child)))
+    await getPostgresPool().end()
+    vi.unstubAllEnvs()
     if (storageDir) await rm(storageDir, { recursive: true, force: true })
   })
 
@@ -278,4 +307,185 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     expect((await call(second, '/api/stories/unavailable.txt', owner.token)).body.content).toBe('retry source')
   }, 25_000)
 
+
+  it('queues preparation through one gateway and restores its private status on another', async () => {
+    const gateway = await startGateway(await freePort(), 'preparation', undefined, true)
+    const otherGateway = await startGateway(await freePort(), 'preparation-second', undefined, true)
+    const owner = await account(gateway)
+    const other = await account(otherGateway)
+    expect((await upload(gateway, owner.token, 'prepare.txt', 'fixture')).status).toBe(200)
+    const route = '/api/stories/prepare.txt/preparation'
+    const queued = await call(gateway, route, owner.token, 'POST')
+    expect(queued).toEqual({
+      status: 202,
+      body: { activeRevision: null, job: { id: expect.any(String), version: expect.any(String), state: 'queued', stage: 'queued', percent: 0 } },
+    })
+    expect(await call(otherGateway, route, owner.token)).toEqual({ status: 200, body: queued.body })
+    expect((await call(otherGateway, route, other.token)).status).toBe(404)
+    expect((await call(otherGateway, route, other.token, 'POST')).status).toBe(404)
+    expect((await call(otherGateway, route)).status).toBe(401)
+    await call(gateway, '/api/stories/prepare.txt', owner.token, 'DELETE')
+  }, 30_000)
+
+  it('recovers after a killed preparation worker and publishes a single playable result', async () => {
+    const gateway = await startGateway(await freePort(), 'recovery-first', undefined, true)
+    const otherGateway = await startGateway(await freePort(), 'recovery-second', undefined, true)
+    const owner = await account(gateway)
+    const fixture = await readFile(new URL('../../../e2e/fixtures/demo-story.txt', import.meta.url), 'utf8')
+    expect((await upload(gateway, owner.token, 'library.txt', fixture)).status).toBe(200)
+    const route = '/api/stories/library.txt/preparation'
+    const queued = await call(gateway, route, owner.token, 'POST')
+    expect(queued.status).toBe(202)
+    expect((await call(otherGateway, '/api/rag/stories?limit=2', owner.token)).body.stories).toEqual([])
+
+    const stalledSource = createHttpServer((_req, _res) => {})
+    await new Promise<void>((resolve) => { stalledSource.listen(0, '127.0.0.1', resolve) })
+    const address = stalledSource.address()
+    if (!address || typeof address === 'string') throw new Error('could not start storage boundary fault')
+    const stalled = startProcess('src/workers/storyPreparation.ts', 'crash', `http://127.0.0.1:${address.port}`, true)
+    try {
+      await expect.poll(async () => (await call(otherGateway, route, owner.token)).body.job?.stage, { timeout: 8_000 }).toBe('read')
+      expect((await call(gateway, route, owner.token, 'POST')).body.job.id).toBe(queued.body.job.id)
+      await stopProcess(stalled, 'SIGKILL')
+    } finally {
+      stalledSource.closeAllConnections()
+      await new Promise<void>((resolve) => { stalledSource.close(() => resolve()) })
+    }
+
+    const recoveryA = startProcess('src/workers/storyPreparation.ts', 'recovery-a', undefined, true)
+    const recoveryB = startProcess('src/workers/storyPreparation.ts', 'recovery-b', undefined, true)
+    await expect.poll(async () => (await call(otherGateway, route, owner.token)).body.job?.state, { timeout: 15_000 }).toBe('complete')
+    const ready = await call(otherGateway, route, owner.token)
+    const other = await account(otherGateway)
+    const readActive = (userId: number) => loadActivePreparedStory(userId, 'library.txt', AbortSignal.timeout(5_000))
+    await expect(readActive(other.user.id)).rejects.toThrow('prepared story not found')
+    const prepared = await readActive(owner.user.id)
+    expect(prepared).toMatchObject({
+      revision: ready.body.activeRevision,
+      sourceRevision: expect.any(String),
+      sourceText: fixture.trim(),
+      index: { scriptId: 'library.txt', chunkCount: expect.any(Number) },
+      dossier: { scriptId: 'library.txt', sourceRevision: ready.body.activeRevision, quality: { degraded: false } },
+      gaps: { scriptId: 'library.txt', sourceRevision: ready.body.activeRevision, storyChars: fixture.trim().length },
+    })
+    expect(prepared.sourceRevision).not.toBe(prepared.revision)
+    expect(prepared.gaps.sceneAnchors.find((scene) => scene.id === 'scene_archive')?.matched).toBe(true)
+    expect(prepared.index.docs[0]?.content).toContain('旧图书馆')
+    expect(ready.body).toEqual({
+      activeRevision: expect.any(String),
+      job: { id: queued.body.job.id, version: expect.any(String), state: 'complete', stage: 'complete', percent: 100 },
+    })
+    expect((await call(gateway, '/api/stories?limit=2', owner.token)).body.stories).toEqual([
+      { id: 'library.txt', name: 'library.txt', preparation: ready.body },
+    ])
+    expect((await call(gateway, '/api/rag/stories?limit=2', owner.token)).body.stories).toEqual([
+      { storyId: 'library.txt', name: 'library.txt', indexedAt: expect.any(Number), chunkCount: expect.any(Number) },
+    ])
+    const { bucket, ...config } = JSON.parse(s3Fixture!)
+    const s3 = new S3Client(config)
+    try {
+      const prefix = `stories/${owner.user.id}/prepared/`
+      const listed = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }))
+      expect(listed.Contents?.map(({ Key }) => Key).sort()).toEqual(
+        ['dossier', 'gaps', 'index', 'sourceText'].map((type) => prefix + ready.body.activeRevision + '/' + type),
+      )
+      const key = prefix + prepared.revision + '/gaps'
+      const mismatchedGaps = Buffer.from(JSON.stringify({ ...prepared.gaps, sourceRevision: randomUUID() }))
+      const sha256 = createHash('sha256').update(mismatchedGaps).digest('hex')
+      // Simulate a repair that leaves a valid digest for the wrong source anchors.
+      await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: mismatchedGaps, Metadata: { sha256 } }))
+      await getPostgresPool().query(`
+        UPDATE story_preparation_revisions SET objects = jsonb_set(objects, '{gaps}', $2::jsonb) WHERE revision = $1
+      `, [prepared.revision, JSON.stringify({ size: mismatchedGaps.length, sha256 })])
+      await expect(readActive(owner.user.id)).rejects.toThrow('prepared story objects are inconsistent')
+      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }))
+      await expect(readActive(owner.user.id)).rejects.toThrow('prepared story object read failed')
+    } finally {
+      s3.destroy()
+      await Promise.all([stopProcess(recoveryA), stopProcess(recoveryB)])
+    }
+  }, 40_000)
+
+  it.skipIf(!canInjectStorageFault)('keeps a previously prepared story ready when a new revision fails to publish its anchors', async () => {
+    const gateway = await startGateway(await freePort(), 'partial-gateway', undefined, true)
+    const owner = await account(gateway)
+    const fixture = await readFile(new URL('../../../e2e/fixtures/demo-story.txt', import.meta.url), 'utf8')
+    expect((await upload(gateway, owner.token, 'library.txt', fixture)).status).toBe(200)
+    const route = '/api/stories/library.txt/preparation'
+    expect((await call(gateway, route, owner.token, 'POST')).status).toBe(202)
+    const worker = startProcess('src/workers/storyPreparation.ts', 'baseline-worker', undefined, true)
+    try {
+      await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.state, { timeout: 10_000 }).toBe('complete')
+    } finally {
+      await stopProcess(worker)
+    }
+    const previous = (await call(gateway, route, owner.token)).body
+    const readyStories = await call(gateway, '/api/rag/stories?limit=2', owner.token)
+    const queued = await call(gateway, route, owner.token, 'POST')
+    expect(queued.body).toEqual({
+      activeRevision: previous.activeRevision,
+      job: { id: expect.any(String), version: expect.any(String), state: 'queued', stage: 'queued', percent: 0 },
+    })
+
+    const { endpoint } = JSON.parse(s3Fixture!)
+    let rejectedAnchorWrites = 0
+    const storage = createHttpServer((request, response) => {
+      const url = new URL(request.url!, endpoint)
+      if (request.method === 'PUT' && url.pathname.endsWith('/gaps')) {
+        rejectedAnchorWrites++
+        request.resume()
+        response.writeHead(503).end()
+        return
+      }
+      const upstream = proxyRequest(url, {
+        method: request.method, headers: request.headers,
+      }, (reply) => {
+        response.writeHead(reply.statusCode ?? 502, reply.headers)
+        reply.pipe(response)
+      })
+      upstream.on('error', () => response.writeHead(502).end())
+      request.pipe(upstream)
+    })
+    await new Promise<void>((resolve) => { storage.listen(0, '127.0.0.1', resolve) })
+    const address = storage.address()
+    if (!address || typeof address === 'string') throw new Error('could not start storage boundary fault')
+    const partial = startProcess('src/workers/storyPreparation.ts', 'partial-worker', `http://127.0.0.1:${address.port}`, true)
+    try {
+      await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.state, { timeout: 10_000 }).toBe('failed')
+      expect((await call(gateway, route, owner.token)).body).toEqual({
+        activeRevision: previous.activeRevision,
+        job: { id: queued.body.job.id, version: expect.any(String), state: 'failed', stage: 'publish_failed', percent: 90 },
+      })
+      expect(rejectedAnchorWrites).toBe(1)
+      expect(await call(gateway, '/api/rag/stories?limit=2', owner.token)).toEqual(readyStories)
+      const current = await loadActivePreparedStory(owner.user.id, 'library.txt', AbortSignal.timeout(5_000))
+      expect(current.revision).toBe(previous.activeRevision)
+      expect(current.sourceText).toBe(fixture.trim())
+    } finally {
+      await stopProcess(partial)
+      storage.closeAllConnections()
+      await new Promise<void>((resolve) => { storage.close(() => resolve()) })
+    }
+  }, 35_000)
+
+  it('keeps a partially OCR’d PDF out of the prepared story catalog', async () => {
+    const gateway = await startGateway(await freePort(), 'ocr-gateway', undefined, true)
+    const owner = await account(gateway)
+    const markers = Array.from({ length: 33 }, (_, index) => String(index + 1).padStart(2, '0'))
+    const pdf = await makePdfWithTextAndEmbeddedImages('A readable source section', [markers])
+    expect((await upload(gateway, owner.token, 'partial.pdf', new Uint8Array(pdf))).status).toBe(200)
+    const route = '/api/stories/partial.pdf/preparation'
+    const queued = await call(gateway, route, owner.token, 'POST')
+    const worker = startProcess('src/workers/storyPreparation.ts', 'ocr-worker', undefined, true)
+    try {
+      await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.state, { timeout: 12_000 }).toBe('failed')
+      expect((await call(gateway, route, owner.token)).body).toEqual({
+        activeRevision: null,
+        job: { id: queued.body.job.id, version: expect.any(String), state: 'failed', stage: 'source_failed', percent: 5 },
+      })
+      expect((await call(gateway, '/api/rag/stories?limit=2', owner.token)).body.stories).toEqual([])
+    } finally {
+      await stopProcess(worker)
+    }
+  }, 30_000)
 })

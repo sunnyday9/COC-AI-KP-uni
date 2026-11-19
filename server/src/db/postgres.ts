@@ -3,6 +3,7 @@ import { logger } from '../utils/logging.js'
 import { IncompatiblePostgresAccountSchemaError, initializePostgresAccounts } from './postgresAccountsSchema.js'
 
 import { initializePostgresStories } from './postgresStoriesSchema.js'
+import { initializePostgresStoryPreparation } from './postgresStoryPreparationSchema.js'
 
 let pool: Pool | undefined
 
@@ -47,12 +48,13 @@ export async function inPostgresTransaction<T>(run: (client: PoolClient) => Prom
 }
 
 /** Gate concurrent gateway startup on the same transactional schema installation. */
-export async function initializePostgres(enableStories = false): Promise<void> {
+export async function initializePostgres(enableStories = false, enablePreparation = false): Promise<void> {
   try {
     await inPostgresTransaction(async (client) => {
       await client.query('SELECT pg_advisory_xact_lock(17407, 111)')
       await initializePostgresAccounts(client)
       if (enableStories) await initializePostgresStories(client)
+      if (enablePreparation) await initializePostgresStoryPreparation(client)
     })
   } catch (error) {
     if (error instanceof IncompatiblePostgresAccountSchemaError) throw error

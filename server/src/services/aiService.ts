@@ -6,7 +6,7 @@ import {
   type ModelOption,
 } from '../../../shared/constants/providers.js'
 import { getAiConfig, getSharedAiConfig } from './settingsService.js'
-import { isMockAiMode, SHARED_ROOMS_ENABLED } from '../config.js'
+import { DEPLOYMENT_MODE, isMockAiMode } from '../config.js'
 import { mockChat, mockChatForAgent, mockChatForRag, mockListModels } from './mockAi.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { safeOutboundFetch } from '../utils/safeOutboundFetch.js'
@@ -79,7 +79,7 @@ export async function withRequestTimeout<T>(p: Promise<T>, label: string): Promi
  * invokeChat's `model: model || ai.model` precedence.
  */
 async function resolveAiConfig(userId: number, modelOverride?: string): Promise<{ config: AIProviderConfig; protocol: LLMProtocol }> {
-  const ai = SHARED_ROOMS_ENABLED ? await getSharedAiConfig(userId) : getAiConfig(userId)
+  const ai = DEPLOYMENT_MODE === 'shared-accounts' ? await getSharedAiConfig(userId) : getAiConfig(userId)
   const protocol = ai.protocol as LLMProtocol
   if (!protocol) throw new BadRequestError('请先在设置中配置 AI 协议')
   if (!ai.model && !modelOverride) throw new BadRequestError('请先在设置中选择或输入模型名称')
@@ -302,7 +302,7 @@ export async function listModels(userId: number, purpose = 'chat'): Promise<Mode
     // One deterministic option so the settings page model picker works.
     return mockListModels()
   }
-  const ai = SHARED_ROOMS_ENABLED ? await getSharedAiConfig(userId) : getAiConfig(userId)
+  const ai = DEPLOYMENT_MODE === 'shared-accounts' ? await getSharedAiConfig(userId) : getAiConfig(userId)
   const protocol = ai.protocol as LLMProtocol
   if (!protocol) return []
   const configuredBaseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(protocol)).replace(/\/$/, '')

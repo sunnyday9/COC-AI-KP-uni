@@ -80,7 +80,7 @@ export interface UniMockState {
   uploads: MockUploadOptions[]
   sockets: MockSocket[]
   uniPlatform: string
-  requestResponder: ((opts: MockRequestOptions) => MockRequestResult) | null
+  requestResponder: ((opts: MockRequestOptions) => MockRequestResult | Promise<MockRequestResult>) | null
   uploadResponder: ((opts: MockUploadOptions) => MockRequestResult) | null
   connectSocketImpl: ((url: string) => MockSocket) | null
   failNextRequest: { errMsg: string } | null
@@ -126,7 +126,8 @@ export function createUniMock(): { uni: Record<string, unknown>; state: UniMockS
         return
       }
       const res = state.requestResponder ? state.requestResponder({ url: opts.url, method: opts.method, data: opts.data, header: opts.header }) : { statusCode: 200, data: { ok: true } }
-      opts.success?.(res)
+      if (res instanceof Promise) void res.then((reply) => opts.success?.(reply))
+      else opts.success?.(res)
     },
     uploadFile: (opts: {
       url: string

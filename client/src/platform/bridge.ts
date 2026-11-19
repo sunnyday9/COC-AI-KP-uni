@@ -33,6 +33,7 @@ import type {
   StoryDossierSummary,
   StoryOperationProgress,
   StoryCatalogPage,
+  StoryPreparationStatus,
 } from '../../../shared/types/bridge'
 import { getBaseUrl, getPlatform, joinApiUrl } from './config'
 import { clearToken, emitUnauthorized, getToken, setToken } from './token'
@@ -259,6 +260,14 @@ export class PlatformBridge {
   listStoryPage(cursor?: string): Promise<StoryCatalogPage> {
     const query = cursor ? `limit=50&cursor=${encodeURIComponent(cursor)}` : 'limit=50'
     return request<StoryCatalogPage>('GET', `/api/stories?${query}`)
+  }
+
+  prepareStory(id: string): Promise<StoryPreparationStatus> {
+    return request('POST', `/api/stories/${encodeURIComponent(id)}/preparation`)
+  }
+
+  readStoryPreparation(id: string): Promise<StoryPreparationStatus> {
+    return request('GET', `/api/stories/${encodeURIComponent(id)}/preparation`)
   }
 
   readStory(id: string, preview = false): Promise<{ name: string; content: string; truncated?: boolean }> {

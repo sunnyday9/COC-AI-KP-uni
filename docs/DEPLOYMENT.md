@@ -144,7 +144,7 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 只有写入对象成功并提交 PostgreSQL 事务后，目录才会公开该条目。每次上传拥有新的不可变原文修订。已确认失败会尝试清理该次上传的对象。若提交回执未知或客户端断线，请刷新目录确认后再上传。同一文件名可重复上传并得到不同 ID，上传接口不根据名称或内容去重。提交状态不明、进程崩溃或存储清理失败可能留下孤儿对象。清理孤儿时，应先暂停上传并核对 PostgreSQL 中所有活跃和已删除记录的修订，保留仍被引用的原文。删除先写入墓碑并保留原文修订，以支持后续房间固定修订。请勿按对象年龄批量过期。
 
-共享目录页支持上传、翻页和选中预览。本地首页和多人等待室也按页列出已索引故事。两处通过 SQLite 索引查询目录元数据，首次读取或原子替换索引文件后会重新导入该账号的本地索引清单，包括旧版文件。共享目录提供原文。直接从共享目录准备剧本、开局及固定原文和制品修订由后续阶段提供。本地 SQLite 和本地文件部署行为不变。`/health/ready` 继续检查 PostgreSQL；应另外用合成文件验证私有对象存储的读写。仓库提供双网关测试，向 `TEST_SHARED_STORIES_DATABASE_URL` 注入独立、可销毁的 PostgreSQL 测试库，并向 `TEST_SHARED_STORIES_S3` 注入独立、可销毁私有桶的 JSON 配置（字段为 `bucket`、`region`、可选 `endpoint`、可选布尔值 `forcePathStyle`、包含 SDK 凭据字段的 `credentials`），随后运行 `npm run test --workspace=server -- sharedStories.test.ts`。测试会写入合成账号、文件和目录元数据，也会列举桶中该测试账号的对象验证清理。
+共享目录页支持上传、翻页和选中预览。本地首页和多人等待室也按页列出已索引故事。两处通过 SQLite 索引查询目录元数据，首次读取或原子替换索引文件后会重新导入该账号的本地索引清单，包括旧版文件。只启用共享目录时可上传和浏览原文。剧本准备可按第 6.4 节单独启用。本地 SQLite 和本地文件部署行为不变。`/health/ready` 继续检查 PostgreSQL；应另外用合成文件验证私有对象存储的读写。仓库提供双网关测试，向 `TEST_SHARED_STORIES_DATABASE_URL` 注入独立、可销毁的 PostgreSQL 测试库，并向 `TEST_SHARED_STORIES_S3` 注入独立、可销毁私有桶的 JSON 配置（字段为 `bucket`、`region`、可选 `endpoint`、可选布尔值 `forcePathStyle`、包含 SDK 凭据字段的 `credentials`），随后运行 `npm run test --workspace=server -- sharedStories.test.ts`。测试会写入合成账号、文件和目录元数据，也会列举桶中该测试账号的对象验证清理。
 
 ### 6.3 单进程共享房间预发布（#115）
 
@@ -155,6 +155,20 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 共享房间在发送玩家聊天回显前提交待处理行动。守秘人回合（含开场）的角色卡、场景、线索、结局、消息及消耗的行动一同提交，随后广播事件。进程在回合提交前终止时，重启从完整快照继续待处理行动。
 
 使用独立的临时 PostgreSQL 数据库设置 `TEST_SHARED_ROOMS_DATABASE_URL`，在仓库根目录运行 `npm run test:server -- src/routes/sharedRooms.test.ts`。测试用同一套既有 REST 和 WebSocket 协议覆盖 SQLite 与 PostgreSQL 的建房、游戏进程重启、房主及剧本归属、角色卡与待处理回合。当前共享房间部署仅面向受控的单游戏进程预发布。
+
+### 6.4 共享剧本准备进程（#116）
+
+先配置第 6.2 节的 PostgreSQL 和私有对象存储，并在所有网关及独立准备进程中设置 `STORY_PREPARATION_ENABLED=1`。网关负责接受请求并查询状态。每个准备进程同一时间处理一个任务，通过增加准备进程独立扩展 OCR、索引和档案生成。准备进程使用同一数据库、私有存储和 `JWT_SECRET`，由服务管理器注入设置并负责重启。
+
+```bash
+NODE_ENV=production DEPLOYMENT_MODE=shared-accounts STORY_PREPARATION_ENABLED=1 npm run start:story-preparation --workspace=server
+```
+
+任务租约默认 30 秒，可通过 `STORY_PREPARATION_LEASE_MS` 调整。进程中断且租约到期后，任一准备进程可重新领取该任务。新进程重新读取原文并生成该次的资料，可能再次调用模型。每次尝试使用独立的对象修订。解析后的原文须在档案生成的 200,000 字符及批次数上限内，超限会显示为失败。
+
+仅当解析原文、索引、档案及匹配的原文锚点写入并通过对象核验后，共享目录才更新可用版本。存储写入失败或进程中断后，之前发布的版本仍可用于故事选择。旧版本由将来的房间修订固定流程使用。异常停止或写入失败可留下尚未发布的制品。清理私有桶前，应暂停准备进程并核对 `story_preparation_revisions` 中所有已发布的修订。
+
+第 6.2 节的测试使用确定性 `MOCK_AI`，验证工作进程中断、双进程竞争领取，以及从真实存储读取完整修订。使用环回地址的 HTTP 路径式 S3 兼容服务时，测试还会通过代理注入对象写入失败，验证上一版本仍可读取。
 
 ## 7. 上线检查清单
 

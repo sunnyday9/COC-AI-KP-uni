@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStoryStore } from '../../stores/storyStore'
 import { listIndexedStories, deleteStoryIndex } from '../../services/ragService'
@@ -9,7 +9,7 @@ import { isRetryableBridgeError } from '../../services/retry'
 import { useToast } from '../../composables/useToast'
 import { getBridge, getToken } from '../../platform'
 import { onUnauthorized } from '../../platform/token'
-import type { StoryOperationProgress } from '../../../../shared/types/bridge'
+import type { StoryOperationProgress, StoryPreparationStage, StoryPreparationStatus } from '../../../../shared/types/bridge'
 import AppLayout from '../../components/layout/AppLayout.vue'
 import AppIcon from '../../components/ui/AppIcon.vue'
 import ConfirmModal from '../../components/ui/ConfirmModal.vue'
@@ -18,10 +18,62 @@ import EmptyState from '../../components/ui/EmptyState.vue'
 const toast = useToast()
 const storyStore = useStoryStore()
 const {
-  storyFiles, isLoading: storiesLoading, error: storyListError, nextCursor, canPrepare,
+  storyFiles, isLoading: storiesLoading, error: storyListError, nextCursor, canPrepare, preparationMode,
   selectedStory, selectedStoryId, isSelecting, selectionError,
 } = storeToRefs(storyStore)
 const PREVIEW_LIMIT = 16_000
+
+const durablePreparation = computed(() => preparationMode.value === 'durable')
+const localPreparation = computed(() => canPrepare.value && !durablePreparation.value)
+const preparationSubmissions = ref<Record<string, boolean>>({})
+const preparationLabels: Record<StoryPreparationStage, string> = {
+  queued: '等待处理',
+  read: '正在读取原文并识别文字',
+  index: '正在建立索引',
+  dossier: '正在生成守秘人档案',
+  publish: '正在核验并发布',
+  complete: '准备完成',
+  source_failed: '准备失败，无法读取原文或可处理的文字过多',
+  index_failed: '准备失败，无法完成索引',
+  dossier_failed: '准备失败，无法生成完整档案',
+  anchors_failed: '准备失败，档案缺少可核验的原文揭晓位置',
+  publish_failed: '准备失败，无法发布完整资料',
+}
+
+function preparationPending(status?: StoryPreparationStatus) {
+  return status?.job?.state === 'queued' || status?.job?.state === 'running'
+}
+
+async function handlePrepareStory(id: string) {
+  preparationSubmissions.value[id] = true
+  try {
+    await storyStore.submitStoryPreparation(id)
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '无法提交剧本准备')
+  } finally {
+    delete preparationSubmissions.value[id]
+  }
+}
+
+const pendingPreparations = computed(() => storyFiles.value.filter((story) => preparationPending(story.preparation)))
+let pollingPreparation = false
+watch(() => durablePreparation.value && pendingPreparations.value.length > 0, (pending, _previous, onCleanup) => {
+  if (!pending) return
+  const timer = setInterval(async () => {
+    if (pollingPreparation) return
+    pollingPreparation = true
+    try {
+      const ids = pendingPreparations.value.map(({ id }) => id)
+      const token = getToken()
+      for (let offset = 0; offset < ids.length && token === getToken() && durablePreparation.value; offset += 4) {
+        await Promise.allSettled(ids.slice(offset, offset + 4).map(storyStore.refreshStoryPreparation))
+      }
+    } finally {
+      pollingPreparation = false
+    }
+  }, 2_000)
+  onCleanup(() => clearInterval(timer))
+})
 
 const indexedStories = ref<IndexedStory[]>([])
 const storyDossiers = ref<StoryDossierSummary[]>([])
@@ -160,7 +212,7 @@ async function refreshDossiers() {
 
 async function refreshLibrary() {
   await storyStore.loadStories()
-  if (getToken() && !storyListError.value && canPrepare.value) {
+  if (getToken() && !storyListError.value && localPreparation.value) {
     void refreshIndexed()
     void refreshDossiers()
   }
@@ -378,7 +430,7 @@ async function confirmDeleteStory() {
       await deleteStoryIndex(pd.id)
       toast.info(`已删除索引「${pd.name}」`)
     }
-    if (canPrepare.value) await refreshIndexed()
+    if (localPreparation.value) await refreshIndexed()
   } catch (e) {
     toast.error(`删除失败：${e instanceof Error ? e.message : String(e)}`)
   } finally {
@@ -408,7 +460,7 @@ function formatDate(ts: number): string {
       <view class="page-head">
         <view class="head-left">
           <text class="page-title">故事管理</text>
-          <text class="page-desc">{{ canPrepare ? '导入并索引故事；单人开局前还需生成守秘人档案' : '导入并浏览私有故事；此环境尚未开放剧本准备' }}</text>
+          <text class="page-desc">{{ durablePreparation ? '导入故事，生成索引和守秘人档案' : localPreparation ? '导入并索引故事；单人开局前还需生成守秘人档案' : '导入并浏览私有故事；此环境尚未开放剧本准备' }}</text>
         </view>
         <view class="head-actions">
           <button class="gothic-btn import-btn" @click="handleImport">导入故事</button>
@@ -426,7 +478,7 @@ function formatDate(ts: number): string {
             </view>
             <view class="section-actions">
               <text class="link-btn" @click="refreshLibrary">刷新</text>
-              <text v-if="canPrepare && storyFiles.length" class="link-btn" @click="handleIndexAll">索引全部</text>
+              <text v-if="localPreparation && storyFiles.length" class="link-btn" @click="handleIndexAll">索引全部</text>
             </view>
           </view>
 
@@ -457,7 +509,20 @@ function formatDate(ts: number): string {
                 </view>
                 <view class="file-info">
                   <text class="file-name">{{ story.name }}</text>
-                  <text v-if="canPrepare" class="file-status" :style="{ color: isIndexed(story.id) ? 'var(--c-eld-300)' : 'var(--c-obsidian-light)' }">
+                  <template v-if="durablePreparation">
+                    <text class="file-status">{{ story.preparation?.activeRevision ? '已有可用版本' : '尚无可用版本' }}</text>
+                    <view v-if="preparationPending(story.preparation)" class="task-progress inline-progress" role="status">
+                      <view v-if="story.preparation?.job" class="progress-meta">
+                        <text>{{ preparationLabels[story.preparation.job.stage] }}</text>
+                        <text>{{ story.preparation.job.percent }}%</text>
+                      </view>
+                      <view class="progress-track"><view class="progress-fill" :style="{ width: (story.preparation?.job?.percent ?? 0) + '%' }" /></view>
+                    </view>
+                    <text v-else-if="story.preparation?.job?.state === 'failed'" class="file-meta dossier-error" role="status">
+                      {{ preparationLabels[story.preparation.job.stage] }}
+                    </text>
+                  </template>
+                  <text v-if="localPreparation" class="file-status" :style="{ color: isIndexed(story.id) ? 'var(--c-eld-300)' : 'var(--c-obsidian-light)' }">
                     {{ isIndexed(story.id) ? '已索引' : '未索引' }}
                   </text>
                   <view
@@ -480,12 +545,18 @@ function formatDate(ts: number): string {
               </view>
               <view class="file-actions">
                 <button
-                  v-if="!canPrepare"
+                  v-if="!localPreparation"
                   class="mini-btn index-btn"
                   @click="selectedStoryId === story.id ? storyStore.clearSelection() : storyStore.selectStory(story.id)"
                 >{{ selectedStoryId === story.id ? '关闭预览' : '查看原文' }}</button>
                 <button
-                  v-if="canPrepare"
+                  v-if="durablePreparation"
+                  class="mini-btn index-btn"
+                  :disabled="preparationSubmissions[story.id] || preparationPending(story.preparation)"
+                  @click="handlePrepareStory(story.id)"
+                >{{ preparationSubmissions[story.id] ? '正在提交…' : preparationPending(story.preparation) ? '准备中…' : story.preparation?.activeRevision ? '重新准备' : '准备剧本' }}</button>
+                <button
+                  v-if="localPreparation"
                   class="mini-btn index-btn"
                   :disabled="indexStatus[story.id] === 'loading' || indexAllLoading"
                   :class="{ 'is-disabled': indexStatus[story.id] === 'loading' || indexAllLoading }"
@@ -525,7 +596,7 @@ function formatDate(ts: number): string {
         </view>
 
         <!-- 已索引故事区 -->
-        <view v-if="canPrepare" class="section">
+        <view v-if="localPreparation" class="section">
           <view class="section-head">
             <view class="section-title-row">
               <app-icon name="book-open" :size="16" class="section-title-icon" />
@@ -585,7 +656,7 @@ function formatDate(ts: number): string {
         </view>
 
         <!-- 守秘人档案单独展示，便于区分索引和单人开局所需的档案 -->
-        <view v-if="canPrepare" class="section">
+        <view v-if="localPreparation" class="section">
           <view class="section-head">
             <view class="section-title-row">
               <app-icon name="book-open" :size="16" class="section-title-icon" />
@@ -657,7 +728,7 @@ function formatDate(ts: number): string {
     <confirm-modal
       v-if="pendingDelete"
       :title="pendingDelete.kind === 'file' ? `删除「${pendingDelete.name}」？` : `删除索引「${pendingDelete.name}」？`"
-      :message="pendingDelete.kind === 'file' ? (canPrepare ? '故事文件将永久删除，无法恢复。此操作不可撤销。' : '故事将从书架移除。此操作无法撤销。') : '该故事的向量索引将删除，可重新索引。'"
+      :message="pendingDelete.kind === 'file' ? (localPreparation ? '故事文件将永久删除，无法恢复。此操作不可撤销。' : '故事将从书架移除。此操作无法撤销。') : '该故事的向量索引将删除，可重新索引。'"
       confirm-text="确认删除"
       tone="danger"
       :loading="deleting"

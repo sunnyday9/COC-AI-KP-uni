@@ -16,6 +16,8 @@ import settingsRoutes from './routes/settings.routes.js'
 import aiRoutes from './routes/ai.routes.js'
 import storiesRoutes from './routes/stories.routes.js'
 import { createSharedStoriesRouter } from './routes/sharedStories.routes.js'
+import { createSharedPreparedStoriesRouter, createSharedStoryPreparationRouter } from './routes/sharedStoryPreparation.routes.js'
+import { STORY_PREPARATION_ENABLED } from './services/sharedStoryPreparation.js'
 import { createSharedStoryCatalog } from './services/sharedStoryCatalog.js'
 import { getStoryObjectStore } from './services/storyObjectStorage.js'
 import ragRoutes from './routes/rag.routes.js'
@@ -57,7 +59,13 @@ export function createApp(): Express {
   app.use('/api/auth', authRoutes)
   app.use('/api/settings', settingsRoutes)
   const storyStorage = sharedAccounts ? getStoryObjectStore() : undefined
-  if (storyStorage) app.use('/api/stories', createSharedStoriesRouter(createSharedStoryCatalog(storyStorage)))
+  if (storyStorage) {
+    if (STORY_PREPARATION_ENABLED) {
+      app.use('/api/stories', createSharedStoryPreparationRouter())
+      app.use('/api/rag', createSharedPreparedStoriesRouter())
+    }
+    app.use('/api/stories', createSharedStoriesRouter(createSharedStoryCatalog(storyStorage)))
+  }
   if (!sharedAccounts) {
     app.use('/api/ai', aiRoutes)
     app.use('/api/stories', storiesRoutes)
@@ -106,7 +114,9 @@ async function startServer(): Promise<void> {
   // Apply the configured storage schema before accepting traffic. A failed or
   // unsupported migration must abort startup rather than fail on first use.
   if (sharedAccounts) {
-    await initializePostgres(Boolean(getStoryObjectStore()))
+    const enableStories = Boolean(getStoryObjectStore())
+    if (STORY_PREPARATION_ENABLED && !enableStories) throw new Error('Story preparation requires story object storage')
+    await initializePostgres(enableStories, STORY_PREPARATION_ENABLED)
     if (SHARED_ROOMS_ENABLED) await initializeSingleProcessRooms()
   } else getDb()
   const httpServer = createApp().listen(PORT, () => {

@@ -224,7 +224,7 @@ interface StoredIndexDoc {
   vector?: number[]
 }
 
-interface StoredIndex {
+export interface StoredIndex {
   scriptId: string
   storyName: string
   indexedAt: number
@@ -322,6 +322,7 @@ export async function indexChunks(
   options: {
     getEmbedding?: (text: string) => Promise<number[]>
     onChunkProgress?: (progress: { completed: number; total: number; embeddingFailures: number }) => void
+    persistIndex?: (index: StoredIndex) => void | Promise<void>
   } | undefined,
 ): Promise<{ ok: boolean; indexed: number }> {
   if (!chunks || !chunks.length) return { ok: true, indexed: 0 }
@@ -371,8 +372,11 @@ export async function indexChunks(
     docs: docs,
     idf: idf,
   }
-  const bytes = saveIndex(userId, idx)
-  memoryCache.set(cacheKey(userId, storyId), idx, bytes)
+  if (options?.persistIndex) await options.persistIndex(serializeIndex(idx))
+  else {
+    const bytes = saveIndex(userId, idx)
+    memoryCache.set(cacheKey(userId, storyId), idx, bytes)
+  }
 
   return { ok: true, indexed: docs.length }
 }

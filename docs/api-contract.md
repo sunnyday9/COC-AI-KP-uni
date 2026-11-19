@@ -78,12 +78,20 @@
 | POST | `/api/stories/upload` | 上传导入（multipart `file`） |
 | DELETE | `/api/stories/:id` | 删除剧本 |
 
-- 将返回的 `nextCursor` 用于下一页。上传和剧本准备的并发上限触发 HTTP 503 和 `Retry-After`，同一剧本正在准备时删除或另启准备返回 409。运行参数见 [部署指南](DEPLOYMENT.md)。
+- 将返回的 `nextCursor` 用于下一页。上传的并发上限触发 HTTP 503 和 `Retry-After`。本地模式中，剧本准备超出并发上限也返回 503，同一剧本正在准备时删除或另启准备返回 409。运行参数见 [部署指南](DEPLOYMENT.md)。
 - 支持格式、上传上限（见 §10）与解析细节见 `server/src/routes/stories.routes.ts`、`services/storyService.ts` 和 `rag/storyParsers.ts`。
 
-启用共享剧本目录时，分页结果附加 `canPrepare: false`，故事管理页据此只提供原文浏览、上传和删除。`GET /api/stories/:id/rag` 仅在本地模式挂载。共享目录的读取和下载需验证账号归属，跨账号请求返回 404，下载由网关传输，不返回对象存储 URL。共享目录删除后，列表和读取接口不再返回该条目。重复使用同一文件名上传会获得新 ID 并保留之前的原文修订。
+仅启用共享剧本目录时，分页结果附加 `canPrepare: false`。故事管理页提供原文浏览、上传和删除。`GET /api/stories/:id/rag` 仅在本地模式挂载。共享目录的读取和下载需验证账号归属，跨账号请求返回 404，下载由网关传输，不返回对象存储 URL。共享目录删除后，列表和读取接口不再返回该条目。重复使用同一文件名上传会获得新 ID 并保留之前的原文修订。
 
 共享预览最多返回 16,000 个 UTF-16 代码单元。纯文本预览从对象存储读取前 64 KiB；需要解析的文档超过 8 MiB 时返回 413，故事管理页提供文本预览，原始附件由通过身份验证的 `GET /api/stories/:id/source` 提供。每网关最多并发四次剧本文本读取，超限返回 503 和 `Retry-After`。
+
+共享剧本准备启用时，分页目录返回 `canPrepare: true`、`preparationMode: 'durable'`，每个故事同时返回 `preparation`。状态形状为 `{activeRevision: string | null, job: {id, version, state, stage, percent} | null}`。任务状态为 `queued`、`running`、`complete` 或 `failed`。`version` 是十进制字符串，同一故事的已提交状态随版本数值递增。共享目录删除剧本只移除目录条目。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/stories/:id/preparation` | 提交准备。返回 202 和当前状态。该故事已有排队或运行任务时，返回该任务。 |
+| GET | `/api/stories/:id/preparation` | 返回最新准备状态。仅故事所有者可查询。 |
+| GET | `/api/rag/stories` | 共享准备启用时，按 §8 的分页契约列出已有完整可用版本的故事。分页返回 `canStartInvestigation: false` 时，首页提供准备状态入口。 |
 
 ## 6. 剧本库脚本（Task 4，原 scripts 库）（已退役，#97）
 

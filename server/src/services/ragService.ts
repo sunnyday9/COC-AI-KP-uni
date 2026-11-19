@@ -21,7 +21,7 @@
  * 零回合路径消费方，需要时从 git 历史取回。
  */
 import { getSettings, getAiConfig, getGatewaySettings, getSharedAiConfig } from './settingsService.js'
-import { isMockAiMode, SHARED_ROOMS_ENABLED } from '../config.js'
+import { DEPLOYMENT_MODE, isMockAiMode } from '../config.js'
 import type { AppSettings } from '../../../shared/types/settings.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError } from '../utils/errors.js'
@@ -49,12 +49,13 @@ async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
     // uses its TF-IDF retrieval baseline when dense embeddings are unavailable.
     return null
   }
-  const settings = SHARED_ROOMS_ENABLED ? await getGatewaySettings(userId) : getSettings(userId)
+  const shared = DEPLOYMENT_MODE === 'shared-accounts'
+  const settings = shared ? await getGatewaySettings(userId) : getSettings(userId)
   const rag = (settings.rag || {}) as NonNullable<AppSettings["rag"]>
   const provider = rag.provider === 'api' ? 'api' : 'builtin'
 
   if (provider === 'api') {
-    const ai = SHARED_ROOMS_ENABLED ? await getSharedAiConfig(userId) : getAiConfig(userId)
+    const ai = shared ? await getSharedAiConfig(userId) : getAiConfig(userId)
     const baseUrl = (ai.baseUrl || '').trim()
     const apiKey = ai.apiKey && ai.apiKey !== '***' ? ai.apiKey : null
     if (baseUrl && apiKey) {
