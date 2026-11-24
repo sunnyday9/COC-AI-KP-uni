@@ -62,6 +62,13 @@ function dossier(truths: { revealScene?: string }[] = [{ revealScene: 's3' }]): 
   } as unknown as StoryDossier
 }
 
+it('rejects reveal anchors from a different dossier revision', () => {
+  const generated = { ...dossier(), sourceRevision: 'current' }
+  expect(getSpoilerMetadataFailureReason({ ...gaps(), sourceRevision: 'previous' }, generated))
+    .toBe('mismatched_source_revision')
+  expect(getSpoilerMetadataFailureReason({ ...gaps(), sourceRevision: 'current' }, generated)).toBeNull()
+})
+
 /** 候选简写：content + 偏移 + 分数（score = 相关性，越大越相关）。 */
 function cand(
   id: string,

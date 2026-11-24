@@ -1,10 +1,12 @@
 import type { AppSettings } from '../../../shared/types/settings.js'
 import { getDb } from '../db/index.js'
-import { BadRequestError } from '../utils/errors.js'
+import { BadRequestError, UnauthorizedError } from '../utils/errors.js'
 import { decryptSecret, encryptSecret, type EncryptedSecret } from '../utils/crypto.js'
 import { ALL_PROTOCOL_IDS, resolveProtocolDefaultBaseUrl } from '../../../shared/constants/providers.js'
 import { logger } from '../utils/logging.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
+import { DEPLOYMENT_MODE } from '../config.js'
+import { readPostgresSettings, updatePostgresSettings } from './postgresSettingsStorage.js'
 
 /**
  * Settings service (api-contract §2) — per-user settings stored in the
@@ -51,9 +53,13 @@ function readRow(userId: number): Record<string, unknown> | null {
   const row = getDb()
     .prepare('SELECT data FROM settings WHERE user_id = ?')
     .get(userId) as { data: string } | undefined
-  if (!row) return null
+  return parseRow(row?.data ?? null, userId)
+}
+
+function parseRow(data: string | null, userId: number): Record<string, unknown> | null {
+  if (data === null) return null
   try {
-    const parsed: unknown = JSON.parse(row.data)
+    const parsed: unknown = JSON.parse(data)
     return isRecord(parsed) ? parsed : null
   } catch {
     logger.warn('settings row unparseable, treating as empty', { userId })
@@ -70,7 +76,7 @@ function writeRow(userId: number, data: StoredSettings): void {
 }
 
 /** Validate a settings patch; throws BadRequestError on any invalid field. */
-export function validatePatch(patch: unknown): void {
+export function validatePatch(patch: unknown): asserts patch is Record<string, unknown> {
   if (!isRecord(patch)) {
     throw new BadRequestError('settings must be an object')
   }
@@ -134,12 +140,29 @@ export function getSettings(userId: number): AppSettings {
   return withoutApiKey(mergeDefaults(raw ?? {}))
 }
 
+/** The gateway uses the configured account store; gameplay still uses local SQLite. */
+export async function getGatewaySettings(userId: number): Promise<AppSettings> {
+  if (DEPLOYMENT_MODE !== 'shared-accounts') return getSettings(userId)
+  const row = await readPostgresSettings(userId)
+  if (row === undefined) throw new UnauthorizedError('user not found')
+  return withoutApiKey(mergeDefaults(parseRow(row, userId) ?? {}))
+}
+
 /**
  * Full AI config for server-side use (aiService) — includes the DECRYPTED
  * apiKey. Never exposed through HTTP.
  */
 export function getAiConfig(userId: number): AppSettings['ai'] {
-  const raw = readRow(userId)
+  return decryptedAiConfig(userId, readRow(userId))
+}
+
+export async function getSharedAiConfig(userId: number): Promise<AppSettings['ai']> {
+  const row = await readPostgresSettings(userId)
+  if (row === undefined) throw new UnauthorizedError('user not found')
+  return decryptedAiConfig(userId, parseRow(row, userId))
+}
+
+function decryptedAiConfig(userId: number, raw: Record<string, unknown> | null): AppSettings['ai'] {
   const merged = mergeDefaults(raw ?? {})
   const ai: AppSettings['ai'] = {
     protocol: merged.ai.protocol,
@@ -161,7 +184,14 @@ export function getAiConfig(userId: number): AppSettings['ai'] {
 
 /** Return a setup instruction when the user's current KP settings cannot start a turn. */
 export function getAiSetupIssue(userId: number): string | null {
-  const ai = getAiConfig(userId)
+  return aiSetupIssue(getAiConfig(userId))
+}
+
+export async function getSharedAiSetupIssue(userId: number): Promise<string | null> {
+  return aiSetupIssue(await getSharedAiConfig(userId))
+}
+
+function aiSetupIssue(ai: AppSettings['ai']): string | null {
   if (!ai.model?.trim()) return '请在设置中选择或输入 KP 模型。'
   const effectiveBaseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(ai.protocol)).trim().replace(/\/+$/, '')
   try {
@@ -185,27 +215,41 @@ export function getAiSetupIssue(userId: number): string | null {
  */
 export function saveSettings(userId: number, patch: unknown): AppSettings {
   validatePatch(patch)
-  const existing = readRow(userId) ?? {}
-
-  const aiIn = (patch as Record<string, unknown>).ai as Record<string, unknown> | undefined
-  let apiKey: EncryptedSecret | undefined
-  if (aiIn?.apiKey !== undefined) {
-    const key = aiIn.apiKey
-    if (typeof key === 'string' && key !== '' && key !== API_KEY_PLACEHOLDER) {
-      apiKey = encryptSecret(key)
-    } else if (isRecord(existing.ai) && existing.ai.apiKey !== undefined) {
-      apiKey = existing.ai.apiKey as EncryptedSecret
-    }
-  } else if (isRecord(existing.ai) && existing.ai.apiKey !== undefined) {
-    apiKey = existing.ai.apiKey as EncryptedSecret
-  }
-
-  const merged = mergeDefaults(patch as Record<string, unknown>)
-  if (apiKey) merged.ai.apiKey = apiKey
-  else delete merged.ai.apiKey
-
+  const merged = settingsForWrite(patch, readRow(userId) ?? {}, false)
   writeRow(userId, merged)
   return withoutApiKey(merged)
+}
+
+export async function saveGatewaySettings(userId: number, patch: unknown): Promise<void> {
+  if (DEPLOYMENT_MODE !== 'shared-accounts') {
+    saveSettings(userId, patch)
+    return
+  }
+  validatePatch(patch)
+  const saved = await updatePostgresSettings(userId, (current) => (
+    JSON.stringify(settingsForWrite(patch, parseRow(current, userId) ?? {}, true))
+  ))
+  if (!saved) throw new UnauthorizedError('user not found')
+}
+
+function settingsForWrite(
+  patch: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  mergeWithExisting: boolean,
+): StoredSettings {
+  const ai = isRecord(patch.ai) ? patch.ai : {}
+  const previous = isRecord(existing.ai) ? existing.ai : {}
+  const key = ai.apiKey
+  const apiKey = typeof key === 'string' && key !== '' && key !== API_KEY_PLACEHOLDER
+    ? encryptSecret(key)
+    : previous.apiKey as EncryptedSecret | undefined
+
+  return mergeDefaults({
+    ai: { ...(mergeWithExisting ? previous : {}), ...ai, apiKey },
+    rag: mergeWithExisting
+      ? { ...(isRecord(existing.rag) ? existing.rag : {}), ...(isRecord(patch.rag) ? patch.rag : {}) }
+      : patch.rag,
+  })
 }
 
 /** Merge a validated patch over DEFAULT_SETTINGS (deep for ai/rag). */

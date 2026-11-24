@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { indexStory } from '../services/ragService'
-import { getBridge } from '../platform'
+import { getBridge, getToken } from '../platform'
+import type { StoryCatalogPage, StoryPreparationStatus } from '../../../shared/types/bridge'
 
 /**
  * 差异说明（Task 7，简报决策 4）：原 StoryFile 为 `{ name, path }`（Electron
@@ -14,6 +15,7 @@ export interface StoryFile {
   name: string
   /** 服务端 id（替代原文件路径；含扩展名的 sanitized 文件名） */
   id: string
+  preparation?: StoryPreparationStatus
 }
 
 export const useStoryStore = defineStore('story', () => {
@@ -21,16 +23,142 @@ export const useStoryStore = defineStore('story', () => {
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
-  async function loadStories() {
+  const nextCursor = ref<string | null>(null)
+  const canPrepare = ref(true)
+  const preparationMode = ref<StoryCatalogPage['preparationMode']>()
+  const selectedStoryId = ref<string | null>(null)
+  const selectedStory = ref<(StoryFile & { content: string; truncated?: boolean }) | null>(null)
+  const isSelecting = ref(false)
+  const selectionError = ref<string | null>(null)
+  let listRevision = 0
+  let librarySession = 0
+  let libraryToken: ReturnType<typeof getToken>
+  let selectionRevision = 0
+  const preparationByStory = new Map<string, StoryPreparationStatus>()
+
+  function clearSelection() {
+    selectionRevision++
+    selectedStoryId.value = null
+    selectedStory.value = null
+    isSelecting.value = false
+    selectionError.value = null
+  }
+
+  function resetLibrary() {
+    librarySession++
+    preparationByStory.clear()
+    listRevision++
+    storyFiles.value = []
+    nextCursor.value = null
+    preparationMode.value = undefined
+    isLoading.value = false
+    error.value = null
+    clearSelection()
+  }
+
+  async function loadPage(cursor?: string) {
+    const token = getToken()
+    if (token !== libraryToken) {
+      resetLibrary()
+      libraryToken = token
+      cursor = undefined
+    }
+    const revision = ++listRevision
+    const isCurrent = () => revision === listRevision && token === getToken()
     try {
       isLoading.value = true
       error.value = null
-      storyFiles.value = await getBridge().listStories()
+      const page = await getBridge().listStoryPage(cursor)
+      if (!isCurrent()) return
+      const rows = page.stories.map((story) => story.preparation
+        ? { ...story, preparation: mergePreparation(story.id, story.preparation) }
+        : story)
+      storyFiles.value = cursor ? [...storyFiles.value, ...rows] : rows
+      if (!cursor) {
+        const visible = new Set(rows.map(({ id }) => id))
+        for (const id of preparationByStory.keys()) {
+          if (!visible.has(id)) preparationByStory.delete(id)
+        }
+      }
+      nextCursor.value = page.nextCursor
+      canPrepare.value = page.canPrepare !== false
+      preparationMode.value = page.preparationMode
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load stories'
+      if (isCurrent()) error.value = e instanceof Error ? e.message : '无法加载故事'
     } finally {
-      isLoading.value = false
+      if (isCurrent()) isLoading.value = false
     }
+  }
+
+  async function loadStories() {
+    clearSelection()
+    storyFiles.value = []
+    nextCursor.value = null
+    await loadPage()
+  }
+
+  async function loadMoreStories() {
+    if (nextCursor.value && !isLoading.value) await loadPage(nextCursor.value)
+  }
+
+  function mergePreparation(id: string, incoming: StoryPreparationStatus): StoryPreparationStatus {
+    const current = preparationByStory.get(id)
+    const currentVersion = current?.job?.version ?? ''
+    const incomingVersion = incoming.job?.version ?? ''
+    if (current && (
+      currentVersion.length > incomingVersion.length ||
+      (currentVersion.length === incomingVersion.length && currentVersion > incomingVersion)
+    )) return current
+    preparationByStory.set(id, incoming)
+    return incoming
+  }
+
+  async function updateStoryPreparation(id: string, submit: boolean) {
+    const token = getToken()
+    const session = librarySession
+    if (token !== libraryToken) return
+    const api = getBridge()
+    const status = await (submit ? api.prepareStory(id) : api.readStoryPreparation(id))
+    if (token !== getToken() || session !== librarySession) return
+    const story = storyFiles.value.find((item) => item.id === id)
+    if (!story && !isLoading.value) return
+    const preparation = mergePreparation(id, status)
+    if (story) story.preparation = preparation
+  }
+
+  const submitStoryPreparation = (id: string) => updateStoryPreparation(id, true)
+  const refreshStoryPreparation = (id: string) => updateStoryPreparation(id, false)
+
+  async function selectStory(id: string) {
+    clearSelection()
+    selectedStoryId.value = id
+    const revision = selectionRevision
+    const token = getToken()
+    const isCurrent = () => revision === selectionRevision && token === getToken()
+    try {
+      isSelecting.value = true
+      const story = await getBridge().readStory(id, true)
+      if (isCurrent()) selectedStory.value = { id, ...story }
+    } catch (e) {
+      if (isCurrent()) selectionError.value = e instanceof Error ? e.message : '无法读取故事'
+    } finally {
+      if (isCurrent()) isSelecting.value = false
+    }
+  }
+
+  /** Explicit batch indexing still processes every local story. */
+  async function listAllStories(): Promise<StoryFile[]> {
+    const token = getToken()
+    const stories: StoryFile[] = []
+    let cursor: string | undefined
+    do {
+      const page = await getBridge().listStoryPage(cursor)
+      if (token !== getToken()) throw new Error('登录状态已更改')
+      if (page.canPrepare === false || page.preparationMode === 'durable') throw new Error('此网关尚未开放剧本准备')
+      stories.push(...page.stories)
+      cursor = page.nextCursor ?? undefined
+    } while (cursor)
+    return stories
   }
 
   /**
@@ -73,10 +201,10 @@ export const useStoryStore = defineStore('story', () => {
   }
 
   async function indexAllStories(): Promise<{ ok: boolean; total: number; errors: string[] }> {
-    await loadStories()
+    const stories = await listAllStories()
     const errors: string[] = []
     let total = 0
-    for (const story of storyFiles.value) {
+    for (const story of stories) {
       const result = await indexStoryForRag(story.id)
       if (result.ok) {
         total += result.indexed || 0
@@ -91,7 +219,21 @@ export const useStoryStore = defineStore('story', () => {
     storyFiles,
     isLoading,
     error,
+    nextCursor,
+    canPrepare,
+    preparationMode,
+    submitStoryPreparation,
+    refreshStoryPreparation,
+    selectedStory,
+    selectedStoryId,
+    isSelecting,
+    selectionError,
+    resetLibrary,
+    clearSelection,
+    selectStory,
     loadStories,
+    loadMoreStories,
+    listAllStories,
     importStory,
     deleteStory,
     indexStoryForRag,

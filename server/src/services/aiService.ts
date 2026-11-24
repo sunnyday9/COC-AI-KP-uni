@@ -5,8 +5,8 @@ import {
   type LLMProtocol,
   type ModelOption,
 } from '../../../shared/constants/providers.js'
-import { getAiConfig } from './settingsService.js'
-import { isMockAiMode } from '../config.js'
+import { getAiConfig, getSharedAiConfig } from './settingsService.js'
+import { DEPLOYMENT_MODE, isMockAiMode } from '../config.js'
 import { mockChat, mockChatForAgent, mockChatForRag, mockListModels } from './mockAi.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { safeOutboundFetch } from '../utils/safeOutboundFetch.js'
@@ -78,8 +78,8 @@ export async function withRequestTimeout<T>(p: Promise<T>, label: string): Promi
  * without requiring settings.ai.model to be set — mirrors the original
  * invokeChat's `model: model || ai.model` precedence.
  */
-function resolveAiConfig(userId: number, modelOverride?: string): { config: AIProviderConfig; protocol: LLMProtocol } {
-  const ai = getAiConfig(userId)
+async function resolveAiConfig(userId: number, modelOverride?: string): Promise<{ config: AIProviderConfig; protocol: LLMProtocol }> {
+  const ai = DEPLOYMENT_MODE === 'shared-accounts' ? await getSharedAiConfig(userId) : getAiConfig(userId)
   const protocol = ai.protocol as LLMProtocol
   if (!protocol) throw new BadRequestError('请先在设置中配置 AI 协议')
   if (!ai.model && !modelOverride) throw new BadRequestError('请先在设置中选择或输入模型名称')
@@ -145,7 +145,7 @@ export async function chat(userId: number, body: ChatBody): Promise<ChatResult> 
     return mockChat(body)
   }
 
-  const { config } = resolveAiConfig(userId)
+  const { config } = await resolveAiConfig(userId)
   const temp = body.temperature ?? config.temperature ?? 0.7
   const maxTokens = body.maxTokens ?? config.maxTokens ?? 2048
   const stream = !!body.stream
@@ -192,7 +192,7 @@ export async function chatForAgent(
     return mockChatForAgent(messages, !!params.stream, params.onChunk)
   }
 
-  const { config } = resolveAiConfig(userId)
+  const { config } = await resolveAiConfig(userId)
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
   const stream = !!params.stream
@@ -242,7 +242,7 @@ export async function chatForRag(
     return mockChatForRag(messages)
   }
 
-  const { config } = resolveAiConfig(userId, params.model)
+  const { config } = await resolveAiConfig(userId, params.model)
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
 
@@ -302,7 +302,7 @@ export async function listModels(userId: number, purpose = 'chat'): Promise<Mode
     // One deterministic option so the settings page model picker works.
     return mockListModels()
   }
-  const ai = getAiConfig(userId)
+  const ai = DEPLOYMENT_MODE === 'shared-accounts' ? await getSharedAiConfig(userId) : getAiConfig(userId)
   const protocol = ai.protocol as LLMProtocol
   if (!protocol) return []
   const configuredBaseUrl = (ai.baseUrl || resolveProtocolDefaultBaseUrl(protocol)).replace(/\/$/, '')

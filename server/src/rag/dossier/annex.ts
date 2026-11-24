@@ -28,11 +28,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PDFDocument, PDFName, PDFRawStream, PDFDict, PDFObject, decodePDFRawStream } from 'pdf-lib'
-import { DOSSIER_DATA_DIR } from '../../config.js'
 import { chatForRag } from '../../services/aiService.js'
 import { getAiConfig } from '../../services/settingsService.js'
 import { readStoryFileBytes } from '../../services/storyService.js'
-import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../../utils/jsonArtifact.js'
+import { createJsonArtifactPath, isInternalJsonArtifactPath, replaceJsonArtifact } from '../../utils/jsonArtifact.js'
+import { findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact, storyArtifactDirectory } from '../../services/storyArtifacts.js'
 import { BadRequestError } from '../../utils/errors.js'
 import type { ChatMessage } from '../../services/llm/types.js'
 import {
@@ -481,18 +481,19 @@ function edgeKey(from: string, to: string): string {
 
 /** annex 文件路径：白名单 sanitize + resolve 边界双保险（同 dossier 文件）。 */
 function annexFiles(userId: number, scriptId: string): string[] {
-  return findJsonArtifactPaths(path.join(DOSSIER_DATA_DIR, String(userId)), scriptId, { suffix: '.annex.json' })
+  return findStoryArtifacts('annex', userId, scriptId)
 }
 
 export async function persistAnnex(userId: number, annex: AnnexFile): Promise<void> {
-  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  const dir = storyArtifactDirectory('annex', userId)
   await fs.mkdir(dir, { recursive: true })
   const existing = annexFiles(userId, annex.scriptId)
   const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(dir, '.annex.json')
-  await fs.writeFile(file, JSON.stringify(annex, null, 2), 'utf-8')
+  await replaceJsonArtifact(file, JSON.stringify(annex, null, 2))
   for (const oldPath of existing) {
     if (oldPath !== file) await fs.unlink(oldPath).catch(() => undefined)
   }
+  rememberStoryArtifact('annex', userId, annex.scriptId, file)
 }
 
 export async function loadAnnex(userId: number, scriptId: string): Promise<AnnexFile | null> {
@@ -501,7 +502,7 @@ export async function loadAnnex(userId: number, scriptId: string): Promise<Annex
   try {
     const raw = await fs.readFile(file, 'utf-8')
     const parsed = JSON.parse(raw) as AnnexFile
-    return parsed && typeof parsed === 'object' ? parsed : null
+    return parsed?.scriptId === scriptId ? parsed : null
   } catch {
     return null
   }
@@ -513,6 +514,7 @@ export async function deleteAnnex(userId: number, scriptId: string): Promise<boo
   for (const file of files) {
     await fs.unlink(file).then(() => { deleted = true }).catch(() => undefined)
   }
+  forgetStoryArtifact('annex', userId, scriptId)
   return deleted
 }
 

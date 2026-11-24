@@ -39,30 +39,51 @@ export async function parseDocx(buffer: Buffer): Promise<string> {
   return (result?.value || '').trim()
 }
 
+interface EpubSpineRef {
+  '@'?: { idref?: string }
+}
+
 /**
  * Parse EPUB buffer to plain text (chapter contents concatenated).
  * Uses epub2 which provides a clean Promise-based API.
  */
-export async function parseEpub(buffer: Buffer): Promise<string> {
+export async function parseEpub(buffer: Buffer, requireComplete = false): Promise<string> {
   const { createTempFile } = await getTempFileHelper()
   const tmpPath = await createTempFile(buffer, '.epub')
   try {
-    const epubMod = await import('epub2')
-    const EPub = (epubMod as { default?: unknown; EPub?: unknown }).default || (epubMod as { EPub?: unknown }).EPub
-    const epub = await (EPub as { createAsync: (p: string) => Promise<{ flow?: { id?: string }[]; getChapter: (id: string, cb: (err: unknown, data?: string) => void) => void }> }).createAsync(tmpPath)
+    const { EPub } = await import('epub2')
+    class CompleteEPub extends EPub {
+      override parseSpine(spine: { itemref?: EpubSpineRef | EpubSpineRef[] }): void {
+        // epub2 drops unresolved references before exposing the chapter flow.
+        const { itemref = [] } = spine
+        const refs = Array.isArray(itemref) ? itemref : [itemref]
+        for (const ref of refs) {
+          const id = ref['@']?.idref
+          if (!id || !Object.hasOwn(this.manifest, id)) {
+            this.emit('error', new Error('EPUB spine references a missing manifest entry'))
+            return
+          }
+        }
+        super.parseSpine(spine)
+      }
+    }
+    const Parser = requireComplete ? CompleteEPub : EPub
+    const epub: InstanceType<typeof EPub> = await Parser.createAsync(tmpPath)
     const flow = epub.flow || []
     const texts: string[] = []
     for (const chapter of flow) {
-      if (!chapter.id) continue
+      const id = chapter.id
+      if (!id) continue
       try {
         const html = await new Promise<string | undefined>((resolve, reject) => {
-          epub.getChapter(chapter.id as string, (err, data) => {
+          epub.getChapter(id, (err, data) => {
             if (err) reject(err)
             else resolve(data)
           })
         })
         if (html) texts.push(stripHtml(html))
-      } catch {
+      } catch (error) {
+        if (requireComplete) throw error
         // Skip unreadable chapters
       }
     }
@@ -140,7 +161,8 @@ interface PdfOcrImage {
   image: number
 }
 
-interface PdfOcrTimeLimits {
+interface PdfOcrOptions {
+  requireComplete?: boolean
   totalOcrTimeLimitMs?: number
   imageOcrTimeLimitMs?: number
 }
@@ -161,10 +183,11 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, limit: 'total' |
   })
 }
 
-export async function parsePdfWithOcr(dataBuffer: Buffer, timeLimits: PdfOcrTimeLimits = {}): Promise<string> {
+export async function parsePdfWithOcr(dataBuffer: Buffer, options: PdfOcrOptions = {}): Promise<string> {
   // Decide whether the image/OCR pass is allowed before any PDF parsing. The
   // text-layer parse still runs so oversized PDFs retain their readable text.
   const exceedsPdfOcrSizeLimit = dataBuffer.length > MAX_PDF_OCR_BYTES
+  if (options.requireComplete && exceedsPdfOcrSizeLimit) throw new Error('PDF exceeds OCR file-size limit')
   const { PDFParse } = await import('pdf-parse')
   // pdf-parse can transfer/detach its input while initializing its worker.
   // Give it a copy so the original upload bytes remain available to pdf-lib.
@@ -177,9 +200,10 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, timeLimits: PdfOcrTime
   let safetySkipCount = 0
   let timeLimitDiagnostic = ''
   const diagnostics: string[] = []
-  const totalOcrTimeLimitMs = timeLimits.totalOcrTimeLimitMs ?? PDF_OCR_TIME_LIMIT_MS
-  const imageOcrTimeLimitMs = timeLimits.imageOcrTimeLimitMs ?? PDF_OCR_IMAGE_TIME_LIMIT_MS
+  const totalOcrTimeLimitMs = options.totalOcrTimeLimitMs ?? PDF_OCR_TIME_LIMIT_MS
+  const imageOcrTimeLimitMs = options.imageOcrTimeLimitMs ?? PDF_OCR_IMAGE_TIME_LIMIT_MS
   const recordSafetySkip = (page: number, image: number, reason: string) => {
+    if (options.requireComplete) throw new Error(`Page ${page} image ${image}: ${reason}`)
     safetySkipCount += 1
     if (safetySkipDetails.length < MAX_OCR_DIAGNOSTIC_DETAILS) {
       safetySkipDetails.push(`Page ${page} image ${image}: ${reason}.`)
@@ -250,7 +274,8 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, timeLimits: PdfOcrTime
               // types the argument as PDFRawStream, so cast only at this call.
               const decoded = decodePDFRawStream({ dict: obj.dict, contents: bytes } as unknown as Parameters<typeof decodePDFRawStream>[0])
               bytes = Buffer.from((decoded.getBytes as (length?: number, forceClamped?: boolean) => Uint8Array)())
-            } catch {
+            } catch (error) {
+              if (options.requireComplete) throw error
               continue
             }
           }
@@ -267,7 +292,10 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, timeLimits: PdfOcrTime
 
         const isJpeg = bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8
         const isPng = bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
-        if (!isJpeg && !isPng) continue
+        if (!isJpeg && !isPng) {
+          if (options.requireComplete) throw new Error('PDF image format is unsupported for OCR')
+          continue
+        }
         totalImageBytes += bytes.length
         imageBuffers.push({ bytes, page: pageIndex + 1, image: pageImageIndex })
       }
@@ -315,6 +343,7 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, timeLimits: PdfOcrTime
           if (!worker) {
             void workerPromise.then((lateWorker) => lateWorker.terminate()).catch(() => {})
           }
+          if (options.requireComplete) throw error
         } else {
           throw error
         }
@@ -327,7 +356,8 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, timeLimits: PdfOcrTime
         mainText += '\n\n--- 以下为 PDF 内嵌插图中识别的内容（场景结构图等）---\n\n' + imageTexts.join('\n\n')
       }
     }
-  } catch {
+  } catch (error) {
+    if (options.requireComplete) throw error
     // 内嵌图提取或 OCR 失败时仅保留正文
   }
   return appendDiagnostics()

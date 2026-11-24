@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
+import syncFs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
@@ -64,10 +65,19 @@ describe('storyDossierService', () => {
     await fs.mkdir(userDir, { recursive: true })
     await fs.writeFile(path.join(userDir, 'corrupt.json'), '{', 'utf-8')
 
-    expect(await listDossiersWithDiagnostics(userId, 'missing-story')).toMatchObject({
-      items: [],
-      failureReason: 'artifact_scan_incomplete',
-    })
+    const syncScan = vi.spyOn(syncFs, 'readdirSync')
+    const asyncScan = vi.spyOn(fs, 'readdir')
+    try {
+      expect(await listDossiersWithDiagnostics(userId, 'missing-story')).toMatchObject({
+        items: [],
+        failureReason: 'artifact_scan_incomplete',
+      })
+      expect(syncScan).not.toHaveBeenCalledWith(userDir)
+      expect(asyncScan).toHaveBeenCalledExactlyOnceWith(userDir)
+    } finally {
+      syncScan.mockRestore()
+      asyncScan.mockRestore()
+    }
     expect(await listDossiersWithDiagnostics(userId + 1, 'missing-story')).toMatchObject({
       items: [],
       failureReason: null,

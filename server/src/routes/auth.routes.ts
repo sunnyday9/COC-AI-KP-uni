@@ -32,8 +32,8 @@ router.post('/login', async (req, res) => {
   }
 })
 
-router.get('/me', requireAuth, (req: AuthRequest, res) => {
-  const user = authService.getUserById(req.userId as number)
+router.get('/me', requireAuth, async (req: AuthRequest, res) => {
+  const user = await authService.getUserById(req.userId as number)
   if (!user) {
     res.status(401).json({ error: 'user not found' })
     return

@@ -24,6 +24,7 @@
  * 门禁安全边界：轻消费方不背重依赖链，RoomService → 本模块同样走动态 import）。
  * 任何失败一律静默降级为空串/空块——回合不因知识装配中断（既有约定）。
  */
+import { SHARED_ROOMS_ENABLED } from '../config.js'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { OPENING_RAG_QUERY, type StoryWorkflow } from './kpPromptService.js'
@@ -285,8 +286,11 @@ async function fetchTurnSupplement(
 ): Promise<string> {
   if (input.workflow !== 'dossier' || !input.storyId) return ''
   try {
-    const { getSettings } = await import('./settingsService.js')
-    if (getSettings(input.ownerId)?.rag?.supplement === false) return ''
+    const accountSettings = await import('./settingsService.js')
+    const settings = SHARED_ROOMS_ENABLED
+      ? await accountSettings.getGatewaySettings(input.ownerId)
+      : accountSettings.getSettings(input.ownerId)
+    if (settings?.rag?.supplement === false) return ''
     const { buildSupplement, defaultRewrite } = await import('../rag/supplementService.js')
     const { buildGetEmbeddingForUser } = await import('./ragService.js')
     const res = await buildSupplement(

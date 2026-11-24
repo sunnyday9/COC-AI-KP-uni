@@ -1,3 +1,6 @@
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { RAG_DATA_DIR } from '../../config.js'
 // @vitest-environment node
 /**
  * RAG route tests (api-contract §8): supertest against the real app.
@@ -166,6 +169,67 @@ describe('rag routes', () => {
     // 块带字符偏移（M1-T3 契约：场景归属在查询期用偏移现算）
     expect(typeof idx.body.chunks[0].metadata?.start).toBe('number')
     expect(idx.body.chunks[0].hasVector).toBe(true)
+  })
+
+  it('pages the room picker through legacy and current owner-scoped indexed stories', async () => {
+    const app = createApp()
+    const owner = await registerToken('rag_picker_owner')
+    const other = await registerToken('rag_picker_outsider')
+    const account = await request(app).get('/api/auth/me').set(auth(owner)).expect(200)
+    const dir = join(RAG_DATA_DIR, String(account.body.user.id), 'rag_index')
+    await mkdir(dir, { recursive: true })
+    const oldStories = [
+      { scriptId: 'old-a.txt', storyName: '旧剧本甲', indexedAt: 1234, docs: [{ id: 'a' }] },
+      { scriptId: 'old-b.txt', storyName: '旧剧本乙', indexedAt: 1234, docs: [{ id: 'b' }] },
+    ]
+    await Promise.all(oldStories.map((story) => writeFile(join(dir, story.scriptId + '.json'), JSON.stringify(story))))
+    const initial = await request(app).get('/api/rag/stories?limit=1').set(auth(owner)).expect(200)
+    expect(initial.body).toEqual({
+      stories: [{ storyId: 'old-b.txt', name: '旧剧本乙', chunkCount: 1, indexedAt: 1234 }],
+      nextCursor: expect.any(String),
+    })
+    await request(app).get('/api/rag/stories').query({ limit: 1, cursor: initial.body.nextCursor })
+      .set(auth(other)).expect(200, { stories: [], nextCursor: null })
+
+    const current = await uploadStory(owner, 'current-picker.md')
+    await request(app).post('/api/rag/index').set(auth(owner)).send({ scriptId: current }).expect(200)
+    const first = await request(app).get('/api/rag/stories?limit=1').set(auth(owner)).expect(200)
+    expect(first.body.stories[0].storyId).toBe(current)
+    const oldFirst = await request(app).get('/api/rag/stories').query({ limit: 1, cursor: first.body.nextCursor })
+      .set(auth(owner)).expect(200)
+    expect(oldFirst.body.stories[0].storyId).toBe('old-b.txt')
+    const last = await request(app).get('/api/rag/stories').query({ limit: 1, cursor: oldFirst.body.nextCursor })
+      .set(auth(owner)).expect(200)
+    expect(last.body).toEqual({
+      stories: [{ storyId: 'old-a.txt', name: '旧剧本甲', chunkCount: 1, indexedAt: 1234 }],
+      nextCursor: null,
+    })
+    expect((await request(app).get('/api/rag/stories').set(auth(owner)).expect(200)).body).toHaveLength(3)
+    await request(app).delete('/api/rag/index/' + current).set(auth(owner)).expect(200)
+    const afterDelete = await request(app).get('/api/rag/stories?limit=1').set(auth(owner)).expect(200)
+    expect(afterDelete.body.stories[0].storyId).toBe('old-b.txt')
+  })
+
+  it('keeps valid picker entries available alongside malformed artifact metadata', async () => {
+    const app = createApp()
+    const owner = await registerToken('rag_picker_corrupt')
+    const account = await request(app).get('/api/auth/me').set(auth(owner)).expect(200)
+    const dir = join(RAG_DATA_DIR, String(account.body.user.id), 'rag_index')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'valid.json'), JSON.stringify({
+      scriptId: 'valid.txt', storyName: '可选故事', indexedAt: 100, docs: [{}],
+    }))
+    await writeFile(join(dir, 'bad-name.json'), JSON.stringify({
+      scriptId: 'bad-name.txt', storyName: { title: 'not a string' }, indexedAt: 200, docs: [{}],
+    }))
+    await writeFile(join(dir, 'bad-count.json'), JSON.stringify({
+      scriptId: 'bad-count.txt', storyName: '坏信息块数', indexedAt: 300, docs: { length: 'many' },
+    }))
+
+    await request(app).get('/api/rag/stories?limit=1').set(auth(owner)).expect(200, {
+      stories: [{ storyId: 'valid.txt', name: '可选故事', chunkCount: 1, indexedAt: 100 }],
+      nextCursor: null,
+    })
   })
 
   it('delete removes the index', async () => {

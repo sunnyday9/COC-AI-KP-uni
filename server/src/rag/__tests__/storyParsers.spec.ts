@@ -4,8 +4,9 @@
  * PDF parsing uses an in-memory pdf-lib fixture, and embedded-image OCR uses
  * a hermetic tesseract.js mock so tests need neither traineddata nor network.
  */
+import JSZip from 'jszip'
 import { beforeEach, describe, it, expect, vi } from 'vitest'
-import { parseHtml, parseByExtension, parsePdfWithOcr } from '../storyParsers.js'
+import { parseEpub, parseHtml, parseByExtension, parsePdfWithOcr } from '../storyParsers.js'
 import { makePdfWithEmbeddedImages, makePdfWithText, makePdfWithTextAndEmbeddedImages } from '../../../test/helpers/pdfFixture.js'
 
 const { mockTesseractModuleLoad, mockCreateWorker, mockRecognize, mockTerminate } = vi.hoisted(() => ({
@@ -30,6 +31,35 @@ beforeEach(() => {
   mockTerminate.mockReset().mockResolvedValue(undefined)
   mockCreateWorker.mockReset().mockResolvedValue({ recognize: mockRecognize, terminate: mockTerminate })
 })
+
+async function makeEpub(secondChapter: 'readable' | 'missing-file' | 'missing-manifest'): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file('mimetype', 'application/epub+zip')
+  zip.file('META-INF/container.xml', `
+    <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+      <rootfiles><rootfile full-path="OPS/story.opf" media-type="application/oebps-package+xml"/></rootfiles>
+    </container>
+  `)
+  zip.file('OPS/story.opf', `
+    <package version="3.0" unique-identifier="book" xmlns="http://www.idpf.org/2007/opf">
+      <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+        <dc:title>Story fixture</dc:title><dc:language>en</dc:language><dc:identifier id="book">story-fixture</dc:identifier>
+      </metadata>
+      <manifest>
+        <item id="first" href="first.xhtml" media-type="application/xhtml+xml"/>
+        <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+        ${secondChapter === 'missing-manifest' ? '' : '<item id="second" href="second.xhtml" media-type="application/xhtml+xml"/>'}
+      </manifest>
+      <spine><itemref idref="first"/><itemref idref="second"/></spine>
+    </package>
+  `)
+  zip.file('OPS/first.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>First chapter</p></body></html>')
+  zip.file('OPS/nav.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><body><nav><a href="first.xhtml">First chapter</a></nav></body></html>')
+  if (secondChapter !== 'missing-file') {
+    zip.file('OPS/second.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Second chapter</p></body></html>')
+  }
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
 
 describe('rag/storyParsers', () => {
   describe('parseHtml', () => {
@@ -66,6 +96,23 @@ describe('rag/storyParsers', () => {
       const result = await parseByExtension('.htm', html)
       expect(result).toContain('HTM file content')
     })
+  })
+
+  it('reads a complete EPUB in spine order', async () => {
+    const epub = await makeEpub('readable')
+    await expect(parseEpub(epub, true)).resolves.toBe('First chapter\n\nSecond chapter')
+  })
+
+  it('rejects an unreadable EPUB chapter when complete source text is required', async () => {
+    const epub = await makeEpub('missing-file')
+    await expect(parseEpub(epub)).resolves.toBe('First chapter')
+    await expect(parseEpub(epub, true)).rejects.toThrow('Reading archive failed')
+  })
+
+  it('rejects an EPUB spine reference missing from the manifest in complete mode', async () => {
+    const epub = await makeEpub('missing-manifest')
+    await expect(parseEpub(epub)).resolves.toBe('First chapter')
+    await expect(parseEpub(epub, true)).rejects.toThrow('EPUB spine references a missing manifest entry')
   })
 
   describe('parsePdfWithOcr', () => {
@@ -147,6 +194,20 @@ describe('rag/storyParsers', () => {
 
       expect(text).toContain('Text remains after OCR fails')
       expect(mockCreateWorker).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects PDF recognition failures when complete source text is required', async () => {
+      const pdf = await makePdfWithTextAndEmbeddedImages('Text remains without OCR', [['01']])
+      mockRecognize.mockRejectedValueOnce(new Error('recognition failed'))
+      await expect(parsePdfWithOcr(pdf, { requireComplete: true })).rejects.toThrow('recognition failed')
+    })
+
+    it('rejects timed-out PDF text when complete source text is required', async () => {
+      const pdf = await makePdfWithTextAndEmbeddedImages('Text remains without OCR', [['01']])
+      mockRecognize.mockImplementationOnce(() => new Promise(() => {}))
+      await expect(parsePdfWithOcr(pdf, {
+        requireComplete: true, totalOcrTimeLimitMs: 1_000, imageOcrTimeLimitMs: 5,
+      })).rejects.toThrow('PDF image OCR time limit reached')
     })
 
     it('extracts the text layer from a pdf-lib generated PDF (no OCR)', async () => {

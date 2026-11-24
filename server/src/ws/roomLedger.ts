@@ -11,13 +11,11 @@
  * 规划在这里。wire 帧格式不变。
  */
 import type { RoomEvent, RoomService } from '../services/roomService.js'
-import { getRoom, isRoomMember, joinRoom } from '../services/roomService.js'
+import { getRoom, hasRoomCapacity, isRoomMember, joinRoom } from '../services/roomService.js'
+import type { FrameRecipient } from './sendFrame.js'
 
 /** 订阅者的最小传输面（WebSocket 的结构子集）。readyState === 1 = OPEN。 */
-export interface RoomSubscriber {
-  readonly readyState: number
-  send(frame: string): void
-}
+export type RoomSubscriber = FrameRecipient
 
 /** socket → 订阅的房间集合（一个连接可订阅多房间）。 */
 const socketRooms = new Map<RoomSubscriber, Set<string>>()
@@ -26,7 +24,7 @@ const socketRooms = new Map<RoomSubscriber, Set<string>>()
 const roomSockets = new Map<string, Set<RoomSubscriber>>()
 
 /** 已挂接扇出的 RoomService 实例（防重复 subscribe 产生重复回调）。 */
-const fanoutAttached = new Set<object>()
+const fanoutAttached = new WeakSet<RoomService>()
 
 /* ═══════════════ 订阅注册表 ═══════════════ */
 
@@ -46,8 +44,12 @@ export function subscribeSocket(socket: RoomSubscriber, roomId: string): void {
 }
 
 export function unsubscribeSocket(socket: RoomSubscriber, roomId: string): void {
-  socketRooms.get(socket)?.delete(roomId)
-  roomSockets.get(roomId)?.delete(socket)
+  const rooms = socketRooms.get(socket)
+  rooms?.delete(roomId)
+  if (rooms?.size === 0) socketRooms.delete(socket)
+  const sockets = roomSockets.get(roomId)
+  sockets?.delete(socket)
+  if (sockets?.size === 0) roomSockets.delete(roomId)
 }
 
 /** 连接关闭：清理该 socket 的全部订阅。 */
@@ -55,15 +57,18 @@ export function cleanupSocket(socket: RoomSubscriber): void {
   const rooms = socketRooms.get(socket)
   if (rooms) {
     for (const roomId of rooms) {
-      roomSockets.get(roomId)?.delete(socket)
+      unsubscribeSocket(socket, roomId)
     }
   }
-  socketRooms.delete(socket)
 }
 
 /** 房间当前的订阅者快照（拷贝，扇出时可安全遍历）。 */
 export function subscribersOf(roomId: string): RoomSubscriber[] {
   return [...(roomSockets.get(roomId) ?? [])]
+}
+
+export function hasSubscribers(roomId: string): boolean {
+  return roomSockets.has(roomId)
 }
 
 /** socket 订阅的房间 id 快照（断线清理时枚举——cleanupSocket 会清空注册表，须先取）。 */
@@ -83,13 +88,17 @@ export function ensureFanout(room: RoomService, listener: (event: RoomEvent, seq
 /* ═══════════════ 帧规划（纯决策，wire 帧编码在 adapter） ═══════════════ */
 
 /** join 规划：成员资格（领域）→ 实例（不存在则 materialize——懒激活）。 */
-export function planJoin(
+export async function planJoin(
   roomId: string,
   userId: number,
   username: string,
-): { ok: true; room: RoomService } | { ok: false; error: string } {
-  const room = joinRoom(roomId, userId, username)
-  if (!room) return { ok: false, error: 'not a room member' }
+): Promise<{ ok: true; room: RoomService } | { ok: false; error: string }> {
+  if (!hasRoomCapacity(roomId)) return { ok: false, error: '服务器活跃房间已满，请稍后重试。' }
+  const room = await joinRoom(roomId, userId, username)
+  if (!room) return {
+    ok: false,
+    error: hasRoomCapacity(roomId) ? 'not a room member' : '\u670d\u52a1\u5668\u6d3b\u8dc3\u623f\u95f4\u5df2\u6ee1\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002',
+  }
   return { ok: true, room }
 }
 
@@ -99,8 +108,8 @@ export type SyncPlan =
   | { kind: 'delta'; room: RoomService; events: { seq: number; event: RoomEvent }[] }
 
 /** sync 规划：成员 gate → 活跃性 → 增量/全量（getEventsSince null 或空 = 缺口过大/无增量 → 全量兜底）。 */
-export function planSync(roomId: string, userId: number, lastSeq: number): SyncPlan {
-  if (!roomId || !isRoomMember(roomId, userId)) return { kind: 'error', error: 'not a room member' }
+export async function planSync(roomId: string, userId: number, lastSeq: number): Promise<SyncPlan> {
+  if (!roomId || !await isRoomMember(roomId, userId)) return { kind: 'error', error: 'not a room member' }
   const room = getRoom(roomId)
   if (!room) return { kind: 'error', error: 'room not active' }
   const deltas = room.getEventsSince(lastSeq)
@@ -109,11 +118,11 @@ export function planSync(roomId: string, userId: number, lastSeq: number): SyncP
 }
 
 /** action 规划：成员 gate → 活跃实例（动作串行入队由调用方在实例上执行）。 */
-export function planAction(
+export async function planAction(
   roomId: string,
   userId: number,
-): { ok: true; room: RoomService } | { ok: false; error: string } {
-  if (!roomId || !isRoomMember(roomId, userId)) return { ok: false, error: 'not a room member' }
+): Promise<{ ok: true; room: RoomService } | { ok: false; error: string }> {
+  if (!roomId || !await isRoomMember(roomId, userId)) return { ok: false, error: 'not a room member' }
   const room = getRoom(roomId)
   if (!room) return { ok: false, error: 'room not active' }
   return { ok: true, room }

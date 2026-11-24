@@ -159,12 +159,26 @@ afterEach(() => {
 })
 
 describe('#86 reapStaleRooms — 只清 stale 房', () => {
+  it('skips periodic snapshots for idle rooms and persists the next change', async () => {
+    const room = seedMultiRoom('idle_snapshots')
+    const active = await getOrCreateRoom(room.roomId, room.userId, 'idle_snapshots')
+    const version = getRoomRowVersion(room.roomId)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(getRoomRowVersion(room.roomId)).toBe(version)
+    await active.submitPlayerChat(room.userId, 'lobby message')
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(getRoomRowVersion(room.roomId)).toBe(version + 1)
+  })
+
   it('超 TTL 空闲的逐出（最终态已落库、可重物化），enqueue 保活的活房保留', async () => {
     const stale = await makeSoloRoom('reaper_stale', 'story_r1')
     const fresh = await makeSoloRoom('reaper_fresh', 'story_r2')
-    const staleRoom = getOrCreateRoom(stale.roomId, stale.userId, 'reaper_stale', 'story_r1')
-    const freshRoom = getOrCreateRoom(fresh.roomId, fresh.userId, 'reaper_fresh', 'story_r2')
-    staleRoom.submitPlayerChat(stale.userId, 'TTL 回收前的最后一句')
+    const staleRoom = await getOrCreateRoom(stale.roomId, stale.userId, 'reaper_stale', 'story_r1')
+    const freshRoom = await getOrCreateRoom(fresh.roomId, fresh.userId, 'reaper_fresh', 'story_r2')
+    staleRoom.appendMessage(
+      { id: 'stale-last-message', timestamp: Date.now(), role: 'player', playerName: 'reaper_stale', content: 'TTL 回收前的最后一句' },
+      { userId: stale.userId, roleName: 'reaper_stale' },
+    )
 
     // 推进到 TTL 之外；fresh 房此刻有动作（enqueue 在入队时 bump lastActivityAt）
     vi.setSystemTime(BASE + TTL_MS + 60_000)
@@ -180,7 +194,7 @@ describe('#86 reapStaleRooms — 只清 stale 房', () => {
     // 逐出前最终态已落库（updateRoomStateSnapshot bump version）
     expect(getRoomRowVersion(stale.roomId)).toBeGreaterThan(versionBefore)
     // 数据无损：重物化拿回消息流（懒激活自愈，getOrCreateRoom 注释 :788-789 依赖此路径）
-    const restored = getOrCreateRoom(stale.roomId, stale.userId, 'reaper_stale', 'story_r1')
+    const restored = await getOrCreateRoom(stale.roomId, stale.userId, 'reaper_stale', 'story_r1')
     expect(restored.getMessages().some((m) => m.content.includes('TTL 回收前'))).toBe(true)
   })
 
@@ -188,9 +202,9 @@ describe('#86 reapStaleRooms — 只清 stale 房', () => {
     const solo = await makeSoloRoom('reaper_solo', 'story_r3')
     const multi = seedMultiRoom('reaper_multi')
     const ended = await makeSoloRoom('reaper_ended', 'story_r4')
-    getOrCreateRoom(solo.roomId, solo.userId, 'reaper_solo', 'story_r3')
-    getOrCreateRoom(multi.roomId, multi.userId, 'reaper_multi', 'story_rm')
-    const endedRoom = getOrCreateRoom(ended.roomId, ended.userId, 'reaper_ended', 'story_r4')
+    await getOrCreateRoom(solo.roomId, solo.userId, 'reaper_solo', 'story_r3')
+    await getOrCreateRoom(multi.roomId, multi.userId, 'reaper_multi', 'story_rm')
+    const endedRoom = await getOrCreateRoom(ended.roomId, ended.userId, 'reaper_ended', 'story_r4')
     endedRoom.setEnding({ outcome: 'victory', title: '落幕', summary: '调查结束。' })
 
     vi.setSystemTime(BASE + TTL_MS + 60_000)
@@ -201,7 +215,7 @@ describe('#86 reapStaleRooms — 只清 stale 房', () => {
     expect(getRoom(multi.roomId)).toBeNull()
     expect(getRoom(ended.roomId)).toBeNull()
     // ended 房重物化仍是 ended（列权威），不会复活成进行中
-    const restoredEnded = getOrCreateRoom(ended.roomId, ended.userId, 'reaper_ended', 'story_r4')
+    const restoredEnded = await getOrCreateRoom(ended.roomId, ended.userId, 'reaper_ended', 'story_r4')
     expect(restoredEnded.getPhase()).toBe('ended')
   })
 })
@@ -209,7 +223,7 @@ describe('#86 reapStaleRooms — 只清 stale 房', () => {
 describe('#86 装配级错误安全 — reap 不打崩进程', () => {
   it('persistSnapshot 落库抛错：不同步抛、无 unhandledRejection、dispose/逐出仍执行', async () => {
     const { userId, roomId } = await makeSoloRoom('reaper_dberr', 'story_r5')
-    getOrCreateRoom(roomId, userId, 'reaper_dberr', 'story_r5')
+    await getOrCreateRoom(roomId, userId, 'reaper_dberr', 'story_r5')
     vi.setSystemTime(BASE + TTL_MS + 60_000)
 
     const unhandled: unknown[] = []
@@ -233,7 +247,7 @@ describe('#86 装配级错误安全 — reap 不打崩进程', () => {
 
   it('startRoomReaper 周期触发 reap；回调抛错被吞且 interval 存活；clearInterval 停扫', async () => {
     const { userId, roomId } = await makeSoloRoom('reaper_timer', 'story_r6')
-    const room = getOrCreateRoom(roomId, userId, 'reaper_timer', 'story_r6')
+    const room = await getOrCreateRoom(roomId, userId, 'reaper_timer', 'story_r6')
 
     const handle = startRoomReaper(1_000)
     // 第一跳：isStale 同步炸——startRoomReaper 的 try/catch 必须兜住，房间不被误清
@@ -252,7 +266,7 @@ describe('#86 装配级错误安全 — reap 不打崩进程', () => {
     // 停扫：clearInterval 后新 stale 房不再被回收
     clearInterval(handle)
     const later = await makeSoloRoom('reaper_stopped', 'story_r7')
-    getOrCreateRoom(later.roomId, later.userId, 'reaper_stopped', 'story_r7')
+    await getOrCreateRoom(later.roomId, later.userId, 'reaper_stopped', 'story_r7')
     vi.setSystemTime(BASE + 2 * TTL_MS)
     await vi.advanceTimersByTimeAsync(5_000)
     expect(getRoom(later.roomId)).not.toBeNull()

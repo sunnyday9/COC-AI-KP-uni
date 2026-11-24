@@ -10,8 +10,8 @@
  *   - 一次 runKpTurn 调用内完成 ≤8 轮，LLM 工具结果不再经网络往返；
  *   - 工具结果摘要/截断策略原样保留（防长链劣化）。
  */
-import { isKpChunkStreamEnabled } from '../config.js'
-import { getAiConfig } from './settingsService.js'
+import { isKpChunkStreamEnabled, SHARED_ROOMS_ENABLED } from '../config.js'
+import { getAiConfig, getSharedAiConfig } from './settingsService.js'
 import { processToolCalls } from '../rule-engine/orchestrator.js'
 import { buildToolContext } from '../rule-engine/toolContextFactory.js'
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
@@ -288,7 +288,7 @@ export async function runKpTurn(
     turn.onOwnerChanged?.()
     return
   }
-  const ai = getAiConfig(userId)
+  const ai = SHARED_ROOMS_ENABLED ? await getSharedAiConfig(userId) : getAiConfig(userId)
   const invokeBase = buildInvokeLLM(userId, ai, {
     stream: true,
     onChunk: turn.handlers.onChunk,

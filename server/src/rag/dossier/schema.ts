@@ -17,6 +17,8 @@ export interface StoryDossier {
   scriptId: string
   storyName: string
   generatedAt: number
+  /** Identifies the dossier and its matching reveal anchors. Legacy files omit it. */
+  sourceRevision?: string
   /** LLM model id used for generation ('' when unknown). */
   generatedByModel?: string
   /** Structured layer — same shape as the COC script JSON schema. */
@@ -291,6 +293,7 @@ export function parseDossierJson(raw: string): StoryDossier | null {
     scriptId,
     storyName,
     generatedAt: typeof obj.generatedAt === 'number' ? obj.generatedAt : Date.now(),
+    ...(typeof obj.sourceRevision === 'string' ? { sourceRevision: obj.sourceRevision } : {}),
     generatedByModel: typeof obj.generatedByModel === 'string' ? obj.generatedByModel : undefined,
     scenes,
     clues,

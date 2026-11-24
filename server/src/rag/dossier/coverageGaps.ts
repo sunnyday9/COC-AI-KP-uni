@@ -22,8 +22,8 @@
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { DOSSIER_DATA_DIR } from '../../config.js'
-import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../../utils/jsonArtifact.js'
+import { createJsonArtifactPath, isInternalJsonArtifactPath, replaceJsonArtifact } from '../../utils/jsonArtifact.js'
+import { findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact, storyArtifactDirectory } from '../../services/storyArtifacts.js'
 import { assertPathInDir } from '../../utils/pathSafety.js'
 import { type DossierScene } from './schema.js'
 import { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
@@ -63,6 +63,7 @@ export interface SceneAnchor {
 export { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
 
 export interface CoverageGaps {
+  sourceRevision?: string
   storyChars: number
   sceneTextChars: number
   /** 未覆盖区间数（相邻未覆盖块已合并）。 */
@@ -329,19 +330,20 @@ export function computeSceneCoverage(gaps: CoverageGaps | null, sceneIdOrName: s
 /* ═══════════════════ 落盘 / 读取（白名单 + resolve 双保险，同 dossier/annex） ═══════════════════ */
 
 function gapsFiles(userId: number, scriptId: string): string[] {
-  return findJsonArtifactPaths(path.join(DOSSIER_DATA_DIR, String(userId)), scriptId, { suffix: '.gaps.json' })
+  return findStoryArtifacts('gaps', userId, scriptId)
 }
 
 export async function persistGaps(userId: number, gaps: CoverageGapsFile): Promise<void> {
-  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  const dir = storyArtifactDirectory('gaps', userId)
   await fs.mkdir(dir, { recursive: true })
   const existing = gapsFiles(userId, gaps.scriptId)
   const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(dir, '.gaps.json')
   const stamped: CoverageGapsFile = { ...gaps, gapsVersion: gaps.gapsVersion ?? GAPS_VERSION }
-  await fs.writeFile(file, JSON.stringify(stamped, null, 2), 'utf-8')
+  await replaceJsonArtifact(file, JSON.stringify(stamped, null, 2))
   for (const oldPath of existing) {
     if (oldPath !== file) await fs.unlink(oldPath).catch(() => undefined)
   }
+  rememberStoryArtifact('gaps', userId, gaps.scriptId, file)
 }
 
 export async function loadGaps(userId: number, scriptId: string): Promise<CoverageGapsFile | null> {
@@ -350,7 +352,7 @@ export async function loadGaps(userId: number, scriptId: string): Promise<Covera
   try {
     const raw = await fs.readFile(file, 'utf-8')
     const parsed = JSON.parse(raw) as CoverageGapsFile
-    return parsed && typeof parsed === 'object' && Array.isArray(parsed.spans) ? parsed : null
+    return parsed?.scriptId === scriptId && Array.isArray(parsed.spans) ? parsed : null
   } catch {
     return null
   }
@@ -365,7 +367,7 @@ export async function getGapsArtifactLoadFailureReason(
   userId: number,
   scriptId: string,
 ): Promise<'artifact_loading_exception' | 'artifact_scan_incomplete' | null> {
-  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  const dir = storyArtifactDirectory('gaps', userId)
   let entries: string[]
   try {
     entries = await fs.readdir(dir)
@@ -407,5 +409,6 @@ export async function deleteGaps(userId: number, scriptId: string): Promise<bool
   for (const file of files) {
     await fs.unlink(file).then(() => { deleted = true }).catch(() => undefined)
   }
+  forgetStoryArtifact('gaps', userId, scriptId)
   return deleted
 }

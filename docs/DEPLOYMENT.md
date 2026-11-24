@@ -35,7 +35,8 @@ Nginx（TLS / WebSocket 升级）
 ```
 
 - **单进程即可**：状态在内存（RoomService）+ SQLite 快照。≤100 并发房间无需 Redis。
-- 多实例触发条件（超出后引入）：活跃房间 > 100 → Redis 会话锁 + 事件总线。
+- 多主机扩展方案见 [ADR-0010](adr/0010-scale-out-deployment.md)。当前运行形态采用单个游戏进程，可将索引和档案生成隔离到同机子进程。共享房间写入和跨进程事件投递需要 ADR-0010 的后续阶段。
+- 探针：`GET /health/live` 返回进程存活状态。`GET /health/ready` 验证当前部署使用的数据库可访问。
 
 ## 4. 环境变量
 
@@ -44,6 +45,8 @@ Nginx（TLS / WebSocket 升级）
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `PORT` | 3000 | HTTP/WS 监听端口 |
+| `DEPLOYMENT_MODE` | `local` | `local` 使用 SQLite。预发布环境可用 `shared-accounts` |
+| `DATABASE_URL` | 未设 | `shared-accounts` 必设。两网关使用同一个 PostgreSQL 数据库连接地址 |
 | `DATA_DIR` | 开发：`server/data`；编译：`server/dist/server/data` | SQLite 数据库目录（`ai-kp.db`）；生产请设置为 `dist` 外的持久化绝对路径 |
 | `RAG_DATA_DIR` | 开发：`server/data/rag`；编译：`server/dist/server/data/rag` | RAG 索引文件；生产单独设置为持久化绝对路径，每用户子目录内使用 UUID 文件名 |
 | `DOSSIER_DATA_DIR` | 开发：`server/data/dossiers`；编译：`server/dist/server/data/dossiers` | 档案及 `.gaps.json` / `.annex.json` sidecar；生产单独设置为持久化绝对路径 |
@@ -51,6 +54,12 @@ Nginx（TLS / WebSocket 升级）
 | `MODELS_DIR` | 开发：`server/data/models`；编译：`server/dist/server/data/models` | 本地嵌入模型缓存；默认可重下载，需跨构建保留时单独设置持久化路径 |
 | `TESSERACT_DATA_DIR` | 开发：`server/assets/tesseract`；编译：`server/dist/server/assets/tesseract` | OCR 语言数据目录；构建会将 checked-in assets 复制到编译目录 |
 | `MAX_UPLOAD_BYTES` | 52428800（50 MiB） | stories 上传大小上限，单位为字节 |
+| `STORY_UPLOAD_CONCURRENCY` | 4 | 每游戏进程同时接收 multipart 上传的上限 |
+| `STORY_PREPARATION_WORKERS` | 0 | 设为 1 时，为每个已准入的索引或档案任务启动同机子进程 |
+| `STORY_PREPARATION_CONCURRENCY` | 2 | 每进程同时处理的索引与档案任务总上限，超限返回 HTTP 503 与 `Retry-After` |
+| `STORY_PREPARATION_TIMEOUT_MS` | 600000 | 隔离任务时限。超时后终止子进程，调用方可重试 |
+| `ROOM_ACTIVE_INSTANCES` | 1024 | 每进程活跃实例的准入上限，请用实际负载确定部署值 |
+| `KP_ACTIVE_TURNS` | 16 | 每进程并行执行的开场及玩家触发的 KP 主回合上限，同房间依序执行 |
 | `JWT_SECRET` | 开发可用本地 fallback | **生产必设且不得使用 `dev-secret-change-me`**（JWT + AES 密钥派生源） |
 | `MOCK_AI` | 未设 | `1` = 无 LLM 测试模式（**生产禁用**） |
 | `ROOM_CONTEXT_BUDGET_CHARS` | 12000 | 每个房间注入 KP 的近期对话字符上限；长期摘要与结构化状态仍会单独注入 |
@@ -88,7 +97,7 @@ Nginx（TLS / WebSocket 升级）
 
 ## 5. 数据库
 
-- 启动时按序运行 `server/src/db/migrations.ts` 中的事务迁移，并在 SQLite `PRAGMA user_version` 记录 schema 版本（当前为 6）；fresh install 与无版本号的旧库都会自动升级。
+- 启动时按序运行 `server/src/db/migrations.ts` 中的事务迁移，并在 SQLite `PRAGMA user_version` 记录 schema 版本（当前为 9）；fresh install 与无版本号的旧库都会自动升级。
 - 所有待执行迁移在一个事务中提交。失败会回滚本次升级并在 HTTP 监听前中止启动，错误包含失败版本与修复/恢复建议；比当前服务更新的数据库版本会被拒绝，服务不会尝试降级。
 - 备份：升级前停止服务，备份 `${DATA_DIR}/ai-kp.db`，以及配置的 `UPLOADS_DIR`、`RAG_DATA_DIR`、`DOSSIER_DATA_DIR` 目录；它们是独立路径，不保证位于 `DATA_DIR` 下。`MODELS_DIR` 是可重下载缓存，可按恢复时间目标选择是否备份。schema 迁移没有自动 down migration，回滚需恢复匹配版本的数据库备份。
 - **无需手动迁移**：存量文件系统剧本首次 list 时自动导入 DB 映射（脚本导入已随 #97 / ADR-0008 scripts 退役摘除）。
@@ -112,6 +121,55 @@ npm run dev:h5       # :5175（vite dev）
 
 示例中的目录应由服务账号持有或可写。若生产环境未设置 `JWT_SECRET`，或仍使用开发默认值 `dev-secret-change-me`，服务会在监听端口前退出，不会接受请求。
 
+### 6.1 双网关账号预发布环境（#113）
+
+为此环境准备独立的 PostgreSQL 数据库和登录角色。首次启动时，该角色需要在数据库默认的 schema 中建表。两网关使用同一构建产物，指向同一数据库及 schema。通过服务管理器或密钥管理系统向两进程注入相同的 `DATABASE_URL` 和强随机 `JWT_SECRET`，每套环境使用独立密钥。跨主机连接按数据库的 CA 配置 TLS，使用 `sslmode=verify-full` 验证主机与证书。
+
+在两个终端从仓库根目录分别启动。两网关同机时使用不同的端口，跨主机时端口可相同。
+
+```bash
+NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3000 npm run start --workspace=server
+NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --workspace=server
+```
+
+两个进程会在 HTTP 监听前串行初始化并验证 PostgreSQL 表结构、约束与服务角色权限。`GET /health/ready` 检查该数据库。路由范围与设置行为见 [API 契约](api-contract.md#11-实挂路由组一览与-serversrcappts-对齐9-组)。共享账号与本地 SQLite 各自持有用户和设置，存量迁移留给后续阶段。两网关需保持同一 `JWT_SECRET`，它同时用于 JWT 验证和 BYOK 密钥派生。修改它会使旧 token 和原加密 API Key 失效。
+
+验证时，通过一个网关注册，在另一网关登录，再交叉使用 token 调用 `/api/auth/me` 和读写设置。重启其中任一网关后复查。仓库另提供双网关 HTTP 测试，把 **独立、可销毁** 的 PostgreSQL 测试库连接地址注入 `TEST_SHARED_ACCOUNTS_DATABASE_URL` 后运行 `npm run test --workspace=server -- sharedAccounts.test.ts`。测试角色需能在该库新建临时 schema，测试会写入模拟用户与设置。CI 使用独立的 PostgreSQL 16 容器运行该套件。
+
+### 6.2 双网关私有剧本目录（#114）
+
+在第 6.1 节的两进程中额外注入相同的 `STORY_S3_BUCKET` 和 `STORY_S3_REGION`。自建 S3 兼容服务可设 `STORY_S3_ENDPOINT`（跨主机使用 HTTPS）及 `STORY_S3_FORCE_PATH_STYLE=true`。四个变量均未设置时仍使用第 6.1 节的账号配置。设置任一变量时，启动会检查必填配置。通过 AWS SDK 默认凭据链提供服务角色，可注入 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY` 和可选的 `AWS_SESSION_TOKEN`。存储桶及网关凭据仅限该环境，关闭公开访问，服务角色只需对 `stories/*` 具有 `PutObject`、`GetObject`、`DeleteObject` 权限。两网关使用同一 PostgreSQL schema 和私有桶。
+
+上传经网关的临时目录流式落盘，验证整个 multipart 请求后以已知长度流式写入私有对象。网关不在内存保留完整上传。临时盘应容纳每网关最多 `STORY_UPLOAD_CONCURRENCY`（默认 4）乘 `MAX_UPLOAD_BYTES`（默认 50 MiB）的在途数据，并为文件系统预留空间。异常退出遗留的 `aikp-story-upload-*` 目录可在网关停机后清理。读取及下载接口见 [API 契约](api-contract.md)。
+
+只有写入对象成功并提交 PostgreSQL 事务后，目录才会公开该条目。每次上传拥有新的不可变原文修订。已确认失败会尝试清理该次上传的对象。若提交回执未知或客户端断线，请刷新目录确认后再上传。同一文件名可重复上传并得到不同 ID，上传接口不根据名称或内容去重。提交状态不明、进程崩溃或存储清理失败可能留下孤儿对象。清理孤儿时，应先暂停上传并核对 PostgreSQL 中所有活跃和已删除记录的修订，保留仍被引用的原文。删除先写入墓碑并保留原文修订，以支持后续房间固定修订。请勿按对象年龄批量过期。
+
+共享目录页支持上传、翻页和选中预览。本地首页和多人等待室也按页列出已索引故事。两处通过 SQLite 索引查询目录元数据，首次读取或原子替换索引文件后会重新导入该账号的本地索引清单，包括旧版文件。只启用共享目录时可上传和浏览原文。剧本准备可按第 6.4 节单独启用。本地 SQLite 和本地文件部署行为不变。`/health/ready` 继续检查 PostgreSQL；应另外用合成文件验证私有对象存储的读写。仓库提供双网关测试，向 `TEST_SHARED_STORIES_DATABASE_URL` 注入独立、可销毁的 PostgreSQL 测试库，并向 `TEST_SHARED_STORIES_S3` 注入独立、可销毁私有桶的 JSON 配置（字段为 `bucket`、`region`、可选 `endpoint`、可选布尔值 `forcePathStyle`、包含 SDK 凭据字段的 `credentials`），随后运行 `npm run test --workspace=server -- sharedStories.test.ts`。测试会写入合成账号、文件和目录元数据，也会列举桶中该测试账号的对象验证清理。
+
+### 6.3 单进程共享房间预发布（#115）
+
+在 PostgreSQL 账号预发布配置上，为唯一的游戏进程另设 `ENABLE_SHARED_ROOMS=1` 和 `SHARED_ROOM_FIXTURE_DIR=<隔离的绝对路径>`。该进程提供既有房间、角色卡 REST 和 `/ws` 协议，并在启动时持有 PostgreSQL 会话锁。同库的其他账号网关可继续提供账号和设置，房间请求和 WebSocket 全部发往持锁的游戏进程。数据库负责保留账号、房间、成员、角色卡与房间快照。配置预发布账号自己的 BYOK 设置，或使用 `MOCK_AI=1` 进行无外部请求的演练。
+
+由操作员把已准备的测试剧本复制到专用目录，按 PostgreSQL 账号 ID 归属。档案及其 sidecar 放在 `<dir>/dossiers/<account-id>/`，索引放在 `<dir>/rag/<account-id>/rag_index/`。文件使用服务端生成的 UUID 文件名与现有 JSON 格式。此处只读，房间开局仍检查对应 workflow 所需的产物。原文查证、wire 训练采样、共享原文与产物版本留待后续阶段。SQLite 的数据和产物目录必须与预发布夹具分开。
+
+共享房间在发送玩家聊天回显前提交待处理行动。守秘人回合（含开场）的角色卡、场景、线索、结局、消息及消耗的行动一同提交，随后广播事件。进程在回合提交前终止时，重启从完整快照继续待处理行动。
+
+使用独立的临时 PostgreSQL 数据库设置 `TEST_SHARED_ROOMS_DATABASE_URL`，在仓库根目录运行 `npm run test:server -- src/routes/sharedRooms.test.ts`。测试用同一套既有 REST 和 WebSocket 协议覆盖 SQLite 与 PostgreSQL 的建房、游戏进程重启、房主及剧本归属、角色卡与待处理回合。当前共享房间部署仅面向受控的单游戏进程预发布。
+
+### 6.4 共享剧本准备进程（#116）
+
+先配置第 6.2 节的 PostgreSQL 和私有对象存储，并在所有网关及独立准备进程中设置 `STORY_PREPARATION_ENABLED=1`。网关负责接受请求并查询状态。每个准备进程同一时间处理一个任务，通过增加准备进程独立扩展 OCR、索引和档案生成。准备进程使用同一数据库、私有存储和 `JWT_SECRET`，由服务管理器注入设置并负责重启。
+
+```bash
+NODE_ENV=production DEPLOYMENT_MODE=shared-accounts STORY_PREPARATION_ENABLED=1 npm run start:story-preparation --workspace=server
+```
+
+任务租约默认 30 秒，可通过 `STORY_PREPARATION_LEASE_MS` 调整。进程中断且租约到期后，任一准备进程可重新领取该任务。新进程重新读取原文并生成该次的资料，可能再次调用模型。每次尝试使用独立的对象修订。解析后的原文须在档案生成的 200,000 字符及批次数上限内，超限会显示为失败。
+
+仅当解析原文、索引、档案及匹配的原文锚点写入并通过对象核验后，共享目录才更新可用版本。存储写入失败或进程中断后，之前发布的版本仍可用于故事选择。旧版本由将来的房间修订固定流程使用。异常停止或写入失败可留下尚未发布的制品。清理私有桶前，应暂停准备进程并核对 `story_preparation_revisions` 中所有已发布的修订。
+
+第 6.2 节的测试使用确定性 `MOCK_AI`，验证工作进程中断、双进程竞争领取，以及从真实存储读取完整修订。使用环回地址的 HTTP 路径式 S3 兼容服务时，测试还会通过代理注入对象写入失败，验证上一版本仍可读取。
+
 ## 7. 上线检查清单
 
 - [ ] `MOCK_AI` 未设置（或显式 `0`）
@@ -127,6 +185,8 @@ npm run dev:h5       # :5175（vite dev）
 - [ ] H5 构建 + 小程序构建成功
 - [ ] 出网策略放行 LLM 提供商域名（SSRF 守卫会拒绝内网/保留地址）
 - [ ] 反向代理配置 WebSocket 升级（`/ws`）
+
+合成规模测试使用独立临时库和模拟 KP。运行 `node e2e/scale-smoke.mjs`，可用 `SCALE_ROOMS`、`SCALE_STORY_ROWS`、`SCALE_ROUNDS` 和 `SCALE_SPREAD_MS` 调整并发房数、剧本元数据行数、回合批次数和每批发送窗口。报告分别给出玩家消息回显、KP 回复和目录分页的 p95。生产验收应另查真实模型、长对话、活跃导入、重连和故障恢复。
 
 ## 8. 回滚
 

@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs'
-import { getDb } from '../db/index.js'
+import { DEPLOYMENT_MODE } from '../config.js'
+import { accounts, type Account } from './accountStorage.js'
 import { signToken } from '../middleware/auth.js'
 import { BadRequestError, ConflictError, UnauthorizedError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
@@ -9,14 +10,9 @@ import { logger } from '../utils/logging.js'
  * bcrypt cost 10; JWT 30 days (issued by signToken).
  */
 
-export interface AuthUser {
-  id: number
-  username: string
-}
-
 export interface AuthResult {
   token: string
-  user: AuthUser
+  user: Account
 }
 
 const BCRYPT_COST = 10
@@ -24,30 +20,17 @@ const USERNAME_MIN = 3
 const USERNAME_MAX = 32
 const PASSWORD_MIN = 6
 
-interface UserRow {
-  id: number
-  username: string
-  password_hash: string
-}
-
-function findUserByUsername(username: string): UserRow | undefined {
-  const row = getDb()
-    .prepare('SELECT id, username, password_hash FROM users WHERE username = ?')
-    .get(username) as UserRow | undefined
-  return row
-}
-
-function findUserById(id: number): AuthUser | undefined {
-  const row = getDb()
-    .prepare('SELECT id, username FROM users WHERE id = ?')
-    .get(id) as AuthUser | undefined
-  return row
+function validateSharedUsername(username: string): void {
+  if (DEPLOYMENT_MODE === 'shared-accounts' && username.includes('\u0000')) {
+    throw new BadRequestError('username must not contain a null character')
+  }
 }
 
 export function validateCredentials(username: unknown, password: unknown): void {
   if (typeof username !== 'string' || username.length < USERNAME_MIN || username.length > USERNAME_MAX) {
     throw new BadRequestError(`username must be ${USERNAME_MIN}-${USERNAME_MAX} characters`)
   }
+  validateSharedUsername(username)
   if (typeof password !== 'string' || password.length < PASSWORD_MIN) {
     throw new BadRequestError(`password must be at least ${PASSWORD_MIN} characters`)
   }
@@ -57,15 +40,9 @@ export function validateCredentials(username: unknown, password: unknown): void 
 export async function register(username: unknown, password: unknown): Promise<AuthResult> {
   validateCredentials(username, password)
   const name = username as string
-  if (findUserByUsername(name)) {
-    throw new ConflictError('username already taken')
-  }
   const passwordHash = await bcrypt.hash(password as string, BCRYPT_COST)
-  const createdAt = Date.now()
-  const info = getDb()
-    .prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)')
-    .run(name, passwordHash, createdAt)
-  const userId = Number(info.lastInsertRowid)
+  const userId = await accounts.create(name, passwordHash)
+  if (userId === undefined) throw new ConflictError('username already taken')
   logger.info('user registered', { userId, username: name })
   return { token: signToken(userId), user: { id: userId, username: name } }
 }
@@ -75,7 +52,8 @@ export async function login(username: unknown, password: unknown): Promise<AuthR
   if (typeof username !== 'string' || typeof password !== 'string') {
     throw new BadRequestError('username and password are required')
   }
-  const user = findUserByUsername(username)
+  validateSharedUsername(username)
+  const user = await accounts.findByUsername(username)
   const ok = user ? await bcrypt.compare(password, user.password_hash) : false
   if (!user || !ok) {
     throw new UnauthorizedError('invalid username or password')
@@ -85,6 +63,6 @@ export async function login(username: unknown, password: unknown): Promise<AuthR
 }
 
 /** Resolve a user by id for GET /api/auth/me; undefined when deleted. */
-export function getUserById(userId: number): AuthUser | undefined {
-  return findUserById(userId)
+export function getUserById(userId: number): Promise<Account | undefined> {
+  return accounts.findById(userId)
 }

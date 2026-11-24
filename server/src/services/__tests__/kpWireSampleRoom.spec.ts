@@ -142,7 +142,7 @@ describe('wire 采样房间链路（T1）', () => {
       content: '你推开图书馆的门。',
       toolCalls: [{ id: 'call_1', name: 'roll_dice', arguments: '{"sides":100}' }],
     })
-    roomStorage.insertRoom('room_flow', 7, 'INV-FLOW-1', null)
+    await roomStorage.insertRoom('room_flow', 7, 'INV-FLOW-1', null)
     const room = new RoomService({ roomId: 'room_flow', ownerId: 7, ownerName: 'alice', turnWindowMs: 0 })
     try {
       room.startGame('story_flow1')
@@ -177,7 +177,7 @@ describe('wire 采样房间链路（T1）', () => {
 
       // ── 快照恢复兼容性：采样零渗入 rooms.state（ADR-0001/0002）──
       await room.persistSnapshot()
-      const stateJson = roomStorage.getRoomRow('room_flow')!.state
+      const stateJson = (await roomStorage.getRoomRow('room_flow'))!.state
       expect(stateJson).not.toContain('wire_messages')
       expect(stateJson).not.toContain('rag_context')
       expect(stateJson).not.toContain('tool_calls')
@@ -202,7 +202,7 @@ describe('wire 采样房间链路（T1）', () => {
 
   it('KP_WIRE_SAMPLING=0：房间链路零额外写入（KP 回合照常）', async () => {
     vi.stubEnv('KP_WIRE_SAMPLING', '0')
-    roomStorage.insertRoom('room_off', 7, 'INV-OFF-1', null)
+    await roomStorage.insertRoom('room_off', 7, 'INV-OFF-1', null)
     const room = new RoomService({ roomId: 'room_off', ownerId: 7, ownerName: 'alice', turnWindowMs: 0 })
     try {
       room.startGame('story_flow1')
@@ -218,7 +218,7 @@ describe('wire 采样房间链路（T1）', () => {
   })
 
   it('M1-T6：dossier 房注入列 = 场景档案块 + 检索补充小节，且两者都进 wire system', async () => {
-    roomStorage.insertRoom('room_dos', 7, 'INV-DOS-1', null)
+    await roomStorage.insertRoom('room_dos', 7, 'INV-DOS-1', null)
     const room = new RoomService({ roomId: 'room_dos', ownerId: 7, ownerName: 'alice', turnWindowMs: 0, workflow: 'dossier' })
     try {
       room.startGame('story_dos1')
@@ -249,7 +249,7 @@ describe('wire 采样房间链路（T1）', () => {
     vi.mocked(getSettings).mockReturnValue({ rag: { supplement: false } } as never)
     vi.mocked(buildSupplement).mockClear()
     vi.mocked(buildGetEmbeddingForUser).mockClear()
-    roomStorage.insertRoom('room_off2', 7, 'INV-OFF-2', null)
+    await roomStorage.insertRoom('room_off2', 7, 'INV-OFF-2', null)
     const room = new RoomService({ roomId: 'room_off2', ownerId: 7, ownerName: 'alice', turnWindowMs: 0, workflow: 'dossier' })
     try {
       room.startGame('story_dos2')

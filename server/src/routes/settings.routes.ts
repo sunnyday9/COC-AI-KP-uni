@@ -11,13 +11,17 @@ import { sendError } from '../utils/errors.js'
  */
 const router = Router()
 
-router.get('/', requireAuth, (req: AuthRequest, res) => {
-  res.json(settingsService.getSettings(req.userId as number))
+router.get('/', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    res.json(await settingsService.getGatewaySettings(req.userId as number))
+  } catch (err) {
+    sendError(res, err)
+  }
 })
 
-router.put('/', requireAuth, (req: AuthRequest, res) => {
+router.put('/', requireAuth, async (req: AuthRequest, res) => {
   try {
-    settingsService.saveSettings(req.userId as number, req.body)
+    await settingsService.saveGatewaySettings(req.userId as number, req.body)
     res.json({ ok: true })
   } catch (err) {
     sendError(res, err)
