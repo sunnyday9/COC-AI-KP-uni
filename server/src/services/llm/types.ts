@@ -42,6 +42,7 @@ export interface LLMCallParams {
   temperature?: number
   maxTokens?: number
   stream?: boolean
+  signal?: AbortSignal
   tools?: ChatTool[]
   onChunk?: (chunk: string) => void
 }

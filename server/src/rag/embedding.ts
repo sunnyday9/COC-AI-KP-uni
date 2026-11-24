@@ -30,7 +30,7 @@ const BUILTIN_MODEL_ID = 'Xenova/text2vec-base-chinese-sentence'
 let builtinPipeline: unknown = null
 
 /** A text → dense vector function (normalized). */
-export type Embedder = (text: string) => Promise<number[]>
+export type Embedder = (text: string, signal?: AbortSignal) => Promise<number[]>
 
 /**
  * Preloaded default: local model via @huggingface/transformers (no API key).
@@ -81,11 +81,13 @@ export function createEmbedder(config: { baseUrl?: string; apiKey?: string; mode
     return null
   }
 
-  return async function getEmbedding(text: string): Promise<number[]> {
+  return async function getEmbedding(text: string, signal?: AbortSignal): Promise<number[]> {
+    signal?.throwIfAborted()
     if (!text || typeof text !== 'string') return []
     const url = `${baseUrl}/v1/embeddings`
     const res = await safeOutboundFetch(url, {
       method: 'POST',
+      ...(signal ? { signal } : {}),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,

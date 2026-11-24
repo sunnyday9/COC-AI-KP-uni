@@ -127,6 +127,7 @@ export async function anthropicMessagesAdapter(
 
   const res = await safeOutboundFetch(messagesUrl, {
     method: 'POST',
+    ...(params.signal ? { signal: params.signal } : {}),
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,

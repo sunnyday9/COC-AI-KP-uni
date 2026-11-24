@@ -114,13 +114,16 @@ export async function generateDossier(
   options: {
     model?: string
     annex?: boolean
+    signal?: AbortSignal
+    beforeProviderRequest?: () => Promise<void>
     /** Canonical source already parsed for a shared preparation attempt. */
     source?: { name: string; content: string; preparationRevision: string }
     persistArtifacts?: (dossier: StoryDossier, gaps: CoverageGapsFile | undefined) => void | Promise<void>
     onProgress?: (progress: { stage: string; percent: number; message?: string }) => void
   } = {},
 ): Promise<GenerateResult> {
-  const { model, annex, onProgress, source, persistArtifacts } = options
+  const { model, annex, onProgress, source, persistArtifacts, signal, beforeProviderRequest } = options
+  signal?.throwIfAborted()
   const report = (stage: string, percent: number, message?: string) => onProgress?.({ stage, percent, message })
   if (!scriptId) return { ok: false, error: 'missing scriptId' }
 
@@ -138,6 +141,7 @@ export async function generateDossier(
       return { ok: false, error: 'story not found' }
     }
   }
+  signal?.throwIfAborted()
   const content = (raw?.content || '').trim()
   if (!content) return { ok: false, error: 'story content is empty' }
 
@@ -173,6 +177,8 @@ export async function generateDossier(
     let parsed: StoryDossier | null = null
     let lastBatchError = ''
     for (let attempt = 0; attempt < DOSSIER_GEN_ATTEMPTS && !parsed; attempt++) {
+      await beforeProviderRequest?.()
+      signal?.throwIfAborted()
       try {
         const res = await chatForRag(userId, {
           messages: [
@@ -182,16 +188,19 @@ export async function generateDossier(
           temperature: 0,
           maxTokens: attempt < 2 ? DOSSIER_GEN_MAX_TOKENS : DOSSIER_GEN_MAX_TOKENS_ESCALATED,
           model,
+          ...(signal ? { signal } : {}),
         })
+        signal?.throwIfAborted()
         parsed = parseDossierJson(stripCodeFence(res?.content || ''))
         if (!parsed) lastBatchError = '解析结果为空/无效 JSON'
       } catch (e) {
+        signal?.throwIfAborted()
         lastBatchError = e instanceof Error ? e.message : String(e)
         if (!isRetryableFailure(e)) break
         if (attempt + 1 < DOSSIER_GEN_ATTEMPTS) {
           const delay = retryDelayMs(attempt + 1)
           report('retry', batchStartPercent, `第 ${bi + 1} 批网络请求失败，等待后重试（${attempt + 1}/${DOSSIER_GEN_ATTEMPTS - 1}）`)
-          await waitForRetry(delay)
+          await waitForRetry(delay, signal)
         }
       }
     }
@@ -218,6 +227,7 @@ export async function generateDossier(
     return { ok: false, error: lastError || 'dossier generation failed' }
   }
 
+  signal?.throwIfAborted()
   const merged = mergeDossierParts(parsedParts)
   const resolved = resolveRefs(merged)
   let dossier: StoryDossier = {
@@ -289,6 +299,7 @@ export async function generateDossier(
   }
   dossier = { ...dossier, quality: qualitySummary }
 
+  signal?.throwIfAborted()
   report('save', 97, '保存档案与质量信息')
   if (persistArtifacts) await persistArtifacts(dossier, gapsArtifact)
   else await persist(userId, dossier)

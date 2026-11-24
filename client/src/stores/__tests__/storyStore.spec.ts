@@ -154,3 +154,49 @@ it('reuses an uncertain operation and applies explicit cancellation and retry re
   expect(state.requests[4].data).not.toEqual(state.requests[1].data)
   expect(store.storyFiles[0].preparation).toEqual(retried)
 })
+
+it('persists an ambiguous preparation across navigation and creates a new intent after observing acceptance', async () => {
+  const route = '/api/stories/first.txt/preparation'
+  let latest: StoryPreparationStatus = { activeRevision: null, job: null }
+  state.requestResponder = ({ method, url, data }) => {
+    if (method === 'GET' && url.endsWith('?limit=50')) return { statusCode: 200, data: {
+      stories: [{ id: 'first.txt', name: 'first.txt', preparation: latest }],
+      nextCursor: null, canPrepare: true, preparationMode: 'durable', preparationOwnerId: '42',
+    } }
+    if (method === 'GET') return { statusCode: 200, data: latest }
+    if (url === route) {
+      const { operationId } = data as { operationId: string }
+      return { statusCode: 202, data: {
+        activeRevision: latest.activeRevision,
+        job: { id: 'replayed-job', operationId, version: '3', state: 'queued', stage: 'queued', percent: 0 },
+      } }
+    }
+    return { statusCode: 404, data: {} }
+  }
+  async function navigate() {
+    setActivePinia(createPinia())
+    const storyStore = useStoryStore()
+    await storyStore.loadStories()
+    return storyStore
+  }
+  const original = await navigate()
+  state.failNextRequest = { errMsg: 'lost response' }
+  await expect(original.submitStoryPreparation('first.txt')).rejects.toThrow('网络错误')
+  const lost = state.requests.at(-1)?.data as { operationId: string }
+  expect(lost.operationId).toBeTypeOf('string')
+  expect([...state.storage.keys()].filter((key) => key.startsWith('aikp_preparation_ops:'))[0]).not.toContain('fictional-story-token')
+  original.resetLibrary()
+  const reloaded = await navigate()
+  state.failNextRequest = { errMsg: 'another lost response' }
+  await expect(reloaded.submitStoryPreparation('first.txt')).rejects.toThrow('网络错误')
+  expect(state.requests.at(-1)?.data).toEqual(lost)
+  latest = {
+    activeRevision: 'complete-revision',
+    job: { id: 'completed-job', operationId: lost.operationId, version: '2', state: 'complete', stage: 'complete', percent: 100 },
+  }
+  reloaded.resetLibrary()
+  const afterAcceptance = await navigate()
+  expect(afterAcceptance.storyFiles[0].preparation).toEqual(latest)
+  await afterAcceptance.submitStoryPreparation('first.txt')
+  expect(state.requests.at(-1)?.data).not.toEqual(lost)
+})

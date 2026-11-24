@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import { BadRequestError, UnauthorizedError } from './errors.js'
 
 export function isRetryableFailure(error: unknown): boolean {
@@ -26,6 +27,6 @@ export function retryDelayMs(retryNumber: number, baseDelayMs = 300, maxDelayMs 
   return Math.round(capped * (0.8 + random() * 0.4))
 }
 
-export async function waitForRetry(delayMs: number): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+export async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  await delay(delayMs, undefined, { signal })
 }

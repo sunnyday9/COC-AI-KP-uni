@@ -33,6 +33,12 @@ async function prepare(claim: PreparationClaim, store: ObjectStore, leaseMs: num
       heartbeatBusy = false
     }
   }, Math.floor(leaseMs / 3))
+  async function beforeProviderRequest() {
+    signal.throwIfAborted()
+    if (!await renewStoryPreparation(claim, leaseMs).catch(() => false)) controller.abort()
+    signal.throwIfAborted()
+  }
+
   async function progress(stage: StoryPreparationStage, percent: number) {
     signal.throwIfAborted()
     if (!await reportStoryPreparation(claim, stage, percent)) {
@@ -71,7 +77,7 @@ async function prepare(claim: PreparationClaim, store: ObjectStore, leaseMs: num
     const body = await store.get(sourceKey(claim.owner_id, claim.source_revision), size, readSignal)
     addAbortSignal(readSignal, body)
     const bytes = Buffer.from(await body.transformToByteArray())
-    const content = (await parseStoryContentForPreparation(source.extension, bytes, true)).trim()
+    const content = (await parseStoryContentForPreparation(source.extension, bytes, true, signal)).trim()
     if (!content || content.length > MAX_DOSSIER_SOURCE_CHARS) throw new Error('source outside preparation limits')
 
     const userId = Number(claim.owner_id)
@@ -85,10 +91,11 @@ async function prepare(claim: PreparationClaim, store: ObjectStore, leaseMs: num
     const indexed = await indexStoryForRag(userId, claim.story_id, undefined, {
       source: raw,
       prefetchReranker: false,
+      signal,
       onProgress: indexProgress.report,
       getEmbedding: embed ? async (text) => {
-        signal.throwIfAborted()
-        return await embed(text)
+        await beforeProviderRequest()
+        return await embed(text, signal)
       } : undefined,
       persistIndex: (index) => { artifacts.index = index },
     })
@@ -100,6 +107,8 @@ async function prepare(claim: PreparationClaim, store: ObjectStore, leaseMs: num
     const dossierProgress = phaseProgress('dossier', 52, 87)
     const generated = await generateDossier(userId, claim.story_id, {
       source: { ...raw, preparationRevision: revision },
+      signal,
+      beforeProviderRequest,
       onProgress: dossierProgress.report,
       persistArtifacts: (dossier, gaps) => {
         artifacts.dossier = dossier

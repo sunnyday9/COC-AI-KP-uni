@@ -228,8 +228,11 @@ export async function chatForRag(
     model?: string
     temperature?: number
     maxTokens?: number
+    signal?: AbortSignal
   },
 ): Promise<{ content: string }> {
+  const { signal } = params
+  signal?.throwIfAborted()
   const messages = params.messages
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new BadRequestError('messages must be a non-empty array')
@@ -243,16 +246,19 @@ export async function chatForRag(
   }
 
   const { config } = await resolveAiConfig(userId, params.model)
+  signal?.throwIfAborted()
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
 
   try {
     const result = await withRequestTimeout(
-      dispatch(config, { messages, stream: false, temperature: temp, maxTokens }),
+      dispatch(config, { messages, stream: false, temperature: temp, maxTokens, ...(signal ? { signal } : {}) }),
       'rag graph LLM',
     )
+    signal?.throwIfAborted()
     return { content: result.content ?? '' }
   } catch (err) {
+    signal?.throwIfAborted()
     if (err instanceof BadRequestError) throw err
     logger.warn('rag graph LLM call failure', { protocol: config.protocol, error: err instanceof Error ? err.message : String(err) })
     throw new UpstreamError(err instanceof Error ? err.message : String(err))

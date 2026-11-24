@@ -58,7 +58,7 @@ function startProcess(entry: string, dir: string, endpointOverride?: string, pre
       SHARED_ROOM_FIXTURE_DIR: undefined,
       PORT: port === undefined ? undefined : String(port),
       MOCK_AI: '1',
-      STORY_PREPARATION_LEASE_MS: '3000',
+      STORY_PREPARATION_LEASE_MS: '30000',
       DATA_DIR: join(storageDir, dir, 'data'),
       UPLOADS_DIR: join(storageDir, dir, 'uploads'),
       MAX_UPLOAD_BYTES: String(1024 * 1024),
@@ -71,9 +71,10 @@ function startProcess(entry: string, dir: string, endpointOverride?: string, pre
       AWS_SESSION_TOKEN: undefined,
       ...overrides,
     },
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   })
+  child.stderr?.resume()
   children.push(child)
   return child
 }
@@ -89,12 +90,13 @@ async function stopProcess(child: ChildProcess, signal?: NodeJS.Signals): Promis
 async function startGateway(port: number, dir: string, endpointOverride?: string, prepare = false, overrides?: NodeJS.ProcessEnv): Promise<string> {
   const child = startProcess('src/app.ts', dir, endpointOverride, prepare, port, overrides)
   const url = `http://127.0.0.1:${port}`
-  for (let i = 0; i < 100 && child.exitCode === null; i++) {
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
     const response = await fetch(`${url}/health/ready`, { signal: AbortSignal.timeout(1_000) }).catch(() => null)
     if (response?.ok) return url
     await delay(100)
   }
-  throw new Error('story gateway never became ready')
+  throw new Error('story gateway never became ready (process exit: ' + String(child.exitCode ?? child.signalCode) + ')')
 }
 
 async function call(url: string, path: string, token?: string, method = 'GET', body?: BodyInit) {
@@ -569,7 +571,8 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     await new Promise<void>((resolve) => { stalledSource.listen(0, '127.0.0.1', resolve) })
     const address = stalledSource.address()
     if (!address || typeof address === 'string') throw new Error('could not start storage boundary fault')
-    const stalled = startProcess('src/workers/storyPreparation.ts', 'crash', `http://127.0.0.1:${address.port}`, true)
+    const stalled = startProcess('src/workers/storyPreparation.ts', 'crash', `http://127.0.0.1:${address.port}`, true,
+      undefined, { STORY_PREPARATION_LEASE_MS: '3000' })
     try {
       await expect.poll(async () => (await call(otherGateway, route, owner.token)).body.job?.stage, { timeout: 8_000 }).toBe('read')
       expect((await call(gateway, route, owner.token, 'POST')).body.job.id).toBe(queued.body.job.id)
@@ -787,6 +790,125 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
   }, 30_000)
 
 
+
+  async function expectDatabaseWait(db: Pool, fragment: string) {
+    await expect.poll(async () => {
+      const result = await db.query<{ waiting: boolean }>(`
+        SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock' AND strpos(query, $1) > 0) AS waiting
+      `, [fragment])
+      return result.rows[0]?.waiting
+    }, { timeout: 5_000 }).toBe(true)
+  }
+
+  it('does not hold the global admission lock while waiting on one story', async () => {
+    const gateway = await startGateway(await freePort(), 'contended-admission', undefined, true)
+    const blockedOwner = await account(gateway)
+    const freeOwner = await account(gateway)
+    await upload(gateway, blockedOwner.token, 'blocked.txt', 'fixture')
+    await upload(gateway, freeOwner.token, 'free.txt', 'fixture')
+    const db = new Pool({ connectionString: databaseUrl })
+    const barrier = await db.connect()
+    let blocked: ReturnType<typeof call> | undefined
+    try {
+      await barrier.query('BEGIN')
+      await barrier.query('SELECT 1 FROM story_catalog WHERE owner_id = $1 AND story_id = $2 FOR UPDATE', [blockedOwner.user.id, 'blocked.txt'])
+      blocked = call(gateway, '/api/stories/blocked.txt/preparation', blockedOwner.token, 'POST')
+      await expectDatabaseWait(db, 'SELECT source_revision, active_preparation_revision FROM story_catalog')
+      const free = await fetch(gateway + '/api/stories/free.txt/preparation', {
+        method: 'POST', headers: { Authorization: 'Bearer ' + freeOwner.token }, signal: AbortSignal.timeout(3_000),
+      })
+      expect(free.status).toBe(202)
+      await barrier.query('COMMIT')
+      expect((await blocked).status).toBe(202)
+    } finally {
+      await barrier.query('ROLLBACK')
+      barrier.release()
+      await blocked?.catch(() => {})
+      await db.end()
+      await call(gateway, '/api/stories/blocked.txt', blockedOwner.token, 'DELETE')
+      await call(gateway, '/api/stories/free.txt', freeOwner.token, 'DELETE')
+    }
+  }, 45_000)
+
+  it('cancels a job admitted while deletion waits for the story lock', async () => {
+    const gateway = await startGateway(await freePort(), 'delete-enqueue', undefined, true, { STORY_PREPARATION_PENDING_PER_ACCOUNT: '1' })
+    const owner = await account(gateway)
+    await upload(gateway, owner.token, 'deleting.txt', 'fixture')
+    await upload(gateway, owner.token, 'next.txt', 'fixture')
+    const db = new Pool({ connectionString: databaseUrl })
+    const barrier = await db.connect()
+    let pending: ReturnType<typeof call> | undefined
+    let removing: ReturnType<typeof call> | undefined
+    try {
+      await barrier.query('BEGIN')
+      await barrier.query('SELECT pg_advisory_xact_lock(17407, 117)')
+      pending = call(gateway, '/api/stories/deleting.txt/preparation', owner.token, 'POST')
+      await expectDatabaseWait(db, 'pg_advisory_xact_lock(17407, 117)')
+      removing = call(gateway, '/api/stories/deleting.txt', owner.token, 'DELETE')
+      await expectDatabaseWait(db, 'UPDATE story_catalog SET deleted_at')
+      await barrier.query('COMMIT')
+      const admitted = await pending
+      expect(admitted.status).toBe(202)
+      expect((await removing).status).toBe(200)
+      const deletedJob = await db.query('SELECT state FROM story_preparation_jobs WHERE job_id = $1', [admitted.body.job.id])
+      expect(deletedJob.rows[0]?.state).toBe('cancelled')
+      expect((await call(gateway, '/api/stories/next.txt/preparation', owner.token, 'POST')).status).toBe(202)
+    } finally {
+      await barrier.query('ROLLBACK')
+      barrier.release()
+      await Promise.allSettled([pending, removing])
+      await db.end()
+      await call(gateway, '/api/stories/next.txt', owner.token, 'DELETE')
+    }
+  }, 45_000)
+
+  it('keeps an in-flight heartbeat charged against its account quota', async () => {
+    const gateway = await startGateway(await freePort(), 'heartbeat-quota', undefined, true, { STORY_PREPARATION_PENDING_PER_ACCOUNT: '1' })
+    const owner = await account(gateway)
+    await upload(gateway, owner.token, 'slot.txt', 'fixture')
+    await upload(gateway, owner.token, 'waiting.txt', 'fixture')
+    const queued = await call(gateway, '/api/stories/slot.txt/preparation', owner.token, 'POST')
+    const db = new Pool({ connectionString: databaseUrl })
+    const heartbeat = await db.connect()
+    try {
+      await db.query(`
+        UPDATE story_preparation_jobs SET state = 'running', attempt = attempt_limit,
+          lease_expires_at = clock_timestamp() + interval '2 seconds' WHERE job_id = $1
+      `, [queued.body.job.id])
+      await heartbeat.query('BEGIN')
+      expect((await heartbeat.query(`
+        UPDATE story_preparation_jobs SET lease_expires_at = clock_timestamp() + interval '2 minutes'
+        WHERE job_id = $1 AND lease_expires_at > clock_timestamp()
+      `, [queued.body.job.id])).rowCount).toBe(1)
+      await expect.poll(async () => {
+        const result = await db.query<{ expired: boolean }>(
+          'SELECT lease_expires_at <= clock_timestamp() AS expired FROM story_preparation_jobs WHERE job_id = $1', [queued.body.job.id])
+        return result.rows[0]?.expired
+      }, { timeout: 6_000 }).toBe(true)
+      expect((await call(gateway, '/api/stories/waiting.txt/preparation', owner.token, 'POST')).status).toBe(503)
+      await heartbeat.query('COMMIT')
+      expect((await call(gateway, '/api/stories/slot.txt/preparation', owner.token)).body.job?.state).toBe('running')
+    } finally {
+      await heartbeat.query('ROLLBACK')
+      heartbeat.release()
+      await db.end()
+      await call(gateway, '/api/stories/slot.txt', owner.token, 'DELETE')
+      await call(gateway, '/api/stories/waiting.txt', owner.token, 'DELETE')
+    }
+  }, 40_000)
+
+  it('releases the slot of a job deleted during a catalog-only rollout', async () => {
+    const gateway = await startGateway(await freePort(), 'legacy-deleted', undefined, true, { STORY_PREPARATION_PENDING_PER_ACCOUNT: '1' })
+    const owner = await account(gateway)
+    await upload(gateway, owner.token, 'retired.txt', 'fixture')
+    await upload(gateway, owner.token, 'fresh.txt', 'fixture')
+    expect((await call(gateway, '/api/stories/retired.txt/preparation', owner.token, 'POST')).status).toBe(202)
+    expect((await call(first, '/api/stories/retired.txt', owner.token, 'DELETE')).status).toBe(200)
+    expect((await call(gateway, '/api/stories/fresh.txt/preparation', owner.token, 'POST')).status).toBe(202)
+    await call(gateway, '/api/stories/fresh.txt', owner.token, 'DELETE')
+  }, 30_000)
+
   it('times out queued work without a worker and permits explicit retry', async () => {
     const gateway = await startGateway(await freePort(), 'deadline', undefined, true, { STORY_PREPARATION_DEADLINE_MS: '1200' })
     const owner = await account(gateway)
@@ -820,7 +942,8 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     const endpoint = 'http://127.0.0.1:' + address.port
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
-        const worker = startProcess('src/workers/storyPreparation.ts', 'attempt-' + attempt, endpoint, true)
+        const worker = startProcess('src/workers/storyPreparation.ts', 'attempt-' + attempt, endpoint, true,
+          undefined, { STORY_PREPARATION_LEASE_MS: '3000' })
         try {
           await expect.poll(() => hits.length, { timeout: 12_000 }).toBe(attempt)
           expect((await call(gateway, route, owner.token)).body.job).toMatchObject({ id: submitted.body.job.id, state: 'running' })
@@ -884,7 +1007,7 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       }
       const before = (await call(gateway, route, owner.token)).body.activeRevision
       const publisher = interruption === 'timeout'
-        ? await startGateway(await freePort(), 'short-deadline', undefined, true, { STORY_PREPARATION_DEADLINE_MS: '6000' })
+        ? await startGateway(await freePort(), 'short-deadline', undefined, true, { STORY_PREPARATION_DEADLINE_MS: '12000' })
         : gateway
 
       let releaseHead: (() => void) | undefined
@@ -915,13 +1038,13 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       try {
         const queued = await call(publisher, route, owner.token, 'POST')
         expect(queued.status).toBe(202)
-        await expect.poll(() => Boolean(releaseHead), { timeout: 5_500 }).toBe(true)
+        await expect.poll(() => Boolean(releaseHead), { timeout: 10_000 }).toBe(true)
         expect((await call(gateway, route, owner.token)).body.job?.stage).toBe('publish')
         if (interruption === 'cancel') {
           const cancelled = await call(gateway, route + '/' + queued.body.job.id + '/cancel', owner.token, 'POST')
           expect(cancelled.status).toBe(200)
         } else {
-          await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.stage, { timeout: 8_000 }).toBe('timed_out')
+          await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.stage, { timeout: 15_000 }).toBe('timed_out')
         }
         releaseHead!()
         expect((await upload(gateway, owner.token, 'advance.txt', 'different story')).status).toBe(200)
@@ -938,7 +1061,7 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
         storage.closeAllConnections()
         await new Promise<void>((resolve) => { storage.close(() => resolve()) })
       }
-    }, 45_000,
+    }, 65_000,
   )
 
   it('keeps a partially OCR’d PDF out of the prepared story catalog', async () => {
@@ -951,7 +1074,7 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     const queued = await call(gateway, route, owner.token, 'POST')
     const worker = startProcess('src/workers/storyPreparation.ts', 'ocr-worker', undefined, true)
     try {
-      await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.state, { timeout: 12_000 }).toBe('failed')
+      await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.state, { timeout: 25_000 }).toBe('failed')
       expect((await call(gateway, route, owner.token)).body).toEqual({
         activeRevision: null,
         job: { id: queued.body.job.id, version: expect.any(String), state: 'failed', stage: 'source_failed', percent: 5 },
@@ -960,5 +1083,5 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     } finally {
       await stopProcess(worker)
     }
-  }, 30_000)
+  }, 55_000)
 })

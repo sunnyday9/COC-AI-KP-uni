@@ -220,16 +220,19 @@ export async function readStoryForRag(userId: number, id: string): Promise<{ nam
 }
 
 /** Shared source parsing for local indexing and the durable worker. */
-export async function parseStoryContentForPreparation(ext: string, dataBuffer: Buffer, requireComplete = false): Promise<string> {
+export async function parseStoryContentForPreparation(ext: string, dataBuffer: Buffer, requireComplete = false, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted()
   if (ext === '.pdf') {
     const { parsePdfWithOcr } = await import('../rag/storyParsers.js')
-    return parsePdfWithOcr(dataBuffer, { requireComplete })
+    return parsePdfWithOcr(dataBuffer, { requireComplete, signal })
   }
   if (ext === '.epub' && requireComplete) {
     const { parseEpub } = await import('../rag/storyParsers.js')
-    return parseEpub(dataBuffer, true)
+    return parseEpub(dataBuffer, true, signal)
   }
-  return parseStoryContent(ext, dataBuffer)
+  const text = await parseStoryContent(ext, dataBuffer)
+  signal?.throwIfAborted()
+  return text
 }
 
 /**

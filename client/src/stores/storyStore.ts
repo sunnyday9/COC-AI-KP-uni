@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { indexStory } from '../services/ragService'
 import { createStoryOperationId } from '../services/operationId'
-import { getBridge, getToken } from '../platform'
+import { getBaseUrl, getBridge, getToken } from '../platform'
 import type { StoryCatalogPage, StoryPreparationStatus } from '../../../shared/types/bridge'
 
 /**
@@ -36,7 +36,48 @@ export const useStoryStore = defineStore('story', () => {
   let libraryToken: ReturnType<typeof getToken>
   let selectionRevision = 0
   const preparationByStory = new Map<string, StoryPreparationStatus>()
-  const pendingPreparationOperations = new Map<string, string>()
+  let preparationOwnerId: string | undefined
+  type PendingOperations = Record<string, string>
+  const pendingPreparationOperations = new Map<string, PendingOperations>()
+
+  function operationStorage(storyId: string) {
+    const owner = preparationOwnerId
+    const key = 'aikp_preparation_ops:' + JSON.stringify([getBaseUrl(), owner ?? null, storyId])
+    function read(): PendingOperations {
+      const fallback = pendingPreparationOperations.get(key)
+      if (fallback) return fallback
+      if (owner) {
+        try {
+          const saved: unknown = uni.getStorageSync(key)
+          return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved as PendingOperations : {}
+        } catch {
+          // The current page still supports operation replay when browser storage is unavailable.
+        }
+      }
+      return {}
+    }
+    function write(operations: PendingOperations) {
+      const hasOperations = Object.keys(operations).length > 0
+      if (owner) {
+        try {
+          if (hasOperations) uni.setStorageSync(key, operations)
+          else uni.removeStorageSync(key)
+          pendingPreparationOperations.delete(key)
+          return
+        } catch {
+          // Fall back to the current page.
+        }
+      }
+      if (hasOperations) pendingPreparationOperations.set(key, operations)
+      else pendingPreparationOperations.delete(key)
+    }
+    function acknowledge(operationId: string) {
+      const operations = read()
+      const remaining = Object.fromEntries(Object.entries(operations).filter(([, id]) => id !== operationId))
+      if (Object.keys(remaining).length !== Object.keys(operations).length) write(remaining)
+    }
+    return { read, write, acknowledge }
+  }
 
   function clearSelection() {
     selectionRevision++
@@ -50,6 +91,7 @@ export const useStoryStore = defineStore('story', () => {
     librarySession++
     preparationByStory.clear()
     pendingPreparationOperations.clear()
+    preparationOwnerId = undefined
     listRevision++
     storyFiles.value = []
     nextCursor.value = null
@@ -73,6 +115,7 @@ export const useStoryStore = defineStore('story', () => {
       error.value = null
       const page = await getBridge().listStoryPage(cursor)
       if (!isCurrent()) return
+      preparationOwnerId = page.preparationOwnerId
       const rows = page.stories.map((story) => story.preparation
         ? { ...story, preparation: mergePreparation(story.id, story.preparation) }
         : story)
@@ -105,6 +148,7 @@ export const useStoryStore = defineStore('story', () => {
   }
 
   function mergePreparation(id: string, incoming: StoryPreparationStatus): StoryPreparationStatus {
+    if (incoming.job?.operationId) operationStorage(id).acknowledge(incoming.job.operationId)
     const current = preparationByStory.get(id)
     const currentVersion = current?.job?.version ?? ''
     const incomingVersion = incoming.job?.version ?? ''
@@ -129,20 +173,22 @@ export const useStoryStore = defineStore('story', () => {
   }
 
   async function submitStoryPreparation(id: string, retryOfJobId?: string) {
-    const key = JSON.stringify([id, retryOfJobId])
-    const operationId = pendingPreparationOperations.get(key) ?? createStoryOperationId('prepare')
-    pendingPreparationOperations.set(key, operationId)
+    if (getToken() !== libraryToken) return
+    const intent = retryOfJobId ?? 'prepare'
+    const saved = operationStorage(id)
+    const operations = saved.read()
+    const operationId = typeof operations[intent] === 'string' ? operations[intent] : createStoryOperationId('prepare')
+    saved.write({ ...operations, [intent]: operationId })
     try {
       const api = getBridge()
       await updateStoryPreparation(id, () => retryOfJobId
         ? api.retryStoryPreparation(id, retryOfJobId, operationId)
         : api.prepareStory(id, operationId))
-      if (pendingPreparationOperations.get(key) === operationId) pendingPreparationOperations.delete(key)
+      saved.acknowledge(operationId)
     } catch (error) {
       const status = (error as { statusCode?: number } | null)?.statusCode
       // Keep the same ID when a transport failure leaves the outcome unknown.
-      if (status !== undefined && status >= 400 && status < 500
-        && pendingPreparationOperations.get(key) === operationId) pendingPreparationOperations.delete(key)
+      if (status !== undefined && status >= 400 && status < 500) saved.acknowledge(operationId)
       throw error
     }
   }

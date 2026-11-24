@@ -60,6 +60,22 @@ describe('storyDossierService', () => {
     await fs.mkdir(path.join(tmpUploads, String(userId), 'stories'), { recursive: true })
   })
 
+  it('does not make another provider request if preparation is cancelled during retry backoff', async () => {
+    const controller = new AbortController()
+    const failure = new Error('fixture provider 503')
+    chatMock.mockRejectedValueOnce(failure)
+    const beforeProviderRequest = vi.fn().mockResolvedValue(undefined)
+    await expect(generateDossier(userId, 'fixture-cancelled', {
+      source: { name: 'Fixture', content: 'Readable fixture text', preparationRevision: 'fixture-revision' },
+      signal: controller.signal,
+      beforeProviderRequest,
+      onProgress: ({ stage }) => { if (stage === 'retry') controller.abort() },
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(beforeProviderRequest).toHaveBeenCalledTimes(1)
+    expect(chatMock).toHaveBeenCalledTimes(1)
+    expect(chatMock.mock.calls[0][1]).toMatchObject({ signal: controller.signal })
+  })
+
   it('reports malformed dossier files as load failures but missing directories as absent', async () => {
     const userDir = path.join(tmpDossier, String(userId))
     await fs.mkdir(userDir, { recursive: true })

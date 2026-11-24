@@ -11,6 +11,7 @@ const limits = STORY_PREPARATION_ENABLED ? sharedPreparationLimits() : undefined
 interface StatusRow {
   active_preparation_revision: string | null
   job_id: string | null
+  operation_id: string | null
   status_version: string
   state: NonNullable<StoryPreparationStatus['job']>['state']
   stage: NonNullable<StoryPreparationStatus['job']>['stage']
@@ -19,7 +20,7 @@ interface StatusRow {
 
 export const latestPreparationJoin = `
   LEFT JOIN LATERAL (
-    SELECT job_id, status_version, state, stage, percent FROM story_preparation_jobs
+    SELECT job_id, operation_id, status_version, state, stage, percent FROM story_preparation_jobs
     WHERE owner_id = catalog.owner_id AND story_id = catalog.story_id AND source_revision = catalog.source_revision
     ORDER BY sequence DESC LIMIT 1
   ) preparation ON true
@@ -28,7 +29,10 @@ export const latestPreparationJoin = `
 export function formatPreparationStatus(row: StatusRow): StoryPreparationStatus {
   return {
     activeRevision: row.active_preparation_revision,
-    job: row.job_id ? { id: row.job_id, version: row.status_version, state: row.state, stage: row.stage, percent: row.percent } : null,
+    job: row.job_id ? {
+      id: row.job_id, version: row.status_version, state: row.state, stage: row.stage, percent: row.percent,
+      ...(row.operation_id === null ? {} : { operationId: row.operation_id }),
+    } : null,
   }
 }
 
@@ -49,7 +53,7 @@ interface PreparationStory {
   source_revision: string
   active_preparation_revision: string | null
 }
-const JOB_STATUS = 'job_id, status_version, state, stage, percent'
+const JOB_STATUS = 'job_id, operation_id, status_version, state, stage, percent'
 
 async function lockPreparationStory(client: PoolClient, ownerId: number, storyId: string): Promise<PreparationStory> {
   const { rows: [story] } = await client.query<PreparationStory>(`
@@ -69,8 +73,6 @@ function preparationMutation<T>(work: (client: PoolClient) => Promise<T>): Promi
 
 export async function requestStoryPreparation(ownerId: number, storyId: string, operationId?: string, retryOfJobId?: string): Promise<StoryPreparationStatus> {
   return preparationMutation(async (client) => {
-    // Only new admissions can increase pending counts. Serialize count and insertion across gateways.
-    await client.query('SELECT pg_advisory_xact_lock(17407, 117)')
     const story = await lockPreparationStory(client, ownerId, storyId)
     await expireStoryPreparationJobs(client, { ownerId, storyId })
 
@@ -108,12 +110,14 @@ export async function requestStoryPreparation(ownerId: number, storyId: string, 
     }
 
     const config = limits ?? sharedPreparationLimits()
-    // Expired work is excluded from admission immediately. The worker or status reader persists the terminal result.
+    // Only count and insertion are serialized across unrelated stories and owners.
+    await client.query('SELECT pg_advisory_xact_lock(17407, 117)')
+    // Reap what can commit now. A locked heartbeat may still be renewing its slot.
+    await expireStoryPreparationJobs(client)
     const { rows: [pending] } = await client.query<{ account: number; total: number }>(`
       SELECT count(*) FILTER (WHERE owner_id = $1)::int AS account, count(*)::int AS total
       FROM story_preparation_jobs
-      WHERE state IN ('queued', 'running') AND deadline_at > statement_timestamp()
-        AND (attempt < attempt_limit OR lease_expires_at > statement_timestamp())
+      WHERE state IN ('queued', 'running')
     `, [ownerId])
     if (pending!.account >= config.perAccount) throw new CapacityError('你的准备任务已达上限，请取消一个任务或稍后重试。')
     if (pending!.total >= config.global) throw new CapacityError('准备队列已满，请稍后重试。')

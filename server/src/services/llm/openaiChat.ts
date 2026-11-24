@@ -45,7 +45,10 @@ export async function openaiChatAdapter(config: AIProviderConfig, params: LLMCal
     opts.tool_choice = 'auto'
   }
 
-  const res = (await client.chat.completions.create(opts as unknown as Parameters<OpenAI['chat']['completions']['create']>[0])) as
+  const res = (await client.chat.completions.create(
+    opts as unknown as Parameters<OpenAI['chat']['completions']['create']>[0],
+    ...(params.signal ? [{ signal: params.signal, maxRetries: 0 }] : []),
+  )) as
     | ChatCompletion
     | AsyncIterable<ChatCompletionChunk>
 

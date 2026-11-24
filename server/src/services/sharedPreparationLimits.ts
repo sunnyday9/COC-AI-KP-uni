@@ -22,16 +22,24 @@ export function sharedPreparationLimits() {
 export async function expireStoryPreparationJobs(db: Pool | PoolClient, story?: { ownerId: number; storyId: string }) {
   await db.query(`
     WITH expired AS (
-      SELECT job_id FROM story_preparation_jobs
-      WHERE state IN ('queued', 'running')
-        ${story ? 'AND owner_id = $1 AND story_id = $2' : ''}
-        AND (deadline_at <= statement_timestamp()
-          OR (state = 'running' AND attempt >= attempt_limit AND lease_expires_at <= statement_timestamp()))
-      ORDER BY deadline_at, sequence
-      LIMIT 256 FOR UPDATE SKIP LOCKED
+      SELECT job.job_id, CASE
+        WHEN catalog.deleted_at IS NOT NULL OR catalog.source_revision <> job.source_revision THEN 'cancelled'
+        WHEN job.deadline_at <= statement_timestamp() THEN 'timed_out'
+        ELSE 'retry_exhausted'
+      END AS stage
+      FROM story_preparation_jobs job
+      JOIN story_catalog catalog ON catalog.owner_id = job.owner_id AND catalog.story_id = job.story_id
+      WHERE job.state IN ('queued', 'running')
+        ${story ? 'AND job.owner_id = $1 AND job.story_id = $2' : ''}
+        AND (catalog.deleted_at IS NOT NULL OR catalog.source_revision <> job.source_revision
+          OR job.deadline_at <= statement_timestamp()
+          OR (job.state = 'running' AND job.attempt >= job.attempt_limit AND job.lease_expires_at <= statement_timestamp()))
+      ORDER BY job.deadline_at, job.sequence
+      LIMIT 256 FOR UPDATE OF job SKIP LOCKED
     )
-    UPDATE story_preparation_jobs job SET state = 'failed',
-      stage = CASE WHEN deadline_at <= clock_timestamp() THEN 'timed_out' ELSE 'retry_exhausted' END,
+    UPDATE story_preparation_jobs job SET
+      state = CASE WHEN expired.stage = 'cancelled' THEN 'cancelled' ELSE 'failed' END,
+      stage = expired.stage,
       lease_expires_at = NULL, status_version = nextval('story_preparation_status_version')
     FROM expired WHERE job.job_id = expired.job_id
   `, story ? [story.ownerId, story.storyId] : [])

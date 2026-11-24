@@ -210,6 +210,25 @@ describe('rag/storyParsers', () => {
       })).rejects.toThrow('PDF image OCR time limit reached')
     })
 
+    it('terminates OCR on cancellation instead of recognizing the next image', async () => {
+      const pdf = await makePdfWithEmbeddedImages([['01', '02']])
+      const controller = new AbortController()
+      let notifyStarted!: () => void
+      const started = new Promise<void>((resolve) => { notifyStarted = resolve })
+      const terminate = vi.fn().mockResolvedValue(undefined)
+      const recognize = vi.fn(() => {
+        notifyStarted()
+        return new Promise(() => {})
+      })
+      mockCreateWorker.mockResolvedValueOnce({ recognize, terminate })
+      const parsed = parsePdfWithOcr(pdf, { requireComplete: true, signal: controller.signal })
+      await started
+      controller.abort()
+      await expect(parsed).rejects.toMatchObject({ name: 'AbortError' })
+      expect(recognize).toHaveBeenCalledTimes(1)
+      expect(terminate).toHaveBeenCalledTimes(1)
+    })
+
     it('extracts the text layer from a pdf-lib generated PDF (no OCR)', async () => {
       const pdf = await makePdfWithText('Hello COC PDF world 123')
       const text = await parsePdfWithOcr(pdf)

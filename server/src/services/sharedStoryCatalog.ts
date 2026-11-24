@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import { getPostgresPool, postgresError } from '../db/postgres.js'
+import type { Pool, PoolClient } from 'pg'
+import { getPostgresPool, inPostgresTransaction, postgresError } from '../db/postgres.js'
 import { NotFoundError, UpstreamError } from '../utils/errors.js'
 import { sanitizeFilename } from '../utils/fileNames.js'
 import { STORY_EXTENSIONS, parseStoryContent } from './storyService.js'
@@ -143,6 +144,7 @@ export function createSharedStoryCatalog(storage: ObjectStore) {
         ...page,
         canPrepare: true,
         preparationMode: 'durable',
+        preparationOwnerId: String(ownerId),
         stories: page.stories.map((story, index) => ({ ...story, preparation: formatPreparationStatus(result.rows[index]!) })),
       }
     },
@@ -175,20 +177,23 @@ export function createSharedStoryCatalog(storage: ObjectStore) {
     },
 
     async delete(ownerId: number, storyId: string) {
-      const result = await getPostgresPool().query(STORY_PREPARATION_ENABLED ? `
-        WITH deleted AS (
-          UPDATE story_catalog SET deleted_at = $3 WHERE owner_id = $1 AND story_id = $2 AND deleted_at IS NULL
-          RETURNING owner_id, story_id
-        ), cancelled AS (
-          UPDATE story_preparation_jobs job SET state = 'cancelled', stage = 'cancelled', lease_expires_at = NULL,
-            status_version = nextval('story_preparation_status_version')
-          FROM deleted WHERE job.owner_id = deleted.owner_id AND job.story_id = deleted.story_id
-            AND job.state IN ('queued', 'running')
-        )
-        SELECT 1 FROM deleted
-      ` : `
+      const tombstone = (db: Pool | PoolClient) => db.query(`
         UPDATE story_catalog SET deleted_at = $3 WHERE owner_id = $1 AND story_id = $2 AND deleted_at IS NULL
-      `, [ownerId, storyId, Date.now()]).catch((error) => { throw postgresError(error) })
+      `, [ownerId, storyId, Date.now()])
+      const result = await (STORY_PREPARATION_ENABLED
+        ? inPostgresTransaction(async (client) => {
+          const deleted = await tombstone(client)
+          if (deleted.rowCount) {
+            // Use a new statement snapshot after obtaining the catalog lock.
+            await client.query(`
+              UPDATE story_preparation_jobs SET state = 'cancelled', stage = 'cancelled', lease_expires_at = NULL,
+                status_version = nextval('story_preparation_status_version')
+              WHERE owner_id = $1 AND story_id = $2 AND state IN ('queued', 'running')
+            `, [ownerId, storyId])
+          }
+          return deleted
+        })
+        : tombstone(getPostgresPool())).catch((error) => { throw postgresError(error) })
       if (!result.rowCount) throw new NotFoundError('story not found')
     },
   }

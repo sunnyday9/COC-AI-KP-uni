@@ -95,7 +95,7 @@
 
 共享预览最多返回 16,000 个 UTF-16 代码单元。纯文本预览从对象存储读取前 64 KiB；需要解析的文档超过 8 MiB 时返回 413，故事管理页提供文本预览，原始附件由通过身份验证的 `GET /api/stories/:id/source` 提供。每网关最多并发四次剧本文本读取，超限返回 503 和 `Retry-After`。
 
-共享剧本准备启用时，分页目录返回 `canPrepare: true`、`preparationMode: 'durable'`，每个故事同时返回 `preparation`。状态形状为 `{activeRevision: string | null, job: {id, version, state, stage, percent} | null}`。任务状态为 `queued`、`running`、`complete`、`failed` 或 `cancelled`。`version` 是十进制字符串，同一故事的已提交状态随版本数值递增。共享目录删除剧本时会取消排队或运行中的任务，并保留已发布的修订。
+共享剧本准备启用时，分页目录返回 `canPrepare: true`、`preparationMode: 'durable'`，每个故事同时返回 `preparation`。分页响应的 `preparationOwnerId` 为当前账号 ID 的字符串，用于区分浏览器保存的待确认请求。状态形状为 `{activeRevision: string | null, job: {id, version, state, stage, percent, operationId?} | null}`。任务状态为 `queued`、`running`、`complete`、`failed` 或 `cancelled`。`version` 是十进制字符串，同一故事的已提交状态随版本数值递增。共享目录删除剧本时会取消排队或运行中的任务，并保留已发布的修订。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

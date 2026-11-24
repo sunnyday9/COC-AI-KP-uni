@@ -22,6 +22,8 @@ export async function claimStoryPreparation(leaseMs: number): Promise<Preparatio
       WITH candidate AS (
         SELECT job.sequence FROM story_preparation_jobs job
         LEFT JOIN story_preparation_dispatch dispatch ON dispatch.owner_id = job.owner_id
+        JOIN story_catalog catalog ON catalog.owner_id = job.owner_id AND catalog.story_id = job.story_id
+          AND catalog.source_revision = job.source_revision AND catalog.deleted_at IS NULL
         WHERE job.state IN ('queued', 'running') AND job.attempt < job.attempt_limit
           AND job.deadline_at > statement_timestamp()
           AND (job.lease_expires_at IS NULL OR job.lease_expires_at <= statement_timestamp())

@@ -47,6 +47,7 @@ export interface StoryPreparationStatus {
     id: string
     /** Monotonic per story across jobs and worker lease recovery. */
     version: string
+    operationId?: string
     state: 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
     stage: StoryPreparationStage
     percent: number
@@ -56,6 +57,7 @@ export interface StoryPreparationStatus {
 export interface StoryCatalogPage {
   stories: { id: string; name: string; preparation?: StoryPreparationStatus }[]
   preparationMode?: 'durable'
+  preparationOwnerId?: string
   nextCursor: string | null
   /** False on shared gateways before durable preparation is available. */
   canPrepare?: boolean

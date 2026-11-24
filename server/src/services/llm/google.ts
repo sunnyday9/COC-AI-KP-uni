@@ -142,6 +142,7 @@ export async function googleAdapter(config: AIProviderConfig, params: LLMCallPar
 
   const res = await safeOutboundFetch(url, {
     method: 'POST',
+    ...(params.signal ? { signal: params.signal } : {}),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })

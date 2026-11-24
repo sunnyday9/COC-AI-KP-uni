@@ -47,11 +47,13 @@ interface EpubSpineRef {
  * Parse EPUB buffer to plain text (chapter contents concatenated).
  * Uses epub2 which provides a clean Promise-based API.
  */
-export async function parseEpub(buffer: Buffer, requireComplete = false): Promise<string> {
+export async function parseEpub(buffer: Buffer, requireComplete = false, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted()
   const { createTempFile } = await getTempFileHelper()
   const tmpPath = await createTempFile(buffer, '.epub')
   try {
     const { EPub } = await import('epub2')
+    signal?.throwIfAborted()
     class CompleteEPub extends EPub {
       override parseSpine(spine: { itemref?: EpubSpineRef | EpubSpineRef[] }): void {
         // epub2 drops unresolved references before exposing the chapter flow.
@@ -69,9 +71,11 @@ export async function parseEpub(buffer: Buffer, requireComplete = false): Promis
     }
     const Parser = requireComplete ? CompleteEPub : EPub
     const epub: InstanceType<typeof EPub> = await Parser.createAsync(tmpPath)
+    signal?.throwIfAborted()
     const flow = epub.flow || []
     const texts: string[] = []
     for (const chapter of flow) {
+      signal?.throwIfAborted()
       const id = chapter.id
       if (!id) continue
       try {
@@ -87,6 +91,7 @@ export async function parseEpub(buffer: Buffer, requireComplete = false): Promis
         // Skip unreadable chapters
       }
     }
+    signal?.throwIfAborted()
     return texts.join('\n\n')
   } finally {
     try { const { unlink } = await import('node:fs/promises'); await unlink(tmpPath) } catch { /* ignore */ }
@@ -163,6 +168,7 @@ interface PdfOcrImage {
 
 interface PdfOcrOptions {
   requireComplete?: boolean
+  signal?: AbortSignal
   totalOcrTimeLimitMs?: number
   imageOcrTimeLimitMs?: number
 }
@@ -173,28 +179,40 @@ class PdfOcrTimeoutError extends Error {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, limit: 'total' | 'image'): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, limit: 'total' | 'image', signal?: AbortSignal): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let abort: (() => void) | undefined
   const timeout = new Promise<never>((_, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason)
+      return
+    }
+    abort = () => reject(signal?.reason)
+    signal?.addEventListener('abort', abort, { once: true })
     timer = setTimeout(() => reject(new PdfOcrTimeoutError(limit)), timeoutMs)
   })
   return Promise.race([promise, timeout]).finally(() => {
+    if (abort) signal?.removeEventListener('abort', abort)
     if (timer !== undefined) clearTimeout(timer)
   })
 }
 
 export async function parsePdfWithOcr(dataBuffer: Buffer, options: PdfOcrOptions = {}): Promise<string> {
+  const { signal } = options
+  signal?.throwIfAborted()
   // Decide whether the image/OCR pass is allowed before any PDF parsing. The
   // text-layer parse still runs so oversized PDFs retain their readable text.
   const exceedsPdfOcrSizeLimit = dataBuffer.length > MAX_PDF_OCR_BYTES
   if (options.requireComplete && exceedsPdfOcrSizeLimit) throw new Error('PDF exceeds OCR file-size limit')
   const { PDFParse } = await import('pdf-parse')
+  signal?.throwIfAborted()
   // pdf-parse can transfer/detach its input while initializing its worker.
   // Give it a copy so the original upload bytes remain available to pdf-lib.
   const parserBytes = Uint8Array.from(dataBuffer)
   const pdfImageBytes = new Uint8Array(dataBuffer.buffer, dataBuffer.byteOffset, dataBuffer.byteLength)
   const parser = new PDFParse({ data: parserBytes })
   const pdfData = await parser.getText()
+  signal?.throwIfAborted()
   let mainText = (pdfData.text || '').trim()
   const safetySkipDetails: string[] = []
   let safetySkipCount = 0
@@ -230,12 +248,14 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, options: PdfOcrOptions
 
   try {
     const { PDFDocument, PDFDict, PDFRawStream, PDFName, decodePDFRawStream } = await import('pdf-lib')
+    signal?.throwIfAborted()
     const doc = await PDFDocument.load(pdfImageBytes)
     const imageBuffers: PdfOcrImage[] = []
     let imageResourceCount = 0
     let totalImageBytes = 0
     const pages = doc.getPages()
     for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+      signal?.throwIfAborted()
       const page = pages[pageIndex]
       const resourcesRef = page.node.get(PDFName.of('Resources'))
       const resources = resourcesRef ? doc.context.lookup(resourcesRef) : undefined
@@ -303,6 +323,7 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, options: PdfOcrOptions
     if (imageBuffers.length) {
       // Load OCR runtime only after page traversal found a supported image.
       const Tesseract = (await import('tesseract.js')).default
+      signal?.throwIfAborted()
       const deadline = Date.now() + totalOcrTimeLimitMs
       // The checked-in traineddata files are uncompressed; disable Tesseract's
       // default .gz lookup so OCR stays local and never fetches language data.
@@ -319,20 +340,25 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, options: PdfOcrOptions
       const imageTexts: string[] = []
       let completedImageCount = 0
       try {
-        worker = await withTimeout(workerPromise, Math.max(0, deadline - Date.now()), 'total')
+        worker = await withTimeout(workerPromise, Math.max(0, deadline - Date.now()), 'total', signal)
         for (let i = 0; i < imageBuffers.length; i++) {
+          signal?.throwIfAborted()
           const image = imageBuffers[i]
           const remainingMs = deadline - Date.now()
           if (remainingMs <= 0) throw new PdfOcrTimeoutError('total')
           const imageLimitApplies = imageOcrTimeLimitMs < remainingMs
           const timeoutMs = Math.min(imageOcrTimeLimitMs, remainingMs)
-          const { data } = await withTimeout(worker.recognize(image.bytes), timeoutMs, imageLimitApplies ? 'image' : 'total')
+          const { data } = await withTimeout(worker.recognize(image.bytes), timeoutMs, imageLimitApplies ? 'image' : 'total', signal)
           completedImageCount = i + 1
           if (data.text && data.text.trim()) {
             imageTexts.push(`[第${image.page}页 插图 ${image.image}]\n${data.text.trim()}`)
           }
         }
       } catch (error) {
+        if (!worker && (error instanceof PdfOcrTimeoutError || signal?.aborted)) {
+          void workerPromise.then((lateWorker) => lateWorker.terminate()).catch(() => {})
+        }
+        signal?.throwIfAborted()
         if (error instanceof PdfOcrTimeoutError) {
           const firstSkipped = imageBuffers[completedImageCount] ?? imageBuffers[imageBuffers.length - 1]
           const skippedCount = imageBuffers.length - completedImageCount
@@ -340,9 +366,6 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, options: PdfOcrOptions
             ? `Per-image OCR time limit (${imageOcrTimeLimitMs} ms) reached`
             : `Total OCR time limit (${totalOcrTimeLimitMs} ms) reached`
           timeLimitDiagnostic = `${limitLabel}; skipped OCR for ${skippedCount} image(s)${firstSkipped ? ` starting at page ${firstSkipped.page} image ${firstSkipped.image}` : ''}.`
-          if (!worker) {
-            void workerPromise.then((lateWorker) => lateWorker.terminate()).catch(() => {})
-          }
           if (options.requireComplete) throw error
         } else {
           throw error
@@ -357,6 +380,7 @@ export async function parsePdfWithOcr(dataBuffer: Buffer, options: PdfOcrOptions
       }
     }
   } catch (error) {
+    signal?.throwIfAborted()
     if (options.requireComplete) throw error
     // 内嵌图提取或 OCR 失败时仅保留正文
   }
