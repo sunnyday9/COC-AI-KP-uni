@@ -72,7 +72,7 @@
 支持回执的房间在 `room:state` 中声明 `actionReceipts: true`。客户端为每次新聊天生成一个行动编号，并通过 `room:action {roomId,actionId,action}` 发送。编号允许 1–80 个 ASCII 字母、数字、下划线或短横线，按房间和登录账号隔离。消息内容必须是字符串，去除首尾空白后用于判定重试是否相同。相同编号和内容返回原消息编号及当前处理状态。同一编号改发其他内容返回 `action_conflict`。回执只发给提交请求的连接。
 
 - `room:action:result {roomId,actionId,status,messageId}` 表示已持久化。等待室聊天立即为 `completed`。进行中的行动先为 `pending`，KP 回合结果入库后为 `completed`。行动执行前发现作者已离开，或房间在处理前结束，则为 `cancelled`，保留原聊天记录。当前成员可以重发原动作查询自己的回执。
-- `room:action:result {roomId,actionId,status,code,error}` 表示本次请求未得到接收确认。`rejected` 是权限、内容或编号冲突。`busy` 表示房间达到待处理上限。命令入口饱和时可能先返回忙碌，稍后重发原编号即可查询已有回执。`retry` 表示暂时无法确认结果。忙碌、回执丢失和暂时性错误后均可用原编号重试。
+- `room:action:result {roomId,actionId,status,code,error}` 表示本次请求未得到接收确认。`rejected` 是权限、内容或编号冲突。`busy` 表示房间达到待处理上限。命令入口饱和时可能先返回忙碌，稍后重发原编号即可查询已有回执。`retry` 表示暂时无法确认结果。忙碌、回执丢失和暂时性错误后均可用原编号重试。固定的剧本版本暂时无法读取时，新行动收到 `story_unavailable`。已保存的回执仍可通过同一个编号查询。
 - 旧客户端省略 `actionId` 时仍收到消息回显及原有错误帧，每次提交视作新的聊天。新客户端连接未声明回执能力的服务端时也使用旧协议。旧聊天、结构化骰子消息和 `retry_kp` 的帧格式保持兼容。
 - 当前由单一房间进程执行。SQLite 和 PostgreSQL 均先提交聊天、回执和待处理状态，再广播回显。重启后，房间重新载入时恢复待处理行动。回合结果与已处理状态一并提交。提交前的中断可能使 KP 请求重做。后续跨进程所有权、事件转发和持久化回放见 ADR-0010。
 

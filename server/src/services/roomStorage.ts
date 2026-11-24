@@ -11,6 +11,7 @@ import type { RoomActionReceiptStatus, RoomPhase } from '../../../shared/types/r
 interface Statement {
   sql: string
   values: SQLInputValue[]
+  requireSelectableRevision?: boolean
 }
 
 const statement = (sql: string, ...values: SQLInputValue[]): Statement => ({ sql, values })
@@ -51,12 +52,16 @@ async function readOne<T extends Row>(sql: string, ...values: SQLInputValue[]): 
 async function writeAll(commands: Statement[]): Promise<void> {
   if (SHARED_ROOMS_ENABLED) {
     const execute = async (client: Pick<PoolClient, 'query'>) => {
-      for (const command of commands) await client.query(pgQuery(command))
+      for (const command of commands) {
+        const result = await client.query(pgQuery(command))
+        if (command.requireSelectableRevision && result.rowCount !== 1) throw new StoryRevisionChangedError()
+      }
     }
     try {
       if (commands.length > 1) await inPostgresTransaction(execute)
       else await execute(getPostgresPool())
     } catch (error) {
+      if (error instanceof StoryRevisionChangedError) throw error
       throw postgresError(error)
     }
     return
@@ -81,12 +86,25 @@ async function writeAll(commands: Statement[]): Promise<void> {
   }
 }
 
+export class StoryRevisionChangedError extends Error {}
+
+export interface StoryRevisionPin {
+  revision: string
+  sourceRevision: string
+}
+
+const selectableRevisionSql = `SELECT 1 FROM story_catalog
+  WHERE owner_id = ? AND story_id = ? AND active_preparation_revision = ?
+    AND source_revision = ? AND deleted_at IS NULL FOR SHARE`
+
 export interface RoomRow {
   room_id: string
   owner_id: number
   invite_code: string
   story_id: string | null
   story_owner_id: number | null
+  story_preparation_revision?: string | null
+  story_source_revision?: string | null
   kind: string
   phase: string
   state: string
@@ -125,8 +143,19 @@ function insertRoomSql(
   kind: 'multi' | 'solo',
   phase: RoomPhase,
   state: string,
+  pin?: StoryRevisionPin,
 ): Statement {
   const now = Date.now()
+  if (pin) return {
+    ...statement(
+      `INSERT INTO rooms (room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state,
+           version, updated_at, created_at, story_preparation_revision, story_source_revision)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ? WHERE EXISTS (${selectableRevisionSql})`,
+      roomId, ownerId, inviteCode, storyId, ownerId, kind, phase, state, now, now, pin.revision, pin.sourceRevision,
+      ownerId, storyId, pin.revision, pin.sourceRevision,
+    ),
+    requireSelectableRevision: true,
+  }
   return statement(
     `INSERT INTO rooms (room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, version, updated_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
@@ -158,10 +187,11 @@ export function insertMultiplayerRoom(roomId: string, userId: number, code: stri
 export function insertSoloRoom(
   roomId: string, userId: number, code: string, storyId: string, state: string,
   character: { id: string; name: string; sheet: string },
+  pin?: StoryRevisionPin,
 ): Promise<void> {
   return writeAll([
     insertCharacterSql(character.id, userId, character.name, character.sheet),
-    insertRoomSql(roomId, userId, code, storyId, 'solo', 'playing', state),
+    insertRoomSql(roomId, userId, code, storyId, 'solo', 'playing', state, pin),
     ownerMember(roomId, userId, character.id),
   ])
 }
@@ -208,12 +238,24 @@ export async function listSoloRoomsForUser(userId: number): Promise<SoloRoomList
 }
 
 export function getRoomRow(roomId: string): Promise<RoomRow | undefined> {
+  const revisionColumns = SHARED_ROOMS_ENABLED ? ', story_preparation_revision, story_source_revision' : ''
   return readOne<RoomRow & Row>(
-    'SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, created_at FROM rooms WHERE room_id = ?', roomId,
+    `SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, created_at${revisionColumns}
+     FROM rooms WHERE room_id = ?`, roomId,
   )
 }
 
-export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number): Promise<void> {
+export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number, pin?: StoryRevisionPin): Promise<void> {
+  if (pin) return writeAll([{
+    ...statement(
+      `UPDATE rooms SET story_id = ?, story_owner_id = ?, story_preparation_revision = ?,
+         story_source_revision = ?, phase = 'playing', updated_at = ?
+       WHERE room_id = ? AND story_preparation_revision IS NULL AND EXISTS (${selectableRevisionSql})`,
+      storyId, storyOwnerId, pin.revision, pin.sourceRevision, Date.now(), roomId,
+      storyOwnerId, storyId, pin.revision, pin.sourceRevision,
+    ),
+    requireSelectableRevision: true,
+  }])
   return writeAll([statement(
     `UPDATE rooms SET story_id = ?, story_owner_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`,
     storyId, storyOwnerId, Date.now(), roomId,

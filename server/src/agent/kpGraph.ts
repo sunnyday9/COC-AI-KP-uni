@@ -649,7 +649,8 @@ function createPlanNode(agentKind: string, userId?: number) {
       : userId
     if (agentKind === 'narrative' && storyOwnerId && state.storyContext?.scriptId) {
       try {
-        const scriptCtx = await loadScriptContext(storyOwnerId, String(state.storyContext.scriptId))
+        const scriptCtx = state.storyContext.preparedScript as import('./scriptContext.js').ScriptContext | undefined
+          ?? await loadScriptContext(storyOwnerId, String(state.storyContext.scriptId))
         const obtainedIds: string[] = []
         if (Array.isArray(state.storyContext.openClues)) {
           for (const c of state.storyContext.openClues) {

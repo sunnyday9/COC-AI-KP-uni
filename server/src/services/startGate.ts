@@ -18,6 +18,8 @@
  * 成功路径副作用（写库/对账/opening）不在此——门闩只判定。唯一静态运行时依赖是
  * 零依赖纯函数 codec roomStateCodec（#61 rooms.state 读点收口），不引 fs/db 重量。
  */
+import { SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
+import type { StoryRevisionPin } from './roomStorage.js'
 import type { StoryWorkflow } from './kpPromptService.js'
 import type { DossierListItem } from '../rag/dossier/dossierCore.js'
 import { parseRoomState } from './roomStateCodec.js'
@@ -57,7 +59,7 @@ export interface StartGateInput {
 }
 
 /** 门闩判定结果：放行，或 409 conflict（门闩拒绝全部映射 409，reason 单一）。 */
-export type StartGateResult = { ok: true } | { ok: false; reason: 'conflict'; message: string }
+export type StartGateResult = { ok: true; pin?: StoryRevisionPin } | { ok: false; reason: 'conflict'; message: string }
 
 /** 解析 workflow 入参：仅接受 'dossier'，其余（含 undefined/非法）一律 rag（现状默认）。 */
 export function sanitizeWorkflow(value: unknown): StoryWorkflow {
@@ -181,7 +183,15 @@ export async function checkStartGate(input: StartGateInput): Promise<StartGateRe
   if (lobby && !input.storyId) return gateConflict('请先在等待室选定剧本')
   // 门闩 2：剧本可用性按 workflow 分派（dossier=已生成+未降质；rag=已索引+可评估剧透锚点）。
   const workflow = input.room ? roomWorkflowFromRow(input.room) : sanitizeWorkflow(input.workflow)
-  if (workflow === 'dossier') {
+  let pin: StoryRevisionPin | undefined
+  if (SHARED_ROOM_CATALOG_ENABLED) {
+    try {
+      const { selectPlayableStory } = await import('./roomStoryRevision.js')
+      pin = await selectPlayableStory(input.ownerId, input.storyId)
+    } catch {
+      return gateConflict('No complete prepared story revision is available.')
+    }
+  } else if (workflow === 'dossier') {
     const materials = await loadDossierGateMaterials(input.ownerId, input.storyId)
     // 「未生成」409：清单拿不到（扫描异常 → []）或 scriptId 不在集合内，均按缺档案处理。
     // solo-create 也必须过这道闩，否则它会绕过 lobby-start 直接出生为 playing。
@@ -206,5 +216,5 @@ export async function checkStartGate(input: StartGateInput): Promise<StartGateRe
     // 到此处必有未绑成员 → 括注名单恒在（原文案的 length>0 三元为恒真分支，输出逐字节一致）。
     return gateConflict(`${unbound.length} 名成员未绑定角色卡（${unbound.map((m) => m.username).join('、')}）`)
   }
-  return { ok: true }
+  return pin ? { ok: true, pin } : { ok: true }
 }

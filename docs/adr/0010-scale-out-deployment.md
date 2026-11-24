@@ -56,7 +56,7 @@ Budget active and queued Keeper work separately from imports, with provider-leve
 
 Two HTTP gateways can share [sign-in and private account settings](../DEPLOYMENT.md#61-双网关账号预发布环境113) in PostgreSQL and an [owner-scoped story catalog](../DEPLOYMENT.md#62-双网关私有剧本目录114) with private object storage. An independent [story preparation worker](../DEPLOYMENT.md#64-共享剧本准备进程116) can recover an interrupted job and publish a complete revision. Story owners can see progress through either gateway.
 
-The opt-in [shared room staging process](../DEPLOYMENT.md#63-单进程共享房间预发布115) keeps one authoritative gameplay process. It uses prepared fixture files under a separate root and restores solo and multiplayer rooms over the existing protocol. Connecting these rooms to published story revisions, migrating existing SQLite data, and distributing room execution across fenced workers are later rollout stages.
+The opt-in [shared room staging process](../DEPLOYMENT.md#63-单进程共享房间预发布115) keeps one authoritative gameplay process, stores rooms and membership in PostgreSQL, and restores solo and multiplayer rooms over the existing protocol. With [shared story preparation and storage enabled](../DEPLOYMENT.md#65-共享房间固定剧本版本118), each new room pins the verified source and preparation revisions. Saved rooms retain access to those revisions after regeneration or catalog deletion. Fixture-only staging uses prepared files under a separate root. SQLite data migration and fenced room workers remain later rollout stages.
 
 ## Local capacity check
 

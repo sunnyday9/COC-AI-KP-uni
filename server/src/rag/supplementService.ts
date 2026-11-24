@@ -30,6 +30,7 @@ import { loadGaps, type CoverageGaps } from './dossier/coverageGaps.js'
 import { findScene } from './dossier/sceneLookup.js'
 import { selectTop } from './reranker.js'
 import type { StoryDossier } from './dossier/schema.js'
+import type { PreparedStoryArtifacts } from '../services/preparedStoryStorage.js'
 import type { Embedder } from './embedding.js'
 
 /** 向量检索落地口（缺省 = vectorStore.queryChunks，distance → score 取反）。 */
@@ -42,6 +43,7 @@ export type VectorQuery = (params: {
 }) => Promise<{ chunks: { id: string; content: string; metadata: Record<string, unknown>; distance: number }[] }>
 
 export interface SupplementDeps {
+  preparedStory?: PreparedStoryArtifacts
   /** 嵌入函数（缺省由调用方从 settings 构建；不传则检索无向量 → 空结果）。 */
   getEmbedding?: Embedder
   /** 向量检索（缺省 vectorStore.queryChunks）。 */
@@ -112,7 +114,7 @@ async function defaultVectorQuery(params: {
   query: string
   topK: number
   getEmbedding?: Embedder
-}): Promise<{ chunks: { id: string; content: string; metadata: Record<string, unknown>; distance: number }[] }> {
+}, preparedStory?: PreparedStoryArtifacts): Promise<{ chunks: { id: string; content: string; metadata: Record<string, unknown>; distance: number }[] }> {
   const vectorStore = await import('./vectorStore.js')
   return vectorStore.queryChunks({
     userId: params.userId,
@@ -120,6 +122,7 @@ async function defaultVectorQuery(params: {
     scriptId: params.scriptId,
     topK: params.topK,
     getEmbedding: params.getEmbedding,
+    preparedIndex: preparedStory?.index,
   })
 }
 
@@ -159,8 +162,8 @@ export async function buildSupplement(
   let dossier: StoryDossier | null = null
   try {
     const [g, d] = await Promise.all([
-      (deps.loadGaps ?? (() => loadGaps(userId, scriptId)))().catch(() => null),
-      (deps.loadDossier ?? (() => defaultLoadDossier(userId, scriptId)))().catch(() => null),
+      (deps.preparedStory ? Promise.resolve(deps.preparedStory.gaps) : (deps.loadGaps ?? (() => loadGaps(userId, scriptId)))()).catch(() => null),
+      (deps.preparedStory ? Promise.resolve(deps.preparedStory.dossier) : (deps.loadDossier ?? (() => defaultLoadDossier(userId, scriptId)))()).catch(() => null),
     ])
     gaps = g
     dossier = d
@@ -189,7 +192,7 @@ export async function buildSupplement(
   const usedPlayerText = rawQuery ? true : built.usedPlayerText
   if (!query) return EMPTY('', 0)
 
-  const vectorQuery = deps.queryVectors ?? defaultVectorQuery
+  const vectorQuery = deps.queryVectors ?? ((params) => defaultVectorQuery(params, deps.preparedStory))
   const retrieve: RetrieveFn = async (q) => {
     const res = await vectorQuery({
       userId,
