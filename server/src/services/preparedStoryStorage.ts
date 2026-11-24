@@ -3,9 +3,9 @@ import { addAbortSignal } from 'node:stream'
 import { SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
 import type { IndexedStory } from '../../../shared/types/bridge.js'
 import { getPostgresPool, postgresError } from '../db/postgres.js'
-import { isCurrentGapsVersion, type CoverageGapsFile } from '../rag/dossier/coverageGaps.js'
+import { computeSceneAnchors, isCurrentGapsVersion, type CoverageGapsFile } from '../rag/dossier/coverageGaps.js'
 import { getSpoilerMetadataFailureReason } from '../rag/supplementAssembly.js'
-import type { StoryDossier } from '../rag/dossier/schema.js'
+import { hasPlayableDossierShape, type StoryDossier } from '../rag/dossier/schema.js'
 import type { StoredIndex } from '../rag/vectorStore.js'
 import { NotFoundError, UpstreamError } from '../utils/errors.js'
 import { getStoryObjectStore } from './storyObjectStorage.js'
@@ -61,6 +61,34 @@ export async function writePreparedStory(
   return manifest
 }
 
+function hasValidCoverageSpans(gaps: CoverageGapsFile): boolean {
+  if (!Array.isArray(gaps.spans) || gaps.gapCount !== gaps.spans.length) return false
+
+  let previousEnd = 0
+  let gapChars = 0
+  for (const span of gaps.spans) {
+    if (!span || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)
+      || span.start < previousEnd || span.end <= span.start || span.end > gaps.storyChars
+      || span.chars !== span.end - span.start) return false
+    previousEnd = span.end
+    gapChars += span.chars
+  }
+  return gapChars === gaps.gapChars
+}
+
+function hasCanonicalAnchors(sourceText: string, dossier: StoryDossier, gaps: CoverageGapsFile): boolean {
+  if (!Array.isArray(gaps.sceneAnchors) || gaps.sceneAnchors.length !== dossier.scenes.length) return false
+
+  return computeSceneAnchors(sourceText, dossier.scenes).every((expected, index) => {
+    const stored = gaps.sceneAnchors[index]
+    if (!stored || stored.id !== expected.id || stored.name !== expected.name || stored.matched !== expected.matched) return false
+    const starts = stored.starts
+    if (!expected.starts) return starts === undefined || (Array.isArray(starts) && starts.length === 0)
+    return Array.isArray(starts) && starts.length === expected.starts.length
+      && expected.starts.every((offset, position) => starts[position] === offset)
+  })
+}
+
 export function isCoherentPreparedStory(storyId: string, revision: string, { sourceText, index, dossier, gaps }: PreparedStoryArtifacts): boolean {
   return index?.scriptId === storyId
     && Array.isArray(index.docs) && index.docs.length > 0 && index.chunkCount === index.docs.length
@@ -71,8 +99,11 @@ export function isCoherentPreparedStory(storyId: string, revision: string, { sou
         && sourceText.slice(start, start + doc.content.length) === doc.content
     })
     && dossier?.scriptId === storyId && dossier.sourceRevision === revision && dossier.quality?.degraded === false
+    && hasPlayableDossierShape(dossier)
     && gaps?.scriptId === storyId && gaps.sourceRevision === revision && gaps.storyChars === sourceText.length
-    && isCurrentGapsVersion(gaps) && getSpoilerMetadataFailureReason(gaps, dossier) === null
+    && isCurrentGapsVersion(gaps) && hasValidCoverageSpans(gaps)
+    && hasCanonicalAnchors(sourceText, dossier, gaps)
+    && getSpoilerMetadataFailureReason(gaps, dossier) === null
 }
 
 /** Load the complete active revision for an authorized story owner. Artifact contents are server-only. */

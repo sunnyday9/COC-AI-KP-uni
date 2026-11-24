@@ -428,6 +428,9 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
         const { clues: _clues, npcs: _npcs, ...malformedDossier } = dossier
         await replaceArtifact('dossier', malformedDossier)
         expect.soft((await solo(owner.token, 'dossier')).status).toBe(409)
+        const [firstScene, ...otherScenes] = dossier.scenes
+        await replaceArtifact('dossier', { ...dossier, scenes: [{ ...firstScene, npcIds: 'invalid-array' }, ...otherScenes] })
+        expect.soft((await solo(owner.token, 'dossier')).status).toBe(409)
         await replaceArtifact('dossier', dossier)
 
         const reveal = dossier.truths[0].revealScene
