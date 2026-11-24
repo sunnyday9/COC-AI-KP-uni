@@ -398,6 +398,8 @@ async function main() {
     pageB = await ctxB.newPage()
     const retryText = '把简报带进档案室。'
     const retryIds = []
+    const reconnectText = '我查看档案下面的信封。'
+    const reconnectIds = []
     await pageA.routeWebSocket((url) => url.pathname === '/ws', (socket) => {
       const server = socket.connectToServer()
       socket.onMessage((data) => {
@@ -409,6 +411,13 @@ async function main() {
               type: 'room:action:result', roomId: frame.roomId, actionId: frame.actionId,
               status: 'busy', code: 'room_busy', error: '房间待处理的操作已满，请稍后重试。',
             }))
+            return
+          }
+        }
+        if (frame.type === 'room:action' && frame.action?.payload?.content === reconnectText) {
+          reconnectIds.push(frame.actionId)
+          if (reconnectIds.length === 1) {
+            socket.send(JSON.stringify({ type: 'room:error', roomId: frame.roomId, error: '房间连接暂时中断。' }))
             return
           }
         }
@@ -562,6 +571,17 @@ async function main() {
       await waitText(pageB, '侦查检定', 40_000)
       await waitText(pageA, '（测试模式）', 40_000)
       await waitText(pageB, '（测试模式）', 40_000)
+    })
+
+    await step('游戏页重新连接后以原行动编号重发', async () => {
+      await fillInput(pageA, '描述你的行动', reconnectText)
+      await clickBtn(pageA, '发送')
+      await waitText(pageA, '房间连接暂时中断。', 5_000)
+      await clickBtn(pageA, '重新连接', { timeout: 5_000 })
+      await waitMsg(pageB, reconnectText)
+      await waitTextGone(pageA, '房间连接暂时中断。')
+      assert(reconnectIds.length === 2 && typeof reconnectIds[0] === 'string' && reconnectIds[0] === reconnectIds[1], 'game reconnect must reuse the original action ID')
+      assert(await pageA.locator('.msg-wrap').filter({ hasText: reconnectText }).count() === 1, 'reconnect must display one chat message')
     })
 
     await step('A reload 重连 → 快照续玩，消息仍在', async () => {
