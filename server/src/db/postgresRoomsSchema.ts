@@ -4,7 +4,7 @@ import { getPostgresPool, postgresError } from './postgres.js'
  * Hold a database-scoped session lock for the lifetime of the only gameplay
  * process. This staging guard does not authorize multi-host workers.
  */
-export async function initializeSingleProcessRooms(): Promise<void> {
+export async function initializeSingleProcessRooms(catalogEnabled = false): Promise<void> {
   try {
     const client = await getPostgresPool().connect()
     try {
@@ -35,6 +35,8 @@ export async function initializeSingleProcessRooms(): Promise<void> {
           updated_at BIGINT NOT NULL,
           created_at BIGINT NOT NULL
         );
+        ALTER TABLE rooms ADD COLUMN IF NOT EXISTS story_preparation_revision UUID;
+        ALTER TABLE rooms ADD COLUMN IF NOT EXISTS story_source_revision UUID;
         CREATE TABLE IF NOT EXISTS room_members (
           room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
           user_id BIGINT NOT NULL REFERENCES users(id),
@@ -48,10 +50,30 @@ export async function initializeSingleProcessRooms(): Promise<void> {
         CREATE INDEX IF NOT EXISTS room_members_room_join ON room_members (room_id, join_order);
       `)
       await client.query(`
-        SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, version, updated_at, created_at FROM rooms LIMIT 0;
+        SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, version, updated_at, created_at, story_preparation_revision, story_source_revision FROM rooms LIMIT 0;
         SELECT room_id, user_id, role, character_id, ready, join_order FROM room_members LIMIT 0;
         SELECT id, user_id, name, sheet, updated_at FROM characters LIMIT 0;
       `)
+      if (catalogEnabled) {
+        await client.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS story_preparation_revision_owner_scope
+          ON story_preparation_revisions (revision, owner_id, story_id, source_revision);
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint
+              WHERE conrelid = 'rooms'::regclass AND conname = 'rooms_retained_story_revision') THEN
+              ALTER TABLE rooms ADD CONSTRAINT rooms_retained_story_revision
+                FOREIGN KEY (story_preparation_revision, story_owner_id, story_id, story_source_revision)
+                REFERENCES story_preparation_revisions (revision, owner_id, story_id, source_revision);
+              ALTER TABLE rooms ADD CONSTRAINT rooms_story_revision_pair CHECK (
+                (story_preparation_revision IS NULL AND story_source_revision IS NULL)
+                OR (story_preparation_revision IS NOT NULL AND story_source_revision IS NOT NULL
+                  AND story_owner_id IS NOT NULL AND story_id IS NOT NULL)
+              );
+            END IF;
+          END $$;
+        `)
+      }
       // Losing the guard connection ends the gameplay process. Reconnecting
       // without the in-memory registry would permit competing room writers.
       client.on('error', () => process.exit(1))

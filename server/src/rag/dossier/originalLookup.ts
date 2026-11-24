@@ -23,6 +23,7 @@
  * MAX_CONTENT_CHARS=580，保证 KP 看到的内容不被砍。
  */
 import { SHARED_ROOMS_ENABLED } from '../../config.js'
+import type { PreparedStoryArtifacts } from '../../services/preparedStoryStorage.js'
 import { chatForRag } from '../../services/aiService.js'
 import { readStoryForRag } from '../../services/storyService.js'
 import { loadGaps, SCENE_REGION_LEAD, SCENE_REGION_SPAN, type CoverageGaps } from './coverageGaps.js'
@@ -339,6 +340,7 @@ export interface VerifyMeta {
 }
 
 export interface VerifyOriginalDeps {
+  preparedStory?: PreparedStoryArtifacts
   /** AI credential owner (current room owner). */
   userId: number
   /** Story file owner; defaults to userId for non-room callers. */
@@ -452,8 +454,8 @@ export async function verifyOriginal(
   }
   const storyOwnerId = deps.storyOwnerId ?? deps.userId
   const [gaps, dossier] = await Promise.all([
-    (deps.loadGaps ?? (() => loadGaps(storyOwnerId, deps.scriptId)))().catch(() => null),
-    (deps.loadDossier ?? (() => loadDossier(storyOwnerId, deps.scriptId)))().catch(() => null),
+    deps.preparedStory?.gaps ?? (deps.loadGaps ?? (() => loadGaps(storyOwnerId, deps.scriptId)))().catch(() => null),
+    deps.preparedStory?.dossier ?? (deps.loadDossier ?? (() => loadDossier(storyOwnerId, deps.scriptId)))().catch(() => null),
   ])
   if (gaps?.sourceRevision !== dossier?.sourceRevision) {
     return {
@@ -472,7 +474,9 @@ export async function verifyOriginal(
 
   let storyText: string | null = null
   try {
-    storyText = deps.loadStoryText ? await deps.loadStoryText() : await defaultLoadStoryText(storyOwnerId, deps.scriptId, now)
+    storyText = deps.preparedStory?.sourceText ?? (deps.loadStoryText
+      ? await deps.loadStoryText()
+      : await defaultLoadStoryText(storyOwnerId, deps.scriptId, now))
   } catch {
     storyText = null
   }

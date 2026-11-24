@@ -9,6 +9,7 @@ export const PORT = Number(process.env.PORT ?? 3000)
 const DEV_JWT_SECRET = 'dev-secret-change-me'
 export const DEPLOYMENT_MODE = process.env.DEPLOYMENT_MODE?.trim() || 'local'
 export const SHARED_ROOMS_ENABLED = DEPLOYMENT_MODE === 'shared-accounts' && process.env.ENABLE_SHARED_ROOMS === '1'
+export const SHARED_ROOM_CATALOG_ENABLED = SHARED_ROOMS_ENABLED && !!process.env.STORY_S3_BUCKET?.trim()
 export const SHARED_ROOM_FIXTURE_DIR = process.env.SHARED_ROOM_FIXTURE_DIR?.trim()
 
 /**
@@ -23,7 +24,7 @@ export function assertRuntimeConfig(): void {
   if (process.env.NODE_ENV === 'production' && (!configuredSecret || configuredSecret === DEV_JWT_SECRET)) {
     throw new Error('JWT_SECRET must be set to a non-default value in production')
   }
-  if (SHARED_ROOMS_ENABLED) {
+  if (SHARED_ROOMS_ENABLED && !SHARED_ROOM_CATALOG_ENABLED) {
     const fixtureDir = SHARED_ROOM_FIXTURE_DIR
     if (!fixtureDir || !path.isAbsolute(fixtureDir)) {
       throw new Error('SHARED_ROOM_FIXTURE_DIR must be an absolute, dedicated prepared-story fixture directory')

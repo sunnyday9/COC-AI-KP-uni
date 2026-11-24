@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { addAbortSignal } from 'node:stream'
+import { SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
 import type { IndexedStory } from '../../../shared/types/bridge.js'
 import { getPostgresPool, postgresError } from '../db/postgres.js'
 import { isCurrentGapsVersion, type CoverageGapsFile } from '../rag/dossier/coverageGaps.js'
@@ -84,6 +85,21 @@ export async function loadActivePreparedStory(ownerId: number, storyId: string, 
       AND prepared.source_revision = catalog.source_revision
     WHERE catalog.owner_id = $1 AND catalog.story_id = $2 AND catalog.deleted_at IS NULL
   `, [ownerId, storyId]).catch((error) => { throw postgresError(error) })
+  return readPreparedObjects(ownerId, storyId, prepared, signal)
+}
+
+/** Restore exactly the revision authorized by a saved room, even after catalog deletion. */
+export async function loadRetainedPreparedStory(
+  ownerId: number, storyId: string, revision: string, sourceRevision: string, signal: AbortSignal,
+) {
+  const { rows: [prepared] } = await getPostgresPool().query<PreparedRevision>(`
+    SELECT revision, source_revision, prepared_at, chunk_count, objects FROM story_preparation_revisions
+    WHERE owner_id = $1 AND story_id = $2 AND revision = $3 AND source_revision = $4
+  `, [ownerId, storyId, revision, sourceRevision]).catch((error) => { throw postgresError(error) })
+  return readPreparedObjects(ownerId, storyId, prepared, signal)
+}
+
+async function readPreparedObjects(ownerId: number, storyId: string, prepared: PreparedRevision | undefined, signal: AbortSignal) {
   if (!prepared) throw new NotFoundError('prepared story not found')
   const store = getStoryObjectStore()
   if (!store) throw new UpstreamError('prepared story storage unavailable')
@@ -98,7 +114,7 @@ export async function loadActivePreparedStory(ownerId: number, storyId: string, 
       const body = await store.get(key, metadata.size, readSignal)
       addAbortSignal(readSignal, body)
       const bytes = Buffer.from(await body.transformToByteArray())
-      if (digest(bytes) !== metadata.sha256) throw new Error('artifact hash mismatch')
+      if (bytes.length !== metadata.size || digest(bytes) !== metadata.sha256) throw new Error('artifact hash mismatch')
       return bytes.toString('utf8')
     } catch {
       throw new UpstreamError('prepared story object read failed')
@@ -117,7 +133,10 @@ export async function loadActivePreparedStory(ownerId: number, storyId: string, 
     if (artifacts.index?.indexedAt === Number(prepared.prepared_at) &&
       artifacts.index.chunkCount === prepared.chunk_count &&
       isCoherentPreparedStory(storyId, prepared.revision, artifacts)) {
-      return { revision: prepared.revision, sourceRevision: prepared.source_revision, ...artifacts }
+      return {
+        revision: prepared.revision, sourceRevision: prepared.source_revision, ...artifacts,
+        bytes: ARTIFACTS.reduce((total, key) => total + prepared.objects[key].size, 0),
+      }
     }
   } catch {
     // A corrupt payload is unavailable to the investigation start gate.
@@ -145,7 +164,7 @@ export async function listPreparedStories(ownerId: number, rawLimit: unknown, ra
   const last = stories[limit - 1]
   return {
     stories: stories.slice(0, limit),
-    canStartInvestigation: false,
+    canStartInvestigation: SHARED_ROOM_CATALOG_ENABLED,
     nextCursor: stories.length > limit && last ? encodeStoryCursor(last.indexedAt, last.storyId) : null,
   }
 }

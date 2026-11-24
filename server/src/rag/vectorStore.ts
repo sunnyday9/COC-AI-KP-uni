@@ -263,25 +263,32 @@ function getOrLoadIndex(userId: number, scriptId: string): LoadedIndex | null {
   const file = loadIndex(userId, scriptId)
   if (file) {
     const saved = file.data
-    // Rehydrate Map shapes (same as the original: tf/tfidf/idf are stored as
-    // entry arrays on disk and restored to Maps on load; vector stays number[]).
-    for (let i = 0; i < saved.docs.length; i++) {
-      const doc = saved.docs[i] as StoredIndexDoc
-      ;(doc as unknown as { tf: Map<string, number> }).tf = new Map(doc.tf)
-      ;(doc as unknown as { tfidf: Map<string, number> }).tfidf = new Map(doc.tfidf)
-    }
-    const loaded: LoadedIndex = {
-      scriptId: saved.scriptId,
-      storyName: saved.storyName,
-      indexedAt: saved.indexedAt,
-      chunkCount: saved.chunkCount,
-      docs: saved.docs as unknown as IndexDoc[],
-      idf: new Map(saved.idf),
-    }
+    const loaded = hydrateIndex(saved)
     memoryCache.set(key, loaded, file.bytes)
     return loaded
   }
   return null
+}
+
+function hydrateIndex(saved: StoredIndex): LoadedIndex {
+  return {
+    scriptId: saved.scriptId,
+    storyName: saved.storyName,
+    indexedAt: saved.indexedAt,
+    chunkCount: saved.chunkCount,
+    docs: saved.docs.map((doc) => ({ ...doc, tf: new Map(doc.tf), tfidf: new Map(doc.tfidf) })),
+    idf: new Map(saved.idf),
+  }
+}
+
+const preparedIndexes = new WeakMap<StoredIndex, LoadedIndex>()
+
+function getPreparedIndex(index: StoredIndex): LoadedIndex {
+  const cached = preparedIndexes.get(index)
+  if (cached) return cached
+  const loaded = hydrateIndex(index)
+  preparedIndexes.set(index, loaded)
+  return loaded
 }
 
 function serializeIndex(idx: LoadedIndex): StoredIndex {
@@ -438,6 +445,7 @@ export async function queryChunks(params: {
   type?: string
   topK?: number
   getEmbedding?: (text: string) => Promise<number[]>
+  preparedIndex?: StoredIndex
 }): Promise<{ chunks: { id: string; content: string; metadata: Record<string, unknown>; type: string; distance: number }[] }> {
   const query = params.query
   const userId = params.userId
@@ -448,8 +456,10 @@ export async function queryChunks(params: {
   const getEmbedding = params.getEmbedding
 
   if (!scriptId) return { chunks: [] }
-  const idx = getOrLoadIndex(userId, scriptId)
-  if (!idx || !idx.docs.length) return { chunks: [] }
+  const idx = params.preparedIndex
+    ? getPreparedIndex(params.preparedIndex)
+    : getOrLoadIndex(userId, scriptId)
+  if (!idx || idx.scriptId !== scriptId || !idx.docs.length) return { chunks: [] }
 
   const queryTfidf = tfidfVector(tokenize(query || ''), idx.idf)
   let queryVector: number[] | null = null

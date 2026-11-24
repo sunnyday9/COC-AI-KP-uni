@@ -116,6 +116,7 @@ export async function handleRoomAction(socket: WebSocket, userId: number, raw: u
     }
     task = room.queuePlayerChat(userId, content)?.then((result) => {
       if (result === 'busy') busy()
+      if (result === 'story-unavailable') send(socket, { type: 'room:error', roomId, error: 'The pinned story revision is unavailable.' })
       if (result === 'not-member') send(socket, { type: 'room:error', roomId, error: 'not a room member' })
     }) ?? null
   } else if (action.type === 'retry_kp') {

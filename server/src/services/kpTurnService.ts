@@ -94,6 +94,7 @@ export interface KpTurnHandlers {
  */
 /** 一个回合的执行依赖（评审候选 1：8 位置参收窄为对象）。 */
 export interface KpTurnDeps {
+  preparedScript?: import('../agent/scriptContext.js').ScriptContext
   /** 角色组（characterId → sheet；多人多卡，单人单卡） */
   characters: Record<string, COCCharacterSheet> | null
   /** 当前行动者（工具缺省 characterId 的回退目标；null = 无角色） */
@@ -253,7 +254,7 @@ export async function runKpTurn(
         import('../agent/scriptContext.js'),
         import('../agent/storyToolGate.js'),
       ])
-      scriptContext = await scriptContextModule.loadScriptContext(storyOwnerId, scriptId)
+      scriptContext = turn.preparedScript ?? await scriptContextModule.loadScriptContext(storyOwnerId, scriptId)
       if (!scriptContext && body.storyContext?.workflow === 'dossier') {
         throw new Error('Dossier story context is unavailable')
       }
@@ -268,6 +269,9 @@ export async function runKpTurn(
       return
     }
   }
+  const graphStoryContext = turn.preparedScript
+    ? { ...body.storyContext, preparedScript: turn.preparedScript }
+    : body.storyContext ?? null
   const obtainedClueIds = getObtainedClueIds(body.storyContext)
   const currentSceneName = typeof body.storyContext?.sceneName === 'string'
     ? body.storyContext.sceneName
@@ -340,7 +344,7 @@ export async function runKpTurn(
       r = await invokeKPAgent(
         msgs,
         invokeLLM,
-        body?.storyContext ?? null,
+        graphStoryContext,
         userId,
         await getSharedGraph(invokeLLM, userId, isKpChunkStreamEnabled()),
       )

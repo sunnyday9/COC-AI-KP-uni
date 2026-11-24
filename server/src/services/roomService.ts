@@ -11,10 +11,11 @@
  * 单人模式 = 单成员房间（同一代码路径，FR-M9）。
  */
 import crypto from 'node:crypto'
+import type { RoomStoryBundle } from './roomStoryRevision.js'
 import * as roomStorage from './roomStorage.js'
 import { logger } from '../utils/logging.js'
 import { createCharacterMutatorFactory, type CharacterEnding } from '../rule-engine/characterMutators.js'
-import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, SHARED_ROOMS_ENABLED } from '../config.js'
+import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 import { acquireKpTurn } from './kpAdmission.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
@@ -91,6 +92,10 @@ interface RoomOptions {
 }
 
 const DEFAULT_TURN_WINDOW_MS = 5_000
+class RoomStoryUnavailableError extends Error {
+  constructor() { super('The pinned story revision is unavailable.'); }
+}
+
 const SNAPSHOT_EVERY_N_EVENTS = 20
 const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
@@ -144,6 +149,7 @@ export class RoomService {
   private storyId: string | null = null
   /** Account that owns the selected story artifacts; unlike AI identity, this survives handoff. */
   private storyOwnerId: number | null = null
+  private storyRevision: roomStorage.StoryRevisionPin | null = null
   private kpSetupRequired = false
   private messages: Message[] = []
   private characters = new Map<string, COCCharacterSheet>()
@@ -417,6 +423,9 @@ export class RoomService {
     this.members = members.map(memberRowToInfo)
     if (typeof r.story_id === 'string') this.storyId = r.story_id
     this.storyOwnerId = typeof r.story_id === 'string' ? (r.story_owner_id ?? r.owner_id) : null
+    this.storyRevision = r.story_preparation_revision && r.story_source_revision
+      ? { revision: r.story_preparation_revision, sourceRevision: r.story_source_revision }
+      : null
     if (this.phase !== 'ended' && (r.phase === 'lobby' || r.phase === 'playing' || r.phase === 'ended')) {
       this.phase = r.phase
     }
@@ -509,9 +518,15 @@ export class RoomService {
   }
 
   /** Check membership at execution time in the same actor slot as the chat. */
-  queuePlayerChat(userId: number, content: string): Promise<'accepted' | 'busy' | 'not-member'> | null {
+  queuePlayerChat(userId: number, content: string): Promise<'accepted' | 'busy' | 'not-member' | 'story-unavailable'> | null {
     return this.enqueueClientAction(() => withRoomCommand(this.roomId, async () => {
       if (!await roomStorage.isRoomMember(this.roomId, userId)) return 'not-member'
+      if (this.phase === 'playing') {
+        try { await this.loadTurnStory() } catch (error) {
+          if (!(error instanceof RoomStoryUnavailableError)) throw error
+          return 'story-unavailable'
+        }
+      }
       return (await this.submitPlayerChat(userId, content)) ? 'accepted' : 'busy'
     }))
   }
@@ -555,6 +570,7 @@ export class RoomService {
     this.turnFlushing = true
     let release: (() => void) | null = null
     let interrupted = false
+    let blockedOnStory = false
     try {
       release = await acquireKpTurn(this.lifetime.signal)
       if (!release || this.disposed || this.isEnded()) return
@@ -583,12 +599,14 @@ export class RoomService {
       const merged = batch.map((b) => `【${b.username}】${b.content}`).join('\n')
       const activeCharacterId = batch[batch.length - 1]?.characterId ?? null
       const allowedCharacterIds = new Set(batch.map((b) => b.characterId).filter((id): id is string => !!id))
+      const preparedStory = await this.loadTurnStory()
       const { assembleTurnKnowledge } = await import('./turnKnowledge.js')
       const knowledge = await assembleTurnKnowledge({
         workflow: this.workflow,
         ownerId: turnOwnerId,
         storyOwnerId: turnStoryOwnerId,
         storyId: this.storyId,
+        ...(preparedStory ? { preparedStory } : {}),
         roomId: this.roomId,
         scene: this.scene,
         playerText: merged,
@@ -632,11 +650,13 @@ export class RoomService {
             .finally(() => this.persistSnapshot())
             .catch((error) => logger.warn('room stale turn recovery persistence failed', { roomId: this.roomId, error: String(error) }))
         },
+        preparedStory,
       )
       this.activeTurnBatch = []
       if (!SHARED_ROOMS_ENABLED && !this.disposed) await this.persistTurnSnapshot()
     } catch (error) {
       interrupted = true
+      blockedOnStory = error instanceof RoomStoryUnavailableError
       throw error
     } finally {
       release?.()
@@ -648,7 +668,7 @@ export class RoomService {
       }
       if (this.disposed || this.isEnded()) {
         this.turnBuffer = []
-      } else if (!this.kpSetupRequired && this.turnBuffer.length > 0) {
+      } else if (!blockedOnStory && !this.kpSetupRequired && this.turnBuffer.length > 0) {
         // Messages arriving while a healthy turn is running are flushed next.
         if (!interrupted && this.turnWindowMs <= 0) {
           this.startBufferedTurn()
@@ -677,6 +697,17 @@ export class RoomService {
    * 房间故事上下文唯一构造点（#77 收编 flushTurn / runOpeningTurn 的重复字面量）：
    * 未绑定剧本（storyId 为空）传 null，KP 图据此跳过脚本门控。
    */
+  private async loadTurnStory(): Promise<RoomStoryBundle | undefined> {
+    if (!this.storyRevision && !SHARED_ROOM_CATALOG_ENABLED) return
+    if (!this.storyRevision || !this.storyId || this.storyOwnerId === null) throw new RoomStoryUnavailableError()
+    try {
+      const { loadRoomStory } = await import('./roomStoryRevision.js')
+      return await loadRoomStory(this.storyOwnerId, this.storyId, this.storyRevision, this.lifetime.signal)
+    } catch {
+      throw new RoomStoryUnavailableError()
+    }
+  }
+
   private buildStoryContext(terminalEndings: RoomStoryContext['terminalEndings'] = []): RoomStoryContext | null {
     return this.storyId
       ? {
@@ -720,11 +751,16 @@ export class RoomService {
     /** Suppress subsequent graph calls and tool effects if governance changes mid-turn. */
     isOwnerCurrent: () => boolean = () => true,
     onOwnerChanged?: () => void,
+    preparedStory?: RoomStoryBundle,
   ): Promise<void> {
     const { runKpTurn } = await import('./kpTurnService.js')
     // dossier 查证工具执行器随回合知识一并收编在 TurnKnowledge（活值读取器传入——
     // 工具在回合执行中才被调用，场景切换/房主转让可能发生在同回合内）。
     const { buildStoryLookup } = await import('./turnKnowledge.js')
+    const preparedScript = preparedStory
+      ? (await import('../rag/dossier/schema.js')).toScriptContext(preparedStory.dossier)
+      : undefined
+    if (preparedStory && !preparedScript) throw new RoomStoryUnavailableError()
     const characterMap = this.getCharacterMap()
     const draft = SHARED_ROOMS_ENABLED ? {
       characters: structuredClone(characterMap),
@@ -785,6 +821,7 @@ export class RoomService {
       { messages, storyContext },
       {
         characters: draft?.characters ?? characterMap,
+        ...(preparedScript ? { preparedScript } : {}),
         activeCharacterId,
         mutatorFactory,
         allowedCharacterIds, // D5：归属校验（窗口内行动者可用的角色卡集）
@@ -801,6 +838,7 @@ export class RoomService {
           getStoryOwnerId: () => this.storyOwnerId ?? this.ownerId,
           getStoryId: () => this.storyId,
           getScene: () => draft ? draft.scene : this.scene,
+          ...(preparedStory ? { preparedStory } : {}),
         }),
         handlers: {
           onChunk: draft ? (chunk) => {
@@ -1111,12 +1149,14 @@ export class RoomService {
       const turnOwnerId = this.ownerId
       // 回合知识装配唯一入口（TurnKnowledge）：stage:'opening' = 无玩家文本——
       // rag query 退化为开场固定 query、补充层 query 退化为纯场景名（T4 契约）、不触发预取。
+      const preparedStory = await this.loadTurnStory()
       const { assembleTurnKnowledge } = await import('./turnKnowledge.js')
       const knowledge = await assembleTurnKnowledge({
         workflow: this.workflow,
         ownerId: turnOwnerId,
         storyOwnerId: this.storyOwnerId ?? this.ownerId,
         storyId: this.storyId,
+        ...(preparedStory ? { preparedStory } : {}),
         roomId: this.roomId,
         scene: this.scene,
         playerText: '',
@@ -1148,6 +1188,7 @@ export class RoomService {
             this.openingStarted = false
             retryOpening = !this.disposed
           },
+          preparedStory,
         ),
       )
     } catch (err) {
@@ -1417,7 +1458,12 @@ export async function createSoloRoom(
     const roomId = `room_${crypto.randomUUID()}`
     const inviteCode = await ensureUniqueInviteCode()
     const state = serializeRoomState(workflow === 'dossier' ? { turnWindowMs: 0, workflow } : { turnWindowMs: 0 })
-    await roomStorage.insertSoloRoom(roomId, userId, inviteCode, storyId, state, { id: characterId, name, sheet: JSON.stringify(sheet) })
+    try {
+      await roomStorage.insertSoloRoom(roomId, userId, inviteCode, storyId, state, { id: characterId, name, sheet: JSON.stringify(sheet) }, gate.pin)
+    } catch (error) {
+      if (!(error instanceof roomStorage.StoryRevisionChangedError)) throw error
+      return { ok: false, reason: 'conflict', message: 'Prepared story changed. Select it again to start.' }
+    }
     return { ok: true, roomId, inviteCode, characterId }
   })
 }
@@ -1492,6 +1538,17 @@ export async function startRoom(
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
     // 开局门闩（唯一判定落点 startGate）：入口只喂房间行摘要 + 成员行摘要 + 归属，
     // 判定（含 rooms.state workflow 解析与分派）全在门内。
+    if (g.room.story_preparation_revision) {
+      if (g.room.phase === 'ended' || getRoom(roomId)?.isEnded()) {
+        return { ok: false, reason: 'conflict', message: 'This investigation has ended.' }
+      }
+      return storyId === g.room.story_id
+        ? { ok: true }
+        : { ok: false, reason: 'conflict', message: 'This investigation has a pinned story.' }
+    }
+    if (SHARED_ROOM_CATALOG_ENABLED && g.room.phase === 'playing') {
+      return { ok: false, reason: 'conflict', message: 'This investigation has no verified story revision.' }
+    }
     // Reuse the persisted source when the selected story is unchanged; a newly
     // selected story belongs to the current owner who selected it.
     const storyOwnerId = storyId === g.room.story_id && g.room.story_owner_id !== null
@@ -1506,7 +1563,12 @@ export async function startRoom(
     })
     if (!gate.ok) return gate
     if (getRoom(roomId)?.isEnded()) return { ok: false, reason: 'conflict', message: '\u5bf9\u5c40\u5df2\u7ed3\u675f\uff0c\u65e0\u6cd5\u91cd\u65b0\u5f00\u59cb' }
-    await roomStorage.updateRoomStart(roomId, storyId, storyOwnerId)
+    try {
+      await roomStorage.updateRoomStart(roomId, storyId, storyOwnerId, gate.pin)
+    } catch (error) {
+      if (!(error instanceof roomStorage.StoryRevisionChangedError)) throw error
+      return { ok: false, reason: 'conflict', message: 'Prepared story changed. Select it again to start.' }
+    }
     await syncActiveRoom(roomId)
     // opening 回合（ADR-0002）：实例已激活则立即触发；未激活时随首次 join 触发（懒激活保持）。
     getRoom(roomId)?.beginOpeningIfPending()

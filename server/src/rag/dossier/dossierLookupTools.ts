@@ -23,12 +23,14 @@
  * 对 dossierCore / coverageGaps / originalLookup 保持动态 import（轻核，Mimosa
  * 门禁安全边界：本模块静态图上不牵连任何重依赖链）。
  */
+import type { PreparedStoryArtifacts } from '../../services/preparedStoryStorage.js'
 import type { StoryWorkflow } from '../../services/kpPromptService.js'
 import { logger } from '../../utils/logging.js'
 
 /** dossier 查证工具执行器的输入：房间 id 直传；owner/剧本/场景是**运行时活值**——
  *  经读取器在工具调用时刻取值（工厂门在装配时刻判定一次，活值语义见模块头注释）。 */
 export interface StoryLookupInput {
+  preparedStory?: PreparedStoryArtifacts
   roomId: string
   getWorkflow: () => StoryWorkflow
   /** Current room owner for AI calls. */
@@ -56,7 +58,7 @@ export async function runStoryLookup(
   const storyId = input.getStoryId() as string
   const { loadDossier, listScenes, buildSceneBlock, findScene, lexicalSearch, renderSceneNotFound, renderLexicalMiss } = await import('./dossierCore.js')
   const { computeSceneCoverage, loadGaps } = await import('./coverageGaps.js')
-  const dossier = await loadDossier(storyOwnerId, storyId)
+  const dossier = input.preparedStory?.dossier ?? await loadDossier(storyOwnerId, storyId)
   if (!dossier) return { content: 'error: 剧本档案不存在' }
   if (toolName === 'scene_list') {
     const scenes = listScenes(dossier)
@@ -71,7 +73,7 @@ export async function runStoryLookup(
       return { content: renderSceneNotFound(name, listScenes(dossier).map((s) => s.name)) }
     }
     // P26：附场景覆盖提示（缺口归属按 .gaps.json；loadGaps 内部已吞错返回 null）
-    const gaps = await loadGaps(storyOwnerId, storyId)
+    const gaps = input.preparedStory?.gaps ?? await loadGaps(storyOwnerId, storyId)
     const coverage = gaps ? computeSceneCoverage(gaps, scene.id) : null
     return { content: buildSceneBlock(dossier, scene.id, coverage) }
   }
@@ -91,7 +93,7 @@ export async function runStoryLookup(
     const { verifyOriginal } = await import('./originalLookup.js')
     const res = await verifyOriginal(
       { question, scene: sceneArg },
-      { userId: ownerId, storyOwnerId, scriptId: storyId },
+      { userId: ownerId, storyOwnerId, scriptId: storyId, ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}) },
     )
     if (process.env.KP_LLM_DEBUG === '1') {
       logger.debug('verify original complete', {

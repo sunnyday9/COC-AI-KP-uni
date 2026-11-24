@@ -6,8 +6,9 @@ import { createServer as createHttpServer, request as proxyRequest, type ServerR
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { DeleteObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { Pool } from 'pg'
+import WebSocket from 'ws'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { getPostgresPool } from '../db/postgres.js'
 import { loadActivePreparedStory } from '../services/preparedStoryStorage.js'
@@ -40,7 +41,7 @@ async function freePort(): Promise<number> {
   })
 }
 
-function startProcess(entry: string, dir: string, endpointOverride?: string, prepare = false, port?: number): ChildProcess {
+function startProcess(entry: string, dir: string, endpointOverride?: string, prepare = false, port?: number, rooms = false): ChildProcess {
   const objectStore = JSON.parse(s3Fixture!)
   const child = spawn(process.execPath, ['--import', 'tsx', entry], {
     env: {
@@ -52,6 +53,8 @@ function startProcess(entry: string, dir: string, endpointOverride?: string, pre
       JWT_SECRET: secret,
       NODE_ENV: 'production',
       STORY_PREPARATION_ENABLED: prepare ? '1' : '0',
+      ENABLE_SHARED_ROOMS: rooms ? '1' : '0',
+      SHARED_ROOM_FIXTURE_DIR: undefined,
       PORT: port === undefined ? undefined : String(port),
       MOCK_AI: '1',
       STORY_PREPARATION_LEASE_MS: '3000',
@@ -81,8 +84,8 @@ async function stopProcess(child: ChildProcess, signal?: NodeJS.Signals): Promis
   })
 }
 
-async function startGateway(port: number, dir: string, endpointOverride?: string, prepare = false): Promise<string> {
-  const child = startProcess('src/app.ts', dir, endpointOverride, prepare, port)
+async function startGateway(port: number, dir: string, endpointOverride?: string, prepare = false, rooms = false): Promise<string> {
+  const child = startProcess('src/app.ts', dir, endpointOverride, prepare, port, rooms)
   const url = `http://127.0.0.1:${port}`
   for (let i = 0; i < 100 && child.exitCode === null; i++) {
     const response = await fetch(`${url}/health/ready`, { signal: AbortSignal.timeout(1_000) }).catch(() => null)
@@ -326,6 +329,167 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     expect((await call(otherGateway, route)).status).toBe(401)
     await call(gateway, '/api/stories/prepare.txt', owner.token, 'DELETE')
   }, 30_000)
+
+  it('starts a room from an authorized prepared story and keeps its revision across renewal, transfer and restart', async () => {
+    let gateway = await startGateway(await freePort(), 'pinned-gateway', undefined, true, true)
+    let gameplay = children.at(-1)!
+    const owner = await account(gateway)
+    const host = await account(gateway)
+    const storyId = 'pinned-story.txt'
+    const fixture = await readFile(new URL('../../../e2e/fixtures/demo-story.txt', import.meta.url), 'utf8')
+    expect((await upload(gateway, owner.token, storyId, fixture)).status).toBe(200)
+    const storyPath = '/api/stories/' + storyId
+    const route = storyPath + '/preparation'
+    const worker = startProcess('src/workers/storyPreparation.ts', 'pinned-worker', undefined, true)
+    const { bucket, ...s3Config } = JSON.parse(s3Fixture!)
+    const s3 = new S3Client(s3Config)
+    const sockets: WebSocket[] = []
+    const sheet = { playerName: 'Archivist', derived: { hp: 10, hpMax: 10, san: 50, sanMax: 50 }, attributes: {}, skills: {} }
+    async function prepare(): Promise<string> {
+      const requested = await call(gateway, route, owner.token, 'POST')
+      expect(requested.status).toBe(202)
+      const jobId = requested.body.job.id
+      await expect.poll(async () => (await call(gateway, route, owner.token)).body.job, { timeout: 15_000 }).toMatchObject({
+        id: jobId, state: 'complete',
+      })
+      return (await call(gateway, route, owner.token)).body.activeRevision
+    }
+    const post = (path: string, token: string, body: unknown) => call(gateway, path, token, 'POST', JSON.stringify(body))
+    const solo = (token: string, workflow: 'dossier' | 'rag') =>
+      post('/api/rooms/solo', token, { storyId, workflow, name: 'Archivist', sheet })
+    function roomSocket(token: string, roomId: string) {
+      const ws = new WebSocket(gateway.replace('http:', 'ws:') + '/ws?token=' + encodeURIComponent(token))
+      const frames: { type: string; eventType?: string; payload?: { message?: { role: string; content: string } }; error?: string }[] = []
+      ws.on('message', (raw) => { frames.push(JSON.parse(raw.toString())) })
+      ws.once('open', () => ws.send(JSON.stringify({ type: 'room:join', roomId })))
+      sockets.push(ws)
+      return {
+        ready: () => expect.poll(() => frames.some((frame) => frame.type === 'room:state'), { timeout: 12_000 }).toBe(true),
+        kpMessages: () => frames.flatMap((frame) =>
+          frame.eventType === 'message_appended' && frame.payload?.message?.role === 'kp' ? [frame.payload.message.content] : [],
+        ),
+        countKp: () => frames.filter((frame) => frame.eventType === 'message_appended' && frame.payload?.message?.role === 'kp').length,
+        error: () => frames.find((frame) => frame.type === 'room:error')?.error,
+        chat: (content: string) => ws.send(JSON.stringify({ type: 'room:action', roomId, action: { type: 'chat', payload: { content } } })),
+      }
+    }
+    try {
+      const originalRevision = await prepare()
+      expect((await call(gateway, '/api/rag/stories?limit=2', owner.token)).body.canStartInvestigation).toBe(true)
+      expect((await solo(host.token, 'dossier')).status).toBe(409)
+
+      const oldSolo = await solo(owner.token, 'dossier')
+      expect(oldSolo.status).toBe(200)
+      const multi = await post('/api/rooms', owner.token, { storyId, workflow: 'rag' })
+      expect(multi.status).toBe(200)
+      const multiPath = '/api/rooms/' + multi.body.roomId
+      expect((await post('/api/rooms/join', host.token, { inviteCode: multi.body.inviteCode })).status).toBe(200)
+      for (const member of [owner, host]) {
+        const card = await post('/api/characters', member.token, { name: 'Archivist', sheet })
+        expect(card.status).toBe(200)
+        expect((await post(multiPath + '/character', member.token, { characterId: card.body.id })).status).toBe(200)
+      }
+      expect((await post(multiPath + '/start', owner.token, { storyId })).status).toBe(200)
+      expect((await post(multiPath + '/transfer', owner.token, { userId: host.user.id })).status).toBe(200)
+      expect((await call(gateway, multiPath + '/settings', host.token, 'PUT', '{"turnWindowMs":0}')).status).toBe(200)
+      const oldMulti = roomSocket(host.token, multi.body.roomId)
+      await oldMulti.ready()
+      await expect.poll(oldMulti.countKp, { timeout: 12_000 }).toBe(1)
+
+      const renewedRevision = await prepare()
+      expect(renewedRevision).not.toBe(originalRevision)
+      const newSolo = await solo(owner.token, 'rag')
+      expect(newSolo.status).toBe(200)
+      const newer = roomSocket(owner.token, newSolo.body.roomId)
+      await newer.ready()
+      await expect.poll(newer.countKp, { timeout: 12_000 }).toBe(1)
+
+      const prefix = `stories/${owner.user.id}/prepared/`
+      const readArtifact = async (kind: 'dossier' | 'gaps') => {
+        const object = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: prefix + renewedRevision + '/' + kind }))
+        return JSON.parse(await object.Body!.transformToString())
+      }
+      // Simulate a storage repair that records a fresh, valid digest for each
+      // bad payload. The REST gate must catch the semantic inconsistency.
+      const db = new Pool({ connectionString: databaseUrl })
+      const replaceArtifact = async (kind: 'dossier' | 'gaps', value: unknown) => {
+        const bytes = Buffer.from(JSON.stringify(value))
+        const sha256 = createHash('sha256').update(bytes).digest('hex')
+        await s3.send(new PutObjectCommand({
+          Bucket: bucket, Key: prefix + renewedRevision + '/' + kind, Body: bytes, Metadata: { sha256 },
+        }))
+        await db.query(`
+          UPDATE story_preparation_revisions SET objects = jsonb_set(objects, ARRAY[$2::text], $3::jsonb)
+          WHERE revision = $1
+        `, [renewedRevision, kind, JSON.stringify({ size: bytes.length, sha256 })])
+      }
+      try {
+        const [dossier, gaps] = await Promise.all([readArtifact('dossier'), readArtifact('gaps')])
+        const { clues: _clues, npcs: _npcs, ...malformedDossier } = dossier
+        await replaceArtifact('dossier', malformedDossier)
+        expect.soft((await solo(owner.token, 'dossier')).status).toBe(409)
+        await replaceArtifact('dossier', dossier)
+
+        const reveal = dossier.truths[0].revealScene
+        const anchor = gaps.sceneAnchors.find((candidate: { id: string; name: string }) => candidate.id === reveal || candidate.name === reveal)
+        expect(anchor?.starts?.[0]).toBeTypeOf('number')
+        anchor.starts[0] += 1
+        expect(anchor.starts[0]).toBeLessThan(gaps.storyChars)
+        await replaceArtifact('gaps', gaps)
+        expect.soft((await solo(owner.token, 'rag')).status).toBe(409)
+        expect.soft((await solo(owner.token, 'dossier')).status).toBe(409)
+      } finally {
+        await db.end()
+      }
+      const oldAnchors = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: prefix + originalRevision + '/gaps' }))
+      await s3.send(new PutObjectCommand({
+        Bucket: bucket, Key: prefix + renewedRevision + '/gaps', Body: await oldAnchors.Body!.transformToByteArray(),
+      }))
+      const cardsBeforeRejectedStarts = (await call(gateway, '/api/characters', owner.token)).body
+      expect((await solo(owner.token, 'rag')).status).toBe(409)
+      expect((await solo(owner.token, 'dossier')).status).toBe(409)
+      expect((await call(gateway, '/api/characters', owner.token)).body).toEqual(cardsBeforeRejectedStarts)
+      const blockedLobby = await post('/api/rooms', owner.token, { storyId, workflow: 'rag' })
+      expect(blockedLobby.status).toBe(200)
+      const blockedPath = '/api/rooms/' + blockedLobby.body.roomId
+      expect((await post(blockedPath + '/character', owner.token, { characterId: oldSolo.body.characterId })).status).toBe(200)
+      expect((await post(blockedPath + '/start', owner.token, { storyId })).status).toBe(409)
+      expect((await call(gateway, blockedPath, owner.token)).body.phase).toBe('lobby')
+
+      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: prefix + renewedRevision + '/dossier' }))
+      expect((await call(gateway, storyPath, owner.token, 'DELETE')).status).toBe(200)
+      expect((await call(gateway, storyPath, owner.token)).status).toBe(404)
+      expect((await solo(owner.token, 'dossier')).status).toBe(409)
+      await stopProcess(gameplay)
+      gateway = await startGateway(await freePort(), 'pinned-restarted', undefined, true, true)
+      gameplay = children.at(-1)!
+
+      // The same room is authorized by membership after catalog deletion;
+      // its successor cannot repin the room or borrow the owner's catalog.
+      expect((await post(multiPath + '/start', host.token, { storyId })).status).toBe(200)
+      expect((await post(multiPath + '/start', host.token, { storyId: 'replacement.txt' })).status).toBe(409)
+      const resumedMulti = roomSocket(host.token, multi.body.roomId)
+      const resumedSolo = roomSocket(owner.token, oldSolo.body.roomId)
+      await Promise.all([resumedMulti.ready(), resumedSolo.ready()])
+      resumedMulti.chat('Enter the archive by the front door.')
+      await expect.poll(resumedMulti.countKp, { timeout: 12_000 }).toBe(1)
+      await expect.poll(resumedSolo.countKp, { timeout: 12_000 }).toBe(1)
+      resumedSolo.chat('请查阅档案，确认一下旧图书馆的情报。')
+      await expect.poll(resumedSolo.countKp, { timeout: 12_000 }).toBe(2)
+      expect(resumedSolo.kpMessages().at(-1)).toContain('你确认了旧图书馆的档案')
+
+      const corrupt = roomSocket(owner.token, newSolo.body.roomId)
+      await corrupt.ready()
+      corrupt.chat('Search the archive cabinet')
+      await expect.poll(corrupt.error, { timeout: 12_000 }).toBe('The pinned story revision is unavailable.')
+      expect(corrupt.countKp()).toBe(0)
+    } finally {
+      await stopProcess(gameplay)
+      for (const socket of sockets) socket.terminate()
+      await stopProcess(worker)
+      s3.destroy()
+    }
+  }, 85_000)
 
   it('recovers after a killed preparation worker and publishes a single playable result', async () => {
     const gateway = await startGateway(await freePort(), 'recovery-first', undefined, true)
