@@ -42,6 +42,7 @@ it('lets a room owner load and start with a ready story from the second page', a
         'scroll-view': { template: '<div><slot /></div>' },
         ConfirmModal: true,
         ChatMessage: true,
+        ChatRetryNotices: true,
         Button: { template: '<button><slot /></button>' },
       },
     },

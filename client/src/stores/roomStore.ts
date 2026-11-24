@@ -16,7 +16,7 @@
  *                                        └─ leaveRoom() ──▶ idle
  */
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, shallowReactive } from 'vue'
 import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomMetaPayload } from '../../../shared/types/room'
 import type { Message, DiceMessage } from '../../../shared/types/game'
 import type { COCCharacterSheet } from '../../../shared/types/character'
@@ -55,6 +55,16 @@ export interface RoomMessageRecord {
   result?: DiceMessage['result']
 }
 
+type ChatRetryCause = 'busy' | 'uncertain'
+
+interface PendingChat {
+  message: RoomMessageRecord
+  cause?: ChatRetryCause
+  /** A server snapshot can already contain the accepted message under its server ID. */
+  outsideTranscript?: boolean
+  timer?: ReturnType<typeof setTimeout>
+}
+
 function toMessage(m: RoomMessageRecord): Message {
   if (m.role === 'player') {
     return { id: m.id, timestamp: m.timestamp, role: 'player', playerName: m.playerName ?? '调查员', content: m.content }
@@ -86,7 +96,10 @@ export const useRoomStore = defineStore('room', () => {
   /** 消息流（服务端权威，按 seq 应用）。 */
   const messages = ref<RoomMessageRecord[]>([])
   let actionReceipts = false
-  const pendingChats = new Map<string, { message: RoomMessageRecord; timer?: ReturnType<typeof setTimeout> }>()
+  const pendingChats = shallowReactive(new Map<string, PendingChat>())
+  const chatRetryNotices = computed(() => [...pendingChats.values()].flatMap(({ message, outsideTranscript }) =>
+    outsideTranscript && message.sendError ? [message] : [],
+  ))
   const chatError = ref('')
   /** 线索列表。 */
   const clues = ref<{ id: string; description: string }[]>([])
@@ -149,10 +162,15 @@ export const useRoomStore = defineStore('room', () => {
     ending.value = snap.ending ?? null
     kpSetupRequired.value = snap.kpSetupRequired === true
     characters.value = (snap.characters && typeof snap.characters === 'object') ? snap.characters : {}
-    messages.value = [
-      ...(Array.isArray(snap.messages) ? snap.messages : []),
-      ...[...pendingChats.values()].flatMap(({ message }) => message.sendError ? [message] : []),
-    ]
+    messages.value = Array.isArray(snap.messages) ? [...snap.messages] : []
+    for (const [actionId, pending] of pendingChats) {
+      if (pending.outsideTranscript) continue
+      if (pending.cause === 'busy') {
+        messages.value.push(pending.message)
+      } else {
+        pendingChats.set(actionId, { ...pending, outsideTranscript: true })
+      }
+    }
     // 成员列表来自 REST（room:state 不含 members；room_meta 事件会覆盖）
   }
 
@@ -262,8 +280,8 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         }
         applySnapshot(frame.snapshot)
         if (joining && actionReceipts) {
-          for (const [actionId, { message }] of pendingChats) {
-            if (!message.sendError) sendPendingChat(actionId)
+          for (const [actionId, pending] of pendingChats) {
+            if (pending.cause !== 'busy') sendPendingChat(actionId)
           }
         }
         break
@@ -281,7 +299,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       case 'room:action:result': {
         if (frame.roomId !== roomId.value || !pendingChats.has(frame.actionId)) return
         if (frame.status === 'busy' || frame.status === 'retry') {
-          markChatForRetry(frame.actionId, frame.error)
+          markChatForRetry(frame.actionId, frame.error, frame.status === 'busy' ? 'busy' : 'uncertain')
         } else if (frame.status === 'rejected') {
           clearPendingChat(frame.actionId)
           awaitingKp.value = false
@@ -451,39 +469,45 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     return true
   }
 
-  function markChatForRetry(actionId: string, reason: string): void {
+  function markChatForRetry(actionId: string, reason: string, cause: ChatRetryCause): void {
     const pending = pendingChats.get(actionId)
     if (!pending) return
     clearTimeout(pending.timer)
-    pending.message = { ...pending.message, sendError: reason }
-    const idx = messages.value.findIndex((message) => message.id === actionId)
-    if (idx >= 0) messages.value[idx] = pending.message
-    else messages.value.push(pending.message)
+    const message = { ...pending.message, sendError: reason }
+    pendingChats.set(actionId, { ...pending, cause, message, timer: undefined })
+    if (!pending.outsideTranscript) {
+      const idx = messages.value.findIndex((entry) => entry.id === actionId)
+      if (idx >= 0) messages.value[idx] = message
+    }
     awaitingKp.value = false
   }
 
   function sendPendingChat(actionId: string): void {
     const rid = roomId.value
-    const pending = pendingChats.get(actionId)
+    let pending = pendingChats.get(actionId)
     if (!rid || !pending) return
     clearTimeout(pending.timer)
-    const uncertain = '暂未确认送达，可以重试这条消息。'
+    if (pending.cause) {
+      const message = { ...pending.message, sendError: undefined }
+      pending = { ...pending, cause: undefined, message }
+      pendingChats.set(actionId, pending)
+      const idx = messages.value.findIndex((entry) => entry.id === actionId)
+      if (idx >= 0) messages.value[idx] = message
+    }
+    const needsRetry = () => markChatForRetry(actionId, '暂未确认送达，可以重试这条消息。', 'uncertain')
     try {
       getBridge().sendRoomFrame('room:action', {
         roomId: rid, actionId, action: { type: 'chat', payload: { content: pending.message.content } },
       })
-      pending.timer = setTimeout(() => markChatForRetry(actionId, uncertain), CHAT_CONFIRMATION_TIMEOUT_MS)
+      pending.timer = setTimeout(needsRetry, CHAT_CONFIRMATION_TIMEOUT_MS)
     } catch {
-      markChatForRetry(actionId, uncertain)
+      needsRetry()
     }
   }
 
   function retryPendingChat(actionId: string): void {
     const pending = pendingChats.get(actionId)
-    if (!actionReceipts || connectionState.value !== 'joined' || !pending?.message.sendError) return
-    pending.message = { ...pending.message, sendError: undefined }
-    const idx = messages.value.findIndex((message) => message.id === actionId)
-    if (idx >= 0) messages.value[idx] = pending.message
+    if (!actionReceipts || connectionState.value !== 'joined' || !pending?.cause) return
     awaitingKp.value = phase.value === 'playing' && !kpSetupRequired.value
     sendPendingChat(actionId)
   }
@@ -594,6 +618,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     resync,
     sendChat,
     retryPendingChat,
+    chatRetryNotices,
     chatError,
     retryKpTurn,
     setReady,

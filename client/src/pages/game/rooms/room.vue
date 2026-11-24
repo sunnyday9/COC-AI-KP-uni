@@ -15,6 +15,7 @@ import { useRoomStore } from '../../../stores/roomStore'
 import { useIndexedStoryPages } from '../../../composables/useIndexedStoryPages'
 import { useToast } from '../../../composables/useToast'
 import ChatMessage from '../components/ChatMessage.vue'
+import ChatRetryNotices from '../components/ChatRetryNotices.vue'
 import ConfirmModal from '../../../components/ui/ConfirmModal.vue'
 import Button from '../../../components/ui/Button.vue'
 import { getBridge } from '../../../platform'
@@ -478,6 +479,7 @@ function readRoomId(): string {
           </view>
         </view>
 
+        <ChatRetryNotices />
         <text v-if="roomStore.chatError" role="alert">{{ roomStore.chatError }}</text>
         <view class="chat-input-row">
           <input

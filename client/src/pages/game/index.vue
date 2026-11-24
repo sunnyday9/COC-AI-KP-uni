@@ -5,6 +5,7 @@ import { storeToRefs } from 'pinia'
 import { useRoomStore } from '../../stores/roomStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import ChatMessage from './components/ChatMessage.vue'
+import ChatRetryNotices from './components/ChatRetryNotices.vue'
 import PlayerStatsBar from './components/PlayerStatsBar.vue'
 import MemberSwitcher from './components/MemberSwitcher.vue'
 import CharacterSheetCard from '../../components/domain/CharacterSheetCard.vue'
@@ -287,6 +288,7 @@ function confirmExit() {
 
         <!-- 输入区 -->
         <view class="input-area">
+          <ChatRetryNotices />
           <text v-if="roomStore.chatError" role="alert">{{ roomStore.chatError }}</text>
           <view class="input-row">
             <textarea

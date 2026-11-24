@@ -118,41 +118,25 @@ export function buildInvokeLLM(
 
 /* ═══════════════════ Graph instance cache (perf) ═══════════════════ */
 
-/**
- * createKPGraph rebuilds the whole StateGraph per invoke. The graph is
- * stateless (all state comes from the invoke payload), so a short-TTL cache
- * avoids the rebuild cost inside a tool chain (up to 8 invokes per turn).
- *
- * Streaming invokes are NEVER cached: the generate node's closure captures
- * the per-request onChunk callback, and reusing a stale closure would stream
- * chunks into a dead connection.
- */
-const GRAPH_CACHE_TTL_MS = 10_000
-
 type KpGraph = ReturnType<typeof import('../agent/kpGraph.js').createKPGraph>
 
-const graphCache = new Map<string, { graph: KpGraph; expiresAt: number }>()
+// One callback belongs to one turn. The graph closes over that callback's
+// membership guard, provider settings, tools, and chunk destination.
+const graphCache = new WeakMap<InvokeLLM, Map<number | undefined, KpGraph>>()
 
 /** Exported for kpTurnService (Phase A2). */
 export async function getSharedGraph(invokeLLM: InvokeLLM, userId?: number, stream?: boolean): Promise<KpGraph> {
   const { createKPGraph } = await import('../agent/kpGraph.js')
   if (stream) return createKPGraph(invokeLLM, userId)
-  // The key includes the invokeLLM closure: the closure captures the resolved
-  // AI config (settings change → new closure → new cache entry), so a config
-  // update can never be served a stale graph.
-  const key = `${String(userId ?? 'anon')}:${String(invokeLLM)}`
-  const now = Date.now()
-  const hit = graphCache.get(key)
-  if (hit && hit.expiresAt > now) {
-    return hit.graph
+  let graphs = graphCache.get(invokeLLM)
+  if (!graphs) {
+    graphs = new Map()
+    graphCache.set(invokeLLM, graphs)
   }
+  const cached = graphs.get(userId)
+  if (cached) return cached
   const graph = createKPGraph(invokeLLM, userId)
-  graphCache.set(key, { graph, expiresAt: now + GRAPH_CACHE_TTL_MS })
-  if (graphCache.size > 50) {
-    for (const [k, v] of graphCache) {
-      if (v.expiresAt <= now) graphCache.delete(k)
-    }
-  }
+  graphs.set(userId, graph)
   return graph
 }
 

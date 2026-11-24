@@ -309,6 +309,8 @@ describe('roomStore', () => {
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
     store.sendChat('查阅档案')
     const action = sentFrames().at(-1)!
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(store.messages.at(-1)?.sendError).toContain('暂未确认送达')
     state.sockets[0].emitClose()
     await vi.advanceTimersByTimeAsync(1_000)
     const reconnect = state.sockets[1]
@@ -319,8 +321,44 @@ describe('roomStore', () => {
       type: 'room:state', roomId: 'room_x', seq: 1, snapshot: { ...SNAP0, seq: 1, messages: [echo] }, actionReceipts: true,
     })
     expect(JSON.parse(reconnect.sent.at(-1)!)).toEqual(action)
+    expect(store.messages).toEqual([echo])
+    reconnect.emitMessage({
+      type: 'room:state', roomId: 'room_x', seq: 1, snapshot: { ...SNAP0, seq: 1, messages: [echo] }, actionReceipts: true,
+    })
+    expect(reconnect.sent.filter((sent) => JSON.parse(sent).type === 'room:action')).toHaveLength(1)
     reconnect.emitMessage({ type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'completed', messageId: echo.id })
     expect(store.messages).toEqual([echo])
+  })
+
+  it('offers manual recovery if the automatic recheck is still uncertain and keeps the transcript authoritative', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    store.sendChat('查阅档案')
+    const action = sentFrames().at(-1)!
+    emitFrame({ type: 'room:error', roomId: 'room_x', error: '短暂断线' })
+    await store.joinRoom('room_x')
+    const message = { id: 'committed-message', timestamp: 1, role: 'player', content: '查阅档案' }
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 1, snapshot: { ...SNAP0, seq: 1, messages: [message] }, actionReceipts: true })
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(store.messages).toEqual([message])
+    expect(store.chatRetryNotices).toMatchObject([{ id: action.actionId, content: '查阅档案', sendError: expect.stringContaining('暂未确认送达') }])
+    store.retryPendingChat(String(action.actionId))
+    expect(sentFrames().at(-1)).toEqual(action)
+  })
+
+  it('keeps a busy rejection available for manual retry across rejoin', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    store.sendChat('继续调查')
+    const action = sentFrames().at(-1)!
+    emitFrame({ type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'busy', error: '房间忙，请稍后重试。' })
+    emitFrame({ type: 'room:error', roomId: 'room_x', error: '短暂断线' })
+    await store.joinRoom('room_x')
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    expect(sentFrames().filter((frame) => frame.type === 'room:action')).toHaveLength(1)
+    expect(store.messages.at(-1)).toMatchObject({ content: '继续调查', sendError: '房间忙，请稍后重试。' })
+    store.retryPendingChat(String(action.actionId))
+    expect(sentFrames().at(-1)).toEqual(action)
   })
 
   it('restores the setup pause from snapshots and sends owner-only retry actions', async () => {

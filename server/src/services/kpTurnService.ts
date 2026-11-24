@@ -335,8 +335,7 @@ export async function runKpTurn(
     const genStart = Date.now()
     let r: Awaited<ReturnType<typeof invokeKPAgent>>
     try {
-      // chunk 流开启时禁用图缓存：缓存 key 取自 String(invokeLLM)，不含 onChunk 回调身份——
-      // 跨回合命中会带走上一回合（跨房间同理）的叙事流回调，导致 chunk 广播错房/漏播。
+      // 非流式工具链复用当前回合的图实例；流式保留逐次构建。
       r = await invokeKPAgent(
         msgs,
         invokeLLM,
