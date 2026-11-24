@@ -66,13 +66,13 @@ async function lockPreparationStory(client: PoolClient, ownerId: number, storyId
 
 function preparationMutation<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
   return inPostgresTransaction(work).catch((error: unknown) => {
-    if (error instanceof NotFoundError || error instanceof ConflictError || error instanceof CapacityError) throw error
+    if (error instanceof NotFoundError || error instanceof ConflictError) throw error
     throw postgresError(error)
   })
 }
 
 export async function requestStoryPreparation(ownerId: number, storyId: string, operationId?: string, retryOfJobId?: string): Promise<StoryPreparationStatus> {
-  return preparationMutation(async (client) => {
+  const outcome = await preparationMutation(async (client) => {
     const story = await lockPreparationStory(client, ownerId, storyId)
     await expireStoryPreparationJobs(client, { ownerId, storyId })
 
@@ -119,8 +119,9 @@ export async function requestStoryPreparation(ownerId: number, storyId: string, 
       FROM story_preparation_jobs
       WHERE state IN ('queued', 'running')
     `, [ownerId])
-    if (pending!.account >= config.perAccount) throw new CapacityError('你的准备任务已达上限，请取消一个任务或稍后重试。')
-    if (pending!.total >= config.global) throw new CapacityError('准备队列已满，请稍后重试。')
+    // Commit this batch of expirations even when the queue still has no space.
+    if (pending!.account >= config.perAccount) return new CapacityError('你的准备任务已达上限，请取消一个任务或稍后重试。')
+    if (pending!.total >= config.global) return new CapacityError('准备队列已满，请稍后重试。')
 
     const { rows: [job] } = await client.query<JobRow>(`
       INSERT INTO story_preparation_jobs
@@ -131,6 +132,8 @@ export async function requestStoryPreparation(ownerId: number, storyId: string, 
       config.deadlineMs, config.attemptLimit])
     return result(job!)
   })
+  if (outcome instanceof CapacityError) throw outcome
+  return outcome
 }
 
 export async function cancelStoryPreparation(ownerId: number, storyId: string, jobId: string): Promise<StoryPreparationStatus> {
