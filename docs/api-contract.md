@@ -85,13 +85,17 @@
 
 共享预览最多返回 16,000 个 UTF-16 代码单元。纯文本预览从对象存储读取前 64 KiB；需要解析的文档超过 8 MiB 时返回 413，故事管理页提供文本预览，原始附件由通过身份验证的 `GET /api/stories/:id/source` 提供。每网关最多并发四次剧本文本读取，超限返回 503 和 `Retry-After`。
 
-共享剧本准备启用时，分页目录返回 `canPrepare: true`、`preparationMode: 'durable'`，每个故事同时返回 `preparation`。状态形状为 `{activeRevision: string | null, job: {id, version, state, stage, percent} | null}`。任务状态为 `queued`、`running`、`complete` 或 `failed`。`version` 是十进制字符串，同一故事的已提交状态随版本数值递增。共享目录删除剧本只移除目录条目。
+共享剧本准备启用时，分页目录返回 `canPrepare: true`、`preparationMode: 'durable'`，每个故事同时返回 `preparation`。状态形状为 `{activeRevision: string | null, job: {id, version, state, stage, percent} | null}`。任务状态为 `queued`、`running`、`complete`、`failed` 或 `cancelled`。`version` 是十进制字符串，同一故事的已提交状态随版本数值递增。共享目录删除剧本时会取消排队或运行中的任务，并保留已发布的修订。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/stories/:id/preparation` | 提交准备。返回 202 和当前状态。该故事已有排队或运行任务时，返回该任务。 |
+| POST | `/api/stories/:id/preparation` | 提交准备。可传 `{operationId}`。返回 202 和任务状态。未传标识且故事已有待处理任务时，返回现有任务。 |
 | GET | `/api/stories/:id/preparation` | 返回最新准备状态。仅故事所有者可查询。 |
+| POST | `/api/stories/:id/preparation/:jobId/retry` | 传 `{operationId}`。对最近一个失败或已取消的任务创建重试，返回 202 和新任务。 |
+| POST | `/api/stories/:id/preparation/:jobId/cancel` | 取消指定的排队或运行任务并返回 200。重复取消返回同一任务及其取消状态。 |
 | GET | `/api/rag/stories` | 共享准备启用时，按 §8 的分页契约列出已有完整可用版本的故事。分页返回 `canStartInvestigation: false` 时，首页提供准备状态入口。 |
+
+操作标识支持 8 至 100 个 ASCII 字母、数字、下划线或连字符。在同一所有者及故事下，重复提交同一操作返回该操作对应的任务，即使该任务已结束。相同标识用于不同操作、另一个显式提交与已有任务冲突，或任务已结束且不可执行指定操作，均返回 409。超出账号或共享准备预算时返回 503 和 `Retry-After`。准备总时限到期时，失败任务的阶段为 `timed_out`。租约中断且已用完领取次数时，阶段为 `retry_exhausted`。失败或取消后仍可读取上次完整发布的版本。
 
 ## 6. 剧本库脚本（Task 4，原 scripts 库）（已退役，#97）
 

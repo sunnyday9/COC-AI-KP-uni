@@ -20,7 +20,7 @@ type ObjectStore = NonNullable<ReturnType<typeof getStoryObjectStore>>
 async function prepare(claim: PreparationClaim, store: ObjectStore, leaseMs: number) {
   const controller = new AbortController()
   // Fences work whose provider or parser keeps running after a lease is lost.
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30 * 60_000)])
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(claim.remaining_ms)])
   let heartbeatBusy = false
   const heartbeat = setInterval(async () => {
     if (heartbeatBusy || signal.aborted) return

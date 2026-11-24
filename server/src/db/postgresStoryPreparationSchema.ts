@@ -24,6 +24,31 @@ export async function initializePostgresStoryPreparation(client: PoolClient): Pr
     CREATE SEQUENCE IF NOT EXISTS story_preparation_status_version;
     ALTER TABLE story_preparation_jobs ADD COLUMN IF NOT EXISTS status_version BIGINT NOT NULL
       DEFAULT nextval('story_preparation_status_version');
+    ALTER TABLE story_preparation_jobs ADD COLUMN IF NOT EXISTS operation_id TEXT COLLATE "C";
+    ALTER TABLE story_preparation_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id UUID REFERENCES story_preparation_jobs(job_id);
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'story_preparation_jobs'::regclass AND conname = 'story_preparation_job_states'
+      ) THEN
+        ALTER TABLE story_preparation_jobs DROP CONSTRAINT IF EXISTS story_preparation_jobs_state_check;
+        ALTER TABLE story_preparation_jobs ADD CONSTRAINT story_preparation_job_states
+          CHECK (state IN ('queued', 'running', 'complete', 'failed', 'cancelled'));
+      END IF;
+    END
+    $$;
+    ALTER TABLE story_preparation_jobs ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ NOT NULL
+      DEFAULT (statement_timestamp() + interval '30 minutes');
+    ALTER TABLE story_preparation_jobs ADD COLUMN IF NOT EXISTS attempt_limit SMALLINT NOT NULL DEFAULT 3;
+    CREATE INDEX IF NOT EXISTS story_preparation_pending_deadline ON story_preparation_jobs
+      (deadline_at, sequence) WHERE state IN ('queued', 'running');
+    CREATE TABLE IF NOT EXISTS story_preparation_dispatch (
+      owner_id BIGINT PRIMARY KEY REFERENCES users(id),
+      last_claim BIGINT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS story_preparation_operation ON story_preparation_jobs
+      (owner_id, story_id, operation_id) WHERE operation_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS story_preparation_latest ON story_preparation_jobs
       (owner_id, story_id, sequence DESC);
     CREATE INDEX IF NOT EXISTS story_preparation_claimable ON story_preparation_jobs

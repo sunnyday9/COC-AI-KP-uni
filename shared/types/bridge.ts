@@ -40,14 +40,14 @@ export interface RAGQueryParams {
   topK?: number
 }
 
-export type StoryPreparationStage = 'queued' | 'read' | 'index' | 'dossier' | 'publish' | 'complete' | 'source_failed' | 'index_failed' | 'dossier_failed' | 'anchors_failed' | 'publish_failed'
+export type StoryPreparationStage = 'queued' | 'read' | 'index' | 'dossier' | 'publish' | 'complete' | 'source_failed' | 'index_failed' | 'dossier_failed' | 'anchors_failed' | 'publish_failed' | 'cancelled' | 'timed_out' | 'retry_exhausted'
 export interface StoryPreparationStatus {
   activeRevision: string | null
   job: {
     id: string
     /** Monotonic per story across jobs and worker lease recovery. */
     version: string
-    state: 'queued' | 'running' | 'complete' | 'failed'
+    state: 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
     stage: StoryPreparationStage
     percent: number
   } | null

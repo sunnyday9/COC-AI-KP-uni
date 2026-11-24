@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DeleteObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { Pool } from 'pg'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { getPostgresPool } from '../db/postgres.js'
 import { loadActivePreparedStory } from '../services/preparedStoryStorage.js'
 import { makePdfWithTextAndEmbeddedImages } from '../../test/helpers/pdfFixture.js'
@@ -22,6 +22,7 @@ const canInjectStorageFault = fixtureObjectStore.forcePathStyle === true
 const secret = randomBytes(32).toString('hex')
 const password = randomBytes(15).toString('hex')
 const children: ChildProcess[] = []
+let permanentGatewayCount = 0
 let storageDir: string
 let first: string
 let second: string
@@ -40,7 +41,7 @@ async function freePort(): Promise<number> {
   })
 }
 
-function startProcess(entry: string, dir: string, endpointOverride?: string, prepare = false, port?: number): ChildProcess {
+function startProcess(entry: string, dir: string, endpointOverride?: string, prepare = false, port?: number, overrides?: NodeJS.ProcessEnv): ChildProcess {
   const objectStore = JSON.parse(s3Fixture!)
   const child = spawn(process.execPath, ['--import', 'tsx', entry], {
     env: {
@@ -65,6 +66,7 @@ function startProcess(entry: string, dir: string, endpointOverride?: string, pre
       AWS_ACCESS_KEY_ID: objectStore.credentials.accessKeyId,
       AWS_SECRET_ACCESS_KEY: objectStore.credentials.secretAccessKey,
       AWS_SESSION_TOKEN: undefined,
+      ...overrides,
     },
     stdio: 'ignore',
     windowsHide: true,
@@ -81,8 +83,8 @@ async function stopProcess(child: ChildProcess, signal?: NodeJS.Signals): Promis
   })
 }
 
-async function startGateway(port: number, dir: string, endpointOverride?: string, prepare = false): Promise<string> {
-  const child = startProcess('src/app.ts', dir, endpointOverride, prepare, port)
+async function startGateway(port: number, dir: string, endpointOverride?: string, prepare = false, overrides?: NodeJS.ProcessEnv): Promise<string> {
+  const child = startProcess('src/app.ts', dir, endpointOverride, prepare, port, overrides)
   const url = `http://127.0.0.1:${port}`
   for (let i = 0; i < 100 && child.exitCode === null; i++) {
     const response = await fetch(`${url}/health/ready`, { signal: AbortSignal.timeout(1_000) }).catch(() => null)
@@ -130,7 +132,13 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     const gateways = await Promise.all([startGateway(firstPort, 'first'), startGateway(secondPort, 'second')])
     first = gateways[0]
     second = gateways[1]
+    permanentGatewayCount = children.length
   }, 25_000)
+
+  afterEach(async () => {
+    const temporaryProcesses = children.splice(permanentGatewayCount)
+    await Promise.all(temporaryProcesses.map((child) => stopProcess(child)))
+  })
 
   afterAll(async () => {
     await Promise.all(children.map((child) => stopProcess(child)))
@@ -467,6 +475,252 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       await new Promise<void>((resolve) => { storage.close(() => resolve()) })
     }
   }, 35_000)
+
+  it('replays an operation across gateways and rejects a competing explicit submission', async () => {
+    const [left, right] = await Promise.all([
+      startGateway(await freePort(), 'operation-left', undefined, true),
+      startGateway(await freePort(), 'operation-right', undefined, true),
+    ])
+    const owner = await account(left)
+    const other = await account(right)
+    const route = '/api/stories/operations.txt/preparation'
+    const payload = JSON.stringify({ operationId: 'fixture-operation-1' })
+    await upload(left, owner.token, 'operations.txt', 'fixture')
+    await upload(right, other.token, 'operations.txt', 'another fixture')
+    const submitted = await call(left, route, owner.token, 'POST', payload)
+    expect(submitted.status).toBe(202)
+    expect(await call(right, route, owner.token, 'POST', payload)).toEqual(submitted)
+    expect(await call(right, route, owner.token, 'POST')).toEqual(submitted)
+    const conflict = await call(right, route, owner.token, 'POST', JSON.stringify({ operationId: 'fixture-operation-2' }))
+    expect(conflict).toEqual({ status: 409, body: { error: expect.any(String) } })
+    const independent = await call(right, route, other.token, 'POST', payload)
+    expect(independent.status).toBe(202)
+    expect(independent.body.job.id).not.toBe(submitted.body.job.id)
+    await call(left, '/api/stories/operations.txt', owner.token, 'DELETE')
+    await call(right, '/api/stories/operations.txt', other.token, 'DELETE')
+  }, 30_000)
+
+  it('cancels and explicitly retries a selected job without taking over a replacement', async () => {
+    const gateway = await startGateway(await freePort(), 'job-actions', undefined, true)
+    const owner = await account(gateway)
+    const other = await account(gateway)
+    const route = '/api/stories/actions.txt/preparation'
+    await upload(gateway, owner.token, 'actions.txt', 'fixture')
+    const first = await call(gateway, route, owner.token, 'POST', JSON.stringify({ operationId: 'initial-action' }))
+    const job = route + '/' + first.body.job.id
+    const retry = JSON.stringify({ operationId: 'retry-action' })
+    expect((await call(gateway, job + '/retry', owner.token, 'POST', retry)).status).toBe(409)
+    expect((await call(gateway, job + '/cancel', other.token, 'POST')).status).toBe(404)
+    const cancelled = await call(gateway, job + '/cancel', owner.token, 'POST')
+    expect(cancelled).toMatchObject({ status: 200, body: { job: { id: first.body.job.id, state: 'cancelled' } } })
+    expect(await call(gateway, job + '/cancel', owner.token, 'POST')).toEqual(cancelled)
+    expect(await call(gateway, route, owner.token, 'POST', JSON.stringify({ operationId: 'initial-action' })))
+      .toEqual({ ...cancelled, status: 202 })
+    const replacement = await call(gateway, job + '/retry', owner.token, 'POST', retry)
+    expect(replacement).toMatchObject({ status: 202, body: { job: { state: 'queued' } } })
+    expect(replacement.body.job.id).not.toBe(first.body.job.id)
+    expect(await call(gateway, job + '/retry', owner.token, 'POST', retry)).toEqual(replacement)
+    expect((await call(gateway, route, owner.token, 'POST', retry)).status).toBe(409)
+    expect((await call(gateway, job + '/retry', owner.token, 'POST', JSON.stringify({ operationId: 'new-retry-action' }))).status).toBe(409)
+    expect(await call(gateway, job + '/cancel', owner.token, 'POST')).toEqual(cancelled)
+    expect((await call(gateway, route, owner.token)).body).toEqual(replacement.body)
+    await call(gateway, '/api/stories/actions.txt', owner.token, 'DELETE')
+  }, 25_000)
+
+  it('limits each owner and admits only one request for the last shared queue slot', async () => {
+    const limits = { STORY_PREPARATION_PENDING_PER_ACCOUNT: '1', STORY_PREPARATION_PENDING_GLOBAL: '2' }
+    const [left, right] = await Promise.all([
+      startGateway(await freePort(), 'capacity-left', undefined, true, limits),
+      startGateway(await freePort(), 'capacity-right', undefined, true, limits),
+    ])
+    const owner = await account(left)
+    const other = await account(right)
+    const third = await account(left)
+    const start = (gateway: string, token: string, file: string) =>
+      call(gateway, '/api/stories/' + file + '/preparation', token, 'POST')
+    const stop = (gateway: string, token: string, file: string, jobId: string) =>
+      call(gateway, '/api/stories/' + file + '/preparation/' + jobId + '/cancel', token, 'POST')
+    const body = 'fixture'
+    await upload(left, owner.token, 'a.txt', body)
+    const first = await start(left, owner.token, 'a.txt')
+    expect(first.status).toBe(202)
+    expect((await upload(left, owner.token, 'b.txt', body)).status).toBe(200)
+    const personal = await fetch(left + '/api/stories/b.txt/preparation', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + owner.token },
+    })
+    expect(personal.status).toBe(503)
+    expect(personal.headers.get('retry-after')).toBe('5')
+    expect((await personal.json()).error).toContain('你的准备任务')
+    expect(await start(right, owner.token, 'a.txt')).toEqual(first)
+    expect((await upload(right, other.token, 'other.txt', body)).status).toBe(200)
+    const independent = await start(right, other.token, 'other.txt')
+    expect(independent.status).toBe(202)
+    expect((await upload(left, third.token, 'third.txt', body)).status).toBe(200)
+    expect(await start(left, third.token, 'third.txt')).toMatchObject({ status: 503, body: { error: expect.stringContaining('准备队列') } })
+    expect((await stop(right, owner.token, 'a.txt', first.body.job.id)).status).toBe(200)
+    const remaining = await Promise.all([start(left, owner.token, 'b.txt'), start(right, third.token, 'third.txt')])
+    expect(remaining.map(({ status }) => status).sort()).toEqual([202, 503])
+    for (const [index, token, file] of [[0, owner.token, 'b.txt'], [1, third.token, 'third.txt']] as const) {
+      const admitted = remaining[index]!
+      if (admitted.status === 202) await stop(left, token, file, admitted.body.job.id)
+    }
+    await stop(left, other.token, 'other.txt', independent.body.job.id)
+  }, 30_000)
+
+
+  it('times out queued work without a worker and permits explicit retry', async () => {
+    const gateway = await startGateway(await freePort(), 'deadline', undefined, true, { STORY_PREPARATION_DEADLINE_MS: '1200' })
+    const owner = await account(gateway)
+    const route = '/api/stories/timeout.txt/preparation'
+    await upload(gateway, owner.token, 'timeout.txt', 'fixture')
+    const queued = await call(gateway, route, owner.token, 'POST', JSON.stringify({ operationId: 'timeout-operation' }))
+    expect(queued.status).toBe(202)
+    await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.stage, { timeout: 6_000 }).toBe('timed_out')
+    expect((await call(gateway, route, owner.token)).body).toMatchObject({
+      activeRevision: null, job: { id: queued.body.job.id, state: 'failed' },
+    })
+    const retried = await call(gateway, route + '/' + queued.body.job.id + '/retry', owner.token,
+      'POST', JSON.stringify({ operationId: 'retry-timeout' }))
+    expect(retried.status).toBe(202)
+    expect(retried.body.job.id).not.toBe(queued.body.job.id)
+    await call(gateway, '/api/stories/timeout.txt', owner.token, 'DELETE')
+  }, 20_000)
+
+  it('stops reclaiming after the stored attempt budget expires', async () => {
+    const gateway = await startGateway(await freePort(), 'attempts', undefined, true, { STORY_PREPARATION_MAX_ATTEMPTS: '2' })
+    const owner = await account(gateway)
+    const route = '/api/stories/interrupted.txt/preparation'
+    await upload(gateway, owner.token, 'interrupted.txt', 'fixture')
+    const submitted = await call(gateway, route, owner.token, 'POST')
+    expect(submitted.status).toBe(202)
+    const hits: string[] = []
+    const stalled = createHttpServer((req, _res) => { hits.push(req.url ?? '') })
+    await new Promise<void>((resolve) => { stalled.listen(0, '127.0.0.1', resolve) })
+    const address = stalled.address()
+    if (!address || typeof address === 'string') throw new Error('could not open storage fault fixture')
+    const endpoint = 'http://127.0.0.1:' + address.port
+    try {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const worker = startProcess('src/workers/storyPreparation.ts', 'attempt-' + attempt, endpoint, true)
+        try {
+          await expect.poll(() => hits.length, { timeout: 12_000 }).toBe(attempt)
+          expect((await call(gateway, route, owner.token)).body.job).toMatchObject({ id: submitted.body.job.id, state: 'running' })
+        } finally {
+          await stopProcess(worker, 'SIGKILL')
+        }
+      }
+      await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.stage, { timeout: 8_000 })
+        .toBe('retry_exhausted')
+      expect((await call(gateway, route, owner.token)).body).toMatchObject({
+        activeRevision: null, job: { id: submitted.body.job.id, state: 'failed' },
+      })
+    } finally {
+      stalled.closeAllConnections()
+      await new Promise<void>((resolve) => { stalled.close(() => resolve()) })
+    }
+  }, 40_000)
+
+  it('dispatches a waiting owner before another job of the last-served owner', async () => {
+    const gateway = await startGateway(await freePort(), 'fairness', undefined, true)
+    const owner = await account(gateway)
+    const other = await account(gateway)
+    for (const [token, name] of [[owner.token, 'first.txt'], [owner.token, 'second.txt'], [other.token, 'other.txt']] as const) {
+      expect((await upload(gateway, token, name, 'fixture')).status).toBe(200)
+      expect((await call(gateway, '/api/stories/' + name + '/preparation', token, 'POST')).status).toBe(202)
+    }
+    const order: string[] = []
+    const storage = createHttpServer((req, res) => {
+      order.push(req.url?.split('/stories/')[1]?.split('/')[0] ?? '')
+      res.writeHead(503).end()
+    })
+    await new Promise<void>((resolve) => { storage.listen(0, '127.0.0.1', resolve) })
+    const address = storage.address()
+    if (!address || typeof address === 'string') throw new Error('could not open storage fault fixture')
+    const worker = startProcess('src/workers/storyPreparation.ts', 'fair-worker', 'http://127.0.0.1:' + address.port, true)
+    try {
+      await expect.poll(() => order.length, { timeout: 12_000 }).toBe(3)
+      expect(order).toEqual([String(owner.user.id), String(other.user.id), String(owner.user.id)])
+    } finally {
+      await stopProcess(worker)
+      storage.closeAllConnections()
+      await new Promise<void>((resolve) => { storage.close(() => resolve()) })
+    }
+  }, 30_000)
+
+
+  it.skipIf(!canInjectStorageFault).each(['cancel', 'timeout'] as const)(
+    'keeps the last ready revision when a worker is held at final storage verification (%s)',
+    async (interruption) => {
+      const gateway = await startGateway(await freePort(), 'publish-fence-' + interruption, undefined, true)
+      const owner = await account(gateway)
+      const fixture = await readFile(new URL('../../../e2e/fixtures/demo-story.txt', import.meta.url), 'utf8')
+      expect((await upload(gateway, owner.token, 'fence.txt', fixture)).status).toBe(200)
+      const route = '/api/stories/fence.txt/preparation'
+      const seedWorker = startProcess('src/workers/storyPreparation.ts', 'seed-fence-' + interruption, undefined, true)
+      try {
+        expect((await call(gateway, route, owner.token, 'POST')).status).toBe(202)
+        await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.state, { timeout: 12_000 }).toBe('complete')
+      } finally {
+        await stopProcess(seedWorker)
+      }
+      const before = (await call(gateway, route, owner.token)).body.activeRevision
+      const publisher = interruption === 'timeout'
+        ? await startGateway(await freePort(), 'short-deadline', undefined, true, { STORY_PREPARATION_DEADLINE_MS: '6000' })
+        : gateway
+
+      let releaseHead: (() => void) | undefined
+      const nextRead = Promise.withResolvers<void>()
+      const { endpoint } = fixtureObjectStore
+      const storage = createHttpServer((req, res) => {
+        const url = new URL(req.url!, endpoint)
+        const forward = () => {
+          const upstream = proxyRequest(url, { method: req.method, headers: req.headers }, (reply) => {
+            res.writeHead(reply.statusCode ?? 502, reply.headers)
+            reply.pipe(res)
+          })
+          upstream.on('error', () => res.writeHead(502).end())
+          req.pipe(upstream)
+        }
+        if (req.method === 'HEAD' && url.pathname.endsWith('/gaps') && !releaseHead) {
+          releaseHead = forward
+          return
+        }
+        if (req.method === 'GET' && releaseHead) nextRead.resolve()
+        forward()
+      })
+      await new Promise<void>((resolve) => { storage.listen(0, '127.0.0.1', resolve) })
+      const address = storage.address()
+      if (!address || typeof address === 'string') throw new Error('could not open storage fault fixture')
+      const late = startProcess('src/workers/storyPreparation.ts', 'late-fence-' + interruption,
+        'http://127.0.0.1:' + address.port, true, undefined, { STORY_PREPARATION_LEASE_MS: '15000' })
+      try {
+        const queued = await call(publisher, route, owner.token, 'POST')
+        expect(queued.status).toBe(202)
+        await expect.poll(() => Boolean(releaseHead), { timeout: 5_500 }).toBe(true)
+        expect((await call(gateway, route, owner.token)).body.job?.stage).toBe('publish')
+        if (interruption === 'cancel') {
+          const cancelled = await call(gateway, route + '/' + queued.body.job.id + '/cancel', owner.token, 'POST')
+          expect(cancelled.status).toBe(200)
+        } else {
+          await expect.poll(async () => (await call(gateway, route, owner.token)).body.job?.stage, { timeout: 8_000 }).toBe('timed_out')
+        }
+        releaseHead!()
+        expect((await upload(gateway, owner.token, 'advance.txt', 'different story')).status).toBe(200)
+        expect((await call(gateway, '/api/stories/advance.txt/preparation', owner.token, 'POST')).status).toBe(202)
+        await Promise.race([nextRead.promise, delay(8_000, undefined, { ref: false }).then(() => { throw new Error('worker did not leave the expired attempt') })])
+        expect((await call(gateway, route, owner.token)).body).toMatchObject({
+          activeRevision: before,
+          job: { id: queued.body.job.id, stage: interruption === 'cancel' ? 'cancelled' : 'timed_out' },
+        })
+        expect((await loadActivePreparedStory(owner.user.id, 'fence.txt', AbortSignal.timeout(5_000))).revision).toBe(before)
+        await call(gateway, '/api/stories/advance.txt', owner.token, 'DELETE')
+      } finally {
+        await stopProcess(late)
+        storage.closeAllConnections()
+        await new Promise<void>((resolve) => { storage.close(() => resolve()) })
+      }
+    }, 45_000,
+  )
 
   it('keeps a partially OCR’d PDF out of the prepared story catalog', async () => {
     const gateway = await startGateway(await freePort(), 'ocr-gateway', undefined, true)

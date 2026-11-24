@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { indexStory } from '../services/ragService'
+import { createStoryOperationId } from '../services/operationId'
 import { getBridge, getToken } from '../platform'
 import type { StoryCatalogPage, StoryPreparationStatus } from '../../../shared/types/bridge'
 
@@ -35,6 +36,7 @@ export const useStoryStore = defineStore('story', () => {
   let libraryToken: ReturnType<typeof getToken>
   let selectionRevision = 0
   const preparationByStory = new Map<string, StoryPreparationStatus>()
+  const pendingPreparationOperations = new Map<string, string>()
 
   function clearSelection() {
     selectionRevision++
@@ -47,6 +49,7 @@ export const useStoryStore = defineStore('story', () => {
   function resetLibrary() {
     librarySession++
     preparationByStory.clear()
+    pendingPreparationOperations.clear()
     listRevision++
     storyFiles.value = []
     nextCursor.value = null
@@ -113,12 +116,11 @@ export const useStoryStore = defineStore('story', () => {
     return incoming
   }
 
-  async function updateStoryPreparation(id: string, submit: boolean) {
+  async function updateStoryPreparation(id: string, request: () => Promise<StoryPreparationStatus>) {
     const token = getToken()
     const session = librarySession
     if (token !== libraryToken) return
-    const api = getBridge()
-    const status = await (submit ? api.prepareStory(id) : api.readStoryPreparation(id))
+    const status = await request()
     if (token !== getToken() || session !== librarySession) return
     const story = storyFiles.value.find((item) => item.id === id)
     if (!story && !isLoading.value) return
@@ -126,8 +128,29 @@ export const useStoryStore = defineStore('story', () => {
     if (story) story.preparation = preparation
   }
 
-  const submitStoryPreparation = (id: string) => updateStoryPreparation(id, true)
-  const refreshStoryPreparation = (id: string) => updateStoryPreparation(id, false)
+  async function submitStoryPreparation(id: string, retryOfJobId?: string) {
+    const key = JSON.stringify([id, retryOfJobId])
+    const operationId = pendingPreparationOperations.get(key) ?? createStoryOperationId('prepare')
+    pendingPreparationOperations.set(key, operationId)
+    try {
+      const api = getBridge()
+      await updateStoryPreparation(id, () => retryOfJobId
+        ? api.retryStoryPreparation(id, retryOfJobId, operationId)
+        : api.prepareStory(id, operationId))
+      if (pendingPreparationOperations.get(key) === operationId) pendingPreparationOperations.delete(key)
+    } catch (error) {
+      const status = (error as { statusCode?: number } | null)?.statusCode
+      // Keep the same ID when a transport failure leaves the outcome unknown.
+      if (status !== undefined && status >= 400 && status < 500
+        && pendingPreparationOperations.get(key) === operationId) pendingPreparationOperations.delete(key)
+      throw error
+    }
+  }
+
+  const cancelStoryPreparation = (id: string, jobId: string) =>
+    updateStoryPreparation(id, () => getBridge().cancelStoryPreparation(id, jobId))
+  const refreshStoryPreparation = (id: string) =>
+    updateStoryPreparation(id, () => getBridge().readStoryPreparation(id))
 
   async function selectStory(id: string) {
     clearSelection()
@@ -223,6 +246,7 @@ export const useStoryStore = defineStore('story', () => {
     canPrepare,
     preparationMode,
     submitStoryPreparation,
+    cancelStoryPreparation,
     refreshStoryPreparation,
     selectedStory,
     selectedStoryId,

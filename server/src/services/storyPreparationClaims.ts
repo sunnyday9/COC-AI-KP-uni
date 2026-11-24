@@ -1,5 +1,6 @@
 import type { StoryPreparationStage } from '../../../shared/types/bridge.js'
 import { getPostgresPool, inPostgresTransaction, postgresError } from '../db/postgres.js'
+import { expireStoryPreparationJobs } from './sharedPreparationLimits.js'
 import type { PreparedStoryManifest } from './preparedStoryStorage.js'
 
 export interface PreparationClaim {
@@ -8,31 +9,46 @@ export interface PreparationClaim {
   story_id: string
   source_revision: string
   attempt: string
+  remaining_ms: number
 }
 
 export async function claimStoryPreparation(leaseMs: number): Promise<PreparationClaim | undefined> {
-  const { rows: [claim] } = await getPostgresPool().query<PreparationClaim>(`
-    WITH candidate AS (
-      SELECT sequence FROM story_preparation_jobs
-      WHERE state IN ('queued', 'running')
-        AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
-      ORDER BY lease_expires_at NULLS LAST, sequence
-      LIMIT 1 FOR UPDATE SKIP LOCKED
-    )
-    UPDATE story_preparation_jobs job SET state = 'running', stage = 'read', percent = 5,
-      status_version = nextval('story_preparation_status_version'),
-      attempt = attempt + 1, lease_expires_at = clock_timestamp() + $1 * interval '1 millisecond'
-    FROM candidate WHERE job.sequence = candidate.sequence
-    RETURNING job_id, owner_id, story_id, source_revision, attempt
-  `, [leaseMs]).catch((error) => { throw postgresError(error) })
-  return claim
+  return inPostgresTransaction(async (client) => {
+    // Both enqueue order and the owner's last grant use the same clock of queue events.
+    // An owner goes behind already-waiting accounts without yielding to future arrivals.
+    await client.query('SELECT pg_advisory_xact_lock(17407, 1117)')
+    await expireStoryPreparationJobs(client)
+    const { rows: [claim] } = await client.query<PreparationClaim>(`
+      WITH candidate AS (
+        SELECT job.sequence FROM story_preparation_jobs job
+        LEFT JOIN story_preparation_dispatch dispatch ON dispatch.owner_id = job.owner_id
+        WHERE job.state IN ('queued', 'running') AND job.attempt < job.attempt_limit
+          AND job.deadline_at > statement_timestamp()
+          AND (job.lease_expires_at IS NULL OR job.lease_expires_at <= statement_timestamp())
+        ORDER BY GREATEST(job.sequence, dispatch.last_claim), job.sequence
+        LIMIT 1 FOR UPDATE OF job SKIP LOCKED
+      )
+      UPDATE story_preparation_jobs job SET state = 'running', stage = 'read', percent = 5,
+        status_version = nextval('story_preparation_status_version'),
+        attempt = attempt + 1, lease_expires_at = LEAST(deadline_at, clock_timestamp() + $1 * interval '1 millisecond')
+      FROM candidate WHERE job.sequence = candidate.sequence
+      RETURNING job_id, owner_id, story_id, source_revision, attempt,
+        GREATEST(0, floor(extract(epoch FROM deadline_at - clock_timestamp()) * 1000))::integer AS remaining_ms
+    `, [leaseMs])
+    if (claim) await client.query(`
+      INSERT INTO story_preparation_dispatch (owner_id, last_claim)
+      VALUES ($1, nextval(pg_get_serial_sequence('story_preparation_jobs', 'sequence')::regclass))
+      ON CONFLICT (owner_id) DO UPDATE SET last_claim = EXCLUDED.last_claim
+    `, [claim.owner_id])
+    return claim
+  }).catch((error) => { throw postgresError(error) })
 }
 
-const CURRENT_CLAIM = `job_id = $1 AND attempt = $2 AND state = 'running' AND lease_expires_at > clock_timestamp()`
+const CURRENT_CLAIM = `job_id = $1 AND attempt = $2 AND state = 'running' AND lease_expires_at > clock_timestamp() AND deadline_at > clock_timestamp()`
 
 export async function renewStoryPreparation(claim: PreparationClaim, leaseMs: number): Promise<boolean> {
   const result = await getPostgresPool().query(`
-    UPDATE story_preparation_jobs SET lease_expires_at = clock_timestamp() + $3 * interval '1 millisecond'
+    UPDATE story_preparation_jobs SET lease_expires_at = LEAST(deadline_at, clock_timestamp() + $3 * interval '1 millisecond')
     WHERE ${CURRENT_CLAIM}
   `, [claim.job_id, claim.attempt, leaseMs])
   return !!result.rowCount
