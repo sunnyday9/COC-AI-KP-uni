@@ -262,8 +262,16 @@ export class PlatformBridge {
     return request<StoryCatalogPage>('GET', `/api/stories?${query}`)
   }
 
-  prepareStory(id: string): Promise<StoryPreparationStatus> {
-    return request('POST', `/api/stories/${encodeURIComponent(id)}/preparation`)
+  prepareStory(id: string, operationId: string): Promise<StoryPreparationStatus> {
+    return request('POST', `/api/stories/${encodeURIComponent(id)}/preparation`, { operationId })
+  }
+
+  retryStoryPreparation(id: string, jobId: string, operationId: string): Promise<StoryPreparationStatus> {
+    return request('POST', `/api/stories/${encodeURIComponent(id)}/preparation/${encodeURIComponent(jobId)}/retry`, { operationId })
+  }
+
+  cancelStoryPreparation(id: string, jobId: string): Promise<StoryPreparationStatus> {
+    return request('POST', `/api/stories/${encodeURIComponent(id)}/preparation/${encodeURIComponent(jobId)}/cancel`)
   }
 
   readStoryPreparation(id: string): Promise<StoryPreparationStatus> {

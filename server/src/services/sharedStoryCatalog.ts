@@ -175,7 +175,18 @@ export function createSharedStoryCatalog(storage: ObjectStore) {
     },
 
     async delete(ownerId: number, storyId: string) {
-      const result = await getPostgresPool().query(`
+      const result = await getPostgresPool().query(STORY_PREPARATION_ENABLED ? `
+        WITH deleted AS (
+          UPDATE story_catalog SET deleted_at = $3 WHERE owner_id = $1 AND story_id = $2 AND deleted_at IS NULL
+          RETURNING owner_id, story_id
+        ), cancelled AS (
+          UPDATE story_preparation_jobs job SET state = 'cancelled', stage = 'cancelled', lease_expires_at = NULL,
+            status_version = nextval('story_preparation_status_version')
+          FROM deleted WHERE job.owner_id = deleted.owner_id AND job.story_id = deleted.story_id
+            AND job.state IN ('queued', 'running')
+        )
+        SELECT 1 FROM deleted
+      ` : `
         UPDATE story_catalog SET deleted_at = $3 WHERE owner_id = $1 AND story_id = $2 AND deleted_at IS NULL
       `, [ownerId, storyId, Date.now()]).catch((error) => { throw postgresError(error) })
       if (!result.rowCount) throw new NotFoundError('story not found')

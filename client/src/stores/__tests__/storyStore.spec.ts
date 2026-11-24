@@ -123,3 +123,34 @@ it.each(['load more', 'reload before enqueue resolves', 'reload after enqueue re
     expect(storyStore.storyFiles[0].preparation).toEqual(overlap === 'reload before enqueue resolves' ? running : queued)
   },
 )
+
+it('reuses an uncertain operation and applies explicit cancellation and retry results', async () => {
+  const route = '/api/stories/first.txt/preparation'
+  const idle = { activeRevision: 'previous-revision', job: null }
+  const queued = { ...idle, job: { id: 'initial-job', version: '1', state: 'queued', stage: 'queued', percent: 0 } }
+  const cancelled = { ...idle, job: { id: 'initial-job', version: '2', state: 'cancelled', stage: 'cancelled', percent: 0 } }
+  const retried = { ...idle, job: { ...queued.job, id: 'new-job', version: '3' } }
+  state.requestResponder = ({ method, url }) => {
+    if (method === 'GET') return { statusCode: 200, data: {
+      stories: [{ id: 'first.txt', name: 'first.txt', preparation: idle }],
+      nextCursor: null, canPrepare: true, preparationMode: 'durable',
+    } }
+    if (url === route) return { statusCode: 202, data: queued }
+    if (url === route + '/initial-job/cancel') return { statusCode: 200, data: cancelled }
+    if (url === route + '/initial-job/retry') return { statusCode: 202, data: retried }
+    return { statusCode: 404, data: { error: 'Unexpected request' } }
+  }
+  const store = useStoryStore()
+  await store.loadStories()
+  state.failNextRequest = { errMsg: 'fixture network failure after sending' }
+  await expect(store.submitStoryPreparation('first.txt')).rejects.toThrow('网络错误')
+  await store.submitStoryPreparation('first.txt')
+  expect(state.requests[1].data).toEqual({ operationId: expect.any(String) })
+  expect(state.requests[2].data).toEqual(state.requests[1].data)
+  await store.cancelStoryPreparation('first.txt', 'initial-job')
+  expect(store.storyFiles[0].preparation).toEqual(cancelled)
+  await store.submitStoryPreparation('first.txt', 'initial-job')
+  expect(state.requests[4].data).toEqual({ operationId: expect.any(String) })
+  expect(state.requests[4].data).not.toEqual(state.requests[1].data)
+  expect(store.storyFiles[0].preparation).toEqual(retried)
+})

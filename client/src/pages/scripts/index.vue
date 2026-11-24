@@ -38,17 +38,23 @@ const preparationLabels: Record<StoryPreparationStage, string> = {
   dossier_failed: '准备失败，无法生成完整档案',
   anchors_failed: '准备失败，档案缺少可核验的原文揭晓位置',
   publish_failed: '准备失败，无法发布完整资料',
+  cancelled: '准备已取消',
+  timed_out: '准备超时，可以重新提交',
+  retry_exhausted: '准备多次中断，已停止自动恢复',
 }
 
 function preparationPending(status?: StoryPreparationStatus) {
   return status?.job?.state === 'queued' || status?.job?.state === 'running'
 }
 
-async function handlePrepareStory(id: string) {
+async function handlePrepareStory(id: string, action?: { kind: 'retry' | 'cancel'; jobId: string }) {
+  if (preparationSubmissions.value[id]) return
   preparationSubmissions.value[id] = true
   try {
-    await storyStore.submitStoryPreparation(id)
+    if (action?.kind === 'cancel') await storyStore.cancelStoryPreparation(id, action.jobId)
+    else await storyStore.submitStoryPreparation(id, action?.jobId)
   } catch (error) {
+    await storyStore.refreshStoryPreparation(id).catch(() => {})
     toast.error(error instanceof Error ? error.message : '无法提交剧本准备')
   } finally {
     delete preparationSubmissions.value[id]
@@ -518,7 +524,7 @@ function formatDate(ts: number): string {
                       </view>
                       <view class="progress-track"><view class="progress-fill" :style="{ width: (story.preparation?.job?.percent ?? 0) + '%' }" /></view>
                     </view>
-                    <text v-else-if="story.preparation?.job?.state === 'failed'" class="file-meta dossier-error" role="status">
+                    <text v-else-if="story.preparation?.job?.state === 'failed' || story.preparation?.job?.state === 'cancelled'" class="file-meta" role="status">
                       {{ preparationLabels[story.preparation.job.stage] }}
                     </text>
                   </template>
@@ -550,11 +556,23 @@ function formatDate(ts: number): string {
                   @click="selectedStoryId === story.id ? storyStore.clearSelection() : storyStore.selectStory(story.id)"
                 >{{ selectedStoryId === story.id ? '关闭预览' : '查看原文' }}</button>
                 <button
-                  v-if="durablePreparation"
+                  v-if="durablePreparation && story.preparation?.job && preparationPending(story.preparation)"
                   class="mini-btn index-btn"
-                  :disabled="preparationSubmissions[story.id] || preparationPending(story.preparation)"
+                  :disabled="preparationSubmissions[story.id]"
+                  @click="handlePrepareStory(story.id, { kind: 'cancel', jobId: story.preparation.job.id })"
+                >取消准备</button>
+                <button
+                  v-else-if="durablePreparation && (story.preparation?.job?.state === 'failed' || story.preparation?.job?.state === 'cancelled')"
+                  class="mini-btn index-btn"
+                  :disabled="preparationSubmissions[story.id]"
+                  @click="handlePrepareStory(story.id, { kind: 'retry', jobId: story.preparation.job.id })"
+                >重试准备</button>
+                <button
+                  v-else-if="durablePreparation"
+                  class="mini-btn index-btn"
+                  :disabled="preparationSubmissions[story.id]"
                   @click="handlePrepareStory(story.id)"
-                >{{ preparationSubmissions[story.id] ? '正在提交…' : preparationPending(story.preparation) ? '准备中…' : story.preparation?.activeRevision ? '重新准备' : '准备剧本' }}</button>
+                >{{ preparationSubmissions[story.id] ? '正在提交…' : story.preparation?.activeRevision ? '重新准备' : '准备剧本' }}</button>
                 <button
                   v-if="localPreparation"
                   class="mini-btn index-btn"
