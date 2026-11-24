@@ -1,19 +1,20 @@
 import { ROOM_ACTIONS_SCHEMA } from './roomActionsSchema.js'
-import { getPostgresPool, postgresError } from './postgres.js'
+import { getPostgresPool, inPostgresTransaction, postgresError } from './postgres.js'
 
-/**
- * Hold a database-scoped session lock for the lifetime of the only gameplay
- * process. This staging guard does not authorize multi-host workers.
- */
-export async function initializeSingleProcessRooms(): Promise<void> {
+// The pilot holds the exclusive lock. Fenced workers share the same lock so
+// even an older pilot cannot start against their database.
+export async function initializePostgresRooms(failover: boolean): Promise<void> {
   try {
     const client = await getPostgresPool().connect()
     try {
-      const result = await client.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock(17407, 115) AS acquired')
+      const lock = failover ? 'pg_try_advisory_lock_shared' : 'pg_try_advisory_lock'
+      const result = await client.query<{ acquired: boolean }>(`SELECT ${lock}(17407, 115) AS acquired`)
       if (!result.rows[0]?.acquired) {
         throw new RoomProcessAlreadyRunningError()
       }
-      await client.query(`
+      await inPostgresTransaction(async (migration) => {
+        await migration.query('SELECT pg_advisory_xact_lock(17407, 120)')
+        await migration.query(`
         CREATE TABLE IF NOT EXISTS characters (
           id TEXT PRIMARY KEY,
           user_id BIGINT NOT NULL REFERENCES users(id),
@@ -49,14 +50,24 @@ export async function initializeSingleProcessRooms(): Promise<void> {
         CREATE INDEX IF NOT EXISTS room_members_room_join ON room_members (room_id, join_order);
         ${ROOM_ACTIONS_SCHEMA}
       `)
-      await client.query(`
+        if (failover) {
+          await migration.query(ROOM_WORKER_SCHEMA)
+          await migration.query(`
+            SELECT worker_id, worker_epoch, worker_expires_at FROM rooms LIMIT 0;
+            SELECT room_id, turn_id, epoch, action_keys, outcome, first_event_seq, last_event_seq FROM room_turns LIMIT 0;
+            SELECT room_id, seq, event_type, payload FROM room_events LIMIT 0;
+            SELECT room_id, seq, created_at FROM room_event_outbox LIMIT 0;
+          `)
+        }
+        await migration.query(`
         SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, version, updated_at, created_at FROM rooms LIMIT 0;
         SELECT room_id, user_id, role, character_id, ready, join_order FROM room_members LIMIT 0;
         SELECT id, user_id, name, sheet, updated_at FROM characters LIMIT 0;
         SELECT room_id, user_id, action_id, payload_hash, message_id, status FROM room_actions LIMIT 0;
       `)
-      // Losing the guard connection ends the gameplay process. Reconnecting
-      // without the in-memory registry would permit competing room writers.
+      })
+      // Losing the startup guard ends the gameplay process. A worker could
+      // otherwise resume alongside an exclusive single-process pilot.
       client.on('error', () => process.exit(1))
       client.on('end', () => process.exit(1))
     } catch (error) {
@@ -75,3 +86,34 @@ class RoomProcessAlreadyRunningError extends Error {
     super('Another gameplay process already holds the PostgreSQL room lock')
   }
 }
+
+const ROOM_WORKER_SCHEMA = `
+  ALTER TABLE rooms ADD COLUMN IF NOT EXISTS worker_id UUID;
+  ALTER TABLE rooms ADD COLUMN IF NOT EXISTS worker_epoch BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE rooms ADD COLUMN IF NOT EXISTS worker_expires_at TIMESTAMPTZ;
+
+  CREATE TABLE IF NOT EXISTS room_turns (
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL,
+    epoch BIGINT NOT NULL,
+    action_keys JSONB NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'failed', 'cancelled')),
+    first_event_seq BIGINT,
+    last_event_seq BIGINT,
+    PRIMARY KEY (room_id, turn_id)
+  );
+  CREATE TABLE IF NOT EXISTS room_events (
+    room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+    seq BIGINT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    PRIMARY KEY (room_id, seq)
+  );
+  CREATE TABLE IF NOT EXISTS room_event_outbox (
+    room_id TEXT NOT NULL,
+    seq BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (room_id, seq),
+    FOREIGN KEY (room_id, seq) REFERENCES room_events (room_id, seq) ON DELETE CASCADE
+  );
+`

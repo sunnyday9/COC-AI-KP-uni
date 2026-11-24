@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 import { types, type PoolClient } from 'pg'
 import { getDb } from '../db/index.js'
 import { getPostgresPool, inPostgresTransaction, postgresError } from '../db/postgres.js'
-import { SHARED_ROOMS_ENABLED } from '../config.js'
+import { ROOM_WORKER_FAILOVER_ENABLED, ROOM_WORKER_LEASE_MS, SHARED_ROOMS_ENABLED } from '../config.js'
+import { CapacityError } from '../utils/errors.js'
 import { parseRoomState } from './roomStateCodec.js'
 import type { RoomActionReceiptStatus, RoomPhase } from '../../../shared/types/room.js'
 
@@ -78,6 +80,74 @@ async function writeAll(commands: Statement[]): Promise<void> {
   } catch (error) {
     db.exec('ROLLBACK')
     throw error
+  }
+}
+
+// Epochs remain decimal strings so PostgreSQL BIGINT can grow without losing precision.
+export type RoomWorkerLease = { epoch: string }
+const workerId = randomUUID()
+
+export class RoomLeaseLostError extends CapacityError {
+  constructor() { super('Room worker lease lost') }
+}
+
+export class RoomWorkerBusyError extends CapacityError {
+  constructor() { super('房间正由另一进程处理，请稍后重新连接。') }
+}
+
+/** Every activation claims a new epoch. Renewal of an existing epoch is separate. */
+export async function claimRoomLease(roomId: string): Promise<RoomWorkerLease | undefined> {
+  return readOne<RoomWorkerLease>(
+    `UPDATE rooms
+     SET worker_id = ?::uuid, worker_expires_at = clock_timestamp() + ? * interval '1 millisecond',
+         worker_epoch = worker_epoch + 1
+     WHERE room_id = ? AND (worker_id = ?::uuid OR worker_expires_at <= clock_timestamp() OR worker_id IS NULL)
+     RETURNING worker_epoch::text AS epoch`,
+    workerId, ROOM_WORKER_LEASE_MS, roomId, workerId,
+  )
+}
+
+export async function renewRoomLease(roomId: string, lease: RoomWorkerLease): Promise<boolean> {
+  return !!await readOne(
+    `UPDATE rooms SET worker_expires_at = clock_timestamp() + ? * interval '1 millisecond'
+     WHERE room_id = ? AND worker_id = ?::uuid AND worker_epoch = ?::bigint
+       AND worker_expires_at > clock_timestamp() RETURNING 1`,
+    ROOM_WORKER_LEASE_MS, roomId, workerId, lease.epoch,
+  )
+}
+
+export function releaseRoomLease(roomId: string, lease: RoomWorkerLease): Promise<void> {
+  return writeAll([statement(
+    'UPDATE rooms SET worker_id = NULL, worker_expires_at = NULL WHERE room_id = ? AND worker_id = ?::uuid AND worker_epoch = ?::bigint',
+    roomId, workerId, lease.epoch,
+  )])
+}
+
+/** Fence and write in one transaction. The same room row serializes lease claims with durable mutations. */
+async function writeRoom(roomId: string, commands: Statement[], lease?: RoomWorkerLease): Promise<void> {
+  if (!ROOM_WORKER_FAILOVER_ENABLED) return writeAll(commands)
+  try {
+    await inPostgresTransaction(async (client) => {
+      const row = await client.query(pgQuery(statement(
+        'SELECT worker_id::text AS worker, worker_epoch::text AS epoch FROM rooms WHERE room_id = ? FOR UPDATE', roomId,
+      )))
+      if (!row.rows[0]) throw new RoomLeaseLostError()
+      // Check expiration after the row is locked. An earlier timestamp could
+      // survive waiting behind a transaction that renews or replaces the lease.
+      const state = (await client.query(pgQuery(statement(
+        'SELECT worker_expires_at > clock_timestamp() AS live FROM rooms WHERE room_id = ?', roomId,
+      )))).rows[0]
+      if (lease) {
+        if (!state?.live || row.rows[0].worker !== workerId || row.rows[0].epoch !== lease.epoch) throw new RoomLeaseLostError()
+      } else if (state?.live) {
+        // Rooms may be set up through REST before they have an active worker.
+        throw new RoomWorkerBusyError()
+      }
+      for (const command of commands) await client.query(pgQuery(command))
+    })
+  } catch (error) {
+    if (error instanceof CapacityError) throw error
+    throw postgresError(error)
   }
 }
 
@@ -213,15 +283,15 @@ export function getRoomRow(roomId: string): Promise<RoomRow | undefined> {
   )
 }
 
-export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number): Promise<void> {
-  return writeAll([statement(
+export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number, lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [statement(
     `UPDATE rooms SET story_id = ?, story_owner_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`,
     storyId, storyOwnerId, Date.now(), roomId,
-  )])
+  )], lease)
 }
 
-export function updateRoomPhase(roomId: string, phase: RoomPhase): Promise<void> {
-  return writeAll([statement('UPDATE rooms SET phase = ?, updated_at = ? WHERE room_id = ?', phase, Date.now(), roomId)])
+export function updateRoomPhase(roomId: string, phase: RoomPhase, lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [statement('UPDATE rooms SET phase = ?, updated_at = ? WHERE room_id = ?', phase, Date.now(), roomId)], lease)
 }
 
 const updateSnapshotSql = 'UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE room_id = ?'
@@ -248,11 +318,24 @@ export function getRoomAction(roomId: string, userId: number, actionId: string):
   )
 }
 
+export interface RoomCheckpoint {
+  lease: RoomWorkerLease
+  events: readonly { seq: number; type: string; payload: unknown }[]
+  turn?: {
+    id: string
+    actionKeys: RoomActionKey[]
+    outcome: 'completed' | 'failed' | 'cancelled'
+    firstEventSeq: number | null
+    lastEventSeq: number | null
+  }
+}
+
 export function updateRoomStateSnapshot(
-  roomId: string, stateJson: string, phase?: 'ended', actions: readonly RoomActionWrite[] = [],
+  roomId: string, stateJson: string, phase?: 'ended', actions: readonly RoomActionWrite[] = [], checkpoint?: RoomCheckpoint,
 ): Promise<void> {
   const sql = phase ? "UPDATE rooms SET phase = 'ended', state = ?, version = version + 1, updated_at = ? WHERE room_id = ?" : updateSnapshotSql
-  return writeAll([
+  if (ROOM_WORKER_FAILOVER_ENABLED && !checkpoint) throw new RoomLeaseLostError()
+  const commands = [
     statement(sql, stateJson, Date.now(), roomId),
     ...actions.map((action) => 'payloadHash' in action
       ? statement(
@@ -264,7 +347,28 @@ export function updateRoomStateSnapshot(
         action.status, roomId, action.userId, action.actionId,
       ),
     ),
-  ])
+  ]
+  if (checkpoint?.turn) {
+    const turn = checkpoint.turn
+    commands.push(statement(
+      `INSERT INTO room_turns (room_id, turn_id, epoch, action_keys, outcome, first_event_seq, last_event_seq)
+       VALUES (?, ?, ?::bigint, ?::jsonb, ?, ?, ?)`,
+      roomId, turn.id, checkpoint.lease.epoch, JSON.stringify(turn.actionKeys), turn.outcome, turn.firstEventSeq, turn.lastEventSeq,
+    ))
+  }
+  if (checkpoint?.events.length) {
+    commands.push(statement(
+      `WITH written AS (
+         INSERT INTO room_events (room_id, seq, event_type, payload)
+         SELECT ?, batch.seq, batch.type, batch.payload
+         FROM jsonb_to_recordset(?::jsonb) AS batch(seq bigint, type text, payload jsonb)
+         RETURNING room_id, seq
+       )
+       INSERT INTO room_event_outbox (room_id, seq) SELECT room_id, seq FROM written`,
+      roomId, JSON.stringify(checkpoint.events),
+    ))
+  }
+  return writeRoom(roomId, commands, checkpoint?.lease)
 }
 
 type SnapshotWrite = {
@@ -307,22 +411,22 @@ async function flushTurnSnapshots(batch: SnapshotWrite[]): Promise<void> {
   }
 }
 
-export function updateRoomStateSettings(roomId: string, stateJson: string): Promise<void> {
-  return writeAll([statement('UPDATE rooms SET state = ?, updated_at = ? WHERE room_id = ?', stateJson, Date.now(), roomId)])
+export function updateRoomStateSettings(roomId: string, stateJson: string, lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [statement('UPDATE rooms SET state = ?, updated_at = ? WHERE room_id = ?', stateJson, Date.now(), roomId)], lease)
 }
 
-export function deleteRoomRows(roomId: string): Promise<void> {
-  return writeAll([
+export function deleteRoomRows(roomId: string, lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [
     statement('DELETE FROM room_members WHERE room_id = ?', roomId),
     statement('DELETE FROM rooms WHERE room_id = ?', roomId),
-  ])
+  ], lease)
 }
 
-export function insertMember(roomId: string, userId: number, role: 'owner' | 'member'): Promise<void> {
-  return writeAll([role === 'owner' ? ownerMember(roomId, userId, null) : statement(
+export function insertMember(roomId: string, userId: number, role: 'owner' | 'member', lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [role === 'owner' ? ownerMember(roomId, userId, null) : statement(
     `INSERT INTO room_members (room_id, user_id, role, character_id) VALUES (?, ?, 'member', NULL)
      ON CONFLICT (room_id, user_id) DO NOTHING`, roomId, userId,
-  )])
+  )], lease)
 }
 
 export async function isRoomMember(roomId: string, userId: number): Promise<boolean> {
@@ -350,8 +454,8 @@ export async function memberCharacterId(roomId: string, userId: number): Promise
   return row?.character_id ?? null
 }
 
-export function bindMemberCharacter(roomId: string, userId: number, characterId: string): Promise<void> {
-  return writeAll([statement('UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?', characterId, roomId, userId)])
+export function bindMemberCharacter(roomId: string, userId: number, characterId: string, lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [statement('UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?', characterId, roomId, userId)], lease)
 }
 
 export async function boundMemberOf(roomId: string, characterId: string, exceptUserId: number): Promise<number | null> {
@@ -361,22 +465,22 @@ export async function boundMemberOf(roomId: string, characterId: string, exceptU
   return row?.user_id ?? null
 }
 
-export function setMemberReady(roomId: string, userId: number, ready: boolean): Promise<void> {
-  return writeAll([statement(
+export function setMemberReady(roomId: string, userId: number, ready: boolean, lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [statement(
     `UPDATE room_members SET ready = ? WHERE room_id = ? AND user_id = ? AND role = 'member'`, ready ? 1 : 0, roomId, userId,
-  )])
+  )], lease)
 }
 
-export function transferRoomOwnership(roomId: string, oldOwnerId: number, newOwnerId: number): Promise<void> {
-  return writeAll([
+export function transferRoomOwnership(roomId: string, oldOwnerId: number, newOwnerId: number, lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [
     statement(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`, roomId, oldOwnerId),
     statement(`UPDATE room_members SET role = 'owner', ready = 0 WHERE room_id = ? AND user_id = ?`, roomId, newOwnerId),
     statement('UPDATE rooms SET owner_id = ? WHERE room_id = ?', newOwnerId, roomId),
-  ])
+  ], lease)
 }
 
-export function deleteMemberRow(roomId: string, userId: number): Promise<void> {
-  return writeAll([statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, userId)])
+export function deleteMemberRow(roomId: string, userId: number, lease?: RoomWorkerLease): Promise<void> {
+  return writeRoom(roomId, [statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, userId)], lease)
 }
 
 export function listMembersOrdered(roomId: string): Promise<RoomMemberRow[]> {
