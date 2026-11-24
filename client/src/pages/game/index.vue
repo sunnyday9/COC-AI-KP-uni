@@ -137,6 +137,11 @@ function handleSend() {
   roomStore.sendChat(text)
 }
 
+function reconnectRoom() {
+  const roomId = roomStore.roomId
+  if (roomId) void roomStore.joinRoom(roomId)
+}
+
 function openAiSettings() {
   uni.navigateTo({ url: '/pages/settings/index' })
 }
@@ -237,6 +242,11 @@ function confirmExit() {
             <app-icon name="x" :size="13" />
             <text>退出</text>
           </view>
+        </view>
+
+        <view v-if="roomStore.connectionState === 'error'" class="room-connection-error" role="alert">
+          <text class="room-connection-message">{{ roomStore.errorMessage || '房间连接失败，请重试。' }}</text>
+          <button class="room-connection-retry" @click="reconnectRoom">重新连接</button>
         </view>
 
         <view v-if="roomStore.kpSetupRequired" class="kp-setup-banner" role="status">
@@ -540,7 +550,8 @@ function confirmExit() {
   color: var(--c-fog);
 }
 
-.kp-setup-banner {
+.kp-setup-banner,
+.room-connection-error {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -560,7 +571,8 @@ function confirmExit() {
   font-family: $font-display;
   font-size: 0.875rem;
 }
-.kp-setup-text {
+.kp-setup-text,
+.room-connection-message {
   color: var(--c-paper-300);
   font-size: 0.75rem;
   line-height: 1.5;
@@ -570,7 +582,8 @@ function confirmExit() {
   flex-shrink: 0;
   gap: 8px;
 }
-.kp-setup-button {
+.kp-setup-button,
+.room-connection-retry {
   margin: 0;
   padding: 7px 10px;
   border: 1px solid color-mix(in srgb, var(--c-paper-400) 40%, transparent);
@@ -580,9 +593,14 @@ function confirmExit() {
   font-size: 0.75rem;
   line-height: 1.2;
 }
-.kp-setup-retry {
+.kp-setup-retry,
+.room-connection-retry {
   border-color: color-mix(in srgb, var(--c-eld-300) 55%, transparent);
   color: var(--c-eld-100);
+}
+
+.room-connection-retry {
+  flex-shrink: 0;
 }
 
 /* ── 输入区 ── */
