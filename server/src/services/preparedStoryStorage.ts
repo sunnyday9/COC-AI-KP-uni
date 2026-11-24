@@ -3,10 +3,10 @@ import { addAbortSignal } from 'node:stream'
 import { SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
 import type { IndexedStory } from '../../../shared/types/bridge.js'
 import { getPostgresPool, postgresError } from '../db/postgres.js'
-import { computeSceneAnchors, isCurrentGapsVersion, type CoverageGapsFile } from '../rag/dossier/coverageGaps.js'
+import { computeCoverageGaps, isCurrentGapsVersion, type CoverageGapsFile } from '../rag/dossier/coverageGaps.js'
 import { getSpoilerMetadataFailureReason } from '../rag/supplementAssembly.js'
 import { hasPlayableDossierShape, type StoryDossier } from '../rag/dossier/schema.js'
-import type { StoredIndex } from '../rag/vectorStore.js'
+import { isHydratableStoredIndex, type StoredIndex } from '../rag/vectorStore.js'
 import { NotFoundError, UpstreamError } from '../utils/errors.js'
 import { getStoryObjectStore } from './storyObjectStorage.js'
 import { encodeStoryCursor, parseStoryPage } from './storyPagination.js'
@@ -61,25 +61,20 @@ export async function writePreparedStory(
   return manifest
 }
 
-function hasValidCoverageSpans(gaps: CoverageGapsFile): boolean {
-  if (!Array.isArray(gaps.spans) || gaps.gapCount !== gaps.spans.length) return false
+function hasCanonicalCoverage(sourceText: string, dossier: StoryDossier, gaps: CoverageGapsFile): boolean {
+  if (!Array.isArray(gaps.spans) || !Array.isArray(gaps.sceneAnchors)
+    || gaps.sceneAnchors.length !== dossier.scenes.length) return false
 
-  let previousEnd = 0
-  let gapChars = 0
-  for (const span of gaps.spans) {
-    if (!span || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)
-      || span.start < previousEnd || span.end <= span.start || span.end > gaps.storyChars
-      || span.chars !== span.end - span.start) return false
-    previousEnd = span.end
-    gapChars += span.chars
-  }
-  return gapChars === gaps.gapChars
-}
+  const canonical = computeCoverageGaps(sourceText, dossier.scenes)
+  if (gaps.storyChars !== canonical.storyChars || gaps.sceneTextChars !== canonical.sceneTextChars
+    || gaps.gapCount !== canonical.gapCount || gaps.gapChars !== canonical.gapChars || gaps.gapPct !== canonical.gapPct
+    || gaps.spans.length !== canonical.spans.length) return false
 
-function hasCanonicalAnchors(sourceText: string, dossier: StoryDossier, gaps: CoverageGapsFile): boolean {
-  if (!Array.isArray(gaps.sceneAnchors) || gaps.sceneAnchors.length !== dossier.scenes.length) return false
-
-  return computeSceneAnchors(sourceText, dossier.scenes).every((expected, index) => {
+  return canonical.spans.every((expected, index) => {
+    const span = gaps.spans[index]
+    return !!span && span.start === expected.start && span.end === expected.end
+      && span.chars === expected.chars && span.preview === expected.preview
+  }) && canonical.sceneAnchors.every((expected, index) => {
     const stored = gaps.sceneAnchors[index]
     if (!stored || stored.id !== expected.id || stored.name !== expected.name || stored.matched !== expected.matched) return false
     const starts = stored.starts
@@ -90,19 +85,17 @@ function hasCanonicalAnchors(sourceText: string, dossier: StoryDossier, gaps: Co
 }
 
 export function isCoherentPreparedStory(storyId: string, revision: string, { sourceText, index, dossier, gaps }: PreparedStoryArtifacts): boolean {
-  return index?.scriptId === storyId
-    && Array.isArray(index.docs) && index.docs.length > 0 && index.chunkCount === index.docs.length
+  return isHydratableStoredIndex(index) && index.scriptId === storyId
     && index.docs.every((doc) => {
-      const start = doc?.metadata?.start
+      const start = doc.metadata.start
       return typeof start === 'number' && Number.isSafeInteger(start) && start >= 0
-        && doc.metadata.storyId === storyId && typeof doc.content === 'string' && doc.content.length > 0
+        && doc.metadata.storyId === storyId
         && sourceText.slice(start, start + doc.content.length) === doc.content
     })
     && dossier?.scriptId === storyId && dossier.sourceRevision === revision && dossier.quality?.degraded === false
     && hasPlayableDossierShape(dossier)
     && gaps?.scriptId === storyId && gaps.sourceRevision === revision && gaps.storyChars === sourceText.length
-    && isCurrentGapsVersion(gaps) && hasValidCoverageSpans(gaps)
-    && hasCanonicalAnchors(sourceText, dossier, gaps)
+    && isCurrentGapsVersion(gaps) && hasCanonicalCoverage(sourceText, dossier, gaps)
     && getSpoilerMetadataFailureReason(gaps, dossier) === null
 }
 

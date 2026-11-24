@@ -94,11 +94,13 @@ interface RoomOptions {
   restore?: RoomSnapshot | null
 }
 
-const DEFAULT_TURN_WINDOW_MS = 5_000
 class RoomStoryUnavailableError extends Error {
-  constructor() { super('The pinned story revision is unavailable.'); }
+  constructor(options?: ErrorOptions) {
+    super('The pinned story revision is unavailable.', options)
+  }
 }
 
+const DEFAULT_TURN_WINDOW_MS = 5_000
 const SNAPSHOT_EVERY_N_EVENTS = 20
 const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
@@ -769,21 +771,21 @@ export class RoomService {
     this.turnBuffer = []
   }
 
-  /**
-   * 房间故事上下文唯一构造点（#77 收编 flushTurn / runOpeningTurn 的重复字面量）：
-   * 未绑定剧本（storyId 为空）传 null，KP 图据此跳过脚本门控。
-   */
   private async loadTurnStory(): Promise<RoomStoryBundle | undefined> {
     if (!this.storyRevision && !SHARED_ROOM_CATALOG_ENABLED) return
     if (!this.storyRevision || !this.storyId || this.storyOwnerId === null) throw new RoomStoryUnavailableError()
     try {
       const { loadRoomStory } = await import('./roomStoryRevision.js')
       return await loadRoomStory(this.storyOwnerId, this.storyId, this.storyRevision, this.lifetime.signal)
-    } catch {
-      throw new RoomStoryUnavailableError()
+    } catch (cause) {
+      throw new RoomStoryUnavailableError({ cause })
     }
   }
 
+  /**
+   * 房间故事上下文唯一构造点（#77 收编 flushTurn / runOpeningTurn 的重复字面量）：
+   * 未绑定剧本（storyId 为空）传 null，KP 图据此跳过脚本门控。
+   */
   private buildStoryContext(terminalEndings: RoomStoryContext['terminalEndings'] = []): RoomStoryContext | null {
     return this.storyId
       ? {

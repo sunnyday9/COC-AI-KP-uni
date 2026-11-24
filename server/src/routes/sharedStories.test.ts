@@ -426,14 +426,14 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       await expect.poll(newer.countKp, { timeout: 12_000 }).toBe(2)
 
       const prefix = `stories/${owner.user.id}/prepared/`
-      const readArtifact = async (kind: 'dossier' | 'gaps') => {
+      const readArtifact = async (kind: 'dossier' | 'gaps' | 'index') => {
         const object = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: prefix + renewedRevision + '/' + kind }))
         return JSON.parse(await object.Body!.transformToString())
       }
       // Simulate a storage repair that records a fresh, valid digest for each
       // bad payload. The REST gate must catch the semantic inconsistency.
       const db = new Pool({ connectionString: databaseUrl })
-      const replaceArtifact = async (kind: 'dossier' | 'gaps', value: unknown) => {
+      const replaceArtifact = async (kind: 'dossier' | 'gaps' | 'index', value: unknown) => {
         const bytes = Buffer.from(JSON.stringify(value))
         const sha256 = createHash('sha256').update(bytes).digest('hex')
         await s3.send(new PutObjectCommand({
@@ -445,7 +445,27 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
         `, [renewedRevision, kind, JSON.stringify({ size: bytes.length, sha256 })])
       }
       try {
-        const [dossier, gaps] = await Promise.all([readArtifact('dossier'), readArtifact('gaps')])
+        const [dossier, gaps, index] = await Promise.all([readArtifact('dossier'), readArtifact('gaps'), readArtifact('index')])
+        const [firstDoc, ...otherDocs] = index.docs
+        for (const malformedIndex of [
+          { ...index, idf: { term: 1 } },
+          { ...index, docs: [{ ...firstDoc, tf: ['term', 1] }, ...otherDocs] },
+          { ...index, docs: [{ ...firstDoc, tfidf: [['term', '1']] }, ...otherDocs] },
+          { ...index, docs: [{ ...firstDoc, vector: [1, null] }, ...otherDocs] },
+        ]) {
+          await replaceArtifact('index', malformedIndex)
+          expect.soft((await solo(owner.token, 'rag')).status).toBe(409)
+        }
+        await replaceArtifact('index', index)
+
+        const spans = gaps.spans.length > 0 ? [] : [{ start: 0, end: 1, chars: 1, preview: 'x' }]
+        const gapChars = spans.length
+        await replaceArtifact('gaps', {
+          ...gaps, spans, gapChars, gapCount: spans.length,
+          gapPct: Math.round((gapChars / gaps.storyChars) * 1000) / 10,
+        })
+        expect.soft((await solo(owner.token, 'dossier')).status).toBe(409)
+        await replaceArtifact('gaps', gaps)
         const { clues: _clues, npcs: _npcs, ...malformedDossier } = dossier
         await replaceArtifact('dossier', malformedDossier)
         expect.soft((await solo(owner.token, 'dossier')).status).toBe(409)

@@ -233,6 +233,22 @@ export interface StoredIndex {
   idf: [string, number][]
 }
 
+/** Validate the persisted shape produced by serializeIndex before shared use. */
+export function isHydratableStoredIndex(index: StoredIndex | null | undefined): index is StoredIndex {
+  const text = (value: unknown) => typeof value === 'string' && value.trim().length > 0
+  const weights = (value: unknown) => Array.isArray(value) && value.every((entry: unknown) =>
+    Array.isArray(entry) && entry.length === 2 && text(entry[0]) && Number.isFinite(entry[1]),
+  )
+  return !!index && text(index.scriptId) && text(index.storyName)
+    && Number.isSafeInteger(index.indexedAt) && index.indexedAt > 0
+    && Array.isArray(index.docs) && index.docs.length > 0 && index.docs.length === index.chunkCount
+    && weights(index.idf)
+    && index.docs.every((doc) => !!doc && text(doc.id) && text(doc.type) && text(doc.content)
+      && !!doc.metadata && typeof doc.metadata === 'object' && !Array.isArray(doc.metadata)
+      && weights(doc.tf) && weights(doc.tfidf)
+      && (doc.vector === undefined || (Array.isArray(doc.vector) && doc.vector.length > 0 && doc.vector.every(Number.isFinite))))
+}
+
 interface LoadedIndex {
   scriptId: string
   storyName: string
