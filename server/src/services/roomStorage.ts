@@ -4,7 +4,7 @@ import { getDb } from '../db/index.js'
 import { getPostgresPool, inPostgresTransaction, postgresError } from '../db/postgres.js'
 import { SHARED_ROOMS_ENABLED } from '../config.js'
 import { parseRoomState } from './roomStateCodec.js'
-import type { RoomPhase } from '../../../shared/types/room.js'
+import type { RoomActionReceiptStatus, RoomPhase } from '../../../shared/types/room.js'
 
 // The room backend is selected once per process. All room/member/character
 // transactions keep the same connection and never cross account stores.
@@ -226,9 +226,45 @@ export function updateRoomPhase(roomId: string, phase: RoomPhase): Promise<void>
 
 const updateSnapshotSql = 'UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE room_id = ?'
 
-export function updateRoomStateSnapshot(roomId: string, stateJson: string, phase?: 'ended'): Promise<void> {
+export interface RoomActionKey {
+  userId: number
+  actionId: string
+}
+
+export type RoomActionWrite =
+  | (RoomActionKey & { status: 'pending' | 'completed'; payloadHash: string; messageId: string })
+  | (RoomActionKey & { status: 'completed' | 'cancelled' })
+
+interface RoomActionReceipt extends Row {
+  payload_hash: string
+  message_id: string
+  status: RoomActionReceiptStatus
+}
+
+export function getRoomAction(roomId: string, userId: number, actionId: string): Promise<RoomActionReceipt | undefined> {
+  return readOne<RoomActionReceipt>(
+    'SELECT payload_hash, message_id, status FROM room_actions WHERE room_id = ? AND user_id = ? AND action_id = ?',
+    roomId, userId, actionId,
+  )
+}
+
+export function updateRoomStateSnapshot(
+  roomId: string, stateJson: string, phase?: 'ended', actions: readonly RoomActionWrite[] = [],
+): Promise<void> {
   const sql = phase ? "UPDATE rooms SET phase = 'ended', state = ?, version = version + 1, updated_at = ? WHERE room_id = ?" : updateSnapshotSql
-  return writeAll([statement(sql, stateJson, Date.now(), roomId)])
+  return writeAll([
+    statement(sql, stateJson, Date.now(), roomId),
+    ...actions.map((action) => 'payloadHash' in action
+      ? statement(
+        'INSERT INTO room_actions (room_id, user_id, action_id, payload_hash, message_id, status) VALUES (?, ?, ?, ?, ?, ?)',
+        roomId, action.userId, action.actionId, action.payloadHash, action.messageId, action.status,
+      )
+      : statement(
+        "UPDATE room_actions SET status = ? WHERE room_id = ? AND user_id = ? AND action_id = ? AND status = 'pending'",
+        action.status, roomId, action.userId, action.actionId,
+      ),
+    ),
+  ])
 }
 
 type SnapshotWrite = {
@@ -300,6 +336,10 @@ export async function memberRole(roomId: string, userId: number): Promise<string
 
 const memberSelect = `SELECT m.user_id, m.role, m.character_id, m.ready, u.username
                       FROM room_members m JOIN users u ON m.user_id = u.id WHERE m.room_id = ?`
+
+export function getRoomMember(roomId: string, userId: number): Promise<RoomMemberRow | undefined> {
+  return readOne<RoomMemberRow & Row>(memberSelect + ' AND m.user_id = ?', roomId, userId)
+}
 
 export function listMembers(roomId: string): Promise<RoomMemberRow[]> {
   return readAll<RoomMemberRow & Row>(memberSelect, roomId)

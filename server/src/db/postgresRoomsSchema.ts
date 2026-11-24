@@ -1,3 +1,4 @@
+import { ROOM_ACTIONS_SCHEMA } from './roomActionsSchema.js'
 import { getPostgresPool, postgresError } from './postgres.js'
 
 /**
@@ -46,11 +47,13 @@ export async function initializeSingleProcessRooms(): Promise<void> {
         );
         CREATE INDEX IF NOT EXISTS room_members_user_room ON room_members (user_id, room_id);
         CREATE INDEX IF NOT EXISTS room_members_room_join ON room_members (room_id, join_order);
+        ${ROOM_ACTIONS_SCHEMA}
       `)
       await client.query(`
         SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, version, updated_at, created_at FROM rooms LIMIT 0;
         SELECT room_id, user_id, role, character_id, ready, join_order FROM room_members LIMIT 0;
         SELECT id, user_id, name, sheet, updated_at FROM characters LIMIT 0;
+        SELECT room_id, user_id, action_id, payload_hash, message_id, status FROM room_actions LIMIT 0;
       `)
       // Losing the guard connection ends the gameplay process. Reconnecting
       // without the in-memory registry would permit competing room writers.

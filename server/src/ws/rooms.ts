@@ -17,6 +17,7 @@
  * RoomService（ADR-0001）。
  */
 import type { WebSocket } from 'ws'
+import type { RoomActionResult } from '../../../shared/types/room.js'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
 import { handleOwnerWsDisconnect } from '../services/roomService.js'
 import { cleanupSocket, ensureFanout, planAction, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeSocket } from './roomLedger.js'
@@ -62,7 +63,7 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
   if (socket.readyState !== 1) return
   subscribeSocket(socket, roomId)
   // 全量快照（加入时）
-  send(socket, { type: 'room:state', roomId, snapshot: room.snapshot(), seq: room.getSeq() })
+  send(socket, { type: 'room:state', roomId, actionReceipts: true, snapshot: room.snapshot(), seq: room.getSeq() })
   logger.info('room join', { roomId, userId })
 }
 
@@ -82,7 +83,7 @@ export async function handleRoomSync(socket: WebSocket, userId: number, raw: unk
   }
   if (plan.kind === 'full') {
     // 缺口过大或无需增量 → 全量快照（客户端按 seq 对账）
-    send(socket, { type: 'room:state', roomId, snapshot: plan.room.snapshot(), seq: plan.room.getSeq() })
+    send(socket, { type: 'room:state', roomId, actionReceipts: true, snapshot: plan.room.snapshot(), seq: plan.room.getSeq() })
     return
   }
   // 增量补齐：补发 lastSeq 之后的事件（客户端按 seq 应用）
@@ -96,6 +97,39 @@ export async function handleRoomSync(socket: WebSocket, userId: number, raw: unk
 export async function handleRoomAction(socket: WebSocket, userId: number, raw: unknown): Promise<void> {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
   const action = (raw as { action?: unknown }).action as { type?: string; payload?: unknown } | undefined
+  const actionId = (raw as { actionId?: unknown }).actionId
+  if (actionId !== undefined) {
+    if (typeof actionId !== 'string' || actionId.length > 80) {
+      send(socket, { type: 'room:error', roomId, error: '行动编号无效。' })
+      return
+    }
+    const sendResult = (result: RoomActionResult) => send(socket, {
+      type: 'room:action:result', roomId, actionId, ...result,
+    })
+    const rawContent = (action?.payload as { content?: unknown } | undefined)?.content
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(actionId) || !roomId || action?.type !== 'chat' ||
+        typeof rawContent !== 'string' || !rawContent.trim()) {
+      sendResult({ status: 'rejected', code: 'invalid_action', error: '行动编号或消息内容无效。' })
+      return
+    }
+    try {
+      const plan = await planAction(roomId, userId)
+      if (!plan.ok) {
+        if (plan.error === 'room not active') {
+          sendResult({ status: 'retry', code: 'room_inactive', error: '房间尚未连接，请重新进入后重试。' })
+        } else {
+          sendResult({ status: 'rejected', code: 'not_member', error: '你已不在该房间内。' })
+        }
+        return
+      }
+      const task = plan.room.queuePlayerChat(userId, rawContent.trim(), actionId)
+      sendResult(task ? await task : { status: 'busy', code: 'room_busy', error: '房间待处理的操作已满，请稍后重试。' })
+    } catch (error) {
+      logger.warn('room action failed', { roomId, error: errorMessage(error) })
+      sendResult({ status: 'retry', code: 'storage_unavailable', error: '暂时无法确认消息是否送达，请重试。' })
+    }
+    return
+  }
   if (!roomId || !action?.type) {
     send(socket, { type: 'room:error', roomId, error: 'roomId and action.type required' })
     return
@@ -115,8 +149,10 @@ export async function handleRoomAction(socket: WebSocket, userId: number, raw: u
       return
     }
     task = room.queuePlayerChat(userId, content)?.then((result) => {
-      if (result === 'busy') busy()
-      if (result === 'not-member') send(socket, { type: 'room:error', roomId, error: 'not a room member' })
+      if (result.status === 'busy') busy()
+      if ('error' in result && result.status !== 'busy') {
+        send(socket, { type: 'room:error', roomId, error: result.code === 'not_member' ? 'not a room member' : result.error })
+      }
     }) ?? null
   } else if (action.type === 'retry_kp') {
     task = room.enqueueClientAction(async () => {

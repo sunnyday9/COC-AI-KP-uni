@@ -83,7 +83,7 @@ describe('SQLite schema migrations', () => {
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .all()
         .map((row) => (row as { name: string }).name)
-      expect(tables).toEqual(['characters', 'indexed_story_catalog', 'indexed_story_catalog_state', 'kp_wire_samples', 'room_members', 'rooms', 'settings', 'stories', 'story_artifact_locations', 'users'])
+      expect(tables).toEqual(['characters', 'indexed_story_catalog', 'indexed_story_catalog_state', 'kp_wire_samples', 'room_actions', 'room_members', 'rooms', 'settings', 'stories', 'story_artifact_locations', 'users'])
       expect(columns(database, 'stories')).toContain('file_path')
       expect(columns(database, 'rooms')).toContain('kind')
       expect(columns(database, 'rooms')).toContain('story_owner_id')

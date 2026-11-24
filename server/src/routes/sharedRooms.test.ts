@@ -22,6 +22,10 @@ const sheet = {
 type Frame = {
   type: string
   seq?: number
+  actionId?: string
+  status?: string
+  messageId?: string
+  code?: string
   snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string }[]; kpMemory?: string[] }
   eventType?: string
   payload?: { message?: { role: string; content: string }; path?: string }
@@ -67,11 +71,24 @@ async function prepareDossier(root: string, userId: number, scriptId: string): P
 interface KeeperFixture {
   pauseAfterTool?: boolean
   failOpeningCheckpoint?: boolean
+  endingOpeningBarrier?: string
 }
 
 function keeperFixture(options: KeeperFixture): string {
   const service = `
+    import { existsSync } from 'node:fs';
+    import { setTimeout as delay } from 'node:timers/promises';
+    const endingOpeningBarrier = ${JSON.stringify(options.endingOpeningBarrier)};
+    let turns = 0;
     export async function runKpTurn(_userId, { messages }, turn) {
+      if (endingOpeningBarrier && ++turns === 1) {
+        process.stdout.write('keeper fixture holding the only turn slot' + String.fromCharCode(10));
+        while (!existsSync(endingOpeningBarrier)) await delay(20);
+      } else if (endingOpeningBarrier && turns === 2) {
+        turn.mutatorFactory(turn.activeCharacterId).endGame({
+          outcome: 'closed', title: 'Archive closed', summary: 'The archive closes at the opening.',
+        });
+      }
       const damage = JSON.stringify(messages).includes('Recover the damaged ledger');
       if (damage) {
         turn.mutatorFactory(turn.activeCharacterId).updateCharacterHP(-2);
@@ -99,15 +116,42 @@ function keeperFixture(options: KeeperFixture): string {
           return fixtureModule(
             'export * from ' + real + '; import { updateRoomStateSnapshot as write } from ' + real + ';' +
             'let failed = false;' +
-            'export async function updateRoomStateSnapshot(roomId, state, phase) {' +
+            'export async function updateRoomStateSnapshot(roomId, state, phase, actions) {' +
             '  if (!failed && JSON.parse(state).messages?.some(m => m.content === "The archive is quiet.")) {' +
             '    failed = true; process.stdout.write("keeper fixture rejected the opening checkpoint" + String.fromCharCode(10));' +
             '    throw new Error("opening checkpoint unavailable");' +
-            '  } return write(roomId, state, phase);' +
+            '  } return write(roomId, state, phase, actions);' +
             '}'
           );
         }
         return next(specifier, context);
+      }
+    });
+  `)
+}
+
+/** Hold a particular submission immediately before its real database transaction. */
+function pauseAcceptance(actionId: string): string {
+  return 'data:text/javascript,' + encodeURIComponent(`
+    import { registerHooks } from 'node:module';
+    registerHooks({
+      resolve(specifier, context, next) {
+        const resolved = next(specifier, context);
+        if (specifier !== './roomStorage.js' || !context.parentURL?.endsWith('/roomService.ts')) return resolved;
+        const original = JSON.stringify(resolved.url);
+        const targetId = ${JSON.stringify(actionId)};
+        const wrapper = [
+          'export * from ' + original + ';',
+          'import { updateRoomStateSnapshot as write } from ' + original + ';',
+          'export async function updateRoomStateSnapshot(...args) {',
+          '  if (args[3]?.some((action) => action.actionId === ' + JSON.stringify(targetId) + ' && action.payloadHash)) {',
+          '    process.stdout.write("chat fixture paused before commit" + String.fromCharCode(10));',
+          '    await new Promise(() => {});',
+          '  }',
+          '  return write(...args);',
+          '}',
+        ].join(String.fromCharCode(10));
+        return { url: 'data:text/javascript,' + encodeURIComponent(wrapper), shortCircuit: true };
       }
     });
   `)
@@ -123,13 +167,18 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
   const sockets: WebSocket[] = []
   const pausedKeepers = new WeakSet<ChildProcess>()
   const rejectedOpenings = new WeakSet<ChildProcess>()
+  const heldOpeningSlots = new WeakSet<ChildProcess>()
+  const pausedAcceptances = new WeakSet<ChildProcess>()
   const shared = backend === 'postgres'
   let base: string
-  async function launch(keeper?: KeeperFixture): Promise<ChildProcess> {
+  async function launch(options: KeeperFixture & { pauseActionId?: string } = {}): Promise<ChildProcess> {
     const port = await freePort()
     base = `http://127.0.0.1:${port}`
     const args = ['--import', 'tsx']
-    if (keeper) args.push('--import', keeperFixture(keeper))
+    if (options.pauseAfterTool !== undefined || options.failOpeningCheckpoint || options.endingOpeningBarrier) {
+      args.push('--import', keeperFixture(options))
+    }
+    if (options.pauseActionId) args.push('--import', pauseAcceptance(options.pauseActionId))
     args.push('src/app.ts')
     const child = spawn(process.execPath, args, {
       env: {
@@ -145,17 +194,20 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
         UPLOADS_DIR: join(root, 'uploads'),
         JWT_SECRET: jwtSecret,
         MOCK_AI: '1',
+        KP_ACTIVE_TURNS: options.endingOpeningBarrier ? '1' : undefined,
         PORT: String(port),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     children.push(child)
-    if (keeper?.pauseAfterTool || keeper?.failOpeningCheckpoint) {
+    if (options.pauseAfterTool || options.pauseActionId || options.failOpeningCheckpoint || options.endingOpeningBarrier) {
       let output = ''
       child.stdout?.on('data', (data: Buffer) => {
-        output += data.toString()
+        output = (output + data.toString()).slice(-4_096)
         if (output.includes('keeper fixture paused after HP tool')) pausedKeepers.add(child)
         if (output.includes('keeper fixture rejected the opening checkpoint')) rejectedOpenings.add(child)
+        if (output.includes('keeper fixture holding the only turn slot')) heldOpeningSlots.add(child)
+        if (output.includes('chat fixture paused before commit')) pausedAcceptances.add(child)
       })
     } else child.stdout?.resume()
     child.stderr?.resume()
@@ -226,7 +278,8 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
   const detail = (roomId: string, token: string) => request(`/api/rooms/${roomId}`, { token })
 
   try {
-    let first = await launch()
+    const beforeCommitId = randomUUID()
+    let first = await launch({ pauseActionId: beforeCommitId })
     await ready(first)
     if (shared) {
       const firstBase = base!
@@ -263,7 +316,7 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
     const opening = await soloSocket.waitFor(isKpMessage)
     if (shared) {
       await stop(first)
-      first = await launch()
+      first = await launch({ pauseActionId: beforeCommitId })
       await ready(first)
       soloSocket = await connect(originalOwner.token)
       soloSocket.send({ type: 'room:join', roomId: solo.roomId })
@@ -277,6 +330,25 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
     const soloAction = 'Search the ledger drawer'
     soloSocket.send(chat(solo.roomId, soloAction))
     await expect.poll(() => soloSocket.frames.filter(isKpMessage).length, { timeout: 8_000 }).toBe(shared ? 1 : 2)
+
+    const beforeCommitText = 'Read the filing instructions'
+    const beforeCommit = { ...chat(solo.roomId, beforeCommitText), actionId: beforeCommitId }
+    soloSocket.send(beforeCommit)
+    await expect.poll(() => pausedAcceptances.has(first), { timeout: 7_000 }).toBe(true)
+    expect(soloSocket.frames.some((frame) => frame.actionId === beforeCommitId || frame.payload?.message?.content === beforeCommitText)).toBe(false)
+    await stop(first)
+    first = await launch()
+    await ready(first)
+    soloSocket = await connect(originalOwner.token)
+    soloSocket.send({ type: 'room:join', roomId: solo.roomId })
+    const beforeRetry = await soloSocket.waitFor((frame) => frame.type === 'room:state')
+    expect(beforeRetry.snapshot?.messages?.some((message) => message.content === beforeCommitText)).toBe(false)
+    soloSocket.send(beforeCommit)
+    expect(await soloSocket.waitFor((frame) => frame.type === 'room:action:result' && frame.actionId === beforeCommitId)).toMatchObject({
+      status: 'pending', messageId: expect.any(String),
+    })
+    await soloSocket.waitFor(isKpMessage)
+    expect(soloSocket.frames.filter((frame) => frame.payload?.message?.content === beforeCommitText)).toHaveLength(1)
 
     const lobby = await request('/api/rooms', {
       method: 'POST', token: originalOwner.token, body: { storyId, workflow: 'dossier' },
@@ -303,6 +375,26 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
     await hostSocket.waitFor((frame) => frame.payload?.message?.content === 'Lobby discussion')
     expect(hostSocket.frames.some(isKpMessage)).toBe(false)
 
+    const lobbyActionId = randomUUID()
+    const lobbyAction = { ...chat(roomId, '  File the briefing  '), actionId: lobbyActionId }
+    ownerSocket.send(lobbyAction)
+    const lobbyReceipt = await ownerSocket.waitFor((frame) => frame.type === 'room:action:result' && frame.actionId === lobbyActionId)
+    expect(lobbyReceipt).toMatchObject({ status: 'completed', messageId: expect.any(String) })
+    expect((await detail(roomId, host.token)).state.messages).toContainEqual(
+      expect.objectContaining({ id: lobbyReceipt.messageId, content: 'File the briefing' }),
+    )
+    const receiptCount = () => ownerSocket.frames.filter((frame) => frame.type === 'room:action:result' && frame.actionId === lobbyActionId).length
+    ownerSocket.send({ ...chat(roomId, 'File the briefing'), actionId: lobbyActionId })
+    await expect.poll(receiptCount).toBe(2)
+    ownerSocket.send({ ...chat(roomId, 'Replace the briefing'), actionId: lobbyActionId })
+    await expect.poll(receiptCount).toBe(3)
+    expect(ownerSocket.frames.filter((frame) => frame.type === 'room:action:result' && frame.actionId === lobbyActionId).slice(1)).toMatchObject([
+      { status: 'completed', messageId: lobbyReceipt.messageId },
+      { status: 'rejected', code: 'action_conflict' },
+    ])
+    expect(hostSocket.frames.filter((frame) => frame.payload?.message?.content === 'File the briefing')).toHaveLength(1)
+    expect(hostSocket.frames.some((frame) => frame.type === 'room:action:result')).toBe(false)
+
     await request(`/api/rooms/${roomId}/transfer`, {
       method: 'POST', token: originalOwner.token, body: { userId: host.user.id },
     })
@@ -314,13 +406,27 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
     expect(ownerSocket.frames.filter(isKpMessage)).toHaveLength(1)
     await request(`/api/rooms/${roomId}/settings`, { method: 'PUT', token: host.token, body: { turnWindowMs: 60_000 } })
     const pendingAction = 'Open the archive cabinet'
-    hostSocket.send(chat(roomId, pendingAction))
+    const pendingActionId = randomUUID()
+    const pendingFrame = { ...chat(roomId, pendingAction), actionId: pendingActionId }
+    hostSocket.send(pendingFrame)
+    const pendingReceipt = await hostSocket.waitFor((frame) => frame.type === 'room:action:result' && frame.actionId === pendingActionId)
+    expect(pendingReceipt).toMatchObject({ status: 'pending', messageId: expect.any(String) })
     await ownerSocket.waitFor((frame) => frame.payload?.message?.content === pendingAction)
-    if (!shared) {
-      await expect.poll(async () => (await detail(roomId, host.token)).state.pendingTurnMessages, { timeout: 24_000 }).toMatchObject([
-        { authorUserId: host.user.id, characterId: hostCard.id, content: pendingAction },
-      ])
+
+    for (let i = 0; i < 31; i++) {
+      const actionId = randomUUID()
+      hostSocket.send({ ...chat(roomId, 'Review archive item ' + i), actionId })
+      expect(await hostSocket.waitFor((frame) => frame.type === 'room:action:result' && frame.actionId === actionId)).toMatchObject({ status: 'pending' })
     }
+    const busyActionId = randomUUID()
+    const busyFrame = { ...chat(roomId, 'Review the overflow file'), actionId: busyActionId }
+    hostSocket.send(busyFrame)
+    expect(await hostSocket.waitFor((frame) => frame.type === 'room:action:result' && frame.actionId === busyActionId)).toMatchObject({ status: 'busy', code: 'room_busy' })
+    hostSocket.send(pendingFrame)
+    await expect.poll(() => hostSocket.frames.filter((frame) => frame.actionId === pendingActionId).length).toBe(2)
+    expect(hostSocket.frames.filter((frame) => frame.actionId === pendingActionId).at(-1)).toMatchObject({ status: 'pending', messageId: pendingReceipt.messageId })
+    expect(ownerSocket.frames.filter((frame) => frame.payload?.message?.content === pendingAction)).toHaveLength(1)
+
 
     // Kill the whole gameplay process while the action is pending so that
     // transport cleanup cannot masquerade as the host leaving the room.
@@ -330,7 +436,7 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
     const persisted = await detail(roomId, host.token)
     expect(persisted).toMatchObject({
       roomId, ownerId: host.user.id, storyId, phase: 'playing',
-      state: { workflow: 'dossier', turnWindowMs: 60_000, pendingTurnMessages: [{ authorUserId: host.user.id, characterId: hostCard.id, content: pendingAction }] },
+      state: { workflow: 'dossier', turnWindowMs: 60_000, pendingTurnMessages: expect.arrayContaining([expect.objectContaining({ authorUserId: host.user.id, characterId: hostCard.id, content: pendingAction, actionId: pendingActionId })]) },
     })
     expect(persisted.members).toHaveLength(2)
     expect(persisted.members).toEqual(expect.arrayContaining([
@@ -352,6 +458,12 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
     }
     expect((await resumedHost.waitFor(isKpMessage)).seq).toBeGreaterThan(persisted.state.seq)
     await expect.poll(async () => (await detail(roomId, host.token)).state.pendingTurnMessages).toEqual([])
+    resumedHost.send(pendingFrame)
+    expect(await resumedHost.waitFor((frame) => frame.type === 'room:action:result' && frame.actionId === pendingActionId)).toMatchObject({
+      status: 'completed', messageId: pendingReceipt.messageId,
+    })
+    expect(resumedHost.frames.filter((frame) => frame.payload?.message?.content === pendingAction)).toHaveLength(0)
+    expect(resumedHost.frames.every((frame) => frame.payload?.message?.content !== 'Review the overflow file')).toBe(true)
     const progressed = await detail(roomId, host.token)
     expect(progressed.state.messages.filter((message: { role: string }) => message.role === 'kp')).toHaveLength(2)
     expect(progressed.state.seq).toBeGreaterThan(persisted.state.seq)
@@ -363,15 +475,36 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
     })
     resumedSolo.send(chat(solo.roomId, 'Check the cabinet lock'))
     await resumedSolo.waitFor(isKpMessage)
-    if (shared) {
+    {
+      await request(`/api/rooms/${roomId}/settings`, { method: 'PUT', token: host.token, body: { turnWindowMs: 60_000 } })
+      const revokedActionId = randomUUID()
+      const revokedText = 'Take the sealed letter'
+      const revokedFrame = { ...chat(roomId, revokedText), actionId: revokedActionId }
+      resumedOwner.send(revokedFrame)
+      expect(await resumedOwner.waitFor((frame) => frame.actionId === revokedActionId)).toMatchObject({ status: 'pending' })
+      await request(`/api/rooms/${roomId}/members/${originalOwner.user.id}`, { method: 'DELETE', token: host.token })
+      resumedOwner.send(revokedFrame)
+      expect(await resumedOwner.waitFor((frame) => frame.actionId === revokedActionId && frame.status === 'rejected')).toMatchObject({ code: 'not_member' })
+      await request(`/api/rooms/${roomId}`, { token: originalOwner.token, expected: 404 })
+
       await stop(restarted)
       const interrupted = await launch({ pauseAfterTool: true })
       await ready(interrupted)
+      const currentMember = await connect(host.token)
+      currentMember.send({ type: 'room:join', roomId })
+      await currentMember.waitFor((frame) => frame.type === 'room:state')
+      await expect.poll(async () => (await detail(roomId, host.token)).state.pendingTurnMessages).toEqual([])
+      expect(currentMember.frames.some(isKpMessage)).toBe(false)
+
       const live = await connect(originalOwner.token)
       live.send({ type: 'room:join', roomId: solo.roomId })
       await live.waitFor((frame) => frame.type === 'room:state')
       const damageAction = 'Recover the damaged ledger'
-      live.send(chat(solo.roomId, damageAction))
+      const damageActionId = randomUUID()
+      const damageFrame = { ...chat(solo.roomId, damageAction), actionId: damageActionId }
+      live.send(damageFrame)
+      const damageReceipt = await live.waitFor((frame) => frame.type === 'room:action:result' && frame.actionId === damageActionId)
+      expect(damageReceipt.status).toBe('pending')
       await expect.poll(() => pausedKeepers.has(interrupted), { timeout: 7_000 }).toBe(true)
 
       // A subsequent accepted chat commits its own checkpoint while the first
@@ -394,25 +527,65 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
       expect(resolved.state.characters[solo.characterId].derived.hp).toBe(8)
       expect(resolved.state.pendingTurnMessages).toEqual([])
       expect(resolved.state.messages.filter((message: { content: string }) => message.content === 'The ledger was recovered.')).toHaveLength(1)
-
-      await stop(recovered)
-      const retryServer = await launch({ failOpeningCheckpoint: true })
-      await ready(retryServer)
-      const fresh = await request('/api/rooms/solo', {
-        method: 'POST', token: originalOwner.token, body: { storyId, name: 'Retry investigator', sheet, workflow: 'dossier' },
+      afterCrash.send(damageFrame)
+      expect(await afterCrash.waitFor((frame) => frame.type === 'room:action:result' && frame.actionId === damageActionId)).toMatchObject({
+        status: 'completed', messageId: damageReceipt.messageId,
       })
-      const retrySocket = await connect(originalOwner.token)
-      retrySocket.send({ type: 'room:join', roomId: fresh.roomId })
-      await retrySocket.waitFor((frame) => frame.type === 'room:state')
-      await expect.poll(() => rejectedOpenings.has(retryServer), { timeout: 7_000 }).toBe(true)
-      const beforeRetry = await detail(fresh.roomId, originalOwner.token)
-      expect(beforeRetry.state.messages ?? []).toEqual([])
-      expect(retrySocket.frames.filter(isKpMessage)).toHaveLength(0)
-      retrySocket.send({ type: 'room:action', roomId: fresh.roomId, action: { type: 'retry_kp' } })
-      await retrySocket.waitFor(isKpMessage)
-      await expect.poll(async () => (await detail(fresh.roomId, originalOwner.token)).state.kpMemory).toEqual(['The archive is silent'])
-      expect(retrySocket.frames.filter(isKpMessage)).toHaveLength(1)
-      expect(existsSync(dataDir)).toBe(false)
+      expect(afterCrash.frames.filter((frame) => frame.payload?.message?.content === damageAction)).toHaveLength(0)
+      if (shared) {
+        await stop(recovered)
+        const retryServer = await launch({ failOpeningCheckpoint: true })
+        await ready(retryServer)
+        const fresh = await request('/api/rooms/solo', {
+          method: 'POST', token: originalOwner.token, body: { storyId, name: 'Retry investigator', sheet, workflow: 'dossier' },
+        })
+        const retrySocket = await connect(originalOwner.token)
+        retrySocket.send({ type: 'room:join', roomId: fresh.roomId })
+        await retrySocket.waitFor((frame) => frame.type === 'room:state')
+        await expect.poll(() => rejectedOpenings.has(retryServer), { timeout: 7_000 }).toBe(true)
+        const beforeRetry = await detail(fresh.roomId, originalOwner.token)
+        expect(beforeRetry.state.messages ?? []).toEqual([])
+        expect(retrySocket.frames.filter(isKpMessage)).toHaveLength(0)
+        retrySocket.send({ type: 'room:action', roomId: fresh.roomId, action: { type: 'retry_kp' } })
+        await retrySocket.waitFor(isKpMessage)
+        await expect.poll(async () => (await detail(fresh.roomId, originalOwner.token)).state.kpMemory).toEqual(['The archive is silent'])
+        expect(retrySocket.frames.filter(isKpMessage)).toHaveLength(1)
+        expect(existsSync(dataDir)).toBe(false)
+      } else {
+        await stop(recovered)
+        const releaseOpening = join(root, 'release-opening')
+        const openingServer = await launch({ endingOpeningBarrier: releaseOpening })
+        await ready(openingServer)
+        const createInvestigation = (name: string) => request('/api/rooms/solo', {
+          method: 'POST', token: originalOwner.token, body: { storyId, name, sheet, workflow: 'dossier' },
+        })
+        const blocking = await createInvestigation('Turn slot holder')
+        const closing = await createInvestigation('Closing archive investigator')
+        const blockingSocket = await connect(originalOwner.token)
+        blockingSocket.send({ type: 'room:join', roomId: blocking.roomId })
+        await expect.poll(() => heldOpeningSlots.has(openingServer), { timeout: 7_000 }).toBe(true)
+
+        const closingSocket = await connect(originalOwner.token)
+        closingSocket.send({ type: 'room:join', roomId: closing.roomId })
+        await closingSocket.waitFor((frame) => frame.type === 'room:state')
+        const actionId = randomUUID()
+        const action = { ...chat(closing.roomId, 'Inspect the closed archive'), actionId }
+        closingSocket.send(action)
+        const receipt = await closingSocket.waitFor((frame) => frame.actionId === actionId)
+        expect(receipt).toMatchObject({ status: 'pending', messageId: expect.any(String) })
+
+        await writeFile(releaseOpening, '')
+        await closingSocket.waitFor((frame) => frame.payload?.path === 'ending')
+        expect(await detail(closing.roomId, originalOwner.token)).toMatchObject({
+          phase: 'ended', state: { pendingTurnMessages: [], ending: { title: 'Archive closed' } },
+        })
+        closingSocket.send(action)
+        await expect.poll(() => closingSocket.frames.filter((frame) => frame.actionId === actionId).length).toBe(2)
+        expect(closingSocket.frames.filter((frame) => frame.actionId === actionId).at(-1)).toMatchObject({
+          status: 'cancelled', messageId: receipt.messageId,
+        })
+        expect(closingSocket.frames.filter((frame) => frame.payload?.message?.content === 'Inspect the closed archive')).toHaveLength(1)
+      }
     }
   } finally {
     await Promise.all(children.map(stop))
@@ -422,6 +595,6 @@ async function journey(backend: 'local' | 'postgres'): Promise<void> {
 }
 
 describe('room protocol across a gameplay process restart', () => {
-  it('creates and resumes solo and multiplayer investigations in SQLite', () => journey('local'), 60_000)
-  it.skipIf(!databaseUrl)('runs the same solo and multiplayer investigations in PostgreSQL', () => journey('postgres'), 60_000)
+  it('creates and resumes solo and multiplayer investigations in SQLite', () => journey('local'), 90_000)
+  it.skipIf(!databaseUrl)('runs the same solo and multiplayer investigations in PostgreSQL', () => journey('postgres'), 90_000)
 })

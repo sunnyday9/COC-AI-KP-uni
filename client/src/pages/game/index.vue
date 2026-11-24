@@ -265,7 +265,14 @@ function confirmExit() {
             class="msg-wrap"
             :class="{ 'msg-pending': msg.pending }"
           >
-            <chat-message :msg="roomStore.toMessage(msg)" @select-option="handleOptionSelected" />
+            <chat-message
+              :msg="roomStore.toMessage(msg)"
+              :pending="msg.pending"
+              :send-error="msg.sendError"
+              :retry-disabled="!isJoined"
+              @retry="roomStore.retryPendingChat(msg.id)"
+              @select-option="handleOptionSelected"
+            />
           </view>
           <view v-if="roomStore.awaitingKp" class="kp-pending">
             <view class="sigil-spinner small-spinner" />
@@ -280,6 +287,7 @@ function confirmExit() {
 
         <!-- 输入区 -->
         <view class="input-area">
+          <text v-if="roomStore.chatError" role="alert">{{ roomStore.chatError }}</text>
           <view class="input-row">
             <textarea
               v-model="inputText"

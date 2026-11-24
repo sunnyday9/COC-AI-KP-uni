@@ -25,6 +25,7 @@ import { checkStartGate, sanitizeWorkflow } from './startGate.js'
 // rooms.state JSON 文档 codec（#61）：读点容错解析 / 写点序列化单点收口。
 import { parseRoomState, parseRoomStateOr, serializeRoomState } from './roomStateCodec.js'
 import type {
+  RoomActionResult,
   RoomEventPayloadMap,
   RoomEventType,
   RoomMemberInfo,
@@ -50,6 +51,8 @@ interface PendingTurnMessage {
   content: string
   characterId: string | null
   authorUserId: number
+  actionId?: string
+  messageId?: string
 }
 
 /** 房间持久化快照（rooms.state JSON）。 */
@@ -204,7 +207,9 @@ export class RoomService {
       this.turnBuffer = Array.isArray(opts.restore.pendingTurnMessages)
         ? opts.restore.pendingTurnMessages.filter((entry): entry is PendingTurnMessage =>
             !!entry && typeof entry.username === 'string' && typeof entry.content === 'string' &&
-            (entry.characterId === null || typeof entry.characterId === 'string') && Number.isSafeInteger(entry.authorUserId),
+            (entry.characterId === null || typeof entry.characterId === 'string') && Number.isSafeInteger(entry.authorUserId) &&
+            (entry.actionId === undefined || typeof entry.actionId === 'string') &&
+            (entry.messageId === undefined || typeof entry.messageId === 'string'),
           )
         : []
       this.messages = Array.isArray(opts.restore.messages) ? opts.restore.messages : []
@@ -480,6 +485,10 @@ export class RoomService {
   /** 玩家聊天（领域方法，ADR-0001）：解析身份 → 消息流广播 →（playing 才）进回合缓冲。
    *  Phase gate（ADR-0005）：lobby 等待室聊天只广播不触发 KP 回合。 */
   async submitPlayerChat(userId: number, content: string): Promise<boolean> {
+    if (getRoom(this.roomId) === this) {
+      const result = await this.queuePlayerChat(userId, content)
+      return result !== null && 'messageId' in result
+    }
     const [username, characterId] = await Promise.all([
       roomStorage.usernameOf(userId).then((name) => name ?? `user_${userId}`),
       roomStorage.memberCharacterId(this.roomId, userId),
@@ -508,11 +517,44 @@ export class RoomService {
     return true
   }
 
-  /** Check membership at execution time in the same actor slot as the chat. */
-  queuePlayerChat(userId: number, content: string): Promise<'accepted' | 'busy' | 'not-member'> | null {
+  /** Check membership and persist the receipt in the same room command slot. */
+  queuePlayerChat(userId: number, content: string, clientActionId?: string): Promise<RoomActionResult> | null {
+    // Legacy frames have no replay key. Keep their echoes and give each submission a server-side identity.
+    const actionId = clientActionId ?? 'legacy:' + crypto.randomUUID()
     return this.enqueueClientAction(() => withRoomCommand(this.roomId, async () => {
-      if (!await roomStorage.isRoomMember(this.roomId, userId)) return 'not-member'
-      return (await this.submitPlayerChat(userId, content)) ? 'accepted' : 'busy'
+      if (this.disposed || getRoom(this.roomId) !== this) {
+        return { status: 'retry', code: 'room_inactive', error: '房间尚未连接，请重新进入后重试。' }
+      }
+      const member = await roomStorage.getRoomMember(this.roomId, userId)
+      if (!member) return { status: 'rejected', code: 'not_member', error: '你已不在该房间内。' }
+      const payloadHash = crypto.createHash('sha256').update(JSON.stringify(['chat', content])).digest('hex')
+      const existing = await roomStorage.getRoomAction(this.roomId, userId, actionId)
+      if (existing) {
+        return existing.payload_hash === payloadHash
+          ? { status: existing.status, messageId: existing.message_id }
+          : { status: 'rejected', code: 'action_conflict', error: '此行动编号已用于另一条消息。' }
+      }
+      if (this.phase === 'playing' && this.turnBuffer.length + this.activeTurnBatch.length >= MAX_PENDING_PLAYER_ACTIONS) {
+        return { status: 'busy', code: 'room_busy', error: '房间待处理的操作已满，请稍后重试。' }
+      }
+
+      const message: Message = {
+        id: `msg_${crypto.randomUUID()}`, timestamp: Date.now(), role: 'player', playerName: member.username, content,
+      }
+      const pending = this.phase === 'playing'
+        ? { username: member.username, content, characterId: member.character_id, authorUserId: userId, actionId, messageId: message.id }
+        : null
+      const status = pending ? 'pending' : 'completed'
+      const snapshot = this.snapshot()
+      snapshot.messages = [...snapshot.messages, message]
+      if (pending) snapshot.pendingTurnMessages = [...(snapshot.pendingTurnMessages ?? []), pending]
+      const author = { userId, roleName: member.username }
+      await this.commitCheckpoint(snapshot, [{ type: 'message_appended', payload: { message, author, actionId: clientActionId } }], () => {
+        this.messages = snapshot.messages
+        if (pending) this.turnBuffer.push(pending)
+      }, [{ userId, actionId, payloadHash, messageId: message.id, status }])
+      if (pending) this.scheduleBufferedTurn()
+      return { status, messageId: message.id }
     }))
   }
 
@@ -542,6 +584,45 @@ export class RoomService {
     })
   }
 
+  private async takePlayerTurnBatch(): Promise<{ batch: PendingTurnMessage[]; history: Message[] }> {
+    return withRoomCommand(this.roomId, async () => {
+      if (this.disposed || this.isEnded()) return { batch: [], history: [] }
+      const queued = this.turnBuffer
+      const messageIds = new Set(queued.flatMap((entry) => entry.messageId ? [entry.messageId] : []))
+      const legacyCount = queued.length - messageIds.size
+      // Echoes and the previous Keeper reply can interleave while a turn is running.
+      // Remove these exact player echoes from history before adding the merged action.
+      const history = this.messages.slice(0, Math.max(0, this.messages.length - legacyCount))
+        .filter((message) => !messageIds.has(message.id))
+      const dispatch = (batch: PendingTurnMessage[]) => {
+        this.turnBuffer = []
+        this.activeTurnBatch = batch
+        return { batch, history }
+      }
+      // Standalone RoomService instances used with the in-memory buffer have no persisted membership.
+      if (getRoom(this.roomId) !== this && !queued.some((entry) => entry.actionId)) return dispatch(queued)
+
+      const members = new Map((await roomStorage.listMembers(this.roomId)).map((member) => [member.user_id, member]))
+      const batch: PendingTurnMessage[] = []
+      const cancelled: roomStorage.RoomActionWrite[] = []
+      for (const entry of queued) {
+        const member = members.get(entry.authorUserId)
+        if (member) {
+          batch.push({ ...entry, characterId: member.character_id })
+        } else if (entry.actionId) {
+          cancelled.push({ userId: entry.authorUserId, actionId: entry.actionId, status: 'cancelled' })
+        }
+      }
+      if (batch.length < queued.length) {
+        const snapshot = this.snapshot()
+        snapshot.pendingTurnMessages = batch
+        await this.commitCheckpoint(snapshot, [], () => { dispatch(batch) }, cancelled)
+        return { batch, history }
+      }
+      return dispatch(batch)
+    })
+  }
+
   /** 合并缓冲内玩家消息 → 一次 KP 回合（窗口超时/严格排队时调用）。 */
   async flushTurn(): Promise<void> {
     if (this.turnFlushing || this.openingInFlight || this.disposed) return
@@ -567,11 +648,9 @@ export class RoomService {
         await this.persistSnapshot()
         return
       }
-      const batch = this.turnBuffer
-      this.turnBuffer = []
-      this.activeTurnBatch = batch
-      const historyEnd = Math.max(0, this.messages.length - batch.length)
-      await this.persistTurnSnapshot()
+      const { batch, history } = await this.takePlayerTurnBatch()
+      const durable = batch.some((entry) => entry.actionId)
+      if (batch.length > 0 && !durable) await this.persistTurnSnapshot()
       if (this.turnTimer) {
         clearTimeout(this.turnTimer)
         this.turnTimer = null
@@ -579,7 +658,13 @@ export class RoomService {
       if (batch.length === 0) return
 
       const turnOwnerId = this.ownerId
-      const turnStoryOwnerId = this.storyOwnerId ?? this.ownerId
+      const turnStoryOwnerId = this.storyOwnerId ?? turnOwnerId
+      const turnOwnershipVersion = this.ownershipVersion
+      const checkMembership = durable || getRoom(this.roomId) === this
+      const canRunTurn = () => !this.disposed && !this.isEnded() && this.ownershipVersion === turnOwnershipVersion &&
+        (!checkMembership || batch.every((entry) => this.members.some((member) =>
+          member.userId === entry.authorUserId && member.characterId === entry.characterId,
+        )))
       const merged = batch.map((b) => `【${b.username}】${b.content}`).join('\n')
       const activeCharacterId = batch[batch.length - 1]?.characterId ?? null
       const allowedCharacterIds = new Set(batch.map((b) => b.characterId).filter((id): id is string => !!id))
@@ -594,17 +679,10 @@ export class RoomService {
         playerText: merged,
         stage: 'turn',
       })
-      if (this.ownerId !== turnOwnerId) {
-        // Ownership changed during knowledge assembly. Requeue the complete
-        // batch so the successor gets a fresh turn assembled with their setup.
-        this.turnBuffer = [...batch, ...this.turnBuffer]
-        this.activeTurnBatch = []
-        await this.refreshOwnerAiSetupStatus()
-        await this.persistSnapshot()
-        return
-      }
+      // Wait for any concurrent room governance command before invoking the Keeper.
+      if (!await withRoomCommand(this.roomId, async () => canRunTurn())) return
       const chatMessages = buildRoomTurnMessages(
-        this.promptInput(knowledge.storyName, this.messages.slice(0, historyEnd)),
+        this.promptInput(knowledge.storyName, history),
         knowledge.ragContext,
         merged,
         {
@@ -623,18 +701,12 @@ export class RoomService {
         (chunk) => this.emitKpChunk(chunk),
         allowedCharacterIds,
         knowledge.wireInjectionText,
-        () => !this.disposed && this.ownerId === turnOwnerId,
-        () => {
-          if (this.disposed) return
-          this.turnBuffer = [...batch, ...this.turnBuffer]
-          this.activeTurnBatch = []
-          void this.refreshOwnerAiSetupStatus()
-            .finally(() => this.persistSnapshot())
-            .catch((error) => logger.warn('room stale turn recovery persistence failed', { roomId: this.roomId, error: String(error) }))
-        },
+        canRunTurn,
       )
-      this.activeTurnBatch = []
-      if (!SHARED_ROOMS_ENABLED && !this.disposed) await this.persistTurnSnapshot()
+      if (!durable && !SHARED_ROOMS_ENABLED && !this.disposed) {
+        if (canRunTurn() || this.isEnded()) this.activeTurnBatch = []
+        await this.persistTurnSnapshot()
+      }
     } catch (error) {
       interrupted = true
       throw error
@@ -726,7 +798,9 @@ export class RoomService {
     // 工具在回合执行中才被调用，场景切换/房主转让可能发生在同回合内）。
     const { buildStoryLookup } = await import('./turnKnowledge.js')
     const characterMap = this.getCharacterMap()
-    const draft = SHARED_ROOMS_ENABLED ? {
+    const batch = this.activeTurnBatch
+    const checkpointOpening = this.openingInFlight && getRoom(this.roomId) === this
+    const draft = SHARED_ROOMS_ENABLED || checkpointOpening || batch.some((entry) => entry.actionId) ? {
       characters: structuredClone(characterMap),
       changedCharacters: new Set<string>(),
       clues: [...this.clues],
@@ -860,6 +934,15 @@ export class RoomService {
         ? this.appendFallbackTurnMemory(draft.content)
         : this.kpMemory
       snapshot.kpMemory = checkpointMemory
+      const actionUpdates: roomStorage.RoomActionWrite[] = []
+      for (const entry of batch) {
+        if (entry.actionId) actionUpdates.push({ userId: entry.authorUserId, actionId: entry.actionId, status: 'completed' })
+      }
+      if (ended) {
+        for (const entry of this.turnBuffer) {
+          if (entry.actionId) actionUpdates.push({ userId: entry.authorUserId, actionId: entry.actionId, status: 'cancelled' })
+        }
+      }
 
       await this.commitCheckpoint(snapshot, events, () => {
         this.phase = snapshot.phase
@@ -871,7 +954,7 @@ export class RoomService {
         this.activeTurnBatch = []
         this.kpMemory = checkpointMemory
         if (ended) this.clearTurnWindow()
-      })
+      }, actionUpdates)
       if (draft.content) {
         this.recordCompletedTurn()
         void this.refineSharedTurnMemory(ownerUserId, draft.content, checkpointMemory)
@@ -1098,12 +1181,12 @@ export class RoomService {
     try {
       release = await acquireKpTurn(this.lifetime.signal)
       if (!release || this.disposed || this.phase !== 'playing') return
-      const setupOwnerId = this.ownerId
+      const turnOwnershipVersion = this.ownershipVersion
       if (!(await this.refreshOwnerAiSetupStatus())) {
         this.openingStarted = false
         return
       }
-      if (this.ownerId !== setupOwnerId) {
+      if (this.ownershipVersion !== turnOwnershipVersion) {
         this.openingStarted = false
         retryOpening = true
         return
@@ -1122,7 +1205,7 @@ export class RoomService {
         playerText: '',
         stage: 'opening',
       })
-      if (this.ownerId !== turnOwnerId) {
+      if (this.ownershipVersion !== turnOwnershipVersion) {
         this.openingStarted = false
         retryOpening = true
         return
@@ -1143,7 +1226,7 @@ export class RoomService {
           undefined,
           // wire 采样注入列：与 flushTurn 同口径（单源在 TurnKnowledge）
           knowledge.wireInjectionText,
-          () => !this.disposed && this.ownerId === turnOwnerId,
+          () => !this.disposed && !this.isEnded() && this.ownershipVersion === turnOwnershipVersion,
           () => {
             this.openingStarted = false
             retryOpening = !this.disposed
@@ -1151,9 +1234,9 @@ export class RoomService {
         ),
       )
     } catch (err) {
-      // A shared opening whose checkpoint failed has not been published.
+      // A staged opening whose checkpoint failed has not been published.
       // Leave it eligible for the next explicit retry or join.
-      if (SHARED_ROOMS_ENABLED) this.openingStarted = false
+      if (SHARED_ROOMS_ENABLED || getRoom(this.roomId) === this) this.openingStarted = false
       // opening 失败不阻塞（ADR-0002）——保留可见日志（此前全吞难排查）
       logger.warn('room opening turn failed', { roomId: this.roomId, ownerId: this.ownerId, error: err instanceof Error ? err.message : String(err) })
     } finally {
@@ -1182,20 +1265,25 @@ export class RoomService {
   }
 
   /** Persist a complete transition before making it visible to clients. Requires the room command slot. */
-  private async commitCheckpoint(snapshot: RoomSnapshot, events: RoomEvent[], install: () => void): Promise<void> {
+  private async commitCheckpoint(
+    snapshot: RoomSnapshot, events: RoomEvent[], install: () => void, actions: readonly roomStorage.RoomActionWrite[] = [],
+  ): Promise<void> {
     snapshot.seq = this.seq + events.length
-    await this.writeSnapshot(snapshot)
+    if (!await this.writeSnapshot(snapshot, actions)) {
+      throw new Error('Room was disposed before its checkpoint could commit')
+    }
     install()
     for (const event of events) this.emit(event)
   }
 
-  async writeSnapshot(snapshot = this.snapshot()): Promise<void> {
-    if (this.disposed) return
+  async writeSnapshot(snapshot = this.snapshot(), actions: readonly roomStorage.RoomActionWrite[] = []): Promise<boolean> {
+    if (this.disposed) return false
     await roomStorage.updateRoomStateSnapshot(
-      this.roomId, serializeRoomState(snapshot), snapshot.phase === 'ended' ? 'ended' : undefined,
+      this.roomId, serializeRoomState(snapshot), snapshot.phase === 'ended' ? 'ended' : undefined, actions,
     )
     this.persistedSeq = Math.max(this.persistedSeq, snapshot.seq)
     this.lastSnapshotAt = Date.now()
+    return true
   }
 
   private async persistTurnSnapshot(): Promise<void> {

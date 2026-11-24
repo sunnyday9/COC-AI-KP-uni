@@ -57,6 +57,8 @@ export type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
 export interface RoomMessageAppendedPayload {
   /** 服务端完整消息（id/timestamp/role/playerName）——客户端直接 append，无需重建。 */
   message: Message
+  /** Client-supplied identity. Match it only for the authenticated author's own echo. */
+  actionId?: string
   /** 发言者（玩家消息 roleName=username；KP 消息 roleName='KP'）。 */
   author: { userId: number; roleName: string }
 }
@@ -98,11 +100,18 @@ export interface RoomSnapshot {
   updatedAt: number
 }
 
+export type RoomActionReceiptStatus = 'pending' | 'completed' | 'cancelled'
+
+export type RoomActionResult =
+  | { status: RoomActionReceiptStatus; messageId: string }
+  | { status: 'busy' | 'retry' | 'rejected'; error: string; code: string }
+
 /** 服务端房间帧（room:*，统一入口，roomStore 按 type 分流）。 */
 export type RoomServerFrame =
-  | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number }
+  | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number; actionReceipts?: true }
   | { type: 'room:event'; roomId: string; seq: number; eventType: RoomEventType; payload: RoomEventFrame['payload'] }
   | { type: 'room:sync:done'; roomId: string; seq: number }
+  | ({ type: 'room:action:result'; roomId: string; actionId: string } & RoomActionResult)
   | { type: 'room:error'; roomId: string; error: string }
 
 /** REST /api/rooms 响应（roomService 客户端契约）。 */

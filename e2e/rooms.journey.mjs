@@ -396,6 +396,25 @@ async function main() {
     const ctxB = await browser.newContext({ viewport: { width: 1280, height: 900 } })
     pageA = await ctxA.newPage()
     pageB = await ctxB.newPage()
+    const retryText = '把简报带进档案室。'
+    const retryIds = []
+    await pageA.routeWebSocket((url) => url.pathname === '/ws', (socket) => {
+      const server = socket.connectToServer()
+      socket.onMessage((data) => {
+        const frame = JSON.parse(String(data))
+        if (frame.type === 'room:action' && frame.action?.payload?.content === retryText) {
+          retryIds.push(frame.actionId)
+          if (retryIds.length === 1) {
+            socket.send(JSON.stringify({
+              type: 'room:action:result', roomId: frame.roomId, actionId: frame.actionId,
+              status: 'busy', code: 'room_busy', error: '房间待处理的操作已满，请稍后重试。',
+            }))
+            return
+          }
+        }
+        server.send(data)
+      })
+    })
     for (const p of [pageA, pageB]) {
       p.on('pageerror', (e) => console.error('[E2E][pageerror]', e instanceof Error ? e.message : String(e)))
       p.on('console', (m) => {
@@ -466,6 +485,17 @@ async function main() {
       await pageB.waitForTimeout(6_000)
       const after = await pageB.locator('.msg-wrap').count()
       assert(after === before, `lobby chat must not trigger a KP turn (msgs ${before} → ${after})`)
+    })
+
+    await step('等待室消息遇到忙碌回执 → 原编号重试送达', async () => {
+      await fillInput(pageA, '说点什么', retryText)
+      await clickBtn(pageA, '发送')
+      await waitText(pageA, '房间待处理的操作已满，请稍后重试。')
+      await clickBtn(pageA, '重试发送')
+      await waitMsg(pageB, retryText)
+      await waitTextGone(pageA, '重试发送')
+      assert(retryIds.length === 2 && typeof retryIds[0] === 'string' && retryIds[0] === retryIds[1], 'chat retry must reuse the original action ID')
+      assert(await pageA.locator('.msg-wrap').filter({ hasText: retryText }).count() === 1, 'retry must display one chat message')
     })
 
     await step('A 选剧本 → 开局被门闩拦（B 未绑卡）', async () => {

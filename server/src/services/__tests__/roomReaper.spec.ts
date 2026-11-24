@@ -100,6 +100,7 @@ import {
   createSoloRoom,
   getOrCreateRoom,
   getRoom,
+  getRoomDetail,
   reapStaleRooms,
   startRoomReaper,
   _clearRoomRegistryForTests,
@@ -159,6 +160,38 @@ afterEach(() => {
 })
 
 describe('#86 reapStaleRooms — 只清 stale 房', () => {
+  it('returns a retry for a chat queued during eviction and accepts its ID after rejoin', async () => {
+    const { roomId, userId } = seedMultiRoom('chat_eviction')
+    const original = await getOrCreateRoom(roomId, userId, 'chat_eviction')
+    let signalSnapshotStarted!: () => void
+    let unblockSnapshot!: () => void
+    const snapshotStarted = new Promise<void>((resolve) => { signalSnapshotStarted = resolve })
+    const snapshotCanFinish = new Promise<void>((resolve) => { unblockSnapshot = resolve })
+    const write = roomStorage.updateRoomStateSnapshot
+    vi.spyOn(roomStorage, 'updateRoomStateSnapshot').mockImplementationOnce(async (...args) => {
+      signalSnapshotStarted()
+      await snapshotCanFinish
+      return write(...args)
+    })
+
+    vi.setSystemTime(BASE + TTL_MS + 1)
+    reapStaleRooms()
+    await snapshotStarted
+    const actionId = 'eviction-chat'
+    const pending = original.queuePlayerChat(userId, 'Check the door', actionId)
+    unblockSnapshot()
+    await expect(pending).resolves.toMatchObject({ status: 'retry', code: 'room_inactive' })
+    const detail = await getRoomDetail(userId, roomId)
+    expect(detail).toMatchObject({ ok: true, detail: { state: { messages: [] } } })
+
+    const rejoined = await getOrCreateRoom(roomId, userId, 'chat_eviction')
+    const accepted = await rejoined.queuePlayerChat(userId, 'Check the door', actionId)
+    expect(accepted).toMatchObject({ status: 'completed', messageId: expect.any(String) })
+    expect(await getRoomDetail(userId, roomId)).toMatchObject({
+      ok: true, detail: { state: { messages: [{ content: 'Check the door' }] } },
+    })
+  })
+
   it('skips periodic snapshots for idle rooms and persists the next change', async () => {
     const room = seedMultiRoom('idle_snapshots')
     const active = await getOrCreateRoom(room.roomId, room.userId, 'idle_snapshots')

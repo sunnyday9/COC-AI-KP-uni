@@ -129,7 +129,6 @@ function pickStory(story: IndexedStory) {
 }
 
 /** 房间消息流（服务端事件回灌）。 */
-const displayMessages = computed(() => roomStore.messages.map((m) => roomStore.toMessage(m)))
 
 async function loadMyCharacters() {
   try {
@@ -464,15 +463,22 @@ function readRoomId(): string {
             等待室里一片寂静……和队友聊两句，或等房主宣布剧本。
           </view>
           <view
-            v-for="msg in displayMessages"
+            v-for="msg in roomStore.messages"
             :key="msg.id"
             class="msg-wrap"
             :id="'msg-' + msg.id"
           >
-            <chat-message :msg="msg" />
+            <chat-message
+              :msg="roomStore.toMessage(msg)"
+              :pending="msg.pending"
+              :send-error="msg.sendError"
+              :retry-disabled="roomStore.connectionState !== 'joined'"
+              @retry="roomStore.retryPendingChat(msg.id)"
+            />
           </view>
         </view>
 
+        <text v-if="roomStore.chatError" role="alert">{{ roomStore.chatError }}</text>
         <view class="chat-input-row">
           <input
             v-model="chatText"

@@ -1,3 +1,4 @@
+import { ROOM_ACTIONS_SCHEMA } from './roomActionsSchema.js'
 import type { DatabaseSync } from 'node:sqlite'
 
 interface SchemaMigration {
@@ -178,6 +179,13 @@ const MIGRATIONS: SchemaMigration[] = [
           stamp TEXT NOT NULL
         );
       `)
+    },
+  },
+  {
+    version: 10,
+    name: 'add durable room actions',
+    up(database) {
+      database.exec(ROOM_ACTIONS_SCHEMA)
     },
   },
 ]
