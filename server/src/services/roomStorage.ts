@@ -547,7 +547,9 @@ export function transferRoomOwnership(
       ? statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, oldOwnerId)
       : statement(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`, roomId, oldOwnerId),
     statement(`UPDATE room_members SET role = 'owner', ready = 0 WHERE room_id = ? AND user_id = ?`, roomId, newOwnerId),
-    statement('UPDATE rooms SET owner_id = ? WHERE room_id = ?', newOwnerId, roomId),
+    statement(`UPDATE rooms SET owner_id = ?, story_owner_id = CASE
+        WHEN story_id IS NOT NULL THEN COALESCE(story_owner_id, ?) ELSE story_owner_id END
+      WHERE room_id = ?`, newOwnerId, oldOwnerId, roomId),
   ], lease, mode === 'disconnect' ? oldOwnerId : undefined)
 }
 

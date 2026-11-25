@@ -13,11 +13,16 @@ interface GatewayPresence extends RoomPresence {
 
 const sockets = new WeakMap<FrameRecipient, Map<string, GatewayPresence>>()
 const live = new Set<GatewayPresence>()
+const pendingRemovals = new Set<Promise<void>>()
 const capacity = 4096
 let draining = false
 
 export function markGatewayDraining(): void {
   draining = true
+}
+
+export async function waitForGatewayPresenceCleanup(): Promise<void> {
+  await Promise.all(pendingRemovals)
 }
 
 function forget(rooms: Map<string, GatewayPresence>, entry: GatewayPresence): void {
@@ -63,10 +68,12 @@ export function releaseGatewayPresence(socket: FrameRecipient, roomId: string, o
   const entry = rooms?.get(roomId)
   if (!rooms || !entry) return
   forget(rooms, entry)
-  void entry.ready.catch(() => false).then(async () => {
+  const removal = entry.ready.catch(() => false).then(async () => {
     const removedWhileLive = await removeRoomPresence(roomId, entry.userId, entry.subscriptionId)
     if (removedWhileLive && entry.active && ordinary && !draining) await routeOwnerDisconnect(entry.userId, roomId)
   }).catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
+    .finally(() => pendingRemovals.delete(removal))
+  pendingRemovals.add(removal)
 }
 
 export async function runGatewayPresence(signal: AbortSignal): Promise<void> {

@@ -29,6 +29,8 @@ import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import { isTransportReset, sendFrame } from './sendFrame.js'
 
+const directUsers = new WeakMap<object, number>()
+
 function send(socket: WebSocket, obj: unknown): void {
   if (socket.readyState !== 1 /* WebSocket.OPEN */) return
   let frame: string
@@ -82,6 +84,7 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
   // 扇出挂接：RoomService 事件 → 房间订阅组（幂等由订阅簿保证）
   ensureFanout(room, (event, seq) => broadcast(roomId, event, seq))
   if (socket.readyState !== 1) return
+  directUsers.set(socket, userId)
   subscribeSocket(socket, roomId)
   // 全量快照（加入时）
   send(socket, { type: 'room:state', roomId, actionReceipts: true, snapshot: room.snapshot(), seq: room.getSeq() })
@@ -235,5 +238,7 @@ export async function cleanupSocketRooms(socket: WebSocket, userId?: number | nu
   }
   cleanupSocket(socket)
   if (!userId || isTransportReset(socket)) return
-  await Promise.all(roomIds.map((roomId) => handleOwnerWsDisconnect(roomId, userId)))
+  await Promise.all(roomIds.map((roomId) => handleOwnerWsDisconnect(roomId, userId, () =>
+    !subscribersOf(roomId).some((subscriber) => subscriber.readyState === 1 && directUsers.get(subscriber) === userId),
+  )))
 }

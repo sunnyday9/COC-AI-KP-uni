@@ -2,7 +2,7 @@ import { ROOM_RUNTIME } from '../config.js'
 import type { RoomActionResult } from '../../../shared/types/room.js'
 import { RoomRelayUnavailable, sendRoomCommand, withRoomRelayDeadline } from './roomMailbox.js'
 import {
-  bindRoomCharacter, deleteRoomAsOwner, handleOwnerWsDisconnect, hasRoomCapacity, isRoomMember, joinRoom,
+  bindRoomCharacter, deleteRoomAsOwner, endRoom, handleOwnerWsDisconnect, hasRoomCapacity, isRoomMember, joinRoom,
   joinRoomByInviteCode, kickRoomMember, leaveRoomAsMember, resolveRoomInvite,
   setMemberReady, setRoomTurnWindow, startRoom, transferOwnership,
 } from './roomService.js'
@@ -16,6 +16,7 @@ const commandHandlers = {
     return joinRoomByInviteCode(userId, code)
   },
   start: startRoom,
+  end: endRoom,
   bind: bindRoomCharacter,
   ready: setMemberReady,
   leave: leaveRoomAsMember,

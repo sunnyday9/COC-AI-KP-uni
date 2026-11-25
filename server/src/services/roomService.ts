@@ -1,4 +1,3 @@
-import { ROOM_RUNTIME } from '../config.js'
 /**
  * RoomService — 服务端房间会话（Phase B1，架构方案 v2.0 §三/D6/D7）。
  *
@@ -17,7 +16,7 @@ import * as roomStorage from './roomStorage.js'
 export { RoomWorkerBusyError } from './roomStorage.js'
 import { logger } from '../utils/logging.js'
 import { createCharacterMutatorFactory, type CharacterEnding } from '../rule-engine/characterMutators.js'
-import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, ROOM_WORKER_FAILOVER_ENABLED, ROOM_WORKER_LEASE_MS, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
+import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, ROOM_RUNTIME, ROOM_WORKER_FAILOVER_ENABLED, ROOM_WORKER_LEASE_MS, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 import { acquireKpTurn } from './kpAdmission.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
@@ -429,6 +428,19 @@ export class RoomService {
     })
   }
 
+  /** Close a playing investigation while holding the room command slot. */
+  async endInvestigation(): Promise<void> {
+    const { snapshot, events, actions, turn } = hostEndingCheckpoint(this.snapshot(), this.members)
+    await this.commitCheckpoint(snapshot, events, () => {
+      this.phase = 'ended'
+      this.ending = snapshot.ending
+      this.kpSetupRequired = false
+      this.activeTurnBatch = []
+      this.pendingPlayerTurn = undefined
+      this.clearTurnWindow()
+    }, actions, this.workerLease ? turn : undefined)
+  }
+
   /** 设置房间阶段（room_meta）。 */
   setPhase(phase: RoomPhase): void {
     this.phase = phase
@@ -744,6 +756,8 @@ export class RoomService {
     try {
       release = await acquireKpTurn(this.lifetime.signal)
       if (!release || this.disposed || this.isEnded()) return
+      const turnOwnershipVersion = this.ownershipVersion
+      const turnOwnerId = this.ownerId
       // Check the successor's own provider setup before consuming queued player actions.
       // When missing, keep the full batch in the persisted snapshot for an explicit retry.
       if (!(await this.refreshOwnerAiSetupStatus())) {
@@ -753,6 +767,7 @@ export class RoomService {
         await this.persistSnapshot()
         return
       }
+      if (this.ownershipVersion !== turnOwnershipVersion) return
       const { batch, history } = await this.takePlayerTurnBatch()
       const durable = batch.some((entry) => entry.actionId)
       if (batch.length > 0 && !durable) await this.persistTurnSnapshot()
@@ -760,11 +775,9 @@ export class RoomService {
         clearTimeout(this.turnTimer)
         this.turnTimer = null
       }
-      if (batch.length === 0) return
+      if (batch.length === 0 || this.ownershipVersion !== turnOwnershipVersion) return
 
-      const turnOwnerId = this.ownerId
       const turnStoryOwnerId = this.storyOwnerId ?? turnOwnerId
-      const turnOwnershipVersion = this.ownershipVersion
       const checkMembership = durable || getRoom(this.roomId) === this
       const canRunTurn = () => !this.disposed && !this.isEnded() && this.ownershipVersion === turnOwnershipVersion &&
         (!checkMembership || batch.every((entry) => this.members.some((member) =>
@@ -1247,7 +1260,7 @@ export class RoomService {
     }
     if (SHARED_ROOMS_ENABLED) {
       const applied = await withRoomCommand(this.roomId, async () => {
-        if (this.disposed) return true
+        if (this.disposed || this.isEnded()) return true
         if (this.ownerId !== ownerId) return false
         await this.setKpSetupRequired(issue)
         return true
@@ -1257,7 +1270,7 @@ export class RoomService {
       if (this.ownerId !== ownerId) return this.refreshOwnerAiSetupStatus()
       await this.setKpSetupRequired(issue)
     }
-    return issue === null
+    return !this.disposed && !this.isEnded() && issue === null
   }
 
   private async setKpSetupRequired(issue: string | null): Promise<void> {
@@ -1949,6 +1962,56 @@ export interface RoomGovernanceFail {
 /** 房间治理约束统一入口（成员资格 / 房主判定 / kind）。
  *  - 治理动作只对多人房（kind='multi'）有意义；
  *  - 房间不存在、调用者非成员、被操作者非成员 → not-found（与既有成员可见语义一致）。 */
+function hostEndingCheckpoint<T extends Partial<RoomSnapshot>>(state: T, members: RoomMember[]) {
+  const endedAt = Date.now()
+  const ending = { outcome: 'closed', title: '调查已结束', summary: '房主结束了本次调查。', endedAt }
+  const seq = state.seq ?? 0
+  const snapshot = {
+    ...state, seq: seq + 2, phase: 'ended' as const, ending, updatedAt: endedAt,
+    pendingTurnMessages: [], pendingPlayerTurn: undefined, kpSetupRequired: false,
+  }
+  const events: RoomEvent[] = [
+    { type: 'state_patch', payload: { path: 'ending', value: ending } },
+    { type: 'room_meta', payload: { phase: 'ended', turnWindowMs: state.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS, members } },
+  ]
+  const pending = Array.isArray(state.pendingTurnMessages) ? state.pendingTurnMessages : []
+  const actionKeys = (entries: PendingTurnMessage[]) => entries.flatMap((entry) =>
+    entry?.actionId ? [{ userId: entry.authorUserId, actionId: entry.actionId }] : [],
+  )
+  const actions = actionKeys(pending).map((key) => ({ ...key, status: 'cancelled' as const }))
+  const turn = state.pendingPlayerTurn ? {
+    id: state.pendingPlayerTurn.id,
+    actionKeys: actionKeys(pending.slice(0, state.pendingPlayerTurn.actionCount)),
+    outcome: 'cancelled' as const, firstEventSeq: seq + 1, lastEventSeq: seq + events.length,
+  } : undefined
+  return { snapshot, events, actions, turn }
+}
+
+/** End a playing investigation without deleting its snapshot or transcript. */
+export async function endRoom(userId: number, roomId: string): Promise<{ ok: true } | RoomGovernanceFail> {
+  return withRoomMutation(roomId, async (workerLease) => {
+    const g = await governanceGate(userId, roomId)
+    if (!g.ok) return g
+    if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can end the game' }
+    const active = getRoom(roomId)
+    if (g.room.phase === 'ended' || active?.isEnded()) return { ok: true }
+    if (g.room.phase !== 'playing') return { ok: false, reason: 'conflict', message: 'only a playing room can be ended' }
+    if (active) {
+      await active.endInvestigation()
+    } else {
+      const state = parseRoomState<Partial<RoomSnapshot>>(g.room.state) ?? {}
+      const members = (await roomStorage.listMembers(roomId)).map(memberRowToInfo)
+      const { snapshot, events, actions, turn } = hostEndingCheckpoint(state, members)
+      await roomStorage.updateRoomStateSnapshot(roomId, serializeRoomState(snapshot), 'ended', actions, workerLease ? {
+        lease: workerLease,
+        events: events.map(({ type, payload }, index) => ({ seq: snapshot.seq - events.length + index + 1, type, payload })),
+        turn,
+      } : undefined)
+    }
+    return { ok: true }
+  })
+}
+
 async function governanceGate(
   userId: number,
   roomId: string,
@@ -2080,11 +2143,11 @@ export async function transferOwnership(
 /** 房主 WS 断线（无 REST 语义）：立即转让给最早成员 / 无其他成员解散（ADR-0005 无宽限）。
  *  供 ws 层断线事件调用——仅当脱机的正是当前 owner 时执行（非 owner 断线不动房间；
  *  刷新即易主是已知取舍）。solo 房主断线不转让（单人房主=唯一成员，solo 无等待室）。 */
-export async function handleOwnerWsDisconnect(roomId: string, userId: number): Promise<void> {
+export async function handleOwnerWsDisconnect(roomId: string, userId: number, stillAbsent = () => true): Promise<void> {
   return withRoomMutation(roomId, async (workerLease) => {
     const room = await roomStorage.getRoomRow(roomId)
     if (!room || room.phase === 'ended' || getRoom(roomId)?.isEnded()) return
-    if (room.kind !== 'multi' || room.owner_id !== userId) return
+    if (room.kind !== 'multi' || room.owner_id !== userId || !stillAbsent()) return
     try {
       await transferToSuccessorOrDissolve(roomId, userId, workerLease, ROOM_RUNTIME === 'worker' ? 'disconnect' : 'transfer')
     } catch (error) {
