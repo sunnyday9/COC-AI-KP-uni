@@ -63,13 +63,13 @@
 - 心跳：客户端每 30s 发 `{ "type": "ping" }`，服务端回 `{ "type": "pong" }`。
 - 服务端 → 客户端推送：`{ "type": "rag:progress", "payload": {...} }`（RAG 索引进度，Task 4）。
 - 当前房间帧（共享类型见 `shared/types/room.ts`）：
-  - 客户端 → 服务端：`room:join {roomId}`、`room:leave {roomId}`、`room:sync {roomId,lastSeq}`、`room:action {roomId,action}`；聊天动作的形状为 `{type:"chat",payload:{content}}`。房主配置 AI 后仍可发送 `{type:"retry_kp"}` 继续已保存的回合。
-  - 服务端 → 客户端：`room:state {roomId,snapshot,seq,actionReceipts:true}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义；`kp_chunk` 仅在实验开关开启时广播，客户端仍以完整 `message_appended` 为准。
-  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。独立网关使用完整快照响应同步请求，快照帧中的可选 kpTurnPending 表示是否仍有待处理的 Keeper 回合。实时事件按已提交的序列号投递。已订阅的成员被踢出或房间解散时，room:error 附带 removedReason（kicked 或 dissolved），随后该连接不再接收房间事件。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
+  - 客户端 → 服务端：`room:join {roomId,lastSeq?}`、`room:leave {roomId}`、`room:sync {roomId,lastSeq}`、`room:action {roomId,action}`；聊天动作的形状为 `{type:"chat",payload:{content}}`。房主配置 AI 后仍可发送 `{type:"retry_kp"}` 继续已保存的回合。
+  - 服务端 → 客户端：`room:state {roomId,snapshot,seq,actionReceipts:true}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq,actionReceipts?}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义；`kp_chunk` 仅在实验开关开启时广播，客户端仍以完整 `message_appended` 为准。
+  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。断线后的 `room:join` 也可携带客户端已应用的最后一个序号。独立网关从 PostgreSQL 重放到已提交的序号，再继续实时投递。保留窗口最多 200 条事件，单次重放上限为 512 KiB。序号超出范围、事件缺失或重放超出上限时，网关发送最新快照。快照帧中的可选 `kpTurnPending` 表示是否仍有待处理的 Keeper 回合。实时事件按已提交的序列号投递。已订阅的成员被踢出或房间解散时，room:error 附带 removedReason（kicked 或 dissolved），随后该连接不再接收房间事件。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
 
 ### 聊天行动回执
 
-支持回执的房间在 `room:state` 中声明 `actionReceipts: true`。客户端为每次新聊天生成一个行动编号，并通过 `room:action {roomId,actionId,action}` 发送。编号允许 1–80 个 ASCII 字母、数字、下划线或短横线，按房间和登录账号隔离。消息内容必须是字符串，去除首尾空白后用于判定重试是否相同。相同编号和内容返回原消息编号及当前处理状态。同一编号改发其他内容返回 `action_conflict`。回执只发给提交请求的连接。
+支持回执的房间在 `room:state` 或 `room:sync:done` 中声明 `actionReceipts: true`。客户端为每次新聊天生成一个行动编号，并通过 `room:action {roomId,actionId,action}` 发送。编号允许 1–80 个 ASCII 字母、数字、下划线或短横线，按房间和登录账号隔离。消息内容必须是字符串，去除首尾空白后用于判定重试是否相同。相同编号和内容返回原消息编号及当前处理状态。同一编号改发其他内容返回 `action_conflict`。回执只发给提交请求的连接。
 
 - `room:action:result {roomId,actionId,status,messageId}` 表示已持久化。等待室聊天立即为 `completed`。进行中的行动先为 `pending`，KP 回合结果入库后为 `completed`。行动执行前发现作者已离开，或房间在处理前结束，则为 `cancelled`，保留原聊天记录。当前成员可以重发原动作查询自己的回执。
 - `room:action:result {roomId,actionId,status,code,error}` 表示本次请求未得到接收确认。`rejected` 是权限、内容或编号冲突。`busy` 表示房间达到待处理上限。命令入口饱和时可能先返回忙碌，稍后重发原编号即可查询已有回执。`retry` 表示暂时无法确认结果。忙碌、回执丢失和暂时性错误后均可用原编号重试。固定的剧本版本暂时无法读取时，新行动收到 `story_unavailable`。已保存的回执仍可通过同一个编号查询。

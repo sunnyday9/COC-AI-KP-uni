@@ -4,7 +4,7 @@
  *
  * 事件流设计（全序 seq 由服务端 RoomService 串行分配）：
  *  - 客户端帧（经共享 WS 连接，见 ws/index.ts）：
- *      room:join   { roomId }
+ *      room:join   { roomId, lastSeq? }
  *      room:leave  { roomId }
  *      room:sync   { roomId, lastSeq }   —— 断线重连增量补齐
  *      room:action { roomId, action }    —— 聊天/表态，串行入队

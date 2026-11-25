@@ -29,7 +29,7 @@ type Frame = {
   code?: string
   removedReason?: string
   error?: string
-  snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string }[]; kpMemory?: string[] }
+  snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string }[]; kpMemory?: string[]; transcript?: { before: string | null } }
   eventType?: string
   payload?: { message?: { role: string; content: string }; path?: string }
 }
@@ -228,7 +228,7 @@ function duplicateOutboxEvents(): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history'): Promise<void> {
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history' | 'replay'): Promise<void> {
   const failover = scenario !== undefined
 
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
@@ -344,6 +344,11 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     return {
       send: (frame: unknown) => socket.send(JSON.stringify(frame)),
       close: () => socket.close(),
+      pauseReads: () => socket.pause(),
+      resumeReads: () => socket.resume(),
+      disconnected: () => socket.readyState === WebSocket.CLOSED
+        ? Promise.resolve(1006)
+        : once(socket, 'close').then(([code]) => Number(code)),
       frames,
       async waitFor(predicate: (frame: Frame) => boolean): Promise<Frame> {
         const existing = frames.find(predicate)
@@ -570,6 +575,96 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(await request(api + '?before=legacy-2&limit=2', { token: owner.token })).toEqual({
       messages: legacy.slice(0, 2), nextBefore: null,
     })
+  }
+
+  async function runGatewayRecovery(): Promise<void> {
+    const worker = await launch({ runtime: 'worker' })
+    await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
+    await ready(await launch({ runtime: 'gateway' }))
+    const owner = await register()
+    const { roomId } = await request('/api/rooms', { method: 'POST', token: owner.token })
+    const joinFrame = { type: 'room:join', roomId }
+    const slow = await connect(owner.token)
+    slow.send(joinFrame)
+    await slow.waitFor((frame) => frame.type === 'room:state')
+    const writers = await Promise.all(Array.from({ length: 8 }, () => connect(owner.token)))
+    const write = async (writer: Awaited<ReturnType<typeof connect>>, content: string) => {
+      const actionId = randomUUID()
+      writer.send({ ...chat(roomId, content), actionId })
+      const receipt = await writer.waitFor((frame) => frame.actionId === actionId)
+      expect(receipt).toMatchObject({ status: 'completed', messageId: expect.any(String) })
+      return receipt.messageId!
+    }
+
+    const firstChat = await write(writers[0], 'First archive entry')
+    const start = await slow.waitFor((frame) => frame.payload?.message?.content === 'First archive entry')
+    const secondChat = await write(writers[0], 'Second archive entry')
+    const disconnected = slow.disconnected()
+    slow.pauseReads()
+
+    // Fill the durable window and send enough data to back up a real paused TCP reader.
+    await Promise.all(writers.map(async (writer, group) => {
+      for (let index = 0; index < 26; index++) {
+        const large = index >= 18
+        await write(writer, `Entry ${group}-${index} ` + (large ? 'x'.repeat(120 * 1024) : ''))
+      }
+    }))
+    const last = await write(writers[0], 'Last archive entry')
+    const current = await connect(owner.token)
+    current.send(joinFrame)
+    const currentState = await current.waitFor((frame) => frame.type === 'room:state')
+    expect(currentState.snapshot!.messages!.at(-1)?.content).toBe('Last archive entry')
+    expect(currentState.snapshot!.messages!.length).toBeLessThanOrEqual(40)
+    expect(Buffer.byteLength(JSON.stringify(currentState.snapshot!.messages))).toBeLessThanOrEqual(512 * 1024)
+    slow.resumeReads()
+    await expect(Promise.race([disconnected, delay(3_000, -1, { ref: false })])).resolves.toBe(1006)
+
+    const recovery = await connect(owner.token)
+    const lastSeen = slow.frames.filter((frame) => frame.type === 'room:event').at(-1)?.seq
+    expect(lastSeen).toBeGreaterThanOrEqual(start.seq!)
+    recovery.send({ ...joinFrame, lastSeq: lastSeen })
+    const recoveryState = await recovery.waitFor((frame) => frame.type === 'room:state')
+    expect(recoveryState.seq).toBe(currentState.seq)
+    const api = `/api/rooms/${roomId}/history`
+    expect(recoveryState.snapshot?.transcript?.before).toEqual(expect.any(String))
+    const older = await request(api + '?limit=3&before=' + recoveryState.snapshot?.transcript?.before, { token: owner.token })
+    expect(older.messages).toHaveLength(3)
+    expect((await request(api + '?limit=1', { token: owner.token })).messages[0].id).toBe(last)
+    expect(await request(api + '?limit=1&before=' + secondChat, { token: owner.token })).toMatchObject({
+      messages: [{ id: firstChat, content: 'First archive entry' }], nextBefore: null,
+    })
+
+    const pool = new Pool({ connectionString: databaseUrl })
+    try {
+      const recent = await pool.query(
+        'SELECT count(*)::int AS events, min(seq)::int AS first, max(seq)::int AS last FROM room_events WHERE room_id = $1',
+        [roomId],
+      )
+      expect(recent.rows).toEqual([{ events: 200, first: currentState.seq! - 199, last: currentState.seq }])
+      expect(await pool.query('SELECT 1 FROM room_event_outbox WHERE room_id = $1', [roomId]))
+        .toHaveProperty('rowCount', 200)
+
+      // Deliberately remove an event inside the live window to test a retention gap.
+      await pool.query('DELETE FROM room_events WHERE room_id = $1 AND seq = $2', [roomId, currentState.seq])
+      const cursors = [start.seq!, currentState.seq! - 1, currentState.seq! + 1]
+      for (const cursor of cursors) {
+        const reconnect = await connect(owner.token)
+        reconnect.send({ ...joinFrame, lastSeq: cursor })
+        const state = await reconnect.waitFor((frame) => frame.type === 'room:state')
+        expect(state.seq).toBe(currentState.seq)
+        expect(state.snapshot?.messages).toEqual(currentState.snapshot?.messages)
+        expect(state.snapshot?.transcript).toEqual(currentState.snapshot?.transcript)
+        expect(reconnect.frames.some((frame) => frame.type === 'room:event')).toBe(false)
+        reconnect.close()
+      }
+    } finally {
+      await pool.end()
+    }
+
+    const next = await write(writers[0], 'Continue after backpressure')
+    const live = await recovery.waitFor((frame) => frame.payload?.message?.content === 'Continue after backpressure')
+    expect(live.seq).toBe(currentState.seq! + 1)
+    expect((await request(api + '?limit=1', { token: owner.token })).messages[0].id).toBe(next)
   }
 
   async function runWorkerFailover(): Promise<void> {
@@ -846,6 +941,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
 
   try {
     if (scenario === 'split') return await runSplitGateways()
+    if (scenario === 'replay') return await runGatewayRecovery()
     if (scenario === 'history') return await runRoomHistory()
     if (scenario === 'governance') return await runGovernanceRace()
     if (scenario === 'membership') return await runMembershipRecovery()
@@ -1175,5 +1271,6 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('cancels the original recovered turn when a member was removed', () => journey('postgres', 'membership'), 45_000)
   it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
   it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', 'split'), 70_000)
+  it.skipIf(!databaseUrl)('recovers old and missing cursors and a disconnected slow gateway reader', () => journey('postgres', 'replay'), 85_000)
   it.skipIf(!databaseUrl)('resumes with bounded state and pages earlier transcript in committed order', () => journey('postgres', 'history'), 45_000)
 })

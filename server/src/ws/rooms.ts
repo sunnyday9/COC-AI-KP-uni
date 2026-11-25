@@ -2,7 +2,7 @@
  * Room WebSocket adapter (Phase B3, 架构方案 v2.0 §6.2) — 房间事件流。
  *
  * 客户端帧：
- *   room:join   { roomId }                     —— 加入房间事件流（校验成员资格）
+ *   room:join   { roomId, lastSeq? }                     —— 加入房间事件流（校验成员资格）
  *   room:leave  { roomId }                     —— 离开
  *   room:sync   { roomId, lastSeq }            —— 断线重连：增量补齐（缺口大 → 全量快照）
  *   room:action { roomId, action }             —— 动作（聊天/表态），串行入队处理
