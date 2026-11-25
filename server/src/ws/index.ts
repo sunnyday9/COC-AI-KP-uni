@@ -39,9 +39,11 @@ export function createWsServer(httpServer: Server): WebSocketServer {
     registerProgressSocket(userId, socket)
 
     const currentUserId = userId
+    const disconnected = new AbortController()
     let pending = 0
     let frameQueue = Promise.resolve()
     const cleanUp = () => {
+      disconnected.abort()
       unregisterProgressSocket(socket)
       void cleanupSocketRooms(socket, currentUserId).catch((error) => {
         logger.warn('room disconnect cleanup failed', { userId, error: errorMessage(error) })
@@ -71,10 +73,10 @@ export function createWsServer(httpServer: Server): WebSocketServer {
       frameQueue = frameQueue.then(async () => {
         if (socket.readyState !== WebSocket.OPEN) return
         switch (type) {
-          case 'room:join': return handleRoomJoin(socket, currentUserId, msg)
+          case 'room:join': return handleRoomJoin(socket, currentUserId, msg, disconnected.signal)
           case 'room:leave': return handleRoomLeave(socket, roomId)
-          case 'room:sync': return handleRoomSync(socket, currentUserId, msg)
-          case 'room:action': return handleRoomAction(socket, currentUserId, msg)
+          case 'room:sync': return handleRoomSync(socket, currentUserId, msg, disconnected.signal)
+          case 'room:action': return handleRoomAction(socket, currentUserId, msg, disconnected.signal)
         }
       }).catch((error) => {
         logger.warn('room frame failed', { userId, roomId, error: errorMessage(error) })

@@ -1722,6 +1722,11 @@ export async function createSoloRoom(
   })
 }
 
+export function resolveRoomInvite(inviteCode: string): Promise<string | null> {
+  return roomStorage.findRoomIdByInviteCode(inviteCode)
+}
+
+
 /** POST /api/rooms/join —— 邀请码加入（幂等：INSERT OR IGNORE）。
  *  ADR-0005：playing 后锁房——开局后邀请码不可再加入（observer 旁观留后续）。 */
 export async function joinRoomByInviteCode(

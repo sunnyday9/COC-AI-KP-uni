@@ -17,6 +17,9 @@
  * RoomService（ADR-0001）。
  */
 import type { WebSocket } from 'ws'
+import { ROOM_RUNTIME } from '../config.js'
+import { routeSocketCommand } from '../services/roomCommands.js'
+import { subscribeGatewaySocket, unsubscribeGatewaySocket } from './gatewayRooms.js'
 import type { RoomActionResult } from '../../../shared/types/room.js'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
 import { handleOwnerWsDisconnect } from '../services/roomService.js'
@@ -45,13 +48,25 @@ function broadcast(roomId: string, event: RoomEvent, seq: number): void {
   }
 }
 
+async function sendGatewayState(socket: WebSocket, userId: number, roomId: string, signal?: AbortSignal): Promise<void> {
+  const result = await routeSocketCommand('snapshot', userId, roomId, [], signal)
+  if (!result) {
+    unsubscribeGatewaySocket(socket, roomId)
+    send(socket, { type: 'room:error', roomId, error: 'not a room member' })
+    return
+  }
+  if (socket.readyState !== 1 || !subscribeGatewaySocket(socket, roomId, userId, result.seq)) return
+  send(socket, { type: 'room:state', roomId, actionReceipts: true, ...result })
+}
+
 /** 处理 room:join — 成员资格 → 订阅 → 全量快照。 */
-export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown): Promise<void> {
+export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unknown, signal?: AbortSignal): Promise<void> {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
   if (!roomId) {
     send(socket, { type: 'room:error', roomId: '', error: 'roomId required' })
     return
   }
+  if (ROOM_RUNTIME === 'gateway') return sendGatewayState(socket, userId, roomId, signal)
   const plan = await planJoin(roomId, userId, `user_${userId}`)
   if (!plan.ok) {
     send(socket, { type: 'room:error', roomId, error: plan.error })
@@ -69,12 +84,14 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
 
 /** 处理 room:leave — 取消订阅。 */
 export function handleRoomLeave(socket: WebSocket, roomId: string): void {
-  unsubscribeSocket(socket, roomId)
+  if (ROOM_RUNTIME === 'gateway') unsubscribeGatewaySocket(socket, roomId)
+  else unsubscribeSocket(socket, roomId)
 }
 
 /** 处理 room:sync — 订阅簿规划增量/全量；编码在本层。 */
-export async function handleRoomSync(socket: WebSocket, userId: number, raw: unknown): Promise<void> {
+export async function handleRoomSync(socket: WebSocket, userId: number, raw: unknown, signal?: AbortSignal): Promise<void> {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
+  if (ROOM_RUNTIME === 'gateway') return sendGatewayState(socket, userId, roomId, signal)
   const lastSeq = Number((raw as { lastSeq?: unknown }).lastSeq ?? 0)
   const plan = await planSync(roomId, userId, lastSeq)
   if (plan.kind === 'error') {
@@ -94,7 +111,7 @@ export async function handleRoomSync(socket: WebSocket, userId: number, raw: unk
 }
 
 /** 处理 room:action — 聊天（触发 KP 回合）/ 表态，串行入队（RoomService.enqueue）。 */
-export async function handleRoomAction(socket: WebSocket, userId: number, raw: unknown): Promise<void> {
+export async function handleRoomAction(socket: WebSocket, userId: number, raw: unknown, signal?: AbortSignal): Promise<void> {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
   const action = (raw as { action?: unknown }).action as { type?: string; payload?: unknown } | undefined
   const actionId = (raw as { actionId?: unknown }).actionId
@@ -113,6 +130,11 @@ export async function handleRoomAction(socket: WebSocket, userId: number, raw: u
       return
     }
     try {
+      if (ROOM_RUNTIME === 'gateway') {
+        const result = await routeSocketCommand('chat', userId, roomId, [rawContent.trim(), actionId], signal)
+        sendResult(result ?? { status: 'rejected', code: 'not_member', error: '你已不在该房间内。' })
+        return
+      }
       const plan = await planAction(roomId, userId)
       if (!plan.ok) {
         if (plan.error === 'room not active') {
@@ -132,6 +154,27 @@ export async function handleRoomAction(socket: WebSocket, userId: number, raw: u
   }
   if (!roomId || !action?.type) {
     send(socket, { type: 'room:error', roomId, error: 'roomId and action.type required' })
+    return
+  }
+  if (ROOM_RUNTIME === 'gateway') {
+    if (action.type === 'chat') {
+      const content = String((action.payload as { content?: unknown } | undefined)?.content ?? '').trim()
+      if (!content) {
+        send(socket, { type: 'room:error', roomId, error: 'chat content required' })
+        return
+      }
+      const result = await routeSocketCommand('chat', userId, roomId, [content], signal)
+      if (!result || 'error' in result) {
+        send(socket, { type: 'room:error', roomId, error: result && result.code !== 'not_member' ? result.error : 'not a room member' })
+      }
+    } else if (action.type === 'retry_kp') {
+      const result = await routeSocketCommand('retry', userId, roomId, [], signal)
+      if (!result) {
+        send(socket, { type: 'room:error', roomId, error: result === null ? 'not a room member' : '只有当前房主可以重试 KP。' })
+      }
+    } else {
+      send(socket, { type: 'room:error', roomId, error: 'unknown action type: ' + action.type })
+    }
     return
   }
   const plan = await planAction(roomId, userId)
@@ -179,6 +222,10 @@ export async function handleRoomAction(socket: WebSocket, userId: number, raw: u
  *  领域内判定脱机者身份：非 owner 断线不动房间，成员行保留——主动离开走 REST leave）。 */
 export async function cleanupSocketRooms(socket: WebSocket, userId?: number | null): Promise<void> {
   const roomIds = roomIdsOfSocket(socket)
+  if (ROOM_RUNTIME === 'gateway') {
+    for (const roomId of roomIds) unsubscribeGatewaySocket(socket, roomId)
+    return
+  }
   cleanupSocket(socket)
   if (!userId || isTransportReset(socket)) return
   await Promise.all(roomIds.map((roomId) => handleOwnerWsDisconnect(roomId, userId)))

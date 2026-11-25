@@ -65,7 +65,7 @@
 - 当前房间帧（共享类型见 `shared/types/room.ts`）：
   - 客户端 → 服务端：`room:join {roomId}`、`room:leave {roomId}`、`room:sync {roomId,lastSeq}`、`room:action {roomId,action}`；聊天动作的形状为 `{type:"chat",payload:{content}}`。房主配置 AI 后仍可发送 `{type:"retry_kp"}` 继续已保存的回合。
   - 服务端 → 客户端：`room:state {roomId,snapshot,seq,actionReceipts:true}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义；`kp_chunk` 仅在实验开关开启时广播，客户端仍以完整 `message_appended` 为准。
-  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
+  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。独立网关使用完整快照响应同步请求，实时事件仍按已提交的序列号投递。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
 
 ### 聊天行动回执
 

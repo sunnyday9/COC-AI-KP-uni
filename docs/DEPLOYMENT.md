@@ -158,7 +158,14 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 #### 多房间进程故障恢复预发布（#120）
 
-在共享房间配置上额外设置 `ENABLE_ROOM_WORKER_FAILOVER=1`。每个进程使用独立端口，共享 PostgreSQL、JWT 签名配置和准备好的剧本目录。`ROOM_WORKER_LEASE_MS` 默认 15000，允许 1000–120000 毫秒。PostgreSQL 使用数据库时钟判定租约，进程约每三分之一租期续租。加入房间时，新进程只有在租约可接管时才恢复房间。连接仍发往指定进程，跨网关路由和事件投递由 #121 处理。
+在共享房间配置上额外设置 `ENABLE_ROOM_WORKER_FAILOVER=1`。每个进程使用独立端口，共享 PostgreSQL、JWT 签名配置和准备好的剧本目录。`ROOM_WORKER_LEASE_MS` 默认 15000，允许 1000–120000 毫秒。PostgreSQL 使用数据库时钟判定租约，进程约每三分之一租期续租。加入房间时，新进程只有在租约可接管时才恢复房间。默认的 `ROOM_RUNTIME=direct` 适用于将 HTTP、WebSocket 和房间执行部署在同一进程的环境。
+
+跨网关部署请使用以下进程角色。各进程使用相同的 PostgreSQL、JWT 签名配置和剧本存储配置。
+
+- `ROOM_RUNTIME=gateway` 提供 HTTP 和 WebSocket，可以配置多个实例。负载均衡器将 HTTP 和 WebSocket 连接指向网关。
+- `ROOM_RUNTIME=worker` 执行房间命令和 Keeper 回合，无需 HTTP 端口。每个房间由持有有效 PostgreSQL 租约的 worker 执行。切换到独立网关前，请先停止仍持有房间租约的 direct 实例。
+
+跨网关使用已提交事件的序列号排序。加入和同步使用已授权的房间快照。房间命令的等待期限为 2.5 秒。暂时没有可用 worker 时，HTTP 房间命令返回 503，带行动编号的 WebSocket 聊天返回可重试结果。连接关闭后，已经开始执行的命令仍可能提交。重试聊天时请复用原有的 `actionId`，以便读取已有回执。
 
 每次接管取得递增的房间 epoch。行动回执、回合结果、房间快照、按序房间事件和事件待投递记录在当前 epoch 校验下提交。进程在 Keeper 调用中退出后，下一进程从已持久化的行动批次继续。模型请求可能重复，已提交的角色卡、线索和结局效果只保存一次。已订阅的同进程连接在事务提交后接收事件。候选批次的成员或绑定角色在恢复时有变动，会记录原回合为已取消，再以新回合编号处理仍有资格的行动。未激活房间的 REST 写操作会临时获取租约，在同一 epoch 内完成权限检查和写入。
 
