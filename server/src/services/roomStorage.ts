@@ -90,6 +90,7 @@ async function writeAll(commands: Statement[]): Promise<void> {
 }
 
 export class StoryRevisionChangedError extends Error {}
+export class RoomOwnerPresentError extends Error {}
 
 export interface StoryRevisionPin {
   revision: string
@@ -159,7 +160,9 @@ export function releaseRoomLease(roomId: string, lease: RoomWorkerLease): Promis
 }
 
 /** Fence and write in one transaction. The same room row serializes lease claims with durable mutations. */
-async function writeRoom(roomId: string, commands: Statement[], lease?: RoomWorkerLease): Promise<void> {
+async function writeRoom(
+  roomId: string, commands: Statement[], lease?: RoomWorkerLease, absentOwnerId?: number,
+): Promise<void> {
   if (!ROOM_WORKER_FAILOVER_ENABLED) return writeAll(commands)
   if (!lease) throw new RoomLeaseLostError()
   try {
@@ -174,10 +177,17 @@ async function writeRoom(roomId: string, commands: Statement[], lease?: RoomWork
         'SELECT worker_expires_at > clock_timestamp() AS live FROM rooms WHERE room_id = ?', roomId,
       )))).rows[0]
       if (!state?.live || row.rows[0].worker !== workerId || row.rows[0].epoch !== lease.epoch) throw new RoomLeaseLostError()
+      if (absentOwnerId !== undefined) {
+        const presence = await client.query(
+          'SELECT 1 FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND expires_at > clock_timestamp() LIMIT 1',
+          [roomId, absentOwnerId],
+        )
+        if (presence.rowCount) throw new RoomOwnerPresentError()
+      }
       await executeRoomStatements(client, commands)
     })
   } catch (error) {
-    if (error instanceof CapacityError || error instanceof StoryRevisionChangedError) throw error
+    if (error instanceof CapacityError || error instanceof StoryRevisionChangedError || error instanceof RoomOwnerPresentError) throw error
     throw postgresError(error)
   }
 }
@@ -472,11 +482,11 @@ export function updateRoomStateSettings(roomId: string, stateJson: string, lease
   return writeRoom(roomId, [statement('UPDATE rooms SET state = ?, updated_at = ? WHERE room_id = ?', stateJson, Date.now(), roomId)], lease)
 }
 
-export function deleteRoomRows(roomId: string, lease?: RoomWorkerLease): Promise<void> {
+export function deleteRoomRows(roomId: string, lease?: RoomWorkerLease, absentOwnerId?: number): Promise<void> {
   return writeRoom(roomId, [
     statement('DELETE FROM room_members WHERE room_id = ?', roomId),
     statement('DELETE FROM rooms WHERE room_id = ?', roomId),
-  ], lease)
+  ], lease, absentOwnerId)
 }
 
 export function insertMember(roomId: string, userId: number, role: 'owner' | 'member', lease?: RoomWorkerLease): Promise<void> {
@@ -528,12 +538,17 @@ export function setMemberReady(roomId: string, userId: number, ready: boolean, l
   )], lease)
 }
 
-export function transferRoomOwnership(roomId: string, oldOwnerId: number, newOwnerId: number, lease?: RoomWorkerLease): Promise<void> {
+export function transferRoomOwnership(
+  roomId: string, oldOwnerId: number, newOwnerId: number, lease?: RoomWorkerLease,
+  mode: 'transfer' | 'leave' | 'disconnect' = 'transfer',
+): Promise<void> {
   return writeRoom(roomId, [
-    statement(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`, roomId, oldOwnerId),
+    mode === 'leave'
+      ? statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, oldOwnerId)
+      : statement(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`, roomId, oldOwnerId),
     statement(`UPDATE room_members SET role = 'owner', ready = 0 WHERE room_id = ? AND user_id = ?`, roomId, newOwnerId),
     statement('UPDATE rooms SET owner_id = ? WHERE room_id = ?', newOwnerId, roomId),
-  ], lease)
+  ], lease, mode === 'disconnect' ? oldOwnerId : undefined)
 }
 
 export function deleteMemberRow(roomId: string, userId: number, lease?: RoomWorkerLease): Promise<void> {

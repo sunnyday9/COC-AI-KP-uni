@@ -19,6 +19,7 @@
 import type { WebSocket } from 'ws'
 import { ROOM_RUNTIME } from '../config.js'
 import { routeSocketCommand } from '../services/roomCommands.js'
+import { activateGatewayPresence, joinGatewayPresence, releaseGatewaySocketPresence } from './gatewayPresence.js'
 import { subscribeGatewaySocket, unsubscribeGatewaySocket } from './gatewayRooms.js'
 import type { RoomActionResult } from '../../../shared/types/room.js'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
@@ -56,6 +57,11 @@ async function sendGatewayState(socket: WebSocket, userId: number, roomId: strin
     return
   }
   if (socket.readyState !== 1 || !subscribeGatewaySocket(socket, roomId, userId, result.seq)) return
+  if (!await joinGatewayPresence(socket, roomId, userId) || socket.readyState !== 1) {
+    unsubscribeGatewaySocket(socket, roomId)
+    return
+  }
+  activateGatewayPresence(socket, roomId)
   send(socket, { type: 'room:state', roomId, actionReceipts: true, ...result })
 }
 
@@ -223,6 +229,7 @@ export async function handleRoomAction(socket: WebSocket, userId: number, raw: u
 export async function cleanupSocketRooms(socket: WebSocket, userId?: number | null): Promise<void> {
   const roomIds = roomIdsOfSocket(socket)
   if (ROOM_RUNTIME === 'gateway') {
+    releaseGatewaySocketPresence(socket, !isTransportReset(socket))
     for (const roomId of roomIds) unsubscribeGatewaySocket(socket, roomId)
     return
   }

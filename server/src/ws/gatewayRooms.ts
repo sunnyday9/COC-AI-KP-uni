@@ -3,6 +3,7 @@ import { readRoomOutbox } from '../services/roomOutbox.js'
 import { logger } from '../utils/logging.js'
 import { errorMessage } from '../utils/errors.js'
 import { roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeSocket, type RoomSubscriber } from './roomLedger.js'
+import { releaseGatewayPresence } from './gatewayPresence.js'
 import { sendFrame } from './sendFrame.js'
 
 interface Subscription {
@@ -37,6 +38,7 @@ export function subscribeGatewaySocket(socket: RoomSubscriber, roomId: string, u
 }
 
 export function unsubscribeGatewaySocket(socket: RoomSubscriber, roomId: string): void {
+  releaseGatewayPresence(socket, roomId)
   const listeners = subscriptions.get(roomId)
   if (!listeners?.delete(socket)) return
   if (listeners.size === 0) subscriptions.delete(roomId)

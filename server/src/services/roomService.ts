@@ -1,3 +1,4 @@
+import { ROOM_RUNTIME } from '../config.js'
 /**
  * RoomService — 服务端房间会话（Phase B1，架构方案 v2.0 §三/D6/D7）。
  *
@@ -1992,7 +1993,7 @@ export async function leaveRoomAsMember(
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole === 'owner') {
-      await transferToSuccessorOrDissolve(roomId, userId, workerLease)
+      await transferToSuccessorOrDissolve(roomId, userId, workerLease, 'leave')
       return { ok: true }
     }
     await roomStorage.deleteMemberRow(roomId, userId, workerLease)
@@ -2018,8 +2019,9 @@ export async function leaveRoomAsOwner(
 /** 转让房主行写库（新 owner 行 role='owner' + ready 清零；旧 owner 行降为 member 且留在房内）。 */
 async function transferOwnerRow(
   roomId: string, oldOwnerId: number, newOwnerId: number, workerLease?: roomStorage.RoomWorkerLease,
+  mode: 'transfer' | 'leave' | 'disconnect' = 'transfer',
 ): Promise<void> {
-  await roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId, workerLease)
+  await roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId, workerLease, mode)
   getRoom(roomId)?.updateOwner(newOwnerId)
 }
 
@@ -2027,16 +2029,17 @@ async function transferOwnerRow(
  *  转让后对活跃实例做 DB→广播对账（syncActiveRoom）；解散路径行已删、无实例对账。
  *  调用方（REST leaveRoomAsOwner / WS handleOwnerWsDisconnect）各持前置 gate，进入时调用者即 multi 房主。 */
 async function transferToSuccessorOrDissolve(
-  roomId: string, oldOwnerId: number, workerLease?: roomStorage.RoomWorkerLease,
+  roomId: string, oldOwnerId: number, workerLease: roomStorage.RoomWorkerLease | undefined,
+  mode: 'transfer' | 'leave' | 'disconnect' = 'transfer',
 ): Promise<void> {
   const members = await roomStorage.listMembersOrdered(roomId)
   const successor = members.find((m) => m.user_id !== oldOwnerId)
   if (!successor) {
-    await roomStorage.deleteRoomRows(roomId, workerLease)
+    await roomStorage.deleteRoomRows(roomId, workerLease, mode === 'disconnect' ? oldOwnerId : undefined)
     disposeDeletedRoom(roomId)
     return
   }
-  await transferOwnerRow(roomId, oldOwnerId, successor.user_id, workerLease)
+  await transferOwnerRow(roomId, oldOwnerId, successor.user_id, workerLease, mode)
   await syncActiveRoom(roomId)
 }
 
@@ -2078,12 +2081,15 @@ export async function transferOwnership(
  *  供 ws 层断线事件调用——仅当脱机的正是当前 owner 时执行（非 owner 断线不动房间；
  *  刷新即易主是已知取舍）。solo 房主断线不转让（单人房主=唯一成员，solo 无等待室）。 */
 export async function handleOwnerWsDisconnect(roomId: string, userId: number): Promise<void> {
-  return withRoomCommand(roomId, async (workerLease) => {
-    if (ROOM_WORKER_FAILOVER_ENABLED && !workerLease) return
+  return withRoomMutation(roomId, async (workerLease) => {
     const room = await roomStorage.getRoomRow(roomId)
     if (!room || room.phase === 'ended' || getRoom(roomId)?.isEnded()) return
     if (room.kind !== 'multi' || room.owner_id !== userId) return
-    await transferToSuccessorOrDissolve(roomId, userId, workerLease)
+    try {
+      await transferToSuccessorOrDissolve(roomId, userId, workerLease, ROOM_RUNTIME === 'worker' ? 'disconnect' : 'transfer')
+    } catch (error) {
+      if (!(error instanceof roomStorage.RoomOwnerPresentError)) throw error
+    }
   })
 }
 
