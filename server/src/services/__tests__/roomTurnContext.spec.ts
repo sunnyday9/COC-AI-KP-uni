@@ -43,6 +43,7 @@ vi.mock('../ragService.js', () => ({
 const getAiSetupIssueMock = vi.hoisted(() => vi.fn((): string | null => null))
 vi.mock('../settingsService.js', () => ({
   getAiSetupIssue: getAiSetupIssueMock,
+  getAiConfig: vi.fn(() => ({})),
   getSettings: vi.fn(() => ({ rag: { supplement: true } })),
 }))
 

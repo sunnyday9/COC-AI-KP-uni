@@ -202,6 +202,26 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts STORY_PREPARATION_ENABLED=1 
 
 共享游戏进程的分页索引清单返回 `canStartInvestigation: true`。未启用共享游戏的目录服务继续提供准备状态。未配置对象存储的受控预发布仍可按 6.3 使用隔离夹具。
 
+### Keeper 容量与超时
+
+每个进程独立限制 Keeper 开场和玩家回合。提供方按配置的 URL origin 分组，账号按房主分组。同一组达到并发上限时，调度器优先启动仍有容量的回合，再处理该组的队列。多进程部署的总容量是各进程容量之和。若需限制所有进程共用的上游配额，应在部署时为每个进程分配预算。
+
+| 环境变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| KP_ACTIVE_TURNS / KP_PENDING_TURNS | 16 / 128 | 单进程内运行中和排队中的 Keeper 回合数 |
+| KP_ACTIVE_PER_PROVIDER / KP_PENDING_PER_PROVIDER | 4 / 32 | 每个提供方 origin 的并发和排队上限 |
+| KP_ACTIVE_PER_ACCOUNT / KP_PENDING_PER_ACCOUNT | 2 / 8 | 每个房主账号的并发和排队上限 |
+| KP_QUEUE_TIMEOUT_MS | 30000 | 等待 Keeper 容量的最长时间 |
+| KP_TURN_TIMEOUT_MS | 120000 | 获得容量后单回合的最长执行时间，包含知识装配和等待模型 |
+| KP_PROVIDER_REQUEST_MS | 45000 | 单次 Keeper 模型请求的最长时间 |
+| KP_PROVIDER_RETRIES | 2 | 每回合共用的 429 / 503 重试次数 |
+
+当全局上限大于 1 时，单个提供方和账号各最多占用相应全局容量减 1。429 与 503 采用 250 毫秒起步、最高 4 秒的指数退避，并按照上游的 Retry-After 延后。等待超过 10 秒或重试耗尽时房间暂停，保留先前确认的行动，由房主稍后重试。
+
+对局中的原文查证、检索改写和远程嵌入沿用所在回合的容量与取消信号，单次最多等待 1 秒。回合后的记忆提取和长摘要只占用空闲容量，单次最多等待 5 秒。可选请求失败时使用已有的上下文与记忆，且不消耗正式回合的重试预算。剧本准备使用独立进程和容量设置。
+
+设置独立保密的 KP_METRICS_TOKEN 后，内部监控可用 Authorization Bearer 请求 GET /health/keeper。响应包含本进程的运行数、排队数、各自上限、队列等待和模型请求耗时指标，以及不带标签的提供方和账号用量。提供方和账号各最多报告 32 组用量。指标不含房间、账号标识、提供方地址或密钥。
+
 ## 7. 上线检查清单
 
 - [ ] `MOCK_AI` 未设置（或显式 `0`）

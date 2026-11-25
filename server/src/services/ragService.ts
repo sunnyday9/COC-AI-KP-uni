@@ -27,6 +27,7 @@ import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError } from '../utils/errors.js'
 import * as vectorStore from '../rag/vectorStore.js'
 import { createEmbedder, createBuiltinEmbedder, type Embedder } from '../rag/embedding.js'
+import { requestKeeper, type KeeperExecution } from './kpAdmission.js'
 
 /* ═══════════════════ Embedding provider resolution ═══════════════════ */
 
@@ -39,11 +40,11 @@ import { createEmbedder, createBuiltinEmbedder, type Embedder } from '../rag/emb
  * 导出（M1-T6）：检索补充层需要同一个嵌入器（同一份 provider 解析与内置模型单例，
  * 两处各写一份会各建一个模型实例）。
  */
-export async function buildGetEmbeddingForUser(userId: number): Promise<Embedder | null> {
-  return buildGetEmbedding(userId)
+export async function buildGetEmbeddingForUser(userId: number, execution?: KeeperExecution): Promise<Embedder | null> {
+  return buildGetEmbedding(userId, execution)
 }
 
-async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
+async function buildGetEmbedding(userId: number, execution?: KeeperExecution): Promise<Embedder | null> {
   if (isMockAiMode()) {
     // MOCK_AI (Task 11): skip the local model download entirely — vectorStore
     // uses its TF-IDF retrieval baseline when dense embeddings are unavailable.
@@ -55,7 +56,7 @@ async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
   const provider = rag.provider === 'api' ? 'api' : 'builtin'
 
   if (provider === 'api') {
-    const ai = shared ? await getSharedAiConfig(userId) : getAiConfig(userId)
+    const ai = execution?.ai ?? (shared ? await getSharedAiConfig(userId) : getAiConfig(userId))
     const baseUrl = (ai.baseUrl || '').trim()
     const apiKey = ai.apiKey && ai.apiKey !== '***' ? ai.apiKey : null
     if (baseUrl && apiKey) {
@@ -70,7 +71,12 @@ async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
         apiKey,
         model: rag.model || 'text-embedding-3-small',
       })
-      if (apiEmbedder) return apiEmbedder
+      if (apiEmbedder) {
+        if (!execution) return apiEmbedder
+        return (input, signal) => requestKeeper(execution, (requestSignal) =>
+          apiEmbedder(input, signal ? AbortSignal.any([signal, requestSignal]) : requestSignal),
+        { retry: false, timeoutMs: 1_000 })
+      }
     }
     // 如果 API 配置不完整，则回退到内置模型（与原实现一致）
   }

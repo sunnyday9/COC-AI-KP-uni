@@ -11,6 +11,7 @@
  *   - 工具结果摘要/截断策略原样保留（防长链劣化）。
  */
 import { isKpChunkStreamEnabled, SHARED_ROOMS_ENABLED } from '../config.js'
+import { KeeperPressureError, type KeeperExecution } from './kpAdmission.js'
 import { getAiConfig, getSharedAiConfig } from './settingsService.js'
 import { processToolCalls } from '../rule-engine/orchestrator.js'
 import { buildToolContext } from '../rule-engine/toolContextFactory.js'
@@ -94,6 +95,7 @@ export interface KpTurnHandlers {
  */
 /** 一个回合的执行依赖（评审候选 1：8 位置参收窄为对象）。 */
 export interface KpTurnDeps {
+  execution?: KeeperExecution
   preparedScript?: import('../agent/scriptContext.js').ScriptContext
   /** 角色组（characterId → sheet；多人多卡，单人单卡） */
   characters: Record<string, COCCharacterSheet> | null
@@ -292,20 +294,28 @@ export async function runKpTurn(
     turn.onOwnerChanged?.()
     return
   }
-  const ai = SHARED_ROOMS_ENABLED ? await getSharedAiConfig(userId) : getAiConfig(userId)
+  const ai = turn.execution?.ai ?? (SHARED_ROOMS_ENABLED ? await getSharedAiConfig(userId) : getAiConfig(userId))
   const invokeBase = buildInvokeLLM(userId, ai, {
     stream: true,
     onChunk: turn.handlers.onChunk,
+    execution: turn.execution,
     // dossier workflow: append story-lookup tools to the base COC tool set.
     tools: turn.storyLookup
       ? (COC_KP_TOOLS as unknown[]).concat(STORY_LOOKUP_TOOLS) as typeof COC_KP_TOOLS
       : undefined,
   })
+  let providerPause: KeeperPressureError | undefined
   const invokeLLM: InvokeLLM = async (llmMessages) => {
     if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
       throw new Error('Room ownership changed during KP turn')
     }
-    return invokeBase(llmMessages)
+    if (providerPause) throw providerPause
+    try {
+      return await invokeBase(llmMessages)
+    } catch (error) {
+      if (error instanceof KeeperPressureError) providerPause = error
+      throw error
+    }
   }
 
   let fullContent = ''
@@ -352,7 +362,10 @@ export async function runKpTurn(
         recoverForOwnerChange()
         return
       }
-      logger.warn('kp:turn graph iteration failed', { userId, loop, error: errorMessage(err) })
+      turn.execution?.signal.throwIfAborted()
+      if (providerPause) throw providerPause
+      if (turn.execution) logger.warn('kp:turn graph iteration failed', { loop })
+      else logger.warn('kp:turn graph iteration failed', { userId, loop, error: errorMessage(err) })
       graphFailed = true
       break
     }
@@ -362,6 +375,8 @@ export async function runKpTurn(
       recoverForOwnerChange()
       return
     }
+    turn.execution?.signal.throwIfAborted()
+    if (providerPause) throw providerPause
     const iterFinal = r?.content || ''
     if (iterFinal.trim()) {
       fullContent = base ? base + '\n\n' + iterFinal : iterFinal

@@ -136,7 +136,7 @@ describe('assembleTurnKnowledge — rag workflow（标准检索情报块，plain
 
     expect(listStories).toHaveBeenCalledWith(7)
     expect(buildSupplement).toHaveBeenCalledWith(expect.objectContaining({ userId: 7, scriptId: 'story_k' }), expect.anything())
-    expect(buildGetEmbeddingForUser).toHaveBeenCalledWith(9)
+    expect(buildGetEmbeddingForUser).toHaveBeenCalledWith(9, undefined)
   })
 
   it('dossier supplement reads the source owner index while settings and embeddings use the current owner', async () => {
@@ -146,7 +146,7 @@ describe('assembleTurnKnowledge — rag workflow（标准检索情报块，plain
     expect(loadGaps).toHaveBeenCalledWith(7, 'story_k')
     expect(getSettings).toHaveBeenCalledWith(9)
     expect(buildSupplement).toHaveBeenCalledWith(expect.objectContaining({ userId: 7, scriptId: 'story_k' }), expect.anything())
-    expect(buildGetEmbeddingForUser).toHaveBeenCalledWith(9)
+    expect(buildGetEmbeddingForUser).toHaveBeenCalledWith(9, undefined)
     expect(runPrefetch).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userId: 9, storyOwnerId: 7, scriptId: 'story_k' }))
   })
 })

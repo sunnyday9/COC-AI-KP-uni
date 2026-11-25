@@ -26,11 +26,13 @@
 import type { PreparedStoryArtifacts } from '../../services/preparedStoryStorage.js'
 import type { StoryWorkflow } from '../../services/kpPromptService.js'
 import { logger } from '../../utils/logging.js'
+import { keeperAuxiliaryChat, type KeeperExecution } from '../../services/kpAdmission.js'
 
 /** dossier 查证工具执行器的输入：房间 id 直传；owner/剧本/场景是**运行时活值**——
  *  经读取器在工具调用时刻取值（工厂门在装配时刻判定一次，活值语义见模块头注释）。 */
 export interface StoryLookupInput {
   preparedStory?: PreparedStoryArtifacts
+  execution?: KeeperExecution
   roomId: string
   getWorkflow: () => StoryWorkflow
   /** Current room owner for AI calls. */
@@ -93,7 +95,11 @@ export async function runStoryLookup(
     const { verifyOriginal } = await import('./originalLookup.js')
     const res = await verifyOriginal(
       { question, scene: sceneArg },
-      { userId: ownerId, storyOwnerId, scriptId: storyId, ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}) },
+      {
+        userId: ownerId, storyOwnerId, scriptId: storyId,
+        ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}),
+        ...(input.execution ? { ask: keeperAuxiliaryChat(input.execution, ownerId) } : {}),
+      },
     )
     if (process.env.KP_LLM_DEBUG === '1') {
       logger.debug('verify original complete', {

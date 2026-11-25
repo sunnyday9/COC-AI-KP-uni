@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -228,7 +228,51 @@ function duplicateOutboxEvents(): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split'): Promise<void> {
+function pressureProvider(directory: string): string {
+  const source = `
+    import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    const directory = ${JSON.stringify(directory)};
+    export async function chatForAgent(_userId, { messages, signal }) {
+      signal?.throwIfAborted();
+      if (messages[0]?.content.includes('只回复一个英文意图关键词')) return { content: 'investigate' };
+      const playerIndex = messages.findLastIndex((message) => message.role === 'user');
+      const action = messages[playerIndex]?.content ?? '';
+      if (action.includes('Hold the slow provider')) {
+        if (!messages.slice(playerIndex + 1).some((message) => message.role === 'tool')) {
+          return { content: '', toolCalls: [{ id: 'fixture-damage', name: 'adjust_hp', arguments: '{"delta":-2}' }] };
+        }
+        if (!existsSync(join(directory, 'allow-slow'))) {
+          writeFileSync(join(directory, 'slow-started'), '');
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => {
+              writeFileSync(join(directory, 'slow-aborted'), '');
+              reject(signal.reason);
+            }, { once: true });
+          });
+        }
+      }
+      if (action.includes('Rate-limit this turn') && !existsSync(join(directory, 'allow-rate'))) {
+        appendFileSync(join(directory, 'rate-attempts'), '1');
+        throw Object.assign(new Error('Synthetic rate limit'), { status: 429, headers: new Headers({ 'retry-after': '0' }) });
+      }
+      return { content: action.includes('Check unrelated room') ? 'Independent reply.' : 'Archive reply.' };
+    }
+  `
+  return 'data:text/javascript,' + encodeURIComponent(`
+    import { registerHooks } from 'node:module';
+    registerHooks({
+      resolve(specifier, context, next) {
+        if (specifier === './aiService.js' && context.parentURL?.endsWith('/kpAgentService.ts')) {
+          return { url: 'data:text/javascript,' + encodeURIComponent(${JSON.stringify(source)}), shortCircuit: true };
+        }
+        return next(specifier, context);
+      }
+    });
+  `)
+}
+
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'pressure'): Promise<void> {
   const failover = scenario !== undefined
 
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
@@ -256,6 +300,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     if (options.pauseActionId) args.push('--import', pauseAcceptance(options.pauseActionId))
     if (options.governanceBarrier) args.push('--import', pauseRoomMutations(options.governanceBarrier))
     if (options.duplicateOutbox) args.push('--import', duplicateOutboxEvents())
+    if (scenario === 'pressure') args.push('--import', pressureProvider(root))
     args.push('src/app.ts')
     const child = spawn(process.execPath, args, {
       env: {
@@ -276,7 +321,14 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
         JWT_SECRET: jwtSecret,
         MOCK_AI: '1',
         KP_CHUNK_STREAM: options.chunkStream ? '1' : undefined,
-        KP_ACTIVE_TURNS: options.endingOpeningBarrier ? '1' : undefined,
+        KP_ACTIVE_TURNS: scenario === 'pressure' ? '3' : options.endingOpeningBarrier ? '1' : undefined,
+        KP_ACTIVE_PER_PROVIDER: scenario === 'pressure' ? '1' : undefined,
+        KP_ACTIVE_PER_ACCOUNT: scenario === 'pressure' ? '1' : undefined,
+        KP_PENDING_PER_ACCOUNT: scenario === 'pressure' ? '1' : undefined,
+        KP_PROVIDER_REQUEST_MS: scenario === 'pressure' ? '1800' : undefined,
+        KP_PROVIDER_RETRIES: scenario === 'pressure' ? '1' : undefined,
+        KP_METRICS_TOKEN: scenario === 'pressure' ? jwtSecret : undefined,
+
         PORT: String(port),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -765,8 +817,96 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     }
   }
 
+  async function runProviderPressure() {
+    const worker = await launch()
+    await ready(worker)
+    const slowOwner = await register()
+    const independent = await register()
+    const storyId = 'provider-pressure-story'
+    for (const [account, baseUrl] of [[slowOwner, 'https://slower.example'], [independent, 'https://other.example']] as const) {
+      await request('/api/settings', { method: 'PUT', token: account.token, body: { ai: { protocol: 'openai_chat', baseUrl, model: 'test' } } })
+      await prepareDossier(join(fixtureRoot, 'dossiers'), account.user.id, storyId)
+    }
+    async function play(account: Account) {
+      const room = await request('/api/rooms/solo', {
+        method: 'POST', token: account.token, body: { storyId, name: 'Pressure archivist', sheet, workflow: 'dossier' },
+      })
+      const socket = await connect(account.token)
+      socket.send({ type: 'room:join', roomId: room.roomId })
+      await socket.waitFor(isKpMessage)
+      return { room, socket, token: account.token }
+    }
+    const slow = await play(slowOwner)
+    const queued = await play(slowOwner)
+    const overflow = await play(slowOwner)
+    const fast = await play(independent)
+    async function sendAction(target: typeof slow, content: string) {
+      const actionId = randomUUID()
+      const frame = { ...chat(target.room.roomId, content), actionId }
+      target.socket.send(frame)
+      expect(await target.socket.waitFor((entry) => entry.actionId === actionId)).toMatchObject({ status: 'pending' })
+      return { actionId, frame }
+    }
+    const pending = await sendAction(slow, 'Hold the slow provider')
+    await expect.poll(() => existsSync(join(root, 'slow-started'))).toBe(true)
+    expect((await detail(slow.room.roomId, slow.token)).state.characters[slow.room.characterId].derived.hp).toBe(10)
+    await sendAction(queued, 'Queue at the same provider')
+    const busy = await sendAction(overflow, 'Keep this accepted action pending')
+    await sendAction(fast, 'Check unrelated room')
+    await fast.socket.waitFor((frame) => frame.payload?.message?.content === 'Independent reply.')
+    expect(existsSync(join(root, 'slow-aborted'))).toBe(false)
+
+    await overflow.socket.waitFor((frame) => frame.payload?.path === 'kpPauseReason')
+    expect((await detail(overflow.room.roomId, overflow.token)).state).toMatchObject({
+      kpPauseReason: 'queue_full', pendingTurnMessages: [{ actionId: busy.actionId }],
+    })
+    for (let count = 1; count < 32; count++) await sendAction(overflow, 'Another accepted action')
+    const refused = randomUUID()
+    overflow.socket.send({ ...chat(overflow.room.roomId, 'Unaccepted overflow action'), actionId: refused })
+    expect(await overflow.socket.waitFor((entry) => entry.actionId === refused)).toMatchObject({ status: 'busy', code: 'room_busy' })
+    const fullRoom = (await detail(overflow.room.roomId, overflow.token)).state
+    expect(fullRoom.pendingTurnMessages).toHaveLength(32)
+    expect(fullRoom.messages.some((message: { content: string }) => message.content === 'Unaccepted overflow action')).toBe(false)
+    await slow.socket.waitFor((frame) => frame.payload?.path === 'kpPauseReason')
+    expect(existsSync(join(root, 'slow-aborted'))).toBe(true)
+    const paused = (await detail(slow.room.roomId, slow.token)).state
+    expect(paused).toMatchObject({
+      kpPauseReason: 'timeout', pendingTurnMessages: [{ actionId: pending.actionId }],
+    })
+    expect(paused.characters[slow.room.characterId].derived.hp).toBe(10)
+    expect(slow.socket.frames.some((frame) => frame.payload?.path === `characters.${slow.room.characterId}`)).toBe(false)
+    await queued.socket.waitFor((frame) => frame.payload?.message?.content === 'Archive reply.' &&
+      frame.seq! > queued.socket.frames.find(isKpMessage)!.seq!)
+
+    await writeFile(join(root, 'allow-slow'), '')
+    slow.socket.send({ type: 'room:action', roomId: slow.room.roomId, action: { type: 'retry_kp' } })
+    await expect.poll(async () => (await detail(slow.room.roomId, slow.token)).state.pendingTurnMessages).toEqual([])
+    const recovered = (await detail(slow.room.roomId, slow.token)).state
+    expect(recovered.characters[slow.room.characterId].derived.hp).toBe(8)
+    expect(recovered.messages.filter((message: { content: string }) => message.content === 'Hold the slow provider')).toHaveLength(1)
+    slow.socket.send(pending.frame)
+    await expect.poll(() => slow.socket.frames.filter((frame) => frame.actionId === pending.actionId).length).toBe(2)
+    expect(slow.socket.frames.filter((frame) => frame.actionId === pending.actionId).at(-1)).toMatchObject({ status: 'completed' })
+
+    const limited = await sendAction(slow, 'Rate-limit this turn')
+    await expect.poll(async () => (await detail(slow.room.roomId, slow.token)).state.kpPauseReason).toBe('provider_limited')
+    expect((await detail(slow.room.roomId, slow.token)).state.pendingTurnMessages).toMatchObject([{ actionId: limited.actionId }])
+    expect(statSync(join(root, 'rate-attempts')).size).toBe(2)
+
+    expect((await fetch(base + '/health/keeper')).status).toBe(404)
+    const metrics = await fetch(base + '/health/keeper', { headers: { Authorization: 'Bearer ' + jwtSecret } })
+    expect(metrics.status).toBe(200)
+    const pressure = await metrics.json()
+    expect(pressure.queue).toMatchObject({ started: expect.any(Number), totalWaitMs: expect.any(Number) })
+    expect(pressure.provider).toMatchObject({ requests: expect.any(Number), totalLatencyMs: expect.any(Number), retries: 1 })
+    expect(pressure.queue.maxWaitMs).toBeGreaterThan(100)
+    expect(pressure.provider.maxLatencyMs).toBeGreaterThan(1_000)
+    expect(JSON.stringify(pressure)).not.toContain('slower.example')
+  }
+
   try {
     if (scenario === 'split') return await runSplitGateways()
+    if (scenario === 'pressure') return await runProviderPressure()
     if (scenario === 'governance') return await runGovernanceRace()
     if (scenario === 'membership') return await runMembershipRecovery()
     if (scenario === 'opening') return await runOpeningRetry()
@@ -1093,6 +1233,7 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('fences stale Keeper effects and recovers accepted turns across PostgreSQL workers', () => journey('postgres', 'failover'), 90_000)
   it.skipIf(!databaseUrl)('serializes competing REST authorizations on an inactive room', () => journey('postgres', 'governance'), 45_000)
   it.skipIf(!databaseUrl)('cancels the original recovered turn when a member was removed', () => journey('postgres', 'membership'), 45_000)
+  it.skipIf(!databaseUrl)('holds accepted work on provider pressure and keeps unrelated rooms responsive', () => journey('postgres', 'pressure'), 45_000)
   it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
   it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', 'split'), 70_000)
 })

@@ -137,6 +137,10 @@ export async function anthropicMessagesAdapter(
   })
 
   if (!res.ok) {
+    if (params.signal && (res.status === 429 || res.status === 503)) {
+      await res.body?.cancel().catch(() => {})
+      throw Object.assign(new Error('Provider temporarily unavailable'), { status: res.status, headers: res.headers })
+    }
     const errText = await res.text()
     throw new Error(`Anthropic: ${res.status} ${errText}`)
   }

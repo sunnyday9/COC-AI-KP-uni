@@ -15,10 +15,11 @@ import type { RoomStoryBundle } from './roomStoryRevision.js'
 import * as roomStorage from './roomStorage.js'
 export { RoomWorkerBusyError } from './roomStorage.js'
 import { logger } from '../utils/logging.js'
+import { setImmediate as defer } from 'node:timers/promises'
 import { createCharacterMutatorFactory, type CharacterEnding } from '../rule-engine/characterMutators.js'
 import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, ROOM_WORKER_FAILOVER_ENABLED, ROOM_WORKER_LEASE_MS, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
-import { acquireKpTurn } from './kpAdmission.js'
+import { acquireKpTurn, createKeeperExecution, keeperLane, KeeperPressureError, runKeeperWork, tryAcquireKpTurn, type KeeperExecution } from './kpAdmission.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
 // 共用 checkStartGate，差异用 gateFor 表达。startGate 是零 fs/db 运行时依赖的叶子
 // （dossierCore/ragService 知识层走其内部动态 import，唯一静态运行时依赖是零依赖
@@ -27,6 +28,7 @@ import { checkStartGate, sanitizeWorkflow } from './startGate.js'
 // rooms.state JSON 文档 codec（#61）：读点容错解析 / 写点序列化单点收口。
 import { parseRoomState, parseRoomStateOr, serializeRoomState } from './roomStateCodec.js'
 import type {
+  KpPauseReason,
   RoomActionResult,
   RoomEventPayloadMap,
   RoomEventType,
@@ -88,6 +90,8 @@ export interface RoomSnapshot {
   openingCheckpointed?: boolean
   /** True while the current room owner must complete AI settings before KP can run. */
   kpSetupRequired?: boolean
+  kpPauseReason?: KpPauseReason | null
+  kpRetryAt?: number
   updatedAt: number
 }
 
@@ -167,6 +171,9 @@ export class RoomService {
   private storyOwnerId: number | null = null
   private storyRevision: roomStorage.StoryRevisionPin | null = null
   private kpSetupRequired = false
+  private kpPauseReason: KpPauseReason | null = null
+  private kpRetryAt = 0
+  private ownerLifetime = new AbortController()
   private messages: Message[] = []
   private characters = new Map<string, COCCharacterSheet>()
   /** characterId → 绑定它的成员 userId（D5 归属校验）。 */
@@ -228,6 +235,8 @@ export class RoomService {
       this.phase = opts.restore.phase ?? 'lobby'
       this.storyId = opts.restore.storyId ?? null
       this.kpSetupRequired = opts.restore.kpSetupRequired === true
+      this.kpPauseReason = opts.restore.kpPauseReason ?? null
+      this.kpRetryAt = opts.restore.kpRetryAt ?? 0
       this.turnBuffer = Array.isArray(opts.restore.pendingTurnMessages)
         ? opts.restore.pendingTurnMessages.filter((entry): entry is PendingTurnMessage =>
             !!entry && typeof entry.username === 'string' && typeof entry.content === 'string' &&
@@ -331,6 +340,8 @@ export class RoomService {
       pendingPlayerTurn: this.pendingPlayerTurn,
       openingCheckpointed: this.openingCheckpointed || undefined,
       kpSetupRequired: this.kpSetupRequired,
+      kpPauseReason: this.kpPauseReason ?? undefined,
+      kpRetryAt: this.kpRetryAt || undefined,
       updatedAt: Date.now(),
     }
   }
@@ -521,6 +532,8 @@ export class RoomService {
   /** Apply a committed transfer before an older Keeper turn can publish new effects. */
   updateOwner(ownerId: number): void {
     if (ownerId === this.ownerId) return
+    this.ownerLifetime.abort()
+    this.ownerLifetime = new AbortController()
     this.ownerId = ownerId
     this.ownershipVersion += 1
     this.ownerName = this.members.find((member) => member.userId === ownerId)?.username ?? `user_${ownerId}`
@@ -726,9 +739,57 @@ export class RoomService {
     })
   }
 
+  private async reserveKeeper(ownerId: number, signal: AbortSignal, optional = false) {
+    const settings = await import('./settingsService.js')
+    const ai = SHARED_ROOMS_ENABLED ? await settings.getSharedAiConfig(ownerId) : settings.getAiConfig(ownerId)
+    const lane = keeperLane(ownerId, ai)
+    const release = optional ? tryAcquireKpTurn(lane, signal) : await acquireKpTurn(lane, signal)
+    if (!release) return null
+    const execution = createKeeperExecution(ai, signal)
+    return { execution, release: () => { execution.close(); release() } }
+  }
+
+  private async setKpPressure(pause: KeeperPressureError | null, ownershipVersion: number): Promise<void> {
+    await withRoomCommand(this.roomId, async () => {
+      if (this.disposed || this.isEnded() || this.ownershipVersion !== ownershipVersion) return
+      const reason = pause?.reason ?? null
+      const retryAt = pause?.retryAt ?? 0
+      if (reason === this.kpPauseReason && retryAt === this.kpRetryAt) return
+      const snapshot = this.snapshot()
+      snapshot.kpPauseReason = reason
+      snapshot.kpRetryAt = retryAt
+      const events: RoomEvent[] = [
+        { type: 'state_patch', payload: { path: 'kpPauseReason', value: reason } },
+        { type: 'state_patch', payload: { path: 'kpRetryAt', value: retryAt } },
+      ]
+      if (pause) {
+        const message: Message = {
+          id: 'sys_' + crypto.randomUUID(), timestamp: Date.now(), role: 'system',
+          content: '守秘人暂时无法处理回合，已接收的行动仍在等待。请稍后由房主重试。',
+        }
+        snapshot.messages = [...snapshot.messages, message]
+        events.push({ type: 'message_appended', payload: { message, author: { userId: this.ownerId, roleName: 'system' } } })
+      }
+      await this.commitCheckpoint(snapshot, events, () => {
+        this.kpPauseReason = reason
+        this.kpRetryAt = retryAt
+        this.messages = snapshot.messages
+      })
+    })
+  }
+
+  private async pauseOnKeeperPressure(error: unknown, ownershipVersion: number, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted && error === signal.reason) return true
+    const pause = error instanceof KeeperPressureError ? error
+      : error instanceof DOMException && error.name === 'TimeoutError' ? new KeeperPressureError('timeout') : null
+    if (!pause) return false
+    await this.setKpPressure(pause, ownershipVersion)
+    return true
+  }
+
   /** 合并缓冲内玩家消息 → 一次 KP 回合（窗口超时/严格排队时调用）。 */
   async flushTurn(): Promise<void> {
-    if (this.turnFlushing || this.openingInFlight || this.disposed) return
+    if (this.turnFlushing || this.openingInFlight || this.disposed || this.kpPauseReason) return
     // 结束态是终态（#54）：end_game 之后不再消费任何缓冲消息。
     if (this.isEnded()) {
       this.turnBuffer = []
@@ -740,9 +801,10 @@ export class RoomService {
     let release: (() => void) | null = null
     let interrupted = false
     let blockedOnStory = false
+    const turnOwnerId = this.ownerId
+    const turnOwnershipVersion = this.ownershipVersion
+    const signal = AbortSignal.any([this.lifetime.signal, this.ownerLifetime.signal])
     try {
-      release = await acquireKpTurn(this.lifetime.signal)
-      if (!release || this.disposed || this.isEnded()) return
       // Check the successor's own provider setup before consuming queued player actions.
       // When missing, keep the full batch in the persisted snapshot for an explicit retry.
       if (!(await this.refreshOwnerAiSetupStatus())) {
@@ -752,6 +814,11 @@ export class RoomService {
         await this.persistSnapshot()
         return
       }
+      const reserved = await this.reserveKeeper(turnOwnerId, signal)
+      if (!reserved) return
+      const { execution } = reserved
+      release = reserved.release
+      if (signal.aborted || this.isEnded()) return
       const { batch, history } = await this.takePlayerTurnBatch()
       const durable = batch.some((entry) => entry.actionId)
       if (batch.length > 0 && !durable) await this.persistTurnSnapshot()
@@ -761,9 +828,7 @@ export class RoomService {
       }
       if (batch.length === 0) return
 
-      const turnOwnerId = this.ownerId
       const turnStoryOwnerId = this.storyOwnerId ?? turnOwnerId
-      const turnOwnershipVersion = this.ownershipVersion
       const checkMembership = durable || getRoom(this.roomId) === this
       const canRunTurn = () => !this.disposed && !this.isEnded() && this.ownershipVersion === turnOwnershipVersion &&
         (!checkMembership || batch.every((entry) => this.members.some((member) =>
@@ -772,9 +837,10 @@ export class RoomService {
       const merged = batch.map((b) => `【${b.username}】${b.content}`).join('\n')
       const activeCharacterId = batch[batch.length - 1]?.characterId ?? null
       const allowedCharacterIds = new Set(batch.map((b) => b.characterId).filter((id): id is string => !!id))
-      const preparedStory = await this.loadTurnStory()
+      const preparedStory = await runKeeperWork(execution.signal, this.loadTurnStory(execution.signal))
       const { assembleTurnKnowledge } = await import('./turnKnowledge.js')
-      const knowledge = await assembleTurnKnowledge({
+      const knowledge = await runKeeperWork(execution.signal, assembleTurnKnowledge({
+        execution,
         workflow: this.workflow,
         ownerId: turnOwnerId,
         storyOwnerId: turnStoryOwnerId,
@@ -784,7 +850,7 @@ export class RoomService {
         scene: this.scene,
         playerText: merged,
         stage: 'turn',
-      })
+      }))
       // Wait for any concurrent room governance command before invoking the Keeper.
       if (!await withRoomCommand(this.roomId, async () => canRunTurn() && await this.renewWorkerLease())) return
       const chatMessages = buildRoomTurnMessages(
@@ -810,6 +876,7 @@ export class RoomService {
         canRunTurn,
         undefined,
         preparedStory,
+        execution,
       )
       if (!durable && !SHARED_ROOMS_ENABLED && !this.disposed) {
         if (canRunTurn() || this.isEnded()) this.activeTurnBatch = []
@@ -818,7 +885,9 @@ export class RoomService {
     } catch (error) {
       interrupted = true
       blockedOnStory = error instanceof RoomStoryUnavailableError
-      throw error
+      release?.()
+      release = null
+      if (!await this.pauseOnKeeperPressure(error, turnOwnershipVersion, signal)) throw error
     } finally {
       release?.()
       this.turnFlushing = false
@@ -829,7 +898,7 @@ export class RoomService {
       }
       if (this.disposed || this.isEnded()) {
         this.turnBuffer = []
-      } else if (!blockedOnStory && !this.kpSetupRequired && this.turnBuffer.length > 0) {
+      } else if (!blockedOnStory && !this.kpPauseReason && !this.kpSetupRequired && this.turnBuffer.length > 0) {
         // Messages arriving while a healthy turn is running are flushed next.
         if (!interrupted && this.turnWindowMs <= 0) {
           this.startBufferedTurn()
@@ -854,13 +923,14 @@ export class RoomService {
     this.turnBuffer = []
   }
 
-  private async loadTurnStory(): Promise<RoomStoryBundle | undefined> {
+  private async loadTurnStory(signal = this.lifetime.signal): Promise<RoomStoryBundle | undefined> {
     if (!this.storyRevision && !SHARED_ROOM_CATALOG_ENABLED) return
     if (!this.storyRevision || !this.storyId || this.storyOwnerId === null) throw new RoomStoryUnavailableError()
     try {
       const { loadRoomStory } = await import('./roomStoryRevision.js')
-      return await loadRoomStory(this.storyOwnerId, this.storyId, this.storyRevision, this.lifetime.signal)
+      return await loadRoomStory(this.storyOwnerId, this.storyId, this.storyRevision, signal)
     } catch (cause) {
+      signal.throwIfAborted()
       throw new RoomStoryUnavailableError({ cause })
     }
   }
@@ -913,6 +983,7 @@ export class RoomService {
     isOwnerCurrent: () => boolean = () => true,
     onOwnerChanged?: () => void,
     preparedStory?: RoomStoryBundle,
+    execution?: KeeperExecution,
   ): Promise<void> {
     const { runKpTurn } = await import('./kpTurnService.js')
     // dossier 查证工具执行器随回合知识一并收编在 TurnKnowledge（活值读取器传入——
@@ -925,7 +996,8 @@ export class RoomService {
     const characterMap = this.getCharacterMap()
     const batch = this.activeTurnBatch
     const checkpointOpening = this.openingInFlight && getRoom(this.roomId) === this
-    const draft = SHARED_ROOMS_ENABLED || checkpointOpening || batch.some((entry) => entry.actionId) ? {
+    const managedTurn = execution !== undefined && getRoom(this.roomId) === this
+    const draft = SHARED_ROOMS_ENABLED || managedTurn || checkpointOpening || batch.some((entry) => entry.actionId) ? {
       characters: structuredClone(characterMap),
       changedCharacters: new Set<string>(),
       clues: [...this.clues],
@@ -980,10 +1052,12 @@ export class RoomService {
       },
     })
 
-    await runKpTurn(
+    execution?.signal.throwIfAborted()
+    const running = runKpTurn(
       ownerUserId,
       { messages, storyContext },
       {
+        execution,
         characters: draft?.characters ?? characterMap,
         ...(preparedScript ? { preparedScript } : {}),
         activeCharacterId,
@@ -1002,6 +1076,7 @@ export class RoomService {
           getStoryOwnerId: () => this.storyOwnerId ?? this.ownerId,
           getStoryId: () => this.storyId,
           getScene: () => draft ? draft.scene : this.scene,
+          execution,
           ...(preparedStory ? { preparedStory } : {}),
         }),
         handlers: {
@@ -1035,10 +1110,13 @@ export class RoomService {
         },
       },
     )
+    if (execution) await runKeeperWork(execution.signal, running)
+    else await running
     if (!draft || draft.ownerChanged) return
 
     const committed = await withRoomCommand(this.roomId, async () => {
       if (this.disposed || !isOwnerCurrent()) return false
+      execution?.signal.throwIfAborted()
       const snapshot = this.snapshot()
       const sceneChanged = draft.scene !== snapshot.scene
       const ended = draft.ending !== null
@@ -1148,7 +1226,8 @@ export class RoomService {
     try {
       const { extractMemoryPoints } = await import('./roomMemory.js')
       if (this.disposed || this.ownershipVersion !== ownershipVersion) return
-      const points = await extractMemoryPoints(ownerId, content)
+      const points = await this.runOptionalKeeperWork(ownerId, (execution) => extractMemoryPoints(ownerId, content, execution))
+      if (!points) return
       if (points.length === 1 && points[0] === checkpointMemory.at(-1)) return
       await withRoomCommand(this.roomId, async () => {
         // Keep the committed fallback if this result belongs to a previous
@@ -1167,6 +1246,21 @@ export class RoomService {
   private recordCompletedTurn(): void {
     this.turnCount += 1
     if (this.turnCount % LONG_TERM_SUMMARY_EVERY_TURNS === 0) void this.refreshLongTermSummary()
+  }
+
+  private async runOptionalKeeperWork<T>(
+    ownerId: number,
+    work: (execution?: KeeperExecution) => Promise<T>,
+  ): Promise<T | undefined> {
+    if (getRoom(this.roomId) !== this) return this.disposed ? undefined : work()
+    const signal = AbortSignal.any([this.lifetime.signal, this.ownerLifetime.signal])
+    // Let the committed turn release its slot before attempting optional work.
+    await defer()
+    if (signal.aborted || this.ownerId !== ownerId) return
+    const reserved = await this.reserveKeeper(ownerId, signal, true)
+    if (!reserved) return
+    try { return await runKeeperWork(reserved.execution.signal, work(reserved.execution)) }
+    finally { reserved.release() }
   }
 
   /** 长期摘要刷新（fire-and-forget；失败保持原摘要）。 */
@@ -1201,7 +1295,9 @@ export class RoomService {
             })
             .filter(Boolean)
             .join('\n')
-          const summary = await summarizeLongTerm(this.ownerId, {
+          const ownerId = this.ownerId
+          const ownershipVersion = this.ownershipVersion
+          const payload = {
             recentMessagesText: recent.slice(-ROOM_SUMMARY_SOURCE_MAX_CHARS),
             recentToolResultsText: recentToolResults.slice(-ROOM_SUMMARY_SOURCE_MAX_CHARS),
             currentSummary: this.longTermSummary,
@@ -1209,19 +1305,14 @@ export class RoomService {
               `当前场景：${this.scene ?? '未知'}`,
               `已获线索：${this.clues.map((clue) => clue.description).join('、') || '无'}`,
             ].join('；'),
-          })
-          if (summary && summary !== this.longTermSummary) {
-            const previousSummary = this.longTermSummary
-            this.longTermSummary = summary
-            try {
-              // Keep the previous summary in memory if durable storage fails. The
-              // original transcript remains intact, so a later checkpoint can retry.
-              await this.persistSnapshot()
-            } catch (error) {
-              this.longTermSummary = previousSummary
-              logger.warn('room long-term summary persistence failed', { roomId: this.roomId, error: String(error) })
-            }
           }
+          const summary = await this.runOptionalKeeperWork(ownerId, (execution) => summarizeLongTerm(ownerId, payload, execution))
+          if (!summary) continue
+          await withRoomCommand(this.roomId, async () => {
+            if (this.disposed || this.ownershipVersion !== ownershipVersion || summary === this.longTermSummary) return
+            await this.writeSnapshot({ ...this.snapshot(), longTermSummary: summary })
+            this.longTermSummary = summary
+          })
         } catch {
           // Summary failures are isolated from player turns and keep the old value.
         }
@@ -1295,7 +1386,13 @@ export class RoomService {
   /** Current owner can resume the preserved opening or queued player actions after setup. */
   async retryKpTurn(userId: number): Promise<boolean> {
     if (!await roomStorage.isRoomMember(this.roomId, userId) || userId !== this.ownerId || this.phase !== 'playing') return false
+    const ownershipVersion = this.ownershipVersion
     if (!(await this.refreshOwnerAiSetupStatus())) return true
+    if (this.kpPauseReason) {
+      if (Date.now() < this.kpRetryAt) return true
+      await this.setKpPressure(null, ownershipVersion)
+    }
+    if (this.ownershipVersion !== ownershipVersion) return false
     if (this.turnBuffer.length > 0) {
       this.startBufferedTurn()
       return true
@@ -1307,7 +1404,7 @@ export class RoomService {
 
   /** opening（ADR-0002）：startRoom / 首次 join 时触发一次，失败不阻塞进入。 */
   beginOpeningIfPending(): void {
-    if (this.disposed || this.openingStarted || this.openingCheckpointed || this.openingInFlight || this.turnFlushing || this.phase !== 'playing' ||
+    if (this.disposed || this.kpPauseReason || this.openingStarted || this.openingCheckpointed || this.openingInFlight || this.turnFlushing || this.phase !== 'playing' ||
         this.messages.some((message) => message.role === 'player' || message.role === 'kp')) return
     this.openingStarted = true
     this.openingInFlight = true
@@ -1315,18 +1412,18 @@ export class RoomService {
   }
 
   /**
-   * opening 回合真实执行：串行入队（与后续 flushTurn 共享队列，避免与玩家
-   * 首条消息并发跑两个回合）。失败不阻塞进入——首回合不是门闩，玩家消息
+   * openingInFlight 保证开场与玩家回合串行。开场等待期间可持久化接收玩家行动。
+   * 普通开场失败时，玩家消息
    * 照常触发回合（flushTurn 路径独立）。快照恢复时角色组（characters map）
    * 由 getOrCreateRoom 的 syncFromDb 装载后才会调用本方法（懒激活顺序保证）。
    */
   private async runOpeningTurn(): Promise<void> {
     let release: (() => void) | null = null
     let retryOpening = false
+    const turnOwnershipVersion = this.ownershipVersion
+    const turnOwnerId = this.ownerId
+    const signal = AbortSignal.any([this.lifetime.signal, this.ownerLifetime.signal])
     try {
-      release = await acquireKpTurn(this.lifetime.signal)
-      if (!release || this.disposed || this.phase !== 'playing') return
-      const turnOwnershipVersion = this.ownershipVersion
       if (!(await this.refreshOwnerAiSetupStatus())) {
         this.openingStarted = false
         return
@@ -1336,12 +1433,22 @@ export class RoomService {
         retryOpening = true
         return
       }
-      const turnOwnerId = this.ownerId
+      const reserved = await this.reserveKeeper(turnOwnerId, signal)
+      if (!reserved) {
+        this.openingStarted = false
+        retryOpening = !this.disposed
+        return
+      }
+      const { execution } = reserved
+      release = reserved.release
+      signal.throwIfAborted()
+      if (this.phase !== 'playing') return
       // 回合知识装配唯一入口（TurnKnowledge）：stage:'opening' = 无玩家文本——
       // rag query 退化为开场固定 query、补充层 query 退化为纯场景名（T4 契约）、不触发预取。
-      const preparedStory = await this.loadTurnStory()
+      const preparedStory = await runKeeperWork(execution.signal, this.loadTurnStory(execution.signal))
       const { assembleTurnKnowledge } = await import('./turnKnowledge.js')
-      const knowledge = await assembleTurnKnowledge({
+      const knowledge = await runKeeperWork(execution.signal, assembleTurnKnowledge({
+        execution,
         workflow: this.workflow,
         ownerId: turnOwnerId,
         storyOwnerId: this.storyOwnerId ?? this.ownerId,
@@ -1351,7 +1458,7 @@ export class RoomService {
         scene: this.scene,
         playerText: '',
         stage: 'opening',
-      })
+      }))
       if (this.ownershipVersion !== turnOwnershipVersion) {
         this.openingStarted = false
         retryOpening = true
@@ -1364,25 +1471,31 @@ export class RoomService {
         supplement: knowledge.supplement,
       })
       const firstCharacterId = [...this.characters.keys()][0] ?? null
-      await this.enqueue(() =>
-        this.runKpTurnForRoom(
-          turnOwnerId,
-          chatMessages,
-          this.buildStoryContext(knowledge.terminalEndings),
-          firstCharacterId,
-          (chunk) => this.emitKpChunk(chunk),
-          undefined,
-          // wire 采样注入列：与 flushTurn 同口径（单源在 TurnKnowledge）
-          knowledge.wireInjectionText,
-          () => !this.disposed && !this.isEnded() && this.ownershipVersion === turnOwnershipVersion,
-          () => {
-            this.openingStarted = false
-            retryOpening = !this.disposed
-          },
-          preparedStory,
-        ),
+      await this.runKpTurnForRoom(
+        turnOwnerId,
+        chatMessages,
+        this.buildStoryContext(knowledge.terminalEndings),
+        firstCharacterId,
+        (chunk) => this.emitKpChunk(chunk),
+        undefined,
+        // wire 采样注入列：与 flushTurn 同口径（单源在 TurnKnowledge）
+        knowledge.wireInjectionText,
+        () => !this.disposed && !this.isEnded() && this.ownershipVersion === turnOwnershipVersion,
+        () => {
+          this.openingStarted = false
+          retryOpening = !this.disposed
+        },
+        preparedStory,
+        execution,
       )
     } catch (err) {
+      release?.()
+      release = null
+      if (await this.pauseOnKeeperPressure(err, turnOwnershipVersion, signal)) {
+        this.openingStarted = false
+        retryOpening = signal.aborted && !this.disposed
+        return
+      }
       // A staged opening whose checkpoint failed has not been published.
       // Leave it eligible for the next explicit retry or join.
       if (SHARED_ROOMS_ENABLED || getRoom(this.roomId) === this) this.openingStarted = false
@@ -1391,7 +1504,7 @@ export class RoomService {
     } finally {
       release?.()
       this.openingInFlight = false
-      if (this.turnBuffer.length > 0 && !this.kpSetupRequired && !this.turnTimer) {
+      if (this.turnBuffer.length > 0 && !this.kpPauseReason && !this.kpSetupRequired && !this.turnTimer) {
         this.startBufferedTurn()
       } else if (retryOpening) {
         this.beginOpeningIfPending()

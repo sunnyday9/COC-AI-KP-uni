@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import cors from 'cors'
@@ -9,6 +10,7 @@ import { CapacityError, sendError } from './utils/errors.js'
 import { getDb } from './db/index.js'
 import { getPostgresPool, initializePostgres } from './db/postgres.js'
 import { initializePostgresRooms } from './db/postgresRoomsSchema.js'
+import { keeperPressureMetrics } from './services/kpAdmission.js'
 import { startRoomReaper } from './services/roomService.js'
 import { roomWorkerId } from './services/roomStorage.js'
 import { executeRoomCommand } from './services/roomCommands.js'
@@ -60,6 +62,19 @@ export function createApp(): Express {
       res.status(503).json({ status: 'unavailable' })
     }
   })
+
+  const keeperToken = process.env.KP_METRICS_TOKEN?.trim()
+  if (keeperToken) {
+    const expected = Buffer.from('Bearer ' + keeperToken)
+    app.get('/health/keeper', (req, res) => {
+      const supplied = Buffer.from(req.headers.authorization ?? '')
+      if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+        res.status(404).json({ error: 'not found' })
+        return
+      }
+      res.set('Cache-Control', 'no-store').json(keeperPressureMetrics())
+    })
+  }
 
   app.use('/api/auth', authRoutes)
   app.use('/api/settings', settingsRoutes)

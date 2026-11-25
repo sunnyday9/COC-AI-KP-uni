@@ -4,6 +4,14 @@
  * 失败回退与客户端一致：抽取失败 → 截断兜底；摘要失败 → 保持原摘要。
  */
 import type { ChatMessage } from './aiService.js'
+import { keeperAuxiliaryChat, type KeeperExecution } from './kpAdmission.js'
+
+async function ask(ownerId: number, messages: ChatMessage[], maxTokens: number, temperature?: number, execution?: KeeperExecution): Promise<string> {
+  if (execution) return keeperAuxiliaryChat(execution, ownerId, 5_000)(messages, maxTokens, temperature)
+  const { chat } = await import('./aiService.js')
+  const result = await chat(ownerId, { messages, maxTokens, temperature, stream: false })
+  return result && 'content' in result ? result.content ?? '' : ''
+}
 
 const EXTRACT_SYSTEM =
   '从守密人回复中提取3-5条关键信息要点，每条≤40字，JSON数组格式。\n' +
@@ -11,19 +19,12 @@ const EXTRACT_SYSTEM =
   '示例输出：["描述了雾中校门口场景","介绍了保卫处处长李建国","告知12名学生失踪","给出三个行动选项"]'
 
 /** 从 KP 回复抽取 3-5 条记忆要点；失败回退为截断单条。 */
-export async function extractMemoryPoints(userId: number, kpResponse: string): Promise<string[]> {
+export async function extractMemoryPoints(userId: number, kpResponse: string, execution?: KeeperExecution): Promise<string[]> {
   try {
-    const { chat } = await import('./aiService.js')
-    const result = await chat(userId, {
-      messages: [
-        { role: 'system', content: EXTRACT_SYSTEM },
-        { role: 'user', content: kpResponse.slice(0, 1500) },
-      ],
-      stream: false,
-      maxTokens: 128,
-      temperature: 0.1,
-    })
-    const content = result && typeof result === 'object' && 'content' in result ? (result as { content?: string }).content ?? '' : ''
+    const content = await ask(userId, [
+      { role: 'system', content: EXTRACT_SYSTEM },
+      { role: 'user', content: kpResponse.slice(0, 1500) },
+    ], 128, 0.1, execution)
     const match = content.match(/\[[\s\S]*\]/)
     if (match) {
       const arr = JSON.parse(match[0]) as unknown[]
@@ -54,7 +55,7 @@ export interface SummarizePayload {
 }
 
 /** 合并近期对话进长期摘要；失败返回原摘要（调用方保持前值）。 */
-export async function summarizeLongTerm(userId: number, payload: SummarizePayload): Promise<string> {
+export async function summarizeLongTerm(userId: number, payload: SummarizePayload, execution?: KeeperExecution): Promise<string> {
   const { recentMessagesText, recentToolResultsText, currentSummary, storyContextText } = payload
   const storyCtxBlock = storyContextText && storyContextText.trim() ? `【当前故事上下文】\n${storyContextText.trim()}\n\n` : ''
   const toolResultsBlock = recentToolResultsText?.trim()
@@ -64,17 +65,11 @@ export async function summarizeLongTerm(userId: number, payload: SummarizePayloa
     ? `${storyCtxBlock}${toolResultsBlock}【当前长期摘要】\n${currentSummary}\n\n【近期对话】\n${recentMessagesText}\n\n请将上述合并为一段新的长期摘要。`
     : `${storyCtxBlock}${toolResultsBlock}【近期对话】\n${recentMessagesText}\n\n请将上述整理为一段长期摘要（场景、线索、重要NPC、关键事件）。`
   try {
-    const { chat } = await import('./aiService.js')
-    const result = await chat(userId, {
-      messages: [
-        { role: 'system', content: SUMMARIZE_SYSTEM },
-        { role: 'user', content: userContent } satisfies ChatMessage,
-      ],
-      stream: false,
-      maxTokens: 768,
-    })
-    const content = result && typeof result === 'object' && 'content' in result ? (result as { content?: string }).content : ''
-    return (content ?? '').trim() || currentSummary
+    const content = await ask(userId, [
+      { role: 'system', content: SUMMARIZE_SYSTEM },
+      { role: 'user', content: userContent },
+    ], 768, execution ? execution.ai.temperature ?? 0.7 : undefined, execution)
+    return content.trim() || currentSummary
   } catch {
     return currentSummary
   }

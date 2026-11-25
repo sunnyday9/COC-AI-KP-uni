@@ -83,6 +83,8 @@ export interface RoomEventFrame {
   payload: RoomEventPayload
 }
 
+export type KpPauseReason = 'queue_full' | 'provider_limited' | 'timeout'
+
 /** 房间全量快照（room:state 帧；与 server RoomSnapshot 对齐）。 */
 export interface RoomSnapshot {
   seq: number
@@ -96,6 +98,8 @@ export interface RoomSnapshot {
   turnWindowMs: number
   /** KP is paused until the current owner completes provider setup. */
   kpSetupRequired?: boolean
+  kpPauseReason?: KpPauseReason | null
+  kpRetryAt?: number
   /** Maximum retained conversation history sent to KP for this room, in characters. */
   contextBudgetChars?: number
   updatedAt: number
