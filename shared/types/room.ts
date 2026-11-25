@@ -116,7 +116,7 @@ export type RoomActionResult =
 
 /** 服务端房间帧（room:*，统一入口，roomStore 按 type 分流）。 */
 export type RoomServerFrame =
-  | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number; actionReceipts?: true; kpTurnPending?: boolean }
+  | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number; actionReceipts?: true; kpTurnPending?: boolean; members?: RoomMemberInfo[] }
   | { type: 'room:event'; roomId: string; seq: number; eventType: RoomEventType; payload: RoomEventFrame['payload'] }
   | { type: 'room:sync:done'; roomId: string; seq: number; actionReceipts?: true }
   | ({ type: 'room:action:result'; roomId: string; actionId: string } & RoomActionResult)

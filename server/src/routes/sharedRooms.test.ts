@@ -236,7 +236,7 @@ function duplicateOutboxEvents(): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history' | 'replay' | 'split-governance'): Promise<void> {
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history' | 'replay' | 'split-governance' | 'replay-pending'): Promise<void> {
   const failover = scenario !== undefined
 
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
@@ -705,6 +705,52 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     }
   }
 
+  async function runReplayPendingTurn(): Promise<void> {
+    const worker = await launch({ runtime: 'worker', pauseAfterTool: true })
+    await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
+    const firstGateway = await launch({ runtime: 'gateway' })
+    await ready(firstGateway)
+    const owner = await register()
+    const storyId = randomUUID()
+    await prepareDossier(join(fixtureRoot, 'dossiers'), owner.user.id, storyId)
+    const { roomId } = await request('/api/rooms/solo', {
+      method: 'POST', token: owner.token, body: { storyId, name: 'Replay Archivist', sheet, workflow: 'dossier' },
+    })
+    const joinFrame = { type: 'room:join', roomId }
+    const first = await connect(owner.token)
+    first.send(joinFrame)
+    const opening = await first.waitFor(isKpMessage)
+    const actionId = randomUUID()
+    const content = 'Recover the damaged ledger'
+    first.send({ ...chat(roomId, content), actionId })
+    const accepted = await first.waitFor((frame) => frame.actionId === actionId)
+    expect(accepted).toMatchObject({ status: 'pending', messageId: expect.any(String) })
+    await expect.poll(() => pausedKeepers.has(worker), { timeout: 7_000 }).toBe(true)
+    await stop(worker)
+    await stop(firstGateway)
+
+    const gateway = await launch({ runtime: 'gateway' })
+    await ready(gateway)
+    const gatewayBase = base
+    const replay = await connect(owner.token)
+    replay.send({ ...joinFrame, lastSeq: opening.seq })
+    const replayEnd = await replay.waitFor((frame) => frame.type === 'room:sync:done')
+    expect(replayEnd.seq).toBeGreaterThan(opening.seq!)
+    expect(replay.frames.filter((frame) => frame.payload?.message?.content === content)).toHaveLength(1)
+    expect(replay.frames.some((frame) => frame.type === 'room:state')).toBe(false)
+
+    // No snapshot, new action, or receipt retry should be needed to wake a new worker.
+    const replacement = await launch({ runtime: 'worker', pauseAfterTool: false })
+    await expect.poll(() => readyWorkers.has(replacement), { timeout: 12_000 }).toBe(true)
+    base = gatewayBase
+    const keeper = await replay.waitFor((frame) => frame.payload?.message?.content === 'The ledger was recovered.')
+    expect(keeper.seq).toBeGreaterThan(replayEnd.seq!)
+    const saved = await request(`/api/rooms/${roomId}/history`, { token: owner.token })
+    expect(saved.messages.filter((message: { id: string }) => message.id === accepted.messageId)).toHaveLength(1)
+    expect(saved.messages.filter((message: { content: string }) => message.content === 'The ledger was recovered.')).toHaveLength(1)
+    expect(Object.values((await detail(roomId, owner.token)).state.characters)[0]).toMatchObject({ derived: { hp: 8 } })
+  }
+
   async function runRoomHistory(): Promise<void> {
     const first = await launch()
     await ready(first)
@@ -796,6 +842,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     const current = await connect(owner.token)
     current.send(joinFrame)
     const currentState = await current.waitFor((frame) => frame.type === 'room:state')
+    expect(currentState).toMatchObject({ members: [{ userId: owner.user.id, role: 'owner' }] })
     expect(currentState.snapshot!.messages!.at(-1)?.content).toBe('Last archive entry')
     expect(currentState.snapshot!.messages!.length).toBeLessThanOrEqual(40)
     expect(Buffer.byteLength(JSON.stringify(currentState.snapshot!.messages))).toBeLessThanOrEqual(512 * 1024)
@@ -1125,6 +1172,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   try {
     if (scenario === 'split') return await runSplitGateways()
     if (scenario === 'split-governance') return await runSplitGovernance()
+    if (scenario === 'replay-pending') return await runReplayPendingTurn()
     if (scenario === 'replay') return await runGatewayRecovery()
     if (scenario === 'history') return await runRoomHistory()
     if (scenario === 'governance') return await runGovernanceRace()
@@ -1456,6 +1504,7 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
   it.skipIf(!databaseUrl)('orders governance with accepted turns and distinguishes split gateway disconnects', () => journey('postgres', 'split-governance'), 80_000)
   it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', 'split'), 70_000)
+  it.skipIf(!databaseUrl)('finishes a pending Keeper turn after replay while its original worker and gateway are gone', () => journey('postgres', 'replay-pending'), 60_000)
   it.skipIf(!databaseUrl)('recovers old and missing cursors and a disconnected slow gateway reader', () => journey('postgres', 'replay'), 85_000)
   it.skipIf(!databaseUrl)('resumes with bounded state and pages earlier transcript in committed order', () => journey('postgres', 'history'), 45_000)
 })

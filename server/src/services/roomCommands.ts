@@ -36,7 +36,7 @@ const commandHandlers = {
     const snapshot = room.snapshot()
     const kpTurnPending = snapshot.phase === 'playing' && !snapshot.kpSetupRequired &&
       (snapshot.pendingTurnMessages?.length ?? 0) > 0
-    return { snapshot, seq: snapshot.seq, kpTurnPending }
+    return { snapshot, seq: snapshot.seq, members: room.getMembers(), kpTurnPending }
   },
   async chat(userId: number, roomId: string, content: string, actionId?: string): Promise<RoomActionResult> {
     if (!await isRoomMember(roomId, userId)) return notMember

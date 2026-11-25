@@ -144,6 +144,15 @@ export async function claimRoomLease(roomId: string): Promise<RoomWorkerLease | 
   )
 }
 
+export async function listPendingRoomRecoveries(limit: number): Promise<{ room_id: string; owner_id: number }[]> {
+  return readAll<{ room_id: string; owner_id: string }>(
+    `SELECT room_id, owner_id FROM rooms
+     WHERE turn_pending AND phase = 'playing'
+       AND (worker_expires_at IS NULL OR worker_expires_at <= now())
+     ORDER BY worker_expires_at NULLS FIRST, room_id LIMIT ?`, limit,
+  ).then((rows) => rows.map((row) => ({ ...row, owner_id: Number(row.owner_id) })))
+}
+
 export async function renewRoomLease(roomId: string, lease: RoomWorkerLease): Promise<boolean> {
   return !!await readOne(
     `UPDATE rooms SET worker_expires_at = clock_timestamp() + ? * interval '1 millisecond'
@@ -448,6 +457,7 @@ export const ROOM_EVENT_WINDOW = 200
 
 export interface RoomCheckpoint {
   seq: number
+  turnPending: boolean
   lease: RoomWorkerLease
   events: readonly { seq: number; type: string; payload: unknown }[]
   turn?: {
@@ -463,11 +473,11 @@ export function updateRoomStateSnapshot(
   roomId: string, stateJson: string, phase?: 'ended', actions: readonly RoomActionWrite[] = [], checkpoint?: RoomCheckpoint,
 ): Promise<void> {
   const phaseUpdate = phase ? "phase = 'ended', " : ''
-  const watermarkUpdate = checkpoint ? ', event_seq = ?' : ''
+  const watermarkUpdate = checkpoint ? ', event_seq = ?, turn_pending = (? = 1)' : ''
   const sql = `UPDATE rooms SET ${phaseUpdate}${updateSnapshotSql}${watermarkUpdate} WHERE room_id = ?`
   if (ROOM_WORKER_FAILOVER_ENABLED && !checkpoint) throw new RoomLeaseLostError()
   const commands = [
-    statement(sql, stateJson, Date.now(), ...(checkpoint ? [checkpoint.seq] : []), roomId),
+    statement(sql, stateJson, Date.now(), ...(checkpoint ? [checkpoint.seq, checkpoint.turnPending ? 1 : 0] : []), roomId),
     ...actions.map((action) => 'payloadHash' in action
       ? statement(
         'INSERT INTO room_actions (room_id, user_id, action_id, payload_hash, message_id, status) VALUES (?, ?, ?, ?, ?, ?)',
@@ -697,7 +707,7 @@ interface RoomOutbox {
 }
 
 export async function readRoomOutbox(
-  cursors: readonly { roomId: string; seq: number; userIds: number[] }[], limit = 16,
+  cursors: readonly { roomId: string; seq: number; userIds: number[] }[], limit = 16, maxBytes: number | null = null,
 ): Promise<RoomOutbox[]> {
   try {
     const { rows } = await getPostgresPool().query<OutboxRow>(
@@ -710,11 +720,18 @@ export async function readRoomOutbox(
       ' WHERE m.room_id = c.room_id AND c.users @> to_jsonb(ARRAY[m.user_id])) AS members' +
       ' ) member_ids' +
       ' LEFT JOIN LATERAL (' +
+      ' SELECT sized.seq, sized.event_type, sized.payload FROM (' +
+      ' SELECT selected.*, sum(CASE WHEN $3::bigint IS NULL THEN 0' +
+      ' ELSE octet_length(selected.payload::text)::bigint + 256 END) OVER (ORDER BY selected.seq) AS bytes' +
+      ' FROM (' +
       ' SELECT e.seq, e.event_type, e.payload FROM room_event_outbox o JOIN room_events e USING (room_id, seq)' +
       ' WHERE o.room_id = c.room_id AND o.seq > c.seq AND cardinality(member_ids.members) > 0' +
+      ' AND ($3::bigint IS NULL OR r.event_seq BETWEEN c.seq AND c.seq + $2::bigint)' +
       ' ORDER BY o.seq LIMIT $2' +
+      ' ) selected' +
+      ' ) sized WHERE $3::bigint IS NULL OR sized.bytes <= $3::bigint' +
       ' ) e ON true ORDER BY c.room_id, e.seq',
-      [JSON.stringify(cursors.map(({ roomId, seq, userIds }) => ({ room_id: roomId, seq, users: userIds }))), limit],
+      [JSON.stringify(cursors.map(({ roomId, seq, userIds }) => ({ room_id: roomId, seq, users: userIds }))), limit, maxBytes],
     )
     const rooms = new Map<string, RoomOutbox>()
     for (const row of rows) {
