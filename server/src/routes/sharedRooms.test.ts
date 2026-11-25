@@ -29,7 +29,7 @@ type Frame = {
   code?: string
   removedReason?: string
   error?: string
-  snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string }[]; kpMemory?: string[] }
+  snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string }[]; kpMemory?: string[]; transcript?: { before: string | null } }
   eventType?: string
   payload?: { message?: { role: string; content: string }; path?: string }
 }
@@ -217,8 +217,8 @@ function pauseRoomMutations(directory: string): string {
 /** Simulate at-least-once outbox delivery while observing the public socket. */
 function duplicateOutboxEvents(): string {
   const wrapper = [
-    'export async function readRoomOutbox(cursors) {',
-    '  return (await read(cursors)).map(room => ({',
+    'export async function readRoomOutbox(...args) {',
+    '  return (await read(...args)).map(room => ({',
     '    ...room, events: room.events.flatMap(event => [event, event]),',
     '  }));',
     '}',
@@ -228,15 +228,15 @@ function duplicateOutboxEvents(): string {
     registerHooks({
       resolve(specifier, context, next) {
         const resolved = next(specifier, context)
-        if (specifier !== '../services/roomOutbox.js' || !context.parentURL?.endsWith('/gatewayRooms.ts')) return resolved
-        const source = 'import { readRoomOutbox as read } from ' + JSON.stringify(resolved.url) + ';' + ${JSON.stringify(wrapper)}
+        if (specifier !== '../services/roomService.js' || !context.parentURL?.endsWith('/gatewayRooms.ts')) return resolved
+        const source = 'import { readRoomOutbox as read } from ' + JSON.stringify(resolved.url) + ';' + 'export { ROOM_EVENT_WINDOW } from ' + JSON.stringify(resolved.url) + ';' + ${JSON.stringify(wrapper)}
         return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true }
       },
     })
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'split-governance'): Promise<void> {
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history' | 'replay' | 'split-governance'): Promise<void> {
   const failover = scenario !== undefined
 
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
@@ -245,6 +245,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const dataDir = join(root, 'sqlite')
   const jwtSecret = randomBytes(32).toString('hex')
   const children: ChildProcess[] = []
+  const startupErrors = new WeakMap<ChildProcess, string>()
   const sockets: WebSocket[] = []
   const readyWorkers = new WeakSet<ChildProcess>()
   const pausedKeepers = new WeakSet<ChildProcess>()
@@ -308,7 +309,11 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       child.stderr?.on('data', (data: Buffer) => {
         if (data.toString().includes('Room worker lease lost')) staleCheckpoints.add(child)
       })
-    } else child.stderr?.resume()
+    } else {
+      child.stderr?.on('data', (data: Buffer) => {
+        startupErrors.set(child, ((startupErrors.get(child) ?? '') + data.toString()).slice(-2_000))
+      })
+    }
     return child
   }
   async function ready(child: ChildProcess): Promise<void> {
@@ -318,7 +323,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       if (response?.ok) return
       await delay(50)
     }
-    throw new Error(`${backend} gameplay process did not become ready (exit ${child.exitCode})`)
+    throw new Error(`${backend} gameplay process did not become ready (exit ${child.exitCode}): ${startupErrors.get(child) ?? ""}`)
   }
   async function request(path: string, options: { method?: string; token?: string; body?: unknown; expected?: number } = {}) {
     const headers: Record<string, string> = {}
@@ -352,6 +357,11 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       close: () => socket.close(),
       reset: () => socket.send('x'.repeat(140 * 1024)),
       closed: () => once(socket, 'close'),
+      pauseReads: () => socket.pause(),
+      resumeReads: () => socket.resume(),
+      disconnected: () => socket.readyState === WebSocket.CLOSED
+        ? Promise.resolve(1006)
+        : once(socket, 'close').then(([code]) => Number(code)),
       frames,
       async waitFor(predicate: (frame: Frame) => boolean): Promise<Frame> {
         const existing = frames.find(predicate)
@@ -496,6 +506,25 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     const replacement = await launch({ runtime: 'worker', pauseAfterTool: false })
     await expect.poll(() => readyWorkers.has(replacement), { timeout: 12_000 }).toBe(true)
     base = gatewayBase
+    await stop(first)
+    const restartedGateway = await launch({ runtime: 'gateway', duplicateOutbox: true })
+    await ready(restartedGateway)
+    const replay = await connect(owner.token)
+    replay.send({ ...joinFrame, lastSeq: beforeAction })
+    const replayDone = await replay.waitFor((frame) => frame.type === 'room:sync:done')
+    expect(replayDone.seq).toBeGreaterThanOrEqual(firstEnd.seq!)
+    expect(committedTurn(replay.frames)).toEqual(turn)
+    expect(replay.frames.some((frame) => frame.type === 'room:state')).toBe(false)
+    replay.send(action)
+    expect(await replay.waitFor((frame) => frame.actionId === actionId)).toMatchObject({
+      status: 'completed', messageId: receipt.messageId,
+    })
+    await request('/api/rooms/' + roomId + '/settings', {
+      method: 'PUT', token: owner.token, body: { turnWindowMs: 125 },
+    })
+    const live = await replay.waitFor((frame) => frame.type === 'room:event' && frame.seq! > replayDone.seq!)
+    expect(live.seq).toBe(replayDone.seq! + 1)
+
     const resumed = await connect(visitor.token)
     resumed.send(joinFrame)
     const resumedState = await resumed.waitFor((frame) => frame.type === 'room:state')
@@ -509,6 +538,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   async function runSplitGovernance(): Promise<void> {
     const release = join(root, 'release-governance-turn')
     const worker = await launch({ runtime: 'worker', pauseAfterTool: true, damageReleaseFile: release, useByok: true })
+    await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
     const first = await launch({ runtime: 'gateway', drainable: true })
     await ready(first)
     const firstBase = base
@@ -661,6 +691,151 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     } finally {
       await db.end()
     }
+  }
+
+  async function runRoomHistory(): Promise<void> {
+    const first = await launch()
+    await ready(first)
+    const owner = await register()
+    const member = await register()
+    const outsider = await register()
+    const { roomId, inviteCode } = await request('/api/rooms', { method: 'POST', token: owner.token })
+    const api = `/api/rooms/${roomId}/history`
+
+    const legacy = Array.from({ length: 72 }, (_, index) => ({
+      id: `legacy-${index}`, timestamp: 42, role: 'player', playerName: 'Archivist', content: `Ledger ${index}`,
+    }))
+    const pool = new Pool({ connectionString: databaseUrl })
+    try {
+      await pool.query("UPDATE rooms SET state = jsonb_set(state::jsonb, '{messages}', $2::jsonb)::text WHERE room_id = $1", [
+        roomId, JSON.stringify(legacy),
+      ])
+    } finally {
+      await pool.end()
+    }
+
+    expect(await request(api + '?limit=2', { token: owner.token })).toEqual({
+      messages: legacy.slice(70), nextBefore: 'legacy-70',
+    })
+    await request(api, { token: outsider.token, expected: 404 })
+    await request(api + '?limit=0', { token: owner.token, expected: 400 })
+    await request('/api/rooms/join', { method: 'POST', token: member.token, body: { inviteCode } })
+    expect((await request(api + '?limit=2', { token: member.token })).messages).toEqual(legacy.slice(70))
+
+    const socket = await connect(owner.token)
+    socket.send({ type: 'room:join', roomId })
+    const state = await socket.waitFor((frame) => frame.type === 'room:state')
+    const recent = state.snapshot?.messages ?? []
+    expect(recent.map((message) => message.content)).toEqual(legacy.slice(-40).map((message) => message.content))
+    expect(state.snapshot).toMatchObject({ transcript: { before: 'legacy-32' } })
+    expect((await detail(roomId, owner.token)).state.messages).toHaveLength(40)
+
+    const actionId = randomUUID()
+    socket.send({ ...chat(roomId, 'File another ledger'), actionId })
+    const receipt = await socket.waitFor((frame) => frame.actionId === actionId)
+    expect(receipt.status).toBe('completed')
+    await request(`/api/rooms/${roomId}/members/${member.user.id}`, { method: 'DELETE', token: owner.token })
+    await request(api + '?before=legacy-71', { token: member.token, expected: 404 })
+    await stop(first)
+    const second = await launch()
+    await ready(second)
+    const page = await request(api + '?limit=2', { token: owner.token })
+    expect(page).toMatchObject({
+      messages: [legacy.at(-1), { id: receipt.messageId, content: 'File another ledger' }], nextBefore: 'legacy-71',
+    })
+    expect(await request(api + '?before=legacy-2&limit=2', { token: owner.token })).toEqual({
+      messages: legacy.slice(0, 2), nextBefore: null,
+    })
+  }
+
+  async function runGatewayRecovery(): Promise<void> {
+    const worker = await launch({ runtime: 'worker' })
+    await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
+    await ready(await launch({ runtime: 'gateway' }))
+    const owner = await register()
+    const { roomId } = await request('/api/rooms', { method: 'POST', token: owner.token })
+    const joinFrame = { type: 'room:join', roomId }
+    const slow = await connect(owner.token)
+    slow.send(joinFrame)
+    await slow.waitFor((frame) => frame.type === 'room:state')
+    const writers = await Promise.all(Array.from({ length: 8 }, () => connect(owner.token)))
+    const write = async (writer: Awaited<ReturnType<typeof connect>>, content: string) => {
+      const actionId = randomUUID()
+      writer.send({ ...chat(roomId, content), actionId })
+      const receipt = await writer.waitFor((frame) => frame.actionId === actionId)
+      expect(receipt).toMatchObject({ status: 'completed', messageId: expect.any(String) })
+      return receipt.messageId!
+    }
+
+    const firstChat = await write(writers[0], 'First archive entry')
+    const start = await slow.waitFor((frame) => frame.payload?.message?.content === 'First archive entry')
+    const secondChat = await write(writers[0], 'Second archive entry')
+    const disconnected = slow.disconnected()
+    slow.pauseReads()
+
+    // Fill the durable window and send enough data to back up a real paused TCP reader.
+    await Promise.all(writers.map(async (writer, group) => {
+      for (let index = 0; index < 26; index++) {
+        const large = index >= 18
+        await write(writer, `Entry ${group}-${index} ` + (large ? 'x'.repeat(120 * 1024) : ''))
+      }
+    }))
+    const last = await write(writers[0], 'Last archive entry')
+    const current = await connect(owner.token)
+    current.send(joinFrame)
+    const currentState = await current.waitFor((frame) => frame.type === 'room:state')
+    expect(currentState.snapshot!.messages!.at(-1)?.content).toBe('Last archive entry')
+    expect(currentState.snapshot!.messages!.length).toBeLessThanOrEqual(40)
+    expect(Buffer.byteLength(JSON.stringify(currentState.snapshot!.messages))).toBeLessThanOrEqual(512 * 1024)
+    slow.resumeReads()
+    await expect(Promise.race([disconnected, delay(3_000, -1, { ref: false })])).resolves.toBe(1006)
+
+    const recovery = await connect(owner.token)
+    const lastSeen = slow.frames.filter((frame) => frame.type === 'room:event').at(-1)?.seq
+    expect(lastSeen).toBeGreaterThanOrEqual(start.seq!)
+    recovery.send({ ...joinFrame, lastSeq: lastSeen })
+    const recoveryState = await recovery.waitFor((frame) => frame.type === 'room:state')
+    expect(recoveryState.seq).toBe(currentState.seq)
+    const api = `/api/rooms/${roomId}/history`
+    expect(recoveryState.snapshot?.transcript?.before).toEqual(expect.any(String))
+    const older = await request(api + '?limit=3&before=' + recoveryState.snapshot?.transcript?.before, { token: owner.token })
+    expect(older.messages).toHaveLength(3)
+    expect((await request(api + '?limit=1', { token: owner.token })).messages[0].id).toBe(last)
+    expect(await request(api + '?limit=1&before=' + secondChat, { token: owner.token })).toMatchObject({
+      messages: [{ id: firstChat, content: 'First archive entry' }], nextBefore: null,
+    })
+
+    const pool = new Pool({ connectionString: databaseUrl })
+    try {
+      const recent = await pool.query(
+        'SELECT count(*)::int AS events, min(seq)::int AS first, max(seq)::int AS last FROM room_events WHERE room_id = $1',
+        [roomId],
+      )
+      expect(recent.rows).toEqual([{ events: 200, first: currentState.seq! - 199, last: currentState.seq }])
+      expect(await pool.query('SELECT 1 FROM room_event_outbox WHERE room_id = $1', [roomId]))
+        .toHaveProperty('rowCount', 200)
+
+      // Deliberately remove an event inside the live window to test a retention gap.
+      await pool.query('DELETE FROM room_events WHERE room_id = $1 AND seq = $2', [roomId, currentState.seq])
+      const cursors = [start.seq!, currentState.seq! - 1, currentState.seq! + 1]
+      for (const cursor of cursors) {
+        const reconnect = await connect(owner.token)
+        reconnect.send({ ...joinFrame, lastSeq: cursor })
+        const state = await reconnect.waitFor((frame) => frame.type === 'room:state')
+        expect(state.seq).toBe(currentState.seq)
+        expect(state.snapshot?.messages).toEqual(currentState.snapshot?.messages)
+        expect(state.snapshot?.transcript).toEqual(currentState.snapshot?.transcript)
+        expect(reconnect.frames.some((frame) => frame.type === 'room:event')).toBe(false)
+        reconnect.close()
+      }
+    } finally {
+      await pool.end()
+    }
+
+    const next = await write(writers[0], 'Continue after backpressure')
+    const live = await recovery.waitFor((frame) => frame.payload?.message?.content === 'Continue after backpressure')
+    expect(live.seq).toBe(currentState.seq! + 1)
+    expect((await request(api + '?limit=1', { token: owner.token })).messages[0].id).toBe(next)
   }
 
   async function runWorkerFailover(): Promise<void> {
@@ -938,6 +1113,8 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   try {
     if (scenario === 'split') return await runSplitGateways()
     if (scenario === 'split-governance') return await runSplitGovernance()
+    if (scenario === 'replay') return await runGatewayRecovery()
+    if (scenario === 'history') return await runRoomHistory()
     if (scenario === 'governance') return await runGovernanceRace()
     if (scenario === 'membership') return await runMembershipRecovery()
     if (scenario === 'opening') return await runOpeningRetry()
@@ -1267,4 +1444,6 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
   it.skipIf(!databaseUrl)('orders governance with accepted turns and distinguishes split gateway disconnects', () => journey('postgres', 'split-governance'), 80_000)
   it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', 'split'), 70_000)
+  it.skipIf(!databaseUrl)('recovers old and missing cursors and a disconnected slow gateway reader', () => journey('postgres', 'replay'), 85_000)
+  it.skipIf(!databaseUrl)('resumes with bounded state and pages earlier transcript in committed order', () => journey('postgres', 'history'), 45_000)
 })

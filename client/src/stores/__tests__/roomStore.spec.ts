@@ -145,6 +145,27 @@ describe('roomStore', () => {
     expect(store.scene).toBe('地下室')
   })
 
+  it('loads earlier transcript pages without changing the live cursor or duplicating messages', async () => {
+    await joinAndSync()
+    const previous = { id: 'm1', timestamp: 1, role: 'system', content: 'A ledger was found.' }
+    const recent = { id: 'm2', timestamp: 1, role: 'kp', content: 'The archive is quiet.' }
+    const historyRequest = vi.fn(({ url }: { url: string }) => {
+      expect(url).toContain('/api/rooms/room_x/history?before=m2')
+      return { statusCode: 200, data: { messages: [previous, recent], nextBefore: null } }
+    })
+    state.requestResponder = historyRequest
+    emitFrame({
+      type: 'room:state', roomId: 'room_x', seq: 29,
+      snapshot: { ...SNAP0, seq: 29, messages: [recent], transcript: { before: 'm2' } },
+    })
+    expect(store.canLoadHistory).toBe(true)
+    await store.loadEarlierMessages()
+    expect(historyRequest).toHaveBeenCalledTimes(1)
+    expect(store.messages).toEqual([previous, recent])
+    expect(store.lastSeq).toBe(29)
+    expect(store.canLoadHistory).toBe(false)
+  })
+
   it('applies characters state_patch by merging', async () => {
     await joinAndSync()
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: { ...SNAP0, characters: { char_a: { derived: { hp: 10 } } } } })
@@ -361,6 +382,33 @@ describe('roomStore', () => {
     expect(reconnect.sent.filter((sent) => JSON.parse(sent).type === 'room:action')).toHaveLength(1)
     reconnect.emitMessage({ type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'completed', messageId: echo.id })
     expect(store.messages).toEqual([echo])
+  })
+
+  it('reattaches at the last applied sequence and retries only chats missing from replay', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 5, snapshot: { ...SNAP0, seq: 5 }, actionReceipts: true })
+    store.sendChat('Inspect the ledger')
+    const confirmed = sentFrames().at(-1)!
+    store.sendChat('Open the cabinet')
+    const uncertain = sentFrames().at(-1)!
+
+    state.sockets[0].emitClose()
+    await vi.advanceTimersByTimeAsync(1_000)
+    const reconnect = state.sockets[1]
+    reconnect.emitOpen()
+    expect(JSON.parse(reconnect.sent[0])).toMatchObject({ type: 'room:join', roomId: 'room_x', lastSeq: 5 })
+    const echo = { id: 'replayed-message', timestamp: 1, role: 'player', playerName: 'alice', content: 'Inspect the ledger' }
+    const replay = { type: 'room:event', roomId: 'room_x', seq: 6, eventType: 'message_appended',
+      payload: { message: echo, author: { userId: 1, roleName: 'alice' }, actionId: confirmed.actionId } }
+    reconnect.emitMessage(replay)
+    reconnect.emitMessage(replay)
+    reconnect.emitMessage({ type: 'room:sync:done', roomId: 'room_x', seq: 6, actionReceipts: true })
+
+    expect(store.connectionState).toBe('joined')
+    expect(store.isSyncing).toBe(false)
+    expect(store.lastSeq).toBe(6)
+    expect(store.messages.filter((message) => message.id === echo.id)).toEqual([echo])
+    expect(reconnect.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === 'room:action')).toEqual([uncertain])
   })
 
   it('offers manual recovery if the automatic recheck is still uncertain and keeps the transcript authoritative', async () => {

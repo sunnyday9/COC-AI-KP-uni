@@ -19,6 +19,7 @@ import {
   createRoom,
   createSoloRoom,
   getRoomDetail,
+  getRoomHistory,
   listRoomsForUser,
   listSoloRoomsForUser,
 } from '../services/roomService.js'
@@ -100,6 +101,18 @@ router.get('/:id', async (req: AuthRequest, res) => {
     return
   }
   res.json(result.detail)
+})
+
+/** GET /api/rooms/:id/history — previous transcript messages in chronological order. */
+router.get('/:id/history', async (req: AuthRequest, res) => {
+  const { before, limit } = req.query
+  const pageSize = limit === undefined ? 40 : typeof limit === 'string' && /^\d{1,3}$/.test(limit) ? Number(limit) : 0
+  if (pageSize < 1 || pageSize > 100 || (before !== undefined && (typeof before !== 'string' || before.length < 1 || before.length > 200))) {
+    return sendError(res, new BadRequestError('invalid history cursor or limit'))
+  }
+  const page = await getRoomHistory(req.userId as number, String(req.params.id ?? ''), typeof before === 'string' ? before : null, pageSize)
+  if (!page) return sendError(res, new NotFoundError('room not found'))
+  res.json(page)
 })
 
 /** POST /api/rooms/:id/start — 房主开始游戏（绑定剧本）。 */

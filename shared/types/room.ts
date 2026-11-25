@@ -4,7 +4,7 @@
  *
  * 事件流设计（全序 seq 由服务端 RoomService 串行分配）：
  *  - 客户端帧（经共享 WS 连接，见 ws/index.ts）：
- *      room:join   { roomId }
+ *      room:join   { roomId, lastSeq? }
  *      room:leave  { roomId }
  *      room:sync   { roomId, lastSeq }   —— 断线重连增量补齐
  *      room:action { roomId, action }    —— 聊天/表态，串行入队
@@ -89,6 +89,8 @@ export interface RoomSnapshot {
   phase: RoomPhase
   storyId: string | null
   messages: Message[]
+  /** Older messages are available through the room history endpoint. Null starts at the newest archived message. */
+  transcript?: { before: string | null }
   characters: Record<string, unknown>
   clues: { id: string; description: string }[]
   scene: string | null
@@ -101,6 +103,11 @@ export interface RoomSnapshot {
   updatedAt: number
 }
 
+export interface RoomHistoryPage {
+  messages: Message[]
+  nextBefore: string | null
+}
+
 export type RoomActionReceiptStatus = 'pending' | 'completed' | 'cancelled'
 
 export type RoomActionResult =
@@ -111,7 +118,7 @@ export type RoomActionResult =
 export type RoomServerFrame =
   | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number; actionReceipts?: true; kpTurnPending?: boolean }
   | { type: 'room:event'; roomId: string; seq: number; eventType: RoomEventType; payload: RoomEventFrame['payload'] }
-  | { type: 'room:sync:done'; roomId: string; seq: number }
+  | { type: 'room:sync:done'; roomId: string; seq: number; actionReceipts?: true }
   | ({ type: 'room:action:result'; roomId: string; actionId: string } & RoomActionResult)
   | { type: 'room:error'; roomId: string; error: string; removedReason?: RoomRemovedReason }
 

@@ -30,9 +30,11 @@ import type {
   RoomActionResult,
   RoomEventPayloadMap,
   RoomEventType,
+  RoomHistoryPage,
   RoomMemberInfo,
   RoomMemberRole,
   RoomPhase as SharedRoomPhase,
+  RoomSnapshot as SharedRoomSnapshot,
 } from '../../../shared/types/room.js'
 import type { COCCharacterSheet } from '../../../shared/types/character.js'
 import type { Message } from '../../../shared/types/game.js'
@@ -68,6 +70,7 @@ export interface RoomSnapshot {
   phase: RoomPhase
   storyId: string | null
   messages: Message[]
+  transcript?: SharedRoomSnapshot['transcript']
   characters: Record<string, COCCharacterSheet>
   clues: { id: string; description: string }[]
   scene: string | null
@@ -115,7 +118,24 @@ const SNAPSHOT_EVERY_N_EVENTS = 20
 const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
 /** 事件日志环形容量（Phase C1：重连增量窗口；超出 → 全量快照兜底）。 */
-const MAX_EVENT_LOG = 200
+const MAX_EVENT_LOG = roomStorage.ROOM_EVENT_WINDOW
+const HOT_TRANSCRIPT_MESSAGES = 40
+const HOT_TRANSCRIPT_BYTES = 512 * 1024
+
+function boundTranscript(snapshot: Pick<RoomSnapshot, 'messages' | 'transcript'>): void {
+  const { messages } = snapshot
+  let cutoff = messages.length
+  let bytes = 0
+  const earliest = Math.max(0, messages.length - HOT_TRANSCRIPT_MESSAGES)
+  while (cutoff > earliest) {
+    bytes += Buffer.byteLength(JSON.stringify(messages[cutoff - 1])) + 1
+    if (bytes > HOT_TRANSCRIPT_BYTES) break
+    cutoff--
+  }
+  if (cutoff > 0) snapshot.messages = messages.slice(cutoff)
+  if (cutoff > 0 || snapshot.transcript) snapshot.transcript = { before: snapshot.messages[0]?.id ?? null }
+}
+
 const MAX_PENDING_PLAYER_ACTIONS = 32
 /** 每 N 个 KP 回合刷新一次长期摘要（场景切换也会触发）。 */
 const LONG_TERM_SUMMARY_EVERY_TURNS = 10
@@ -205,6 +225,7 @@ export class RoomService {
   private renewingLease = false
   private pendingPlayerTurn?: PlayerTurnCheckpoint
   private openingCheckpointed = false
+  private transcript?: RoomSnapshot['transcript']
   /** 回合窗口（D4）：缓冲窗口内玩家消息，超时合并进一次 KP 回合。 */
   private turnBuffer: PendingTurnMessage[] = []
   /** Batch currently executing; included in snapshots until its turn commits. */
@@ -243,6 +264,7 @@ export class RoomService {
       }
       this.openingCheckpointed = opts.restore.openingCheckpointed === true
       this.messages = Array.isArray(opts.restore.messages) ? opts.restore.messages : []
+      this.transcript = opts.restore.transcript
       this.characters = new Map(Object.entries(opts.restore.characters ?? {}))
       this.clues = Array.isArray(opts.restore.clues) ? opts.restore.clues : []
       this.scene = opts.restore.scene ?? null
@@ -318,6 +340,7 @@ export class RoomService {
       phase: this.phase,
       storyId: this.storyId,
       messages: this.messages,
+      transcript: this.transcript,
       characters: Object.fromEntries(this.characters),
       clues: this.clues,
       scene: this.scene,
@@ -375,8 +398,11 @@ export class RoomService {
   /** 增量事件（lastSeq 之后；返回 null 表示缺口过大需全量快照）。
    * lastSeq=0（客户端无状态）或 < 日志起始 seq → 全量。 */
   getEventsSince(lastSeq: number): { seq: number; event: RoomEvent }[] | null {
-    if (lastSeq < this.eventLogStartSeq) return null
-    return this.eventLog.filter((e) => e.seq > lastSeq)
+    if (lastSeq <= 0 || lastSeq > this.seq) return null
+    if (lastSeq === this.seq) return []
+    if (lastSeq < this.eventLogStartSeq - 1) return null
+    const events = this.eventLog.filter((e) => e.seq > lastSeq)
+    return events.length === this.seq - lastSeq ? events : null
   }
 
   /* ═══════════════ 动作处理 ═══════════════ */
@@ -1446,7 +1472,9 @@ export class RoomService {
     stagedEvents: { seq: number; event: RoomEvent }[] = [], turn?: roomStorage.RoomCheckpoint['turn'],
   ): Promise<boolean> {
     if (this.disposed) return false
+    if (this.workerLease) boundTranscript(snapshot)
     const checkpoint = this.workerLease ? {
+      seq: snapshot.seq,
       lease: this.workerLease,
       events: [...this.eventLog.filter(({ seq }) => seq > this.persistedSeq), ...stagedEvents]
         .map(({ seq, event }) => ({ seq, type: event.type, payload: event.payload })),
@@ -1464,6 +1492,7 @@ export class RoomService {
     }
     this.persistedSeq = Math.max(this.persistedSeq, snapshot.seq)
     this.lastSnapshotAt = Date.now()
+    if (this.workerLease) this.transcript = snapshot.transcript
     return true
   }
 
@@ -1599,6 +1628,17 @@ async function materializeRoom(
         ending: null,
         turnWindowMs: DEFAULT_TURN_WINDOW_MS,
         updatedAt: Date.now(),
+      }
+    }
+    if (workerLease && r && !r.transcript_archived && restore) {
+      const legacyMessages = Array.isArray(restore.messages) ? restore.messages : []
+      restore.messages = legacyMessages
+      boundTranscript(restore)
+      try {
+        await roomStorage.archiveRoomTranscript(roomId, workerLease, legacyMessages, serializeRoomState(restore), restore.seq ?? 0)
+      } catch (error) {
+        await roomStorage.releaseRoomLease(roomId, workerLease).catch(() => {})
+        throw error
       }
     }
     room = new RoomService({ roomId, ownerId: r?.owner_id ?? ownerId, ownerName: (r ? await roomStorage.usernameOf(r.owner_id) : null) ?? ownerName, storyId: typeof r?.story_id === 'string' ? r.story_id : storyId, storyOwnerId: r?.story_owner_id ?? (typeof r?.story_id === 'string' ? r.owner_id : null), restore, workerLease })
@@ -1771,7 +1811,10 @@ export async function getRoomDetail(
     const room = await roomStorage.getRoomRow(roomId)
     if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
     // rooms.state 经 codec 容错解析（#61）：脏 JSON → {}；成功值原样透传（含 JSON null，原语义）
-    const state: unknown = parseRoomStateOr(room.state, {})
+    const state = parseRoomStateOr(room.state, {}) as Partial<RoomSnapshot> | null
+    if (ROOM_WORKER_FAILOVER_ENABLED && !room.transcript_archived && Array.isArray(state?.messages)) {
+      boundTranscript(state as RoomSnapshot)
+    }
     return {
       ok: true,
       detail: {
@@ -1792,6 +1835,15 @@ export async function getRoomDetail(
       },
     }
   })
+}
+
+export async function getRoomHistory(
+  userId: number, roomId: string, before: string | null, limit: number,
+): Promise<RoomHistoryPage | undefined> {
+  const newestFirst = await roomStorage.readRoomHistory(roomId, userId, before, limit + 1)
+  if (!newestFirst) return undefined
+  const messages = newestFirst.slice(0, limit).reverse()
+  return { messages, nextBefore: newestFirst.length > limit ? messages[0]?.id ?? null : null }
 }
 
 /** POST /api/rooms/:id/start —— 房主开始游戏。开局门闩（ADR-0005）判定单源在
@@ -2223,3 +2275,6 @@ export function _clearRoomRegistryForTests(): void {
   for (const room of roomRegistry.values()) room.dispose()
   roomRegistry.clear()
 }
+
+export const readRoomOutbox = roomStorage.readRoomOutbox
+export const ROOM_EVENT_WINDOW = roomStorage.ROOM_EVENT_WINDOW

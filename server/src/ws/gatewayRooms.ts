@@ -1,71 +1,119 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import { readRoomOutbox } from '../services/roomOutbox.js'
+import { routeSocketCommand } from '../services/roomCommands.js'
+import { readRoomOutbox, ROOM_EVENT_WINDOW } from '../services/roomService.js'
 import { logger } from '../utils/logging.js'
 import { errorMessage } from '../utils/errors.js'
-import { roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeSocket, type RoomSubscriber } from './roomLedger.js'
-import { releaseGatewayPresence } from './gatewayPresence.js'
-import { sendFrame } from './sendFrame.js'
+import {
+  gatewayRoomIds, gatewaySubscribers, reserveGatewaySubscription, unsubscribeGatewaySocket, type RoomSubscriber,
+} from './roomLedger.js'
+import { activateGatewayPresence, joinGatewayPresence } from './gatewayPresence.js'
+import { markTransportReset, sendFrame } from './sendFrame.js'
 
-interface Subscription {
-  userId: number
-  seq: number
+const MAX_REPLAY_BYTES = 512 * 1024
+
+type OutboxEvent = Awaited<ReturnType<typeof readRoomOutbox>>[number]['events'][number]
+
+function eventFrame(roomId: string, { seq, type, payload }: OutboxEvent): string {
+  return JSON.stringify({ type: 'room:event', roomId, seq, eventType: type, payload })
 }
 
-const subscriptions = new Map<string, Map<RoomSubscriber, Subscription>>()
-let subscriptionCount = 0
-
-export function subscribeGatewaySocket(socket: RoomSubscriber, roomId: string, userId: number, seq: number): boolean {
-  const rooms = roomIdsOfSocket(socket)
-  let listeners = subscriptions.get(roomId)
-  const previous = listeners?.get(socket)
-  if (previous && previous.seq > seq) {
-    sendFrame(socket, JSON.stringify({ type: 'room:sync:done', roomId, seq: previous.seq }))
-    return false
+function buildReplay(roomId: string, cursor: number, highWater: number | null, events: OutboxEvent[]): string[] | null {
+  if (highWater === null || cursor > highWater || highWater - cursor > ROOM_EVENT_WINDOW) return null
+  const frames: string[] = []
+  let bytes = 0
+  let seq = cursor
+  for (const event of events) {
+    if (event.seq <= seq) continue
+    if (event.seq !== seq + 1 || event.seq > highWater) return null
+    const frame = eventFrame(roomId, event)
+    bytes += Buffer.byteLength(frame)
+    if (bytes > MAX_REPLAY_BYTES) return null
+    frames.push(frame)
+    seq = event.seq
   }
-  if (!previous && (rooms.length >= 8 || subscriptionCount >= 4096 ||
-      (!listeners && subscriptions.size >= 1024) || (listeners?.size ?? 0) >= 256)) {
-    sendFrame(socket, JSON.stringify({ type: 'room:error', roomId, error: 'Room subscription limit reached.' }))
-    return false
-  }
-  if (!listeners) {
-    listeners = new Map()
-    subscriptions.set(roomId, listeners)
-  }
-  listeners.set(socket, { userId, seq })
-  subscribeSocket(socket, roomId)
-  if (!previous) subscriptionCount++
-  return true
+  return seq === highWater ? frames : null
 }
 
-export function unsubscribeGatewaySocket(socket: RoomSubscriber, roomId: string): void {
-  releaseGatewayPresence(socket, roomId)
-  const listeners = subscriptions.get(roomId)
-  if (!listeners?.delete(socket)) return
-  if (listeners.size === 0) subscriptions.delete(roomId)
-  subscriptionCount--
-  unsubscribeSocket(socket, roomId)
+export async function resumeGatewaySocket(
+  socket: RoomSubscriber, roomId: string, userId: number, lastSeq: number, signal?: AbortSignal,
+): Promise<void> {
+  const subscription = reserveGatewaySubscription(socket, roomId, userId)
+  const send = (frame: unknown) => sendFrame(socket, JSON.stringify(frame))
+  if (!subscription) {
+    send({ type: 'room:error', roomId, error: 'Room subscription limit reached.' })
+    return
+  }
+
+  const current = () => socket.readyState === 1 && subscription === gatewaySubscribers(roomId)?.get(socket)
+  try {
+    const present = await joinGatewayPresence(socket, roomId, userId)
+    if (!current()) return
+    if (!present) {
+      send({ type: 'room:error', roomId, error: 'not a room member' })
+      return
+    }
+    if (lastSeq > 0) {
+      const [result] = await readRoomOutbox([{ roomId, userIds: [userId], seq: lastSeq }], ROOM_EVENT_WINDOW)
+      if (!current()) return
+      if (!result.members.has(userId)) {
+        send({ type: 'room:error', roomId, error: 'not a room member' })
+        return
+      }
+      const replay = buildReplay(roomId, lastSeq, result.highWater, result.events)
+      if (replay && result.highWater !== null) {
+        for (const frame of replay) sendFrame(socket, frame)
+        send({ type: 'room:sync:done', roomId, seq: result.highWater, actionReceipts: true })
+        if (current()) {
+          subscription.seq = result.highWater
+          activateGatewayPresence(socket, roomId)
+        }
+        return
+      }
+    }
+    const result = await routeSocketCommand('snapshot', userId, roomId, [], signal)
+    if (!current()) return
+    if (!result) {
+      send({ type: 'room:error', roomId, error: 'not a room member' })
+      return
+    }
+    send({ type: 'room:state', roomId, actionReceipts: true, ...result })
+    if (current()) {
+      subscription.seq = result.seq
+      activateGatewayPresence(socket, roomId)
+    }
+  } finally {
+    if (subscription.seq === null && subscription === gatewaySubscribers(roomId)?.get(socket)) {
+      unsubscribeGatewaySocket(socket, roomId)
+    }
+  }
+}
+
+function resetForReplay(socket: RoomSubscriber): void {
+  markTransportReset(socket)
+  socket.terminate()
 }
 
 export async function runGatewayRoomFanout(signal: AbortSignal): Promise<void> {
   while (!signal.aborted) {
-    const activeRooms = [...subscriptions.keys()]
+    const activeRooms = gatewayRoomIds()
     for (let first = 0; first < activeRooms.length && !signal.aborted; first += 16) {
       const page = activeRooms.slice(first, first + 16).flatMap((roomId) => {
-        const listeners = subscriptions.get(roomId)
-        return listeners ? [{ roomId, listeners: new Map(listeners) }] : []
+        const listeners = new Map(
+          [...gatewaySubscribers(roomId) ?? []].filter(([, subscription]) => subscription.seq !== null),
+        )
+        return listeners.size ? [{ roomId, listeners }] : []
       })
       if (!page.length) continue
       try {
         const changes = await readRoomOutbox(page.map(({ roomId, listeners }) => ({
           roomId,
-          seq: Math.min(...[...listeners.values()].map((sub) => sub.seq)),
+          seq: Math.min(...[...listeners.values()].map((sub) => sub.seq!)),
           userIds: [...new Set([...listeners.values()].map((sub) => sub.userId))],
         })))
-        for (const { roomId, roomExists, members, events } of changes) {
+        for (const { roomId, roomExists, highWater, members, events } of changes) {
           const selected = page.find((entry) => entry.roomId === roomId)?.listeners
-          for (const socket of subscribersOf(roomId)) {
-            const subscription = subscriptions.get(roomId)?.get(socket)
-            if (!subscription || subscription !== selected?.get(socket)) continue
+          for (const [socket, subscription] of selected ?? []) {
+            if (subscription.seq === null || subscription !== gatewaySubscribers(roomId)?.get(socket)) continue
             if (!members.has(subscription.userId)) {
               unsubscribeGatewaySocket(socket, roomId)
               sendFrame(socket, JSON.stringify({
@@ -74,11 +122,18 @@ export async function runGatewayRoomFanout(signal: AbortSignal): Promise<void> {
               }))
               continue
             }
+            if (events.length === 0 && highWater !== null && subscription.seq < highWater) {
+              resetForReplay(socket)
+              continue
+            }
             for (const event of events) {
               if (event.seq <= subscription.seq) continue
-              sendFrame(socket, JSON.stringify({
-                type: 'room:event', roomId, seq: event.seq, eventType: event.type, payload: event.payload,
-              }))
+              if (event.seq !== subscription.seq + 1) {
+                resetForReplay(socket)
+                break
+              }
+              sendFrame(socket, eventFrame(roomId, event))
+              if (socket.readyState !== 1) break
               subscription.seq = event.seq
             }
           }

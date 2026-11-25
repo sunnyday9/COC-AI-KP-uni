@@ -18,7 +18,7 @@
  *   shared/ — no runtime import, so no bundling concerns).
  */
 import type { AppSettings } from '../../../shared/types/settings'
-import type { RoomServerFrame, RoomSnapshot, RoomAction, RoomListItem, RoomDetail, CharacterListItem, SoloRoomListItem } from '../../../shared/types/room'
+import type { RoomServerFrame, RoomSnapshot, RoomAction, RoomListItem, RoomDetail, RoomHistoryPage, CharacterListItem, SoloRoomListItem } from '../../../shared/types/room'
 import type {
   AuthResult,
   BridgeUser,
@@ -253,6 +253,11 @@ export class PlatformBridge {
   }
   roomDetail(roomId: string): Promise<RoomDetail> {
     return request<RoomDetail>('GET', `/api/rooms/${encodeURIComponent(roomId)}`)
+  }
+
+  roomHistory(roomId: string, before: string | null): Promise<RoomHistoryPage> {
+    const query = before === null ? '' : `?before=${encodeURIComponent(before)}`
+    return request('GET', `/api/rooms/${encodeURIComponent(roomId)}/history${query}`)
   }
   roomStart(roomId: string, storyId: string): Promise<{ ok: boolean }> {
     return request('POST', `/api/rooms/${encodeURIComponent(roomId)}/start`, { storyId })
