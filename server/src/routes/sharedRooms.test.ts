@@ -73,6 +73,7 @@ async function prepareDossier(root: string, userId: number, scriptId: string): P
 interface KeeperFixture {
   pauseAfterTool?: boolean
   failOpeningCheckpoint?: boolean
+  failOpeningProvider?: boolean
   endingOpeningBarrier?: string
   damageReleaseFile?: string
   ignoreLeaseRenewal?: boolean
@@ -86,6 +87,10 @@ function keeperFixture(options: KeeperFixture): string {
     const damageReleaseFile = ${JSON.stringify(options.damageReleaseFile)};
     let turns = 0;
     export async function runKpTurn(_userId, { messages }, turn) {
+      if (${options.failOpeningProvider === true}) {
+        turn.handlers.onError('Synthetic provider failure');
+        return;
+      }
       if (endingOpeningBarrier && ++turns === 1) {
         process.stdout.write('keeper fixture holding the only turn slot' + String.fromCharCode(10));
         while (!existsSync(endingOpeningBarrier)) await delay(20);
@@ -103,6 +108,7 @@ function keeperFixture(options: KeeperFixture): string {
           while (!existsSync(damageReleaseFile)) await delay(20);
         }
       }
+      turn.handlers.onChunk?.('Narration chunk.');
       turn.handlers.onEnd({ content: damage ? 'The ledger was recovered.' : 'The archive is quiet.', displayMessages: [] });
     }
   `
@@ -168,7 +174,40 @@ function pauseAcceptance(actionId: string): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', failover = false): Promise<void> {
+/** Interrupt a single worker after it has authorized a REST mutation. */
+function pauseRoomMutations(directory: string): string {
+  return 'data:text/javascript,' + encodeURIComponent(`
+    import { registerHooks } from 'node:module';
+    const directory = ${JSON.stringify(directory)};
+    registerHooks({
+      resolve(specifier, context, next) {
+        const resolved = next(specifier, context);
+        if (specifier !== './roomStorage.js' || !context.parentURL?.endsWith('/roomService.ts')) return resolved;
+        const origin = JSON.stringify(resolved.url);
+        const wrapper = [
+          'export * from ' + origin + ';',
+          'import * as storage from ' + origin + ';',
+          'import { existsSync, writeFileSync } from "node:fs";',
+          'import { join } from "node:path";',
+          'import { setTimeout as delay } from "node:timers/promises";',
+          'const directory = ' + JSON.stringify(directory) + ';',
+          'async function pause(operation) {',
+          '  if (!existsSync(join(directory, "arm-" + operation))) return;',
+          '  writeFileSync(join(directory, "held-" + operation), "");',
+          '  while (!existsSync(join(directory, "release-" + operation))) await delay(20);',
+          '}',
+          'export async function insertMember(...args) { await pause("join"); return storage.insertMember(...args); }',
+          'export async function transferRoomOwnership(...args) { await pause("transfer"); return storage.transferRoomOwnership(...args); }',
+        ].join(String.fromCharCode(10));
+        return { url: 'data:text/javascript,' + encodeURIComponent(wrapper), shortCircuit: true };
+      }
+    });
+  `)
+}
+
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening'): Promise<void> {
+  const failover = scenario !== undefined
+
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
   const fixtureRoot = join(root, 'prepared')
   const localDossiers = join(root, 'local-dossiers')
@@ -183,14 +222,15 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
   const pausedAcceptances = new WeakSet<ChildProcess>()
   const shared = backend === 'postgres'
   let base: string
-  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean } = {}): Promise<ChildProcess> {
+  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string } = {}): Promise<ChildProcess> {
     const port = await freePort()
     base = `http://127.0.0.1:${port}`
     const args = ['--import', 'tsx']
-    if (options.pauseAfterTool !== undefined || options.failOpeningCheckpoint || options.endingOpeningBarrier) {
+    if (options.pauseAfterTool !== undefined || options.failOpeningCheckpoint || options.failOpeningProvider || options.endingOpeningBarrier) {
       args.push('--import', keeperFixture(options))
     }
     if (options.pauseActionId) args.push('--import', pauseAcceptance(options.pauseActionId))
+    if (options.governanceBarrier) args.push('--import', pauseRoomMutations(options.governanceBarrier))
     args.push('src/app.ts')
     const child = spawn(process.execPath, args, {
       env: {
@@ -208,6 +248,7 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
         UPLOADS_DIR: join(root, 'uploads'),
         JWT_SECRET: jwtSecret,
         MOCK_AI: '1',
+        KP_CHUNK_STREAM: options.chunkStream ? '1' : undefined,
         KP_ACTIVE_TURNS: options.endingOpeningBarrier ? '1' : undefined,
         PORT: String(port),
       },
@@ -325,7 +366,7 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
     const middle = await launch({ pauseAfterTool: true })
     await ready(middle)
     const middleBase = base
-    const newest = await launch({ pauseAfterTool: false })
+    const newest = await launch({ pauseAfterTool: false, chunkStream: true })
     await ready(newest)
     const newestBase = base
     await delay(3_100)
@@ -409,6 +450,7 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
       )
       expect(events.rows.map((event) => event.seq)).toEqual(events.rows.map((_, index) => index + 1))
       expect(events.rows.every((event) => event.in_outbox)).toBe(true)
+      expect(events.rows.filter((event) => event.event_type === 'kp_chunk')).toHaveLength(2)
       expect(events.rows.filter((event) => event.payload?.message?.content === actionText)).toHaveLength(1)
       expect(events.rows.filter((event) => event.payload?.message?.content === 'The ledger was recovered.')).toHaveLength(1)
     } finally {
@@ -416,11 +458,161 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
     }
   }
 
-  try {
-    if (failover) {
-      await runWorkerFailover()
-      return
+  async function createLobby(owner: Account, name: string) {
+    const storyId = 'worker-' + randomUUID()
+    await prepareDossier(join(fixtureRoot, 'dossiers'), owner.user.id, storyId)
+    const room = await request('/api/rooms', {
+      method: 'POST', token: owner.token, body: { storyId, workflow: 'dossier' },
+    })
+    const addCard = async (account: Account, cardName: string) => {
+      const card = await request('/api/characters', { method: 'POST', token: account.token, body: { name: cardName, sheet } })
+      await bind(room.roomId, account.token, card.id)
+      return card.id
     }
+    const characterId = await addCard(owner, name)
+    return { ...room, storyId, characterId, addCard }
+  }
+
+  const enter = (inviteCode: string, token: string, expected = 200) =>
+    request('/api/rooms/join', { method: 'POST', token, body: { inviteCode }, expected })
+
+  async function runGovernanceRace() {
+    const slow = await launch({ governanceBarrier: root })
+    await ready(slow)
+    const slowBase = base
+    const fast = await launch()
+    await ready(fast)
+    const fastBase = base
+    const owner = await register()
+    const member = await register()
+    const other = await register()
+    const room = await createLobby(owner, 'Governance archivist')
+    const start = (expected: number) => request('/api/rooms/' + room.roomId + '/start', {
+      method: 'POST', token: owner.token, body: { storyId: room.storyId }, expected,
+    })
+    const transfer = (userId: number, expected = 200) => request('/api/rooms/' + room.roomId + '/transfer', {
+      method: 'POST', token: owner.token, body: { userId }, expected,
+    })
+
+    await writeFile(join(root, 'arm-join'), '')
+    base = slowBase
+    const joining = enter(room.inviteCode, member.token)
+    try {
+      await expect.poll(() => existsSync(join(root, 'held-join'))).toBe(true)
+      base = fastBase
+      await start(503)
+    } finally {
+      await writeFile(join(root, 'release-join'), '')
+      await joining
+    }
+    await start(409)
+    await enter(room.inviteCode, other.token)
+    await writeFile(join(root, 'arm-transfer'), '')
+    base = slowBase
+    const transferring = transfer(member.user.id)
+    try {
+      await expect.poll(() => existsSync(join(root, 'held-transfer'))).toBe(true)
+      base = fastBase
+      await transfer(other.user.id, 503)
+    } finally {
+      await writeFile(join(root, 'release-transfer'), '')
+      await transferring
+    }
+    await transfer(other.user.id, 409)
+    const snapshot = await detail(room.roomId, member.token)
+    expect(snapshot.members.filter((entry: { role: string }) => entry.role === 'owner')).toMatchObject([{ userId: member.user.id }])
+  }
+
+  async function runMembershipRecovery() {
+    const worker = await launch({ pauseAfterTool: true })
+    await ready(worker)
+    const owner = await register()
+    const removed = await register()
+    const room = await createLobby(owner, 'Recovery owner')
+    await enter(room.inviteCode, removed.token)
+    await room.addCard(removed, 'Recovery member')
+    await request('/api/rooms/' + room.roomId + '/settings', { method: 'PUT', token: owner.token, body: { turnWindowMs: 800 } })
+    await request('/api/rooms/' + room.roomId + '/start', { method: 'POST', token: owner.token, body: { storyId: room.storyId } })
+
+    const ownerSocket = await connect(owner.token)
+    const removedSocket = await connect(removed.token)
+    for (const socket of [ownerSocket, removedSocket]) socket.send({ type: 'room:join', roomId: room.roomId })
+    await Promise.all([ownerSocket, removedSocket].map((socket) => socket.waitFor((frame) => frame.type === 'room:state')))
+    const removedId = randomUUID()
+    const survivingId = randomUUID()
+    removedSocket.send({ ...chat(room.roomId, 'Look at the rug'), actionId: removedId })
+    expect(await removedSocket.waitFor((frame) => frame.actionId === removedId)).toMatchObject({ status: 'pending' })
+    ownerSocket.send({ ...chat(room.roomId, 'Recover the damaged ledger'), actionId: survivingId })
+    expect(await ownerSocket.waitFor((frame) => frame.actionId === survivingId)).toMatchObject({ status: 'pending' })
+    await expect.poll(() => pausedKeepers.has(worker), { timeout: 7_000 }).toBe(true)
+    const original = (await detail(room.roomId, owner.token)).state.pendingPlayerTurn
+    expect(original).toMatchObject({ id: expect.any(String), actionCount: 2 })
+    await stop(worker)
+
+    const replacement = await launch({ pauseAfterTool: false })
+    await ready(replacement)
+    await delay(3_100)
+    await request('/api/rooms/' + room.roomId + '/members/' + removed.user.id, { method: 'DELETE', token: owner.token })
+    const resumed = await connect(owner.token)
+    resumed.send({ type: 'room:join', roomId: room.roomId })
+    await resumed.waitFor((frame) => frame.payload?.message?.content === 'The ledger was recovered.')
+    expect((await detail(room.roomId, owner.token)).state.characters[room.characterId].derived.hp).toBe(8)
+
+    const database = new Pool({ connectionString: databaseUrl })
+    try {
+      const turns = await database.query(
+        "SELECT turn_id, action_keys, outcome FROM room_turns WHERE room_id = $1 AND turn_id <> 'opening' ORDER BY first_event_seq NULLS FIRST",
+        [room.roomId],
+      )
+      expect(turns.rows).toEqual([
+        { turn_id: original.id, action_keys: [{ userId: removed.user.id, actionId: removedId }, { userId: owner.user.id, actionId: survivingId }], outcome: 'cancelled' },
+        { turn_id: expect.any(String), action_keys: [{ userId: owner.user.id, actionId: survivingId }], outcome: 'completed' },
+      ])
+      expect(turns.rows[1].turn_id).not.toBe(original.id)
+      expect((await database.query('SELECT status FROM room_actions WHERE room_id = $1 AND action_id = $2', [room.roomId, removedId])).rows).toEqual([{ status: 'cancelled' }])
+    } finally {
+      await database.end()
+    }
+  }
+
+  async function runOpeningRetry() {
+    const first = await launch({ failOpeningProvider: true })
+    await ready(first)
+    const owner = await register()
+    const storyId = 'opening-failure-archive'
+    await prepareDossier(join(fixtureRoot, 'dossiers'), owner.user.id, storyId)
+    const room = await request('/api/rooms/solo', {
+      method: 'POST', token: owner.token, body: { storyId, name: 'Opening retry archivist', sheet, workflow: 'dossier' },
+    })
+    const initial = await connect(owner.token)
+    initial.send({ type: 'room:join', roomId: room.roomId })
+    await initial.waitFor((frame) => frame.payload?.message?.role === 'system')
+    await stop(first)
+
+    const second = await launch({ pauseAfterTool: false })
+    await ready(second)
+    await delay(3_100)
+    const resumed = await connect(owner.token)
+    resumed.send({ type: 'room:join', roomId: room.roomId })
+    await resumed.waitFor(isKpMessage)
+
+    const database = new Pool({ connectionString: databaseUrl })
+    try {
+      const attempts = await database.query('SELECT turn_id, outcome FROM room_turns WHERE room_id = $1 ORDER BY first_event_seq', [room.roomId])
+      expect(attempts.rows).toEqual([
+        { turn_id: expect.stringMatching(/^opening-failed:/), outcome: 'failed' },
+        { turn_id: 'opening', outcome: 'completed' },
+      ])
+    } finally {
+      await database.end()
+    }
+  }
+
+  try {
+    if (scenario === 'governance') return await runGovernanceRace()
+    if (scenario === 'membership') return await runMembershipRecovery()
+    if (scenario === 'opening') return await runOpeningRetry()
+    if (scenario === 'failover') return await runWorkerFailover()
     const beforeCommitId = randomUUID()
     let first = await launch({ pauseActionId: beforeCommitId })
     await ready(first)
@@ -740,5 +932,8 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
 describe('room protocol across a gameplay process restart', () => {
   it('creates and resumes solo and multiplayer investigations in SQLite', () => journey('local'), 90_000)
   it.skipIf(!databaseUrl)('runs the same solo and multiplayer investigations in PostgreSQL', () => journey('postgres'), 90_000)
-  it.skipIf(!databaseUrl)('fences stale Keeper effects and recovers accepted turns across PostgreSQL workers', () => journey('postgres', true), 90_000)
+  it.skipIf(!databaseUrl)('fences stale Keeper effects and recovers accepted turns across PostgreSQL workers', () => journey('postgres', 'failover'), 90_000)
+  it.skipIf(!databaseUrl)('serializes competing REST authorizations on an inactive room', () => journey('postgres', 'governance'), 45_000)
+  it.skipIf(!databaseUrl)('cancels the original recovered turn when a member was removed', () => journey('postgres', 'membership'), 45_000)
+  it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
 })

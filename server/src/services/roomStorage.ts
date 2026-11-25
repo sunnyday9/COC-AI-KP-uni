@@ -143,6 +143,7 @@ export function releaseRoomLease(roomId: string, lease: RoomWorkerLease): Promis
 /** Fence and write in one transaction. The same room row serializes lease claims with durable mutations. */
 async function writeRoom(roomId: string, commands: Statement[], lease?: RoomWorkerLease): Promise<void> {
   if (!ROOM_WORKER_FAILOVER_ENABLED) return writeAll(commands)
+  if (!lease) throw new RoomLeaseLostError()
   try {
     await inPostgresTransaction(async (client) => {
       const row = await client.query(pgQuery(statement(
@@ -154,12 +155,7 @@ async function writeRoom(roomId: string, commands: Statement[], lease?: RoomWork
       const state = (await client.query(pgQuery(statement(
         'SELECT worker_expires_at > clock_timestamp() AS live FROM rooms WHERE room_id = ?', roomId,
       )))).rows[0]
-      if (lease) {
-        if (!state?.live || row.rows[0].worker !== workerId || row.rows[0].epoch !== lease.epoch) throw new RoomLeaseLostError()
-      } else if (state?.live) {
-        // Rooms may be set up through REST before they have an active worker.
-        throw new RoomWorkerBusyError()
-      }
+      if (!state?.live || row.rows[0].worker !== workerId || row.rows[0].epoch !== lease.epoch) throw new RoomLeaseLostError()
       await executeRoomStatements(client, commands)
     })
   } catch (error) {

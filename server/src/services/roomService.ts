@@ -692,8 +692,10 @@ export class RoomService {
       const members = new Map((await roomStorage.listMembers(this.roomId)).map((member) => [member.user_id, member]))
       const batch: PendingTurnMessage[] = []
       const cancelled: roomStorage.RoomActionWrite[] = []
+      let batchChanged = false
       for (const entry of candidates) {
         const member = members.get(entry.authorUserId)
+        if (!member || member.character_id !== entry.characterId) batchChanged = true
         if (member) {
           batch.push({ ...entry, characterId: member.character_id })
         } else if (entry.actionId) {
@@ -701,15 +703,18 @@ export class RoomService {
         }
       }
       if (this.workerLease || batch.length < candidates.length) {
+        const previousTurn = this.pendingPlayerTurn
         const checkpoint = this.workerLease && batch.length > 0
-          ? { id: this.pendingPlayerTurn?.id ?? crypto.randomUUID(), actionCount: batch.length }
+          ? { id: (batchChanged ? undefined : previousTurn?.id) ?? crypto.randomUUID(), actionCount: batch.length }
           : undefined
         const snapshot = this.snapshot()
         snapshot.pendingTurnMessages = [...batch, ...remaining]
         snapshot.pendingPlayerTurn = checkpoint
-        const cancelledTurn = !checkpoint && this.pendingPlayerTurn ? {
-          id: this.pendingPlayerTurn.id,
-          actionKeys: cancelled.map(({ userId, actionId }) => ({ userId, actionId })),
+        // Retire the old identity with its complete original action set.
+        // Survivors with fresh membership or bindings belong to a new turn.
+        const cancelledTurn = previousTurn && batchChanged ? {
+          id: previousTurn.id,
+          actionKeys: candidates.flatMap((entry) => entry.actionId ? [{ userId: entry.authorUserId, actionId: entry.actionId }] : []),
           outcome: 'cancelled' as const,
           firstEventSeq: null,
           lastEventSeq: null,
@@ -1055,7 +1060,9 @@ export class RoomService {
       )]
       snapshot.pendingTurnMessages = ended ? [] : [...this.turnBuffer]
       snapshot.pendingPlayerTurn = undefined
-      if (this.workerLease && checkpointOpening) snapshot.openingCheckpointed = true
+      const retryableOpeningFailure = checkpointOpening && draft.failed && !draft.content &&
+        !draft.events.some((event) => event.type === 'state_patch')
+      if (this.workerLease && checkpointOpening) snapshot.openingCheckpointed = !retryableOpeningFailure
       const checkpointMemory = draft.content
         ? this.appendFallbackTurnMemory(draft.content)
         : this.kpMemory
@@ -1070,7 +1077,9 @@ export class RoomService {
         }
       }
 
-      const turnId = checkpointOpening ? 'opening' : this.pendingPlayerTurn?.id
+      const turnId = retryableOpeningFailure
+        ? 'opening-failed:' + crypto.randomUUID()
+        : checkpointOpening ? 'opening' : this.pendingPlayerTurn?.id
       const turn = this.workerLease && turnId ? {
         id: turnId,
         actionKeys: batch.flatMap((entry) => entry.actionId ? [{ userId: entry.authorUserId, actionId: entry.actionId }] : []),
@@ -1492,6 +1501,39 @@ function withRoomCommand<T>(
   return next
 }
 
+/** A dormant room uses an exclusive temporary lease without materializing it. */
+function withRoomMutation<T>(
+  roomId: string, command: (workerLease?: roomStorage.RoomWorkerLease) => Promise<T>,
+): Promise<T> {
+  return withRoomCommand(roomId, async (workerLease) => {
+    if (!ROOM_WORKER_FAILOVER_ENABLED || workerLease) return command(workerLease)
+    const temporaryLease = await roomStorage.claimRoomLease(roomId)
+    if (!temporaryLease) {
+      if (!await roomStorage.getRoomRow(roomId)) return command()
+      throw new roomStorage.RoomWorkerBusyError()
+    }
+    let renewing = false
+    const heartbeat = setInterval(() => {
+      if (renewing) return
+      renewing = true
+      void roomStorage.renewRoomLease(roomId, temporaryLease).then((live) => {
+        if (!live) clearInterval(heartbeat)
+      }).catch((error) => {
+        logger.warn('temporary room lease renewal failed', { roomId, error: String(error) })
+      }).finally(() => { renewing = false })
+    }, Math.floor(ROOM_WORKER_LEASE_MS / 3))
+    heartbeat.unref?.()
+    try {
+      return await command(temporaryLease)
+    } finally {
+      clearInterval(heartbeat)
+      await roomStorage.releaseRoomLease(roomId, temporaryLease).catch((error) => {
+        logger.warn('temporary room lease release failed', { roomId, error: String(error) })
+      })
+    }
+  })
+}
+
 export function hasRoomCapacity(roomId: string): boolean {
   const configured = Number(process.env.ROOM_ACTIVE_INSTANCES ?? 1024)
   const limit = Number.isSafeInteger(configured) && configured > 0 ? configured : 1024
@@ -1688,7 +1730,7 @@ export async function joinRoomByInviteCode(
 ): Promise<{ ok: true; roomId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string }> {
   const roomId = await roomStorage.findRoomIdByInviteCode(inviteCode)
   if (!roomId) return { ok: false, reason: 'not-found', message: 'room not found' }
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const room = await roomStorage.getRoomRow(roomId)
     if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
     if (room.phase !== 'lobby') {
@@ -1744,7 +1786,7 @@ export async function startRoom(
   roomId: string,
   storyId: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string }> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
@@ -1815,7 +1857,7 @@ export async function bindRoomCharacter(
   roomId: string,
   characterId: string,
 ): Promise<{ ok: true; roomId: string; characterId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string }> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     if (!await roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
     if (await roomStorage.characterOwnerUserId(characterId) !== userId) {
       return { ok: false, reason: 'not-found', message: 'character not found' }
@@ -1850,7 +1892,7 @@ export async function setRoomTurnWindow(
   roomId: string,
   rawTurnWindowMs: unknown,
 ): Promise<{ ok: true; turnWindowMs?: number } | { ok: false; reason: 'not-found' | 'not-owner' | 'bad-request'; message: string }> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const room = await roomStorage.getRoomRow(roomId)
     if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
     if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can change room settings' }
@@ -1878,7 +1920,7 @@ export async function deleteRoomAsOwner(
   userId: number,
   roomId: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string }> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const room = await roomStorage.getRoomRow(roomId)
     if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
     if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
@@ -1924,7 +1966,7 @@ export async function setMemberReady(
   roomId: string,
   ready: boolean,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole === 'owner') return { ok: false, reason: 'not-owner', message: 'only members can toggle ready' }
@@ -1941,7 +1983,7 @@ export async function leaveRoomAsMember(
   userId: number,
   roomId: string,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole === 'owner') {
@@ -1959,7 +2001,7 @@ export async function leaveRoomAsOwner(
   userId: number,
   roomId: string,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
@@ -1999,7 +2041,7 @@ export async function kickRoomMember(
   roomId: string,
   targetUserId: number,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const g = await governanceGate(callerUserId, roomId, targetUserId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can kick members' }
@@ -2016,7 +2058,7 @@ export async function transferOwnership(
   roomId: string,
   targetUserId: number,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async (workerLease) => {
+  return withRoomMutation(roomId, async (workerLease) => {
     const g = await governanceGate(callerUserId, roomId, targetUserId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can transfer ownership' }

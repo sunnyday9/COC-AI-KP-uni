@@ -5,6 +5,7 @@ import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
 import { DEPLOYMENT_MODE, ROOM_WORKER_FAILOVER_ENABLED, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED, PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
 import { logger } from './utils/logging.js'
+import { CapacityError, sendError } from './utils/errors.js'
 import { getDb } from './db/index.js'
 import { getPostgresPool, initializePostgres } from './db/postgres.js'
 import { initializePostgresRooms } from './db/postgresRoomsSchema.js'
@@ -87,6 +88,10 @@ export function createApp(): Express {
   // Body-parser (malformed JSON / payload too large) and other 4xx errors
   // keep their status; everything else is a generic 500 (no stack traces).
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (err instanceof CapacityError) {
+      sendError(res, err)
+      return
+    }
     const status = typeof (err as { status?: unknown }).status === 'number' ? (err as { status: number }).status : 0
     if (status >= 400 && status < 500) {
       const type = (err as { type?: unknown }).type
