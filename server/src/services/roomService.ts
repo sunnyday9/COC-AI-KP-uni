@@ -18,7 +18,7 @@ export { RoomWorkerBusyError } from './roomStorage.js'
 import { logger } from '../utils/logging.js'
 import { createCharacterMutatorFactory, type CharacterEnding } from '../rule-engine/characterMutators.js'
 import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, ROOM_WORKER_FAILOVER_ENABLED, ROOM_WORKER_LEASE_MS, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
-import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
+import { buildRoomTurnMessages, buildRoomOpeningMessages, roomConversationLookback, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 import { acquireKpTurn } from './kpAdmission.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
 // 共用 checkStartGate，差异用 gateFor 表达。startGate 是零 fs/db 运行时依赖的叶子
@@ -72,6 +72,7 @@ export interface RoomSnapshot {
   storyId: string | null
   messages: Message[]
   transcript?: SharedRoomSnapshot['transcript']
+  hasNarrative?: boolean
   characters: Record<string, COCCharacterSheet>
   clues: { id: string; description: string }[]
   scene: string | null
@@ -123,8 +124,17 @@ const MAX_EVENT_LOG = roomStorage.ROOM_EVENT_WINDOW
 const HOT_TRANSCRIPT_MESSAGES = 40
 const HOT_TRANSCRIPT_BYTES = 512 * 1024
 
-function boundTranscript(snapshot: Pick<RoomSnapshot, 'messages' | 'transcript'>): void {
+function snapshotHasRecoverableTurn(snapshot: RoomSnapshot): boolean {
+  return !snapshot.kpSetupRequired && (snapshot.pendingTurnMessages?.length ?? 0) > 0
+}
+
+function isNarrative(message: Message): boolean {
+  return message?.role === 'player' || message?.role === 'kp'
+}
+
+function boundTranscript(snapshot: Pick<RoomSnapshot, 'messages' | 'transcript' | 'hasNarrative'>): void {
   const { messages } = snapshot
+  if (!snapshot.hasNarrative && messages.some(isNarrative)) snapshot.hasNarrative = true
   let cutoff = messages.length
   let bytes = 0
   const earliest = Math.max(0, messages.length - HOT_TRANSCRIPT_MESSAGES)
@@ -226,6 +236,7 @@ export class RoomService {
   private renewingLease = false
   private pendingPlayerTurn?: PlayerTurnCheckpoint
   private openingCheckpointed = false
+  private hasNarrative = false
   private transcript?: RoomSnapshot['transcript']
   /** 回合窗口（D4）：缓冲窗口内玩家消息，超时合并进一次 KP 回合。 */
   private turnBuffer: PendingTurnMessage[] = []
@@ -264,6 +275,7 @@ export class RoomService {
         this.pendingPlayerTurn = checkpoint
       }
       this.openingCheckpointed = opts.restore.openingCheckpointed === true
+      this.hasNarrative = opts.restore.hasNarrative === true
       this.messages = Array.isArray(opts.restore.messages) ? opts.restore.messages : []
       this.transcript = opts.restore.transcript
       this.characters = new Map(Object.entries(opts.restore.characters ?? {}))
@@ -343,6 +355,7 @@ export class RoomService {
       storyId: this.storyId,
       messages: this.messages,
       transcript: this.transcript,
+      hasNarrative: this.hasNarrative || undefined,
       characters: Object.fromEntries(this.characters),
       clues: this.clues,
       scene: this.scene,
@@ -708,6 +721,15 @@ export class RoomService {
       // Remove these exact player echoes from history before adding the merged action.
       const history = this.messages.slice(0, Math.max(0, this.messages.length - legacyCount))
         .filter((message) => !messageIds.has(message.id))
+      if (this.workerLease && this.transcript) {
+        const lookback = roomConversationLookback(history, this.contextBudgetChars)
+        if (lookback) {
+          const older = await roomStorage.readArchivedTurnHistory(
+            this.roomId, this.transcript.before, messageIds, Math.max(0, legacyCount - this.messages.length), lookback,
+          )
+          history.unshift(...older)
+        }
+      }
       const dispatch = (batch: PendingTurnMessage[], checkpoint?: PlayerTurnCheckpoint) => {
         this.turnBuffer = remaining
         this.activeTurnBatch = batch
@@ -1328,7 +1350,7 @@ export class RoomService {
       this.startBufferedTurn()
       return true
     }
-    const hasNarrative = this.messages.some((message) => message.role === 'player' || message.role === 'kp')
+    const hasNarrative = this.hasNarrative || this.messages.some(isNarrative)
     if (!hasNarrative && !this.openingStarted) this.beginOpeningIfPending()
     return true
   }
@@ -1336,7 +1358,7 @@ export class RoomService {
   /** opening（ADR-0002）：startRoom / 首次 join 时触发一次，失败不阻塞进入。 */
   beginOpeningIfPending(): void {
     if (this.disposed || this.openingStarted || this.openingCheckpointed || this.openingInFlight || this.turnFlushing || this.phase !== 'playing' ||
-        this.messages.some((message) => message.role === 'player' || message.role === 'kp')) return
+        this.hasNarrative || this.messages.some(isNarrative)) return
     this.openingStarted = true
     this.openingInFlight = true
     void this.runOpeningTurn()
@@ -1463,7 +1485,7 @@ export class RoomService {
     if (this.workerLease) boundTranscript(snapshot)
     const checkpoint = this.workerLease ? {
       seq: snapshot.seq,
-      turnPending: !snapshot.kpSetupRequired && (snapshot.pendingTurnMessages?.length ?? 0) > 0,
+      turnPending: snapshotHasRecoverableTurn(snapshot),
       lease: this.workerLease,
       events: [...this.eventLog.filter(({ seq }) => seq > this.persistedSeq), ...stagedEvents]
         .map(({ seq, event }) => ({ seq, type: event.type, payload: event.payload })),
@@ -1481,7 +1503,10 @@ export class RoomService {
     }
     this.persistedSeq = Math.max(this.persistedSeq, snapshot.seq)
     this.lastSnapshotAt = Date.now()
-    if (this.workerLease) this.transcript = snapshot.transcript
+    if (this.workerLease) {
+      this.transcript = snapshot.transcript
+      this.hasNarrative = snapshot.hasNarrative === true
+    }
     return true
   }
 
@@ -1624,7 +1649,9 @@ async function materializeRoom(
       restore.messages = legacyMessages
       boundTranscript(restore)
       try {
-        await roomStorage.archiveRoomTranscript(roomId, workerLease, legacyMessages, serializeRoomState(restore), restore.seq ?? 0)
+        await roomStorage.archiveRoomTranscript(
+          roomId, workerLease, legacyMessages, serializeRoomState(restore), restore.seq ?? 0, snapshotHasRecoverableTurn(restore),
+        )
       } catch (error) {
         await roomStorage.releaseRoomLease(roomId, workerLease).catch(() => {})
         throw error

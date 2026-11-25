@@ -323,14 +323,15 @@ function buildSystemBody(input: RoomPromptInput, ragContext: string, opts: RoomP
   return `${baseInstructionsFor(workflow)}${longTermBlock}${memoryBlock}${recentTurnsBlock}${knowledgeBlock}\n\n## 当前状态\n${stateParts.join('\n')}`
 }
 
-function compactConversationHistory(input: RoomPromptInput, contextBudgetChars = Number.POSITIVE_INFINITY): RoomPromptMessage[] {
+function compactConversationHistory(messages: RoomPromptMessage[], contextBudgetChars = Number.POSITIVE_INFINITY) {
   const budget = Number.isFinite(contextBudgetChars) ? Math.max(0, Math.floor(contextBudgetChars)) : Number.POSITIVE_INFINITY
   const recent: RoomPromptMessage[] = []
   let usedChars = 0
   let scanned = 0
-  for (let index = input.messages.length - 1; index >= 0 && recent.length < CONVERSATION_WINDOW && scanned < MAX_CONTEXT_SCAN_MESSAGES; index -= 1) {
+  let budgetExhausted = false
+  for (let index = messages.length - 1; index >= 0 && recent.length < CONVERSATION_WINDOW && scanned < MAX_CONTEXT_SCAN_MESSAGES; index -= 1) {
     scanned += 1
-    const message = input.messages[index]!
+    const message = messages[index]!
     if ((message.role !== 'kp' && message.role !== 'player') || (message.role === 'kp' && (message as { isStreaming?: boolean }).isStreaming)) continue
 
     const prefix = message.role === 'player' ? `[${message.playerName}] ` : ''
@@ -341,13 +342,26 @@ function compactConversationHistory(input: RoomPromptInput, contextBudgetChars =
       usedChars += messageChars
       continue
     }
+    budgetExhausted = true
     const contentBudget = available - prefix.length
     if (recent.length === 0 && contentBudget > 0) {
       recent.unshift({ ...message, content: contentBudget === 1 ? '…' : `…${message.content.slice(-(contentBudget - 1))}` })
     }
     break
   }
-  return recent
+  return { recent, scanned, usedChars, budgetExhausted }
+}
+
+export function roomConversationLookback(messages: RoomPromptMessage[], characterBudget: number) {
+  const { recent, scanned, usedChars, budgetExhausted } = compactConversationHistory(messages, characterBudget)
+  if (budgetExhausted || recent.length === CONVERSATION_WINDOW || scanned === MAX_CONTEXT_SCAN_MESSAGES || usedChars >= characterBudget) {
+    return null
+  }
+  return {
+    scan: MAX_CONTEXT_SCAN_MESSAGES - scanned,
+    take: CONVERSATION_WINDOW - recent.length,
+    chars: characterBudget - usedChars,
+  }
 }
 
 function conversationMessages(messages: RoomPromptMessage[]): RoomChatMessage[] {
@@ -368,7 +382,7 @@ export function buildRoomTurnMessages(
 ): RoomChatMessage[] {
   // Compact the history once so both the prompt's narrative summary and the
   // conversation messages have bounded size and bounded scan cost.
-  const compacted = compactConversationHistory(input, opts.contextBudgetChars)
+  const { recent: compacted } = compactConversationHistory(input.messages, opts.contextBudgetChars)
   const compactedInput = { ...input, messages: compacted }
   return [
     { role: 'system', content: buildSystemBody(compactedInput, ragContext, opts) },

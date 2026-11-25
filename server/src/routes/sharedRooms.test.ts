@@ -78,6 +78,7 @@ interface KeeperFixture {
   endingOpeningBarrier?: string
   damageReleaseFile?: string
   ignoreLeaseRenewal?: boolean
+  archivedNarration?: string
 }
 
 function keeperFixture(options: KeeperFixture): string {
@@ -86,6 +87,7 @@ function keeperFixture(options: KeeperFixture): string {
     import { setTimeout as delay } from 'node:timers/promises';
     const endingOpeningBarrier = ${JSON.stringify(options.endingOpeningBarrier)};
     const damageReleaseFile = ${JSON.stringify(options.damageReleaseFile)};
+    const archivedNarration = ${JSON.stringify(options.archivedNarration)};
     let turns = 0;
     export async function runKpTurn(_userId, { messages }, turn) {
       if (${options.failOpeningProvider === true}) {
@@ -102,6 +104,10 @@ function keeperFixture(options: KeeperFixture): string {
       }
       const damage = messages.findLast((message) => message.role === 'user')?.content.includes('Recover the damaged ledger');
       if (damage) {
+        if (archivedNarration && !messages.some((message) => message.role === 'user' && message.content.includes(archivedNarration))) {
+          turn.handlers.onError('Archived narration was missing from Keeper context');
+          return;
+        }
         turn.mutatorFactory(turn.activeCharacterId).updateCharacterHP(-2);
         if (${options.pauseAfterTool === true}) {
           process.stdout.write('keeper fixture paused after HP tool' + String.fromCharCode(10));
@@ -523,7 +529,8 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   }
 
   async function runReplayPendingTurn(): Promise<void> {
-    const worker = await launch({ runtime: 'worker', pauseAfterTool: true })
+    const archivedNarration = 'A red lantern was in the basement.'
+    const worker = await launch({ runtime: 'worker', pauseAfterTool: true, archivedNarration })
     await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
     const firstGateway = await launch({ runtime: 'gateway' })
     await ready(firstGateway)
@@ -533,10 +540,28 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     const { roomId } = await request('/api/rooms/solo', {
       method: 'POST', token: owner.token, body: { storyId, name: 'Replay Archivist', sheet, workflow: 'dossier' },
     })
+    // Model a room saved before transcript archiving existed. All narration is behind the hot window.
+    const legacy = [
+      { id: 'archive-narration', role: 'player', timestamp: 42, playerName: 'Archivist', content: archivedNarration },
+      ...Array.from({ length: 52 }, (_, index) => ({
+        id: `system-${index}`, role: 'system', timestamp: 43 + index, content: `System note ${index}`,
+      })),
+    ]
+    const pool = new Pool({ connectionString: databaseUrl })
+    try {
+      await pool.query(`
+        UPDATE rooms SET state = (state::jsonb || jsonb_build_object('seq', 12, 'messages', $2::jsonb))::text
+        WHERE room_id = $1`, [roomId, JSON.stringify(legacy)])
+    } finally {
+      await pool.end()
+    }
     const joinFrame = { type: 'room:join', roomId }
     const first = await connect(owner.token)
     first.send(joinFrame)
-    const opening = await first.waitFor(isKpMessage)
+    const snapshot = await first.waitFor((frame) => frame.type === 'room:state')
+    expect(snapshot.seq).toBe(12)
+    expect(snapshot.snapshot?.messages).toHaveLength(40)
+    expect(snapshot.snapshot?.messages?.some((message) => message.content === archivedNarration)).toBe(false)
     const actionId = randomUUID()
     const content = 'Recover the damaged ledger'
     first.send({ ...chat(roomId, content), actionId })
@@ -550,14 +575,14 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     await ready(gateway)
     const gatewayBase = base
     const replay = await connect(owner.token)
-    replay.send({ ...joinFrame, lastSeq: opening.seq })
+    replay.send({ ...joinFrame, lastSeq: snapshot.seq })
     const replayEnd = await replay.waitFor((frame) => frame.type === 'room:sync:done')
-    expect(replayEnd.seq).toBeGreaterThan(opening.seq!)
+    expect(replayEnd.seq).toBeGreaterThan(snapshot.seq!)
     expect(replay.frames.filter((frame) => frame.payload?.message?.content === content)).toHaveLength(1)
     expect(replay.frames.some((frame) => frame.type === 'room:state')).toBe(false)
 
     // No snapshot, new action, or receipt retry should be needed to wake a new worker.
-    const replacement = await launch({ runtime: 'worker', pauseAfterTool: false })
+    const replacement = await launch({ runtime: 'worker', pauseAfterTool: false, archivedNarration })
     await expect.poll(() => readyWorkers.has(replacement), { timeout: 12_000 }).toBe(true)
     base = gatewayBase
     const keeper = await replay.waitFor((frame) => frame.payload?.message?.content === 'The ledger was recovered.')
