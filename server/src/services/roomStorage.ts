@@ -86,6 +86,7 @@ async function writeAll(commands: Statement[]): Promise<void> {
 // Epochs remain decimal strings so PostgreSQL BIGINT can grow without losing precision.
 export type RoomWorkerLease = { epoch: string }
 const workerId = randomUUID()
+export { workerId as roomWorkerId }
 
 export class RoomLeaseLostError extends CapacityError {
   constructor() { super('Room worker lease lost') }

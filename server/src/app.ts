@@ -3,12 +3,17 @@ import { fileURLToPath } from 'node:url'
 import cors from 'cors'
 import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
-import { DEPLOYMENT_MODE, ROOM_WORKER_FAILOVER_ENABLED, SHARED_ROOMS_ENABLED, PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
+import { DEPLOYMENT_MODE, ROOM_RUNTIME, ROOM_WORKER_FAILOVER_ENABLED, SHARED_ROOMS_ENABLED, PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
 import { logger } from './utils/logging.js'
 import { getDb } from './db/index.js'
 import { getPostgresPool, initializePostgres } from './db/postgres.js'
 import { initializePostgresRooms } from './db/postgresRoomsSchema.js'
 import { startRoomReaper } from './services/roomService.js'
+import { roomWorkerId } from './services/roomStorage.js'
+import { executeRoomCommand } from './services/roomCommands.js'
+import { initializeRoomMailbox, RoomRelayUnavailable, runRoomMailbox } from './services/roomMailbox.js'
+import { sendError } from './utils/errors.js'
+import { runGatewayRoomFanout } from './ws/gatewayRooms.js'
 import { createWsServer } from './ws/index.js'
 import { hasSubscribers } from './ws/roomLedger.js'
 import authRoutes from './routes/auth.routes.js'
@@ -87,6 +92,10 @@ export function createApp(): Express {
   // Body-parser (malformed JSON / payload too large) and other 4xx errors
   // keep their status; everything else is a generic 500 (no stack traces).
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (err instanceof RoomRelayUnavailable) {
+      if (!res.destroyed) sendError(res, err)
+      return
+    }
     const status = typeof (err as { status?: unknown }).status === 'number' ? (err as { status: number }).status : 0
     if (status >= 400 && status < 500) {
       const type = (err as { type?: unknown }).type
@@ -119,6 +128,13 @@ async function startServer(): Promise<void> {
     await initializePostgres(enableStories, STORY_PREPARATION_ENABLED)
     if (SHARED_ROOMS_ENABLED) await initializePostgresRooms(ROOM_WORKER_FAILOVER_ENABLED)
   } else getDb()
+  if (ROOM_RUNTIME !== 'direct') await initializeRoomMailbox()
+  if (ROOM_RUNTIME === 'worker') {
+    startRoomReaper()
+    logger.info('Room worker ready')
+    await runRoomMailbox(roomWorkerId, executeRoomCommand)
+    return
+  }
   const httpServer = createApp().listen(PORT, () => {
     logger.info(`COC AI KP server listening on http://localhost:${PORT}`)
     if (isMockAiMode()) {
@@ -127,6 +143,12 @@ async function startServer(): Promise<void> {
   })
   if (sharedAccounts && !SHARED_ROOMS_ENABLED) return
   createWsServer(httpServer)
+  if (ROOM_RUNTIME === 'gateway') {
+    const fanout = new AbortController()
+    httpServer.once('close', () => fanout.abort())
+    void runGatewayRoomFanout(fanout.signal)
+    return
+  }
   // 房间 TTL 回收（#86）：CONTEXT.md「活跃实例·TTL 回收」与 roomService 头注释
   // 声明的运行时行为在此装配——定期扫描 roomRegistry，把空闲超过 ROOM_TTL_MS
   // 的实例落库逐出（不删 DB 行，重进经 getOrCreateRoom 重物化）。只在真实进程

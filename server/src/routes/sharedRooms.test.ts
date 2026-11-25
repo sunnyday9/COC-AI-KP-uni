@@ -168,7 +168,29 @@ function pauseAcceptance(actionId: string): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', failover = false): Promise<void> {
+/** Simulate at-least-once outbox delivery while observing the public socket. */
+function duplicateOutboxEvents(): string {
+  const wrapper = [
+    'export async function readRoomOutbox(cursors) {',
+    '  return (await read(cursors)).map(room => ({',
+    '    ...room, events: room.events.flatMap(event => [event, event]),',
+    '  }));',
+    '}',
+  ].join('\n')
+  return 'data:text/javascript,' + encodeURIComponent(`
+    import { registerHooks } from 'node:module'
+    registerHooks({
+      resolve(specifier, context, next) {
+        const resolved = next(specifier, context)
+        if (specifier !== '../services/roomOutbox.js' || !context.parentURL?.endsWith('/gatewayRooms.ts')) return resolved
+        const source = 'import { readRoomOutbox as read } from ' + JSON.stringify(resolved.url) + ';' + ${JSON.stringify(wrapper)}
+        return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true }
+      },
+    })
+  `)
+}
+
+async function journey(backend: 'local' | 'postgres', failover = false, split = false): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
   const fixtureRoot = join(root, 'prepared')
   const localDossiers = join(root, 'local-dossiers')
@@ -183,7 +205,7 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
   const pausedAcceptances = new WeakSet<ChildProcess>()
   const shared = backend === 'postgres'
   let base: string
-  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean } = {}): Promise<ChildProcess> {
+  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; runtime?: 'worker' | 'gateway'; duplicateOutbox?: boolean } = {}): Promise<ChildProcess> {
     const port = await freePort()
     base = `http://127.0.0.1:${port}`
     const args = ['--import', 'tsx']
@@ -191,6 +213,7 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
       args.push('--import', keeperFixture(options))
     }
     if (options.pauseActionId) args.push('--import', pauseAcceptance(options.pauseActionId))
+    if (options.duplicateOutbox) args.push('--import', duplicateOutboxEvents())
     args.push('src/app.ts')
     const child = spawn(process.execPath, args, {
       env: {
@@ -200,6 +223,7 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
         ENABLE_SHARED_ROOMS: shared ? '1' : undefined,
         ENABLE_ROOM_WORKER_FAILOVER: failover && !options.singleProcess ? '1' : undefined,
         ROOM_WORKER_LEASE_MS: failover ? '3000' : undefined,
+        ROOM_RUNTIME: options.runtime,
         SHARED_ROOM_FIXTURE_DIR: fixtureRoot,
         DATABASE_URL: shared ? databaseUrl : undefined,
         DATA_DIR: dataDir,
@@ -294,6 +318,96 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
   const bind = (roomId: string, token: string, characterId: string, expected = 200) =>
     request(`/api/rooms/${roomId}/character`, { method: 'POST', token, expected, body: { characterId } })
   const detail = (roomId: string, token: string) => request(`/api/rooms/${roomId}`, { token })
+
+  async function runSplitGateways(): Promise<void> {
+    const worker = await launch({ runtime: 'worker', pauseAfterTool: false })
+    const first = await launch({ runtime: 'gateway', duplicateOutbox: true })
+    await ready(first)
+    const firstBase = base
+    const owner = await register()
+    const storyId = randomUUID()
+    await prepareDossier(join(fixtureRoot, 'dossiers'), owner.user.id, storyId)
+    const { roomId, inviteCode } = await request('/api/rooms', {
+      method: 'POST', token: owner.token, body: { storyId, workflow: 'dossier' },
+    })
+    const second = await launch({ runtime: 'gateway' })
+    await ready(second)
+    const visitor = await register()
+    const outsider = await register()
+    expect(await request('/api/rooms/join', {
+      method: 'POST', token: visitor.token, body: { inviteCode },
+    })).toMatchObject({ roomId })
+    for (const player of [owner, visitor]) {
+      const { id } = await request('/api/characters', {
+        method: 'POST', token: player.token, body: { name: 'Archivist', sheet },
+      })
+      await bind(roomId, player.token, id)
+    }
+
+    const socketA = await connect(owner.token, firstBase)
+    const socketB = await connect(visitor.token)
+    const blocked = await connect(outsider.token)
+    const joinFrame = { type: 'room:join', roomId }
+    socketA.send(joinFrame)
+    expect(await socketA.waitFor((frame) => frame.type === 'room:state')).toMatchObject({ snapshot: { phase: 'lobby' } })
+    socketB.send(joinFrame)
+    expect(await socketB.waitFor((frame) => frame.type === 'room:state')).toMatchObject({ snapshot: { phase: 'lobby' } })
+    blocked.send(joinFrame)
+    expect(await blocked.waitFor((frame) => frame.type === 'room:error')).toMatchObject({ error: 'not a room member' })
+    await request('/api/rooms/' + roomId + '/settings', {
+      method: 'PUT', token: owner.token, body: { turnWindowMs: 0 },
+    })
+    await request('/api/rooms/' + roomId + '/start', {
+      method: 'POST', token: owner.token, body: { storyId },
+    })
+    await Promise.all([socketA.waitFor(isKpMessage), socketB.waitFor(isKpMessage)])
+    const beforeAction = socketA.frames.find(isKpMessage)?.seq ?? 0
+
+    const actionId = randomUUID()
+    const action = { ...chat(roomId, 'Recover the damaged ledger'), actionId }
+    socketA.send(action)
+    const receipt = await socketA.waitFor((frame) => frame.actionId === actionId)
+    expect(receipt).toMatchObject({ status: 'pending', messageId: expect.any(String) })
+    const recovered = (frame: Frame) => isKpMessage(frame) && frame.payload?.message?.content === 'The ledger was recovered.'
+    const [firstEnd, secondEnd] = await Promise.all([socketA.waitFor(recovered), socketB.waitFor(recovered)])
+    expect(firstEnd).toEqual(secondEnd)
+    const committedTurn = (frames: Frame[]) =>
+      frames.filter((frame) => frame.type === 'room:event' && (frame.seq ?? 0) > beforeAction && (frame.seq ?? 0) <= firstEnd.seq!)
+    const turn = committedTurn(socketA.frames)
+    expect(turn).toEqual(committedTurn(socketB.frames))
+    const sequences = turn.map((frame) => frame.seq)
+    expect(sequences).toEqual([...new Set(sequences)].sort((a, b) => a! - b!))
+    expect(turn.filter((frame) => frame.payload?.message?.content === 'Recover the damaged ledger')).toHaveLength(1)
+    expect(blocked.frames.filter((frame) => frame.type === 'room:event' || frame.type === 'room:state')).toEqual([])
+
+    const duplicate = await connect(owner.token)
+    duplicate.send(joinFrame)
+    await duplicate.waitFor((frame) => frame.type === 'room:state')
+    duplicate.send(action)
+    expect(await duplicate.waitFor((frame) => frame.actionId === actionId)).toMatchObject({
+      status: 'completed', messageId: receipt.messageId,
+    })
+    expect(socketA.frames.filter((frame) => frame.payload?.message?.content === 'Recover the damaged ledger')).toHaveLength(1)
+    await stop(worker)
+    const unavailable = randomUUID()
+    socketB.send({ ...chat(roomId, 'I cannot reach the worker'), actionId: unavailable })
+    expect(await socketB.waitFor((frame) => frame.actionId === unavailable)).toMatchObject({ status: 'retry' })
+    await request('/api/rooms/' + roomId + '/ready', {
+      method: 'POST', token: visitor.token, body: { ready: true }, expected: 503,
+    })
+    const gatewayBase = base
+    await launch({ runtime: 'worker', pauseAfterTool: false })
+    base = gatewayBase
+    const resumed = await connect(visitor.token)
+    resumed.send(joinFrame)
+    const resumedState = await resumed.waitFor((frame) => frame.type === 'room:state')
+    expect(resumedState.snapshot?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'The ledger was recovered.' }),
+    ]))
+    expect(resumedState.snapshot?.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'I cannot reach the worker' }),
+    ]))
+  }
 
   async function runWorkerFailover(): Promise<void> {
     const oldRelease = join(root, 'release-stale-provider')
@@ -417,6 +531,7 @@ async function journey(backend: 'local' | 'postgres', failover = false): Promise
   }
 
   try {
+    if (split) return await runSplitGateways()
     if (failover) {
       await runWorkerFailover()
       return
@@ -741,4 +856,5 @@ describe('room protocol across a gameplay process restart', () => {
   it('creates and resumes solo and multiplayer investigations in SQLite', () => journey('local'), 90_000)
   it.skipIf(!databaseUrl)('runs the same solo and multiplayer investigations in PostgreSQL', () => journey('postgres'), 90_000)
   it.skipIf(!databaseUrl)('fences stale Keeper effects and recovers accepted turns across PostgreSQL workers', () => journey('postgres', true), 90_000)
+  it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', true, true), 70_000)
 })

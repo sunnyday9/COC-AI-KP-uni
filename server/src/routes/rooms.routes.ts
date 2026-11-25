@@ -15,20 +15,15 @@ import type { AuthRequest } from '../middleware/auth.js'
 import { requireAuth } from '../middleware/auth.js'
 import { sendError, NotFoundError, BadRequestError, ConflictError } from '../utils/errors.js'
 import {
-  bindRoomCharacter,
   createRoom,
   createSoloRoom,
-  deleteRoomAsOwner,
   getRoomDetail,
-  joinRoomByInviteCode,
-  kickRoomMember,
-  leaveRoomAsMember,
   listRoomsForUser,
   listSoloRoomsForUser,
-  setMemberReady,
-  startRoom,
-  transferOwnership,
 } from '../services/roomService.js'
+
+import { routeRoomInvite, routeRoomMutation } from '../services/roomCommands.js'
+import { roomRequestSignal } from './roomRequestSignal.js'
 
 const router = Router()
 
@@ -86,7 +81,7 @@ router.post('/join', async (req: AuthRequest, res) => {
     sendError(res, new BadRequestError('invalid invite code'))
     return
   }
-  const result = await joinRoomByInviteCode(userId, inviteCode)
+  const result = await routeRoomInvite(userId, inviteCode, roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -111,7 +106,7 @@ router.post('/:id/start', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const storyId = String((req.body as { storyId?: unknown } | undefined)?.storyId ?? '')
-  const result = await startRoom(userId, roomId, storyId)
+  const result = await routeRoomMutation('start', userId, roomId, [storyId], roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -124,7 +119,7 @@ router.post('/:id/character', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const charId = String((req.body as { characterId?: unknown } | undefined)?.characterId ?? '')
-  const result = await bindRoomCharacter(userId, roomId, charId)
+  const result = await routeRoomMutation('bind', userId, roomId, [charId], roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -137,7 +132,7 @@ router.post('/:id/ready', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
   const ready = (req.body as { ready?: unknown } | undefined)?.ready === true
-  const result = await setMemberReady(userId, roomId, ready)
+  const result = await routeRoomMutation('ready', userId, roomId, [ready], roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -149,7 +144,7 @@ router.post('/:id/ready', async (req: AuthRequest, res) => {
 router.post('/:id/leave', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
-  const result = await leaveRoomAsMember(userId, roomId)
+  const result = await routeRoomMutation('leave', userId, roomId, [], roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -166,7 +161,7 @@ router.delete('/:id/members/:userId', async (req: AuthRequest, res) => {
     sendError(res, new BadRequestError('invalid userId'))
     return
   }
-  const result = await kickRoomMember(callerUserId, roomId, targetUserId)
+  const result = await routeRoomMutation('kick', callerUserId, roomId, [targetUserId], roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -183,7 +178,7 @@ router.post('/:id/transfer', async (req: AuthRequest, res) => {
     sendError(res, new BadRequestError('invalid userId'))
     return
   }
-  const result = await transferOwnership(callerUserId, roomId, targetUserId)
+  const result = await routeRoomMutation('transfer', callerUserId, roomId, [targetUserId], roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return
@@ -195,7 +190,7 @@ router.post('/:id/transfer', async (req: AuthRequest, res) => {
 router.delete('/:id', async (req: AuthRequest, res) => {
   const userId = req.userId as number
   const roomId = String(req.params.id ?? '')
-  const result = await deleteRoomAsOwner(userId, roomId)
+  const result = await routeRoomMutation('delete', userId, roomId, [], roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return

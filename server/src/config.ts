@@ -10,6 +10,7 @@ const DEV_JWT_SECRET = 'dev-secret-change-me'
 export const DEPLOYMENT_MODE = process.env.DEPLOYMENT_MODE?.trim() || 'local'
 export const SHARED_ROOMS_ENABLED = DEPLOYMENT_MODE === 'shared-accounts' && process.env.ENABLE_SHARED_ROOMS === '1'
 export const ROOM_WORKER_FAILOVER_ENABLED = process.env.ENABLE_ROOM_WORKER_FAILOVER === '1'
+export const ROOM_RUNTIME = process.env.ROOM_RUNTIME?.trim() || 'direct'
 export const ROOM_WORKER_LEASE_MS = Number(process.env.ROOM_WORKER_LEASE_MS ?? 15_000)
 export const SHARED_ROOM_FIXTURE_DIR = process.env.SHARED_ROOM_FIXTURE_DIR?.trim()
 
@@ -24,6 +25,12 @@ export function assertRuntimeConfig(): void {
   }
   if (process.env.NODE_ENV === 'production' && (!configuredSecret || configuredSecret === DEV_JWT_SECRET)) {
     throw new Error('JWT_SECRET must be set to a non-default value in production')
+  }
+  if (!['direct', 'gateway', 'worker'].includes(ROOM_RUNTIME)) {
+    throw new Error('ROOM_RUNTIME must be direct, gateway or worker')
+  }
+  if (ROOM_RUNTIME !== 'direct' && !ROOM_WORKER_FAILOVER_ENABLED) {
+    throw new Error('Split room roles require ENABLE_ROOM_WORKER_FAILOVER=1')
   }
   if (ROOM_WORKER_FAILOVER_ENABLED && (!SHARED_ROOMS_ENABLED || !Number.isSafeInteger(ROOM_WORKER_LEASE_MS) ||
       ROOM_WORKER_LEASE_MS < 1_000 || ROOM_WORKER_LEASE_MS > 120_000)) {
