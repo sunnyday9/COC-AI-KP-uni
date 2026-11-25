@@ -29,7 +29,7 @@ type Frame = {
   code?: string
   removedReason?: string
   error?: string
-  snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string }[]; kpMemory?: string[] }
+  snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string; role?: string }[]; kpMemory?: string[] }
   eventType?: string
   payload?: { message?: { role: string; content: string }; path?: string }
 }
@@ -233,7 +233,7 @@ function pressureProvider(directory: string): string {
     import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
     import { join } from 'node:path';
     const directory = ${JSON.stringify(directory)};
-    export async function chatForAgent(_userId, { messages, signal }) {
+    export async function chatForAgent(_userId, { messages, signal, keeperSettings }) {
       signal?.throwIfAborted();
       if (messages[0]?.content.includes('只回复一个英文意图关键词')) return { content: 'investigate' };
       const playerIndex = messages.findLastIndex((message) => message.role === 'user');
@@ -256,6 +256,12 @@ function pressureProvider(directory: string): string {
         appendFileSync(join(directory, 'rate-attempts'), '1');
         throw Object.assign(new Error('Synthetic rate limit'), { status: 429, headers: new Headers({ 'retry-after': '0' }) });
       }
+      if (action.includes('Continue after a host handoff')) {
+        if (keeperSettings.baseUrl.includes('slower.example')) {
+          throw Object.assign(new Error('Synthetic provider cooldown'), { status: 429, headers: new Headers({ 'retry-after': '120' }) });
+        }
+        return { content: 'The successor investigated the archive.' };
+      }
       return { content: action.includes('Check unrelated room') ? 'Independent reply.' : 'Archive reply.' };
     }
   `
@@ -272,14 +278,16 @@ function pressureProvider(directory: string): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'pressure'): Promise<void> {
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'pressure' | 'split-pressure'): Promise<void> {
   const failover = scenario !== undefined
+  const pressureScenario = scenario === 'pressure' || scenario === 'split-pressure'
 
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
   const fixtureRoot = join(root, 'prepared')
   const localDossiers = join(root, 'local-dossiers')
   const dataDir = join(root, 'sqlite')
   const jwtSecret = randomBytes(32).toString('hex')
+  const metricsToken = randomBytes(32).toString('hex')
   const children: ChildProcess[] = []
   const sockets: WebSocket[] = []
   const readyWorkers = new WeakSet<ChildProcess>()
@@ -300,7 +308,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     if (options.pauseActionId) args.push('--import', pauseAcceptance(options.pauseActionId))
     if (options.governanceBarrier) args.push('--import', pauseRoomMutations(options.governanceBarrier))
     if (options.duplicateOutbox) args.push('--import', duplicateOutboxEvents())
-    if (scenario === 'pressure') args.push('--import', pressureProvider(root))
+    if (pressureScenario && options.runtime !== 'gateway') args.push('--import', pressureProvider(root))
     args.push('src/app.ts')
     const child = spawn(process.execPath, args, {
       env: {
@@ -321,13 +329,14 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
         JWT_SECRET: jwtSecret,
         MOCK_AI: '1',
         KP_CHUNK_STREAM: options.chunkStream ? '1' : undefined,
-        KP_ACTIVE_TURNS: scenario === 'pressure' ? '3' : options.endingOpeningBarrier ? '1' : undefined,
-        KP_ACTIVE_PER_PROVIDER: scenario === 'pressure' ? '1' : undefined,
-        KP_ACTIVE_PER_ACCOUNT: scenario === 'pressure' ? '1' : undefined,
-        KP_PENDING_PER_ACCOUNT: scenario === 'pressure' ? '1' : undefined,
-        KP_PROVIDER_REQUEST_MS: scenario === 'pressure' ? '1800' : undefined,
-        KP_PROVIDER_RETRIES: scenario === 'pressure' ? '1' : undefined,
-        KP_METRICS_TOKEN: scenario === 'pressure' ? jwtSecret : undefined,
+        KP_ACTIVE_TURNS: pressureScenario ? '3' : options.endingOpeningBarrier ? '1' : undefined,
+        KP_ACTIVE_PER_PROVIDER: pressureScenario ? '1' : undefined,
+        KP_ACTIVE_PER_ACCOUNT: pressureScenario ? '1' : undefined,
+        KP_PENDING_PER_ACCOUNT: pressureScenario ? '1' : undefined,
+        KP_PROVIDER_REQUEST_MS: pressureScenario ? '3000' : undefined,
+        KP_PROVIDER_RETRIES: pressureScenario ? '1' : undefined,
+        KP_METRICS_TOKEN: pressureScenario ? metricsToken : undefined,
+        KP_METRICS_PORT: scenario === 'split-pressure' && options.runtime === 'worker' ? String(port) : undefined,
 
         PORT: String(port),
       },
@@ -818,8 +827,15 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   }
 
   async function runProviderPressure() {
-    const worker = await launch()
-    await ready(worker)
+    const split = scenario === 'split-pressure'
+    const worker = await launch(split ? { runtime: 'worker' } : undefined)
+    const metricsUrl = base + '/health/keeper'
+    if (split) {
+      await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
+      await ready(await launch({ runtime: 'gateway' }))
+      expect((await fetch(base + '/health/keeper', { headers: { Authorization: 'Bearer ' + metricsToken } })).status).toBe(404)
+    } else await ready(worker)
+    const readMetrics = () => fetch(metricsUrl, { headers: { Authorization: 'Bearer ' + metricsToken } })
     const slowOwner = await register()
     const independent = await register()
     const storyId = 'provider-pressure-story'
@@ -833,8 +849,9 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       })
       const socket = await connect(account.token)
       socket.send({ type: 'room:join', roomId: room.roomId })
-      await socket.waitFor(isKpMessage)
-      return { room, socket, token: account.token }
+      const opening = await socket.waitFor((frame) => isKpMessage(frame) ||
+        (frame.type === 'room:state' && frame.snapshot?.messages?.some((message) => message.role === 'kp') === true))
+      return { room, socket, token: account.token, openingSeq: opening.seq! }
     }
     const slow = await play(slowOwner)
     const queued = await play(slowOwner)
@@ -850,7 +867,11 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     const pending = await sendAction(slow, 'Hold the slow provider')
     await expect.poll(() => existsSync(join(root, 'slow-started'))).toBe(true)
     expect((await detail(slow.room.roomId, slow.token)).state.characters[slow.room.characterId].derived.hp).toBe(10)
+    const activePressure = await (await readMetrics()).json()
+    expect(activePressure.runtime).toBe(split ? 'worker' : 'direct')
+    expect(activePressure.active).toBeGreaterThan(0)
     await sendAction(queued, 'Queue at the same provider')
+    await expect.poll(async () => (await (await readMetrics()).json()).pending).toBe(1)
     const busy = await sendAction(overflow, 'Keep this accepted action pending')
     await sendAction(fast, 'Check unrelated room')
     await fast.socket.waitFor((frame) => frame.payload?.message?.content === 'Independent reply.')
@@ -876,7 +897,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(paused.characters[slow.room.characterId].derived.hp).toBe(10)
     expect(slow.socket.frames.some((frame) => frame.payload?.path === `characters.${slow.room.characterId}`)).toBe(false)
     await queued.socket.waitFor((frame) => frame.payload?.message?.content === 'Archive reply.' &&
-      frame.seq! > queued.socket.frames.find(isKpMessage)!.seq!)
+      frame.seq! > queued.openingSeq)
 
     await writeFile(join(root, 'allow-slow'), '')
     slow.socket.send({ type: 'room:action', roomId: slow.room.roomId, action: { type: 'retry_kp' } })
@@ -893,20 +914,47 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect((await detail(slow.room.roomId, slow.token)).state.pendingTurnMessages).toMatchObject([{ actionId: limited.actionId }])
     expect(statSync(join(root, 'rate-attempts')).size).toBe(2)
 
-    expect((await fetch(base + '/health/keeper')).status).toBe(404)
-    const metrics = await fetch(base + '/health/keeper', { headers: { Authorization: 'Bearer ' + jwtSecret } })
+    expect((await fetch(metricsUrl)).status).toBe(404)
+    expect((await fetch(metricsUrl, { headers: { Authorization: 'Bearer ' + jwtSecret } })).status).toBe(404)
+    const metrics = await readMetrics()
     expect(metrics.status).toBe(200)
+    expect(metrics.headers.get('cache-control')).toBe('no-store')
     const pressure = await metrics.json()
     expect(pressure.queue).toMatchObject({ started: expect.any(Number), totalWaitMs: expect.any(Number) })
     expect(pressure.provider).toMatchObject({ requests: expect.any(Number), totalLatencyMs: expect.any(Number), retries: 1 })
     expect(pressure.queue.maxWaitMs).toBeGreaterThan(100)
     expect(pressure.provider.maxLatencyMs).toBeGreaterThan(1_000)
     expect(JSON.stringify(pressure)).not.toContain('slower.example')
+
+    const handoff = await createLobby(slowOwner, 'Handoff archivist')
+    await enter(handoff.inviteCode, independent.token)
+    await handoff.addCard(independent, 'Successor archivist')
+    await request('/api/rooms/' + handoff.roomId + '/settings', { method: 'PUT', token: slowOwner.token, body: { turnWindowMs: 0 } })
+    await request('/api/rooms/' + handoff.roomId + '/start', { method: 'POST', token: slowOwner.token, body: { storyId: handoff.storyId } })
+    const socket = await connect(slowOwner.token)
+    socket.send({ type: 'room:join', roomId: handoff.roomId })
+    const opening = await socket.waitFor((frame) => isKpMessage(frame) ||
+      (frame.type === 'room:state' && frame.snapshot?.messages?.some((message) => message.role === 'kp') === true))
+    const accepted = await sendAction({ room: handoff, socket, token: slowOwner.token, openingSeq: opening.seq! }, 'Continue after a host handoff')
+    await expect.poll(async () => (await detail(handoff.roomId, slowOwner.token)).state.kpPauseReason).toBe('provider_limited')
+    const cooldown = (await detail(handoff.roomId, slowOwner.token)).state.kpRetryAt
+    expect(cooldown).toBeGreaterThan(Date.now() + 100_000)
+    await request('/api/rooms/' + handoff.roomId + '/transfer', {
+      method: 'POST', token: slowOwner.token, body: { userId: independent.user.id },
+    })
+    await socket.waitFor((frame) => frame.payload?.message?.content === 'The successor investigated the archive.')
+    const afterTransfer = (await detail(handoff.roomId, independent.token)).state
+    expect(afterTransfer.kpPauseReason).toBeUndefined()
+    expect(afterTransfer.kpRetryAt).toBeUndefined()
+    expect(afterTransfer.pendingTurnMessages).toEqual([])
+    socket.send(accepted.frame)
+    await expect.poll(() => socket.frames.filter((frame) => frame.actionId === accepted.actionId).length).toBe(2)
+    expect(socket.frames.filter((frame) => frame.actionId === accepted.actionId).at(-1)?.status).toBe('completed')
   }
 
   try {
     if (scenario === 'split') return await runSplitGateways()
-    if (scenario === 'pressure') return await runProviderPressure()
+    if (pressureScenario) return await runProviderPressure()
     if (scenario === 'governance') return await runGovernanceRace()
     if (scenario === 'membership') return await runMembershipRecovery()
     if (scenario === 'opening') return await runOpeningRetry()
@@ -1234,6 +1282,7 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('serializes competing REST authorizations on an inactive room', () => journey('postgres', 'governance'), 45_000)
   it.skipIf(!databaseUrl)('cancels the original recovered turn when a member was removed', () => journey('postgres', 'membership'), 45_000)
   it.skipIf(!databaseUrl)('holds accepted work on provider pressure and keeps unrelated rooms responsive', () => journey('postgres', 'pressure'), 45_000)
+  it.skipIf(!databaseUrl)('reports provider pressure on a split room worker', () => journey('postgres', 'split-pressure'), 70_000)
   it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
   it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', 'split'), 70_000)
 })

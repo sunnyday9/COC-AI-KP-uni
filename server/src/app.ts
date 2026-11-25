@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto'
+import { once } from 'node:events'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import cors from 'cors'
@@ -35,6 +36,33 @@ import charactersRoutes from './routes/characters.routes.js'
 
 const sharedAccounts = DEPLOYMENT_MODE === 'shared-accounts'
 
+function mountKeeperMetrics(app: Express, token: string, runtime: 'direct' | 'worker'): void {
+  const expected = Buffer.from('Bearer ' + token)
+  app.get('/health/keeper', (req, res) => {
+    const supplied = Buffer.from(req.headers.authorization ?? '')
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      res.status(404).json({ error: 'not found' })
+      return
+    }
+    res.set('Cache-Control', 'no-store').json({ runtime, ...keeperPressureMetrics() })
+  })
+}
+
+async function listenForWorkerMetrics() {
+  const rawPort = process.env.KP_METRICS_PORT?.trim()
+  if (!rawPort) return
+  const port = Number(rawPort)
+  const token = process.env.KP_METRICS_TOKEN?.trim()
+  if (!Number.isInteger(port) || port < 1 || port > 65_535 || !token) {
+    throw new Error('Worker metrics require KP_METRICS_PORT from 1 to 65535 and KP_METRICS_TOKEN')
+  }
+  const app = express()
+  mountKeeperMetrics(app, token, 'worker')
+  const server = app.listen(port, '127.0.0.1')
+  await once(server, 'listening')
+  return server
+}
+
 /**
  * Express application factory.
  *
@@ -64,17 +92,7 @@ export function createApp(): Express {
   })
 
   const keeperToken = process.env.KP_METRICS_TOKEN?.trim()
-  if (keeperToken) {
-    const expected = Buffer.from('Bearer ' + keeperToken)
-    app.get('/health/keeper', (req, res) => {
-      const supplied = Buffer.from(req.headers.authorization ?? '')
-      if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-        res.status(404).json({ error: 'not found' })
-        return
-      }
-      res.set('Cache-Control', 'no-store').json(keeperPressureMetrics())
-    })
-  }
+  if (ROOM_RUNTIME === 'direct' && keeperToken) mountKeeperMetrics(app, keeperToken, 'direct')
 
   app.use('/api/auth', authRoutes)
   app.use('/api/settings', settingsRoutes)
@@ -148,9 +166,11 @@ async function startServer(): Promise<void> {
   } else getDb()
   if (ROOM_RUNTIME !== 'direct') await initializeRoomMailbox()
   if (ROOM_RUNTIME === 'worker') {
+    const metrics = await listenForWorkerMetrics()
     startRoomReaper()
     logger.info('Room worker ready')
-    await runRoomMailbox(roomWorkerId, executeRoomCommand)
+    try { await runRoomMailbox(roomWorkerId, executeRoomCommand) }
+    finally { metrics?.close() }
     return
   }
   const httpServer = createApp().listen(PORT, () => {

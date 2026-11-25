@@ -92,6 +92,7 @@ export interface RoomSnapshot {
   kpSetupRequired?: boolean
   kpPauseReason?: KpPauseReason | null
   kpRetryAt?: number
+  kpPauseOwnerId?: number
   updatedAt: number
 }
 
@@ -173,6 +174,7 @@ export class RoomService {
   private kpSetupRequired = false
   private kpPauseReason: KpPauseReason | null = null
   private kpRetryAt = 0
+  private kpPauseOwnerId?: number
   private ownerLifetime = new AbortController()
   private messages: Message[] = []
   private characters = new Map<string, COCCharacterSheet>()
@@ -237,6 +239,7 @@ export class RoomService {
       this.kpSetupRequired = opts.restore.kpSetupRequired === true
       this.kpPauseReason = opts.restore.kpPauseReason ?? null
       this.kpRetryAt = opts.restore.kpRetryAt ?? 0
+      this.kpPauseOwnerId = this.kpPauseReason ? opts.restore.kpPauseOwnerId ?? opts.ownerId : undefined
       this.turnBuffer = Array.isArray(opts.restore.pendingTurnMessages)
         ? opts.restore.pendingTurnMessages.filter((entry): entry is PendingTurnMessage =>
             !!entry && typeof entry.username === 'string' && typeof entry.content === 'string' &&
@@ -342,6 +345,7 @@ export class RoomService {
       kpSetupRequired: this.kpSetupRequired,
       kpPauseReason: this.kpPauseReason ?? undefined,
       kpRetryAt: this.kpRetryAt || undefined,
+      kpPauseOwnerId: this.kpPauseOwnerId,
       updatedAt: Date.now(),
     }
   }
@@ -519,6 +523,9 @@ export class RoomService {
         const sheet = JSON.parse(b.sheet) as COCCharacterSheet
         this.characters.set(b.characterId, sheet)
       } catch { /* 脏 sheet 忽略 */ }
+    }
+    if (this.kpPauseOwnerId !== undefined && this.kpPauseOwnerId !== this.ownerId) {
+      await this.checkpointKpPressure(null)
     }
     if (this.phase === 'playing') {
       void this.refreshOwnerAiSetupStatus().then((ready) => {
@@ -752,29 +759,36 @@ export class RoomService {
   private async setKpPressure(pause: KeeperPressureError | null, ownershipVersion: number): Promise<void> {
     await withRoomCommand(this.roomId, async () => {
       if (this.disposed || this.isEnded() || this.ownershipVersion !== ownershipVersion) return
-      const reason = pause?.reason ?? null
-      const retryAt = pause?.retryAt ?? 0
-      if (reason === this.kpPauseReason && retryAt === this.kpRetryAt) return
-      const snapshot = this.snapshot()
-      snapshot.kpPauseReason = reason
-      snapshot.kpRetryAt = retryAt
-      const events: RoomEvent[] = [
-        { type: 'state_patch', payload: { path: 'kpPauseReason', value: reason } },
-        { type: 'state_patch', payload: { path: 'kpRetryAt', value: retryAt } },
-      ]
-      if (pause) {
-        const message: Message = {
-          id: 'sys_' + crypto.randomUUID(), timestamp: Date.now(), role: 'system',
-          content: '守秘人暂时无法处理回合，已接收的行动仍在等待。请稍后由房主重试。',
-        }
-        snapshot.messages = [...snapshot.messages, message]
-        events.push({ type: 'message_appended', payload: { message, author: { userId: this.ownerId, roleName: 'system' } } })
+      await this.checkpointKpPressure(pause)
+    })
+  }
+
+  /** Persist a pause against the account whose Keeper settings produced it. */
+  private async checkpointKpPressure(pause: KeeperPressureError | null): Promise<void> {
+    const reason = pause?.reason ?? null
+    const retryAt = pause?.retryAt ?? 0
+    if (reason === this.kpPauseReason && retryAt === this.kpRetryAt) return
+    const snapshot = this.snapshot()
+    snapshot.kpPauseReason = reason
+    snapshot.kpRetryAt = retryAt
+    snapshot.kpPauseOwnerId = pause ? this.ownerId : undefined
+    const events: RoomEvent[] = [
+      { type: 'state_patch', payload: { path: 'kpPauseReason', value: reason } },
+      { type: 'state_patch', payload: { path: 'kpRetryAt', value: retryAt } },
+    ]
+    if (pause) {
+      const message: Message = {
+        id: 'sys_' + crypto.randomUUID(), timestamp: Date.now(), role: 'system',
+        content: '守秘人暂时无法处理回合，已接收的行动仍在等待。请稍后由房主重试。',
       }
-      await this.commitCheckpoint(snapshot, events, () => {
-        this.kpPauseReason = reason
-        this.kpRetryAt = retryAt
-        this.messages = snapshot.messages
-      })
+      snapshot.messages = [...snapshot.messages, message]
+      events.push({ type: 'message_appended', payload: { message, author: { userId: this.ownerId, roleName: 'system' } } })
+    }
+    await this.commitCheckpoint(snapshot, events, () => {
+      this.kpPauseReason = reason
+      this.kpRetryAt = retryAt
+      this.kpPauseOwnerId = snapshot.kpPauseOwnerId
+      this.messages = snapshot.messages
     })
   }
 

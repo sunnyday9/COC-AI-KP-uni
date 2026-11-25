@@ -220,7 +220,7 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts STORY_PREPARATION_ENABLED=1 
 
 对局中的原文查证、检索改写和远程嵌入沿用所在回合的容量与取消信号，单次最多等待 1 秒。回合后的记忆提取和长摘要只占用空闲容量，单次最多等待 5 秒。可选请求失败时使用已有的上下文与记忆，且不消耗正式回合的重试预算。剧本准备使用独立进程和容量设置。
 
-设置独立保密的 KP_METRICS_TOKEN 后，内部监控可用 Authorization Bearer 请求 GET /health/keeper。响应包含本进程的运行数、排队数、各自上限、队列等待和模型请求耗时指标，以及不带标签的提供方和账号用量。提供方和账号各最多报告 32 组用量。指标不含房间、账号标识、提供方地址或密钥。
+使用独立保密的 KP_METRICS_TOKEN，通过 Authorization Bearer 请求 GET /health/keeper。独立运行的游戏服务在现有端口提供此路径。拆分部署时，为每个 ROOM_RUNTIME=worker 额外设置 KP_METRICS_PORT，从该进程所在主机或容器的 127.0.0.1 采集。同一主机上的每个 worker 使用不同端口。网关对此路径返回 404。响应的 runtime 标识 direct 或 worker，并报告本进程的运行数、排队数、各自上限、队列等待和模型请求耗时。提供方和账号各最多报告 32 组匿名用量。指标不含房间、账号标识、提供方地址或密钥。
 
 ## 7. 上线检查清单
 
