@@ -340,8 +340,13 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     await call(gateway, '/api/stories/prepare.txt', owner.token, 'DELETE')
   }, 30_000)
 
-  it('starts a room from an authorized prepared story and keeps its revision across renewal, transfer and restart', async () => {
-    let gateway = await startGateway(await freePort(), 'pinned-gateway', undefined, true, { ENABLE_SHARED_ROOMS: '1' })
+  it.each([false, true])('keeps a pinned story across renewal, transfer and restart (worker failover: %s)', async (failover) => {
+    const rooms = {
+      ENABLE_SHARED_ROOMS: '1',
+      ENABLE_ROOM_WORKER_FAILOVER: failover ? '1' : '0',
+      ROOM_WORKER_LEASE_MS: '3000',
+    }
+    let gateway = await startGateway(await freePort(), 'pinned-gateway', undefined, true, rooms)
     let gameplay = children.at(-1)!
     const owner = await account(gateway)
     const host = await account(gateway)
@@ -515,7 +520,17 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       expect((await call(gateway, storyPath, owner.token)).status).toBe(404)
       expect((await solo(owner.token, 'dossier')).status).toBe(409)
       await stopProcess(gameplay)
-      gateway = await startGateway(await freePort(), 'pinned-restarted', undefined, true, { ENABLE_SHARED_ROOMS: '1' })
+      if (failover) {
+        const roomIds = [oldSolo.body.roomId, multi.body.roomId, newSolo.body.roomId]
+        await expect.poll(async () => {
+          const result = await getPostgresPool().query<{ live: number }>(`
+            SELECT count(*)::int AS live FROM rooms
+            WHERE room_id = ANY($1::text[]) AND worker_expires_at > clock_timestamp()
+          `, [roomIds])
+          return result.rows[0]?.live
+        }, { timeout: 12_000 }).toBe(0)
+      }
+      gateway = await startGateway(await freePort(), 'pinned-restarted', undefined, true, rooms)
       gameplay = children.at(-1)!
 
       // The same room is authorized by membership after catalog deletion;
