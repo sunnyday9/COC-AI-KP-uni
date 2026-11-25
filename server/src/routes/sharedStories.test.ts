@@ -23,6 +23,7 @@ const canInjectStorageFault = fixtureObjectStore.forcePathStyle === true
 const secret = randomBytes(32).toString('hex')
 const password = randomBytes(15).toString('hex')
 const children: ChildProcess[] = []
+const startupLogs = new WeakMap<ChildProcess, string>()
 let permanentGatewayCount = 0
 let storageDir: string
 let first: string
@@ -71,10 +72,14 @@ function startProcess(entry: string, dir: string, endpointOverride?: string, pre
       AWS_SESSION_TOKEN: undefined,
       ...overrides,
     },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
-  child.stderr?.resume()
+  const capture = (chunk: Buffer) => {
+    startupLogs.set(child, ((startupLogs.get(child) ?? '') + chunk.toString()).slice(-4_096))
+  }
+  child.stdout?.on('data', capture)
+  child.stderr?.on('data', capture)
   children.push(child)
   return child
 }
@@ -91,12 +96,23 @@ async function startGateway(port: number, dir: string, endpointOverride?: string
   const child = startProcess('src/app.ts', dir, endpointOverride, prepare, port, overrides)
   const url = `http://127.0.0.1:${port}`
   const deadline = Date.now() + 20_000
+  let status: number | undefined
   while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
     const response = await fetch(`${url}/health/ready`, { signal: AbortSignal.timeout(1_000) }).catch(() => null)
     if (response?.ok) return url
+    status = response?.status
     await delay(100)
   }
-  throw new Error('story gateway never became ready (process exit: ' + String(child.exitCode ?? child.signalCode) + ')')
+  const { credentials } = JSON.parse(s3Fixture!)
+  const sensitive = [databaseUrl, secret, password, credentials.accessKeyId, credentials.secretAccessKey]
+  let output = startupLogs.get(child) ?? ''
+  for (const value of sensitive) {
+    if (value) output = output.replaceAll(value, '<REDACTED>')
+  }
+  throw new Error(
+    'story gateway never became ready (fixture ' + dir + ', status ' + String(status) +
+    ', process exit ' + String(child.exitCode ?? child.signalCode) + ')\n' + output,
+  )
 }
 
 async function call(url: string, path: string, token?: string, method = 'GET', body?: BodyInit) {
