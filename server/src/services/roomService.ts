@@ -2055,6 +2055,7 @@ export async function endRoom(userId: number, roomId: string): Promise<{ ok: tru
       const members = (await roomStorage.listMembers(roomId)).map(memberRowToInfo)
       const { snapshot, events, actions, turn } = hostEndingCheckpoint(state, members)
       await roomStorage.updateRoomStateSnapshot(roomId, serializeRoomState(snapshot), 'ended', actions, workerLease ? {
+        seq: snapshot.seq,
         lease: workerLease,
         events: events.map(({ type, payload }, index) => ({ seq: snapshot.seq - events.length + index + 1, type, payload })),
         turn,

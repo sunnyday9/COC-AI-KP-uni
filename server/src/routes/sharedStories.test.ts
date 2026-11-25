@@ -356,13 +356,22 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     await call(gateway, '/api/stories/prepare.txt', owner.token, 'DELETE')
   }, 30_000)
 
-  it.each([false, true])('keeps a pinned story across renewal, transfer and restart (worker failover: %s)', async (failover) => {
+  it.each(['direct', 'fenced', 'split'])('keeps a pinned story across renewal, transfer and restart (%s)', async (mode) => {
+    const failover = mode !== 'direct'
+    const split = mode === 'split'
     const rooms = {
       ENABLE_SHARED_ROOMS: '1',
       ENABLE_ROOM_WORKER_FAILOVER: failover ? '1' : '0',
       ROOM_WORKER_LEASE_MS: '3000',
     }
-    let gateway = await startGateway(await freePort(), 'pinned-gateway', undefined, true, rooms)
+    const startPlayingWorker = () => startProcess('src/app.ts', 'pinned-room-worker', undefined, true, undefined, {
+      ...rooms, ROOM_RUNTIME: 'worker',
+    })
+    const startPlayingGateway = async (name: string) => startGateway(await freePort(), name, undefined, true, {
+      ...rooms, ROOM_RUNTIME: split ? 'gateway' : 'direct',
+    })
+    let roomWorker = split ? startPlayingWorker() : undefined
+    let gateway = await startPlayingGateway('pinned-gateway')
     let gameplay = children.at(-1)!
     const owner = await account(gateway)
     const host = await account(gateway)
@@ -435,7 +444,14 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
         expect((await post(multiPath + '/character', member.token, { characterId: card.body.id })).status).toBe(200)
       }
       expect((await post(multiPath + '/start', owner.token, { storyId })).status).toBe(200)
+      const roomPin = () => getPostgresPool().query<{
+        story_owner_id: string; story_preparation_revision: string; story_source_revision: string
+      }>(`SELECT story_owner_id, story_preparation_revision, story_source_revision FROM rooms WHERE room_id = $1`, [multi.body.roomId])
+      const pin = (await roomPin()).rows[0]
+      expect(pin).toMatchObject({ story_owner_id: String(owner.user.id), story_preparation_revision: originalRevision })
+      expect(pin.story_source_revision).toBeTruthy()
       expect((await post(multiPath + '/transfer', owner.token, { userId: host.user.id })).status).toBe(200)
+      expect((await roomPin()).rows[0]).toEqual(pin)
       expect((await call(gateway, multiPath + '/settings', host.token, 'PUT', '{"turnWindowMs":0}')).status).toBe(200)
       const oldMulti = roomSocket(host.token, multi.body.roomId)
       await oldMulti.ready()
@@ -536,6 +552,7 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       expect((await call(gateway, storyPath, owner.token)).status).toBe(404)
       expect((await solo(owner.token, 'dossier')).status).toBe(409)
       await stopProcess(gameplay)
+      if (roomWorker) await stopProcess(roomWorker)
       if (failover) {
         const roomIds = [oldSolo.body.roomId, multi.body.roomId, newSolo.body.roomId]
         await expect.poll(async () => {
@@ -546,8 +563,10 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
           return result.rows[0]?.live
         }, { timeout: 12_000 }).toBe(0)
       }
-      gateway = await startGateway(await freePort(), 'pinned-restarted', undefined, true, rooms)
+      if (split) roomWorker = startPlayingWorker()
+      gateway = await startPlayingGateway('pinned-restarted')
       gameplay = children.at(-1)!
+      expect((await roomPin()).rows[0]).toEqual(pin)
 
       // The same room is authorized by membership after catalog deletion;
       // its successor cannot repin the room or borrow the owner's catalog.
@@ -581,6 +600,7 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       expect(corrupt.countKp()).toBe(0)
     } finally {
       await stopProcess(gameplay)
+      if (roomWorker) await stopProcess(roomWorker)
       for (const socket of sockets) socket.terminate()
       await stopProcess(worker)
       s3.destroy()

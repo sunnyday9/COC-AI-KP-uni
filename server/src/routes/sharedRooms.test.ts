@@ -587,10 +587,12 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     const { roomId, inviteCode } = await createRoom(storyId)
     await joinInvite(successor, inviteCode)
     await joinInvite(member, inviteCode)
+    const cards = new Map<number, string>()
     for (const player of [owner, successor, member]) {
       const card = await request('/api/characters', {
         method: 'POST', token: player.token, body: { name: 'Archivist', sheet },
       })
+      cards.set(player.user.id, card.id)
       await bind(roomId, player.token, card.id)
     }
     const [ownerSocket, successorSocket, memberSocket] = await Promise.all([
@@ -639,6 +641,16 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(ended).toMatchObject({ phase: 'ended', state: { pendingTurnMessages: [], ending: { outcome: 'closed' } } })
     expect(ended.state.messages.filter((message: { content: string }) => message.content.startsWith('The ledger was recovered.')))
       .toHaveLength(1)
+
+    const dormant = await createRoom(storyId)
+    await bind(dormant.roomId, owner.token, cards.get(owner.user.id)!)
+    await post(dormant.roomId, 'start', owner.token, { storyId })
+    await post(dormant.roomId, 'end', owner.token)
+    await post(dormant.roomId, 'end', owner.token)
+    const endedLobby = await subscribe(owner, dormant.roomId)
+    expect(await endedLobby.waitFor((frame) => frame.type === 'room:state')).toMatchObject({
+      seq: 2, snapshot: { phase: 'ended', messages: [] },
+    })
 
     const lobby = await createRoom()
     await joinInvite(successor, lobby.inviteCode)

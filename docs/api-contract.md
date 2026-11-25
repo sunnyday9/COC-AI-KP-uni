@@ -182,10 +182,12 @@
 | 4 | `/api/stories` | `stories.routes.ts`（本地）、`sharedStories.routes.ts`（共享） | GET `/`、POST `/upload`、GET `/:id`、DELETE `/:id`；本地 GET `/:id/rag`，共享 GET `/:id/source` | §5 |
 | 5 | `/api/rag` | `rag.routes.ts` | GET `/health`、POST `/test-embedding`、POST `/index`、DELETE `/index/:scriptId`、POST `/query`、POST `/context`、GET `/stories`、GET `/index/:scriptId` | §8 |
 | 6 | `/api/dossier` | `dossier.routes.ts` | GET `/`、POST `/:scriptId/generate` | 档案 workflow（与 rag 并行）；叙述见 ONBOARDING-GUIDE §7 |
-| 7 | `/api/rooms` | `rooms.routes.ts` | POST `/`、GET `/`、POST `/solo`、GET `/solo`、POST `/join`、GET `/:id`、POST `/:id/start`・`/:id/character`・`/:id/ready`・`/:id/leave`・`/:id/transfer`、DELETE `/:id`、DELETE `/:id/members/:userId` | 房间治理 REST（帧协议见 §4） |
+| 7 | `/api/rooms` | `rooms.routes.ts` | POST `/`、GET `/`、POST `/solo`、GET `/solo`、POST `/join`、GET `/:id`、POST `/:id/start`・`/:id/end`・`/:id/character`・`/:id/ready`・`/:id/leave`・`/:id/transfer`、DELETE `/:id`、DELETE `/:id/members/:userId` | 房间治理 REST（帧协议见 §4） |
 | 8 | `/api/rooms` | `roomSettings.routes.ts` | PUT `/:id/settings` | 房间设置（turnWindowMs） |
 | 9 | `/api/characters` | `characters.routes.ts` | GET `/`、POST `/` | 角色卡存取 |
 
+- `POST /api/rooms/:id/end` 允许房主结束进行中的多人调查，保留聊天记录和最终状态。再次调用返回成功。未开局或调用者为普通成员时返回 409。结束时尚未完成的行动回执会变为 `cancelled`。
+- `POST /api/rooms/:id/leave` 移除调用者的房间成员资格。房主主动离开时由最早加入的成员接任，若无其他成员则解散。WebSocket 的 `room:leave` 只取消当前连接的订阅。
 - 房间解散只允许删除 `lobby` 或已结束房间；`playing` 房间返回 409，避免进行中的快照被 owner 直接删除。
 - KP 回合不占路由组：唯一入口为房间协议（ADR-0002，帧协议细节见 §4）。
 - §6/§7 为退役节：`/api/scripts*`、`/api/saves*` 已不在挂载面。
