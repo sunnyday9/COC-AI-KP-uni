@@ -13,9 +13,10 @@
 import crypto from 'node:crypto'
 import type { RoomStoryBundle } from './roomStoryRevision.js'
 import * as roomStorage from './roomStorage.js'
+export { RoomWorkerBusyError } from './roomStorage.js'
 import { logger } from '../utils/logging.js'
 import { createCharacterMutatorFactory, type CharacterEnding } from '../rule-engine/characterMutators.js'
-import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
+import { getRoomContextBudgetChars, isKpChunkStreamEnabled, isMockAiMode, ROOM_WORKER_FAILOVER_ENABLED, ROOM_WORKER_LEASE_MS, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
 import { buildRoomTurnMessages, buildRoomOpeningMessages, MAX_MEMORY_ENTRIES, type RoomPromptInput, type StoryWorkflow } from './kpPromptService.js'
 import { acquireKpTurn } from './kpAdmission.js'
 // 开局门闩判定单源（deep module，架构走查候选 4）：startRoom / createSoloRoom 双入口
@@ -56,6 +57,11 @@ interface PendingTurnMessage {
   messageId?: string
 }
 
+interface PlayerTurnCheckpoint {
+  id: string
+  actionCount: number
+}
+
 /** 房间持久化快照（rooms.state JSON）。 */
 export interface RoomSnapshot {
   seq: number
@@ -77,6 +83,9 @@ export interface RoomSnapshot {
   contextBudgetChars?: number
   /** Pending player actions survive a paused KP turn and server restart. */
   pendingTurnMessages?: PendingTurnMessage[]
+  /** A claimed batch stays at the head of pendingTurnMessages across worker restarts. */
+  pendingPlayerTurn?: PlayerTurnCheckpoint
+  openingCheckpointed?: boolean
   /** True while the current room owner must complete AI settings before KP can run. */
   kpSetupRequired?: boolean
   updatedAt: number
@@ -92,6 +101,7 @@ interface RoomOptions {
   workflow?: StoryWorkflow
   contextBudgetChars?: number
   restore?: RoomSnapshot | null
+  workerLease?: roomStorage.RoomWorkerLease
 }
 
 class RoomStoryUnavailableError extends Error {
@@ -145,6 +155,7 @@ export type RoomStoryContext = {
  */
 export class RoomService {
   readonly roomId: string
+  readonly workerLease?: roomStorage.RoomWorkerLease
   /** 现任房主（转让/断线易主后随 syncFromDb 更新——KP/RAG/记忆全程跟随现任 owner）。 */
   private ownerId: number
   private ownershipVersion = 0
@@ -190,6 +201,10 @@ export class RoomService {
   private eventLog: { seq: number; event: RoomEvent }[] = []
   private eventLogStartSeq = 0
   private snapshotTimer: NodeJS.Timeout | null = null
+  private leaseTimer: NodeJS.Timeout | null = null
+  private renewingLease = false
+  private pendingPlayerTurn?: PlayerTurnCheckpoint
+  private openingCheckpointed = false
   /** 回合窗口（D4）：缓冲窗口内玩家消息，超时合并进一次 KP 回合。 */
   private turnBuffer: PendingTurnMessage[] = []
   /** Batch currently executing; included in snapshots until its turn commits. */
@@ -199,6 +214,7 @@ export class RoomService {
 
   constructor(private readonly opts: RoomOptions) {
     this.roomId = opts.roomId
+    this.workerLease = opts.workerLease
     this.ownerId = opts.ownerId
     this.ownerName = opts.ownerName
     this.storyId = opts.storyId ?? null
@@ -220,6 +236,12 @@ export class RoomService {
             (entry.messageId === undefined || typeof entry.messageId === 'string'),
           )
         : []
+      const checkpoint = opts.restore.pendingPlayerTurn
+      if (this.workerLease && checkpoint && typeof checkpoint.id === 'string' &&
+          Number.isSafeInteger(checkpoint.actionCount) && checkpoint.actionCount > 0 && checkpoint.actionCount <= this.turnBuffer.length) {
+        this.pendingPlayerTurn = checkpoint
+      }
+      this.openingCheckpointed = opts.restore.openingCheckpointed === true
       this.messages = Array.isArray(opts.restore.messages) ? opts.restore.messages : []
       this.characters = new Map(Object.entries(opts.restore.characters ?? {}))
       this.clues = Array.isArray(opts.restore.clues) ? opts.restore.clues : []
@@ -239,6 +261,34 @@ export class RoomService {
       })
     }, SNAPSHOT_EVERY_MS)
     this.snapshotTimer.unref?.()
+    if (this.workerLease) {
+      this.leaseTimer = setInterval(() => {
+        if (this.renewingLease || this.disposed) return
+        this.renewingLease = true
+        void this.renewWorkerLease().catch((error) => {
+          logger.warn('room worker lease renewal failed', { roomId: this.roomId, error: String(error) })
+        }).finally(() => { this.renewingLease = false })
+      }, Math.floor(ROOM_WORKER_LEASE_MS / 3))
+      this.leaseTimer.unref?.()
+    }
+  }
+
+  async renewWorkerLease(): Promise<boolean> {
+    if (this.disposed) return false
+    if (!this.workerLease) return true
+    try {
+      if (await roomStorage.renewRoomLease(this.roomId, this.workerLease)) return !this.disposed
+      this.retireWorker()
+      return false
+    } catch (error) {
+      this.retireWorker()
+      throw error
+    }
+  }
+
+  private retireWorker(): void {
+    this.dispose()
+    if (getRoom(this.roomId) === this) roomRegistry.delete(this.roomId)
   }
 
   /* ═══════════════ 查询（只读，无需入队） ═══════════════ */
@@ -278,6 +328,8 @@ export class RoomService {
       longTermSummary: this.longTermSummary,
       contextBudgetChars: this.contextBudgetChars,
       pendingTurnMessages: [...this.activeTurnBatch, ...this.turnBuffer],
+      pendingPlayerTurn: this.pendingPlayerTurn,
+      openingCheckpointed: this.openingCheckpointed || undefined,
       kpSetupRequired: this.kpSetupRequired,
       updatedAt: Date.now(),
     }
@@ -384,24 +436,34 @@ export class RoomService {
   }
 
   private persistPhase(phase: RoomPhase): void {
-    void withRoomCommand(this.roomId, () => roomStorage.updateRoomPhase(this.roomId, phase)).catch((error) => {
+    void withRoomCommand(this.roomId, () => roomStorage.updateRoomPhase(this.roomId, phase, this.workerLease)).catch((error) => {
       logger.error('room phase persistence failed', { roomId: this.roomId, phase, error: String(error) })
     })
   }
 
   private members: RoomMember[] = []
 
-  /** Broadcast the current membership and retain it for standalone phase events. */
-  broadcastMembers(members: RoomMember[]): void {
-    this.members = members
-    this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members } })
+  /** Callers hold the room command slot. The worker publishes only committed metadata. */
+  async broadcastMembers(members: RoomMember[]): Promise<void> {
+    const event: RoomEvent = { type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members } }
+    if (this.workerLease) {
+      await this.commitCheckpoint(this.snapshot(), [event], () => { this.members = members })
+    } else {
+      this.members = members
+      this.emit(event)
+    }
   }
 
   /** 设置回合窗口（房主控制，B6）；0 = 严格排队。广播 room_meta 全员可见。 */
-  setTurnWindowMs(ms: number): void {
+  async setTurnWindowMs(ms: number): Promise<void> {
     const clamped = Math.max(0, Math.min(60_000, Math.floor(ms)))
-    this.turnWindowMs = clamped
-    this.emit({ type: 'room_meta', payload: { phase: this.phase, turnWindowMs: this.turnWindowMs, members: this.members } })
+    const event: RoomEvent = { type: 'room_meta', payload: { phase: this.phase, turnWindowMs: clamped, members: this.members } }
+    if (this.workerLease) {
+      await this.commitCheckpoint({ ...this.snapshot(), turnWindowMs: clamped }, [event], () => { this.turnWindowMs = clamped })
+    } else {
+      this.turnWindowMs = clamped
+      this.emit(event)
+    }
   }
 
   getTurnWindowMs(): number {
@@ -477,8 +539,10 @@ export class RoomService {
   }
 
   /** 角色卡 sheet 定向广播（T4 #31：绑定/换绑后全员拿到 characters.<id>）。 */
-  emitSheetPatch(characterId: string, sheet: COCCharacterSheet): void {
-    this.emit({ type: 'state_patch', payload: { path: `characters.${characterId}`, value: sheet } })
+  async emitSheetPatch(characterId: string, sheet: COCCharacterSheet): Promise<void> {
+    const event: RoomEvent = { type: 'state_patch', payload: { path: `characters.${characterId}`, value: sheet } }
+    if (this.workerLease) await this.commitCheckpoint(this.snapshot(), [event], () => {})
+    else this.emit(event)
   }
 
   /** 角色卡归属查询（D5：工具 characterId 归属校验）。 */
@@ -608,15 +672,18 @@ export class RoomService {
     return withRoomCommand(this.roomId, async () => {
       if (this.disposed || this.isEnded()) return { batch: [], history: [] }
       const queued = this.turnBuffer
+      const candidates = this.pendingPlayerTurn ? queued.slice(0, this.pendingPlayerTurn.actionCount) : queued
+      const remaining = queued.slice(candidates.length)
       const messageIds = new Set(queued.flatMap((entry) => entry.messageId ? [entry.messageId] : []))
       const legacyCount = queued.length - messageIds.size
       // Echoes and the previous Keeper reply can interleave while a turn is running.
       // Remove these exact player echoes from history before adding the merged action.
       const history = this.messages.slice(0, Math.max(0, this.messages.length - legacyCount))
         .filter((message) => !messageIds.has(message.id))
-      const dispatch = (batch: PendingTurnMessage[]) => {
-        this.turnBuffer = []
+      const dispatch = (batch: PendingTurnMessage[], checkpoint?: PlayerTurnCheckpoint) => {
+        this.turnBuffer = remaining
         this.activeTurnBatch = batch
+        this.pendingPlayerTurn = checkpoint
         return { batch, history }
       }
       // Standalone RoomService instances used with the in-memory buffer have no persisted membership.
@@ -625,7 +692,7 @@ export class RoomService {
       const members = new Map((await roomStorage.listMembers(this.roomId)).map((member) => [member.user_id, member]))
       const batch: PendingTurnMessage[] = []
       const cancelled: roomStorage.RoomActionWrite[] = []
-      for (const entry of queued) {
+      for (const entry of candidates) {
         const member = members.get(entry.authorUserId)
         if (member) {
           batch.push({ ...entry, characterId: member.character_id })
@@ -633,10 +700,21 @@ export class RoomService {
           cancelled.push({ userId: entry.authorUserId, actionId: entry.actionId, status: 'cancelled' })
         }
       }
-      if (batch.length < queued.length) {
+      if (this.workerLease || batch.length < candidates.length) {
+        const checkpoint = this.workerLease && batch.length > 0
+          ? { id: this.pendingPlayerTurn?.id ?? crypto.randomUUID(), actionCount: batch.length }
+          : undefined
         const snapshot = this.snapshot()
-        snapshot.pendingTurnMessages = batch
-        await this.commitCheckpoint(snapshot, [], () => { dispatch(batch) }, cancelled)
+        snapshot.pendingTurnMessages = [...batch, ...remaining]
+        snapshot.pendingPlayerTurn = checkpoint
+        const cancelledTurn = !checkpoint && this.pendingPlayerTurn ? {
+          id: this.pendingPlayerTurn.id,
+          actionKeys: cancelled.map(({ userId, actionId }) => ({ userId, actionId })),
+          outcome: 'cancelled' as const,
+          firstEventSeq: null,
+          lastEventSeq: null,
+        } : undefined
+        await this.commitCheckpoint(snapshot, [], () => { dispatch(batch, checkpoint) }, cancelled, cancelledTurn)
         return { batch, history }
       }
       return dispatch(batch)
@@ -703,7 +781,7 @@ export class RoomService {
         stage: 'turn',
       })
       // Wait for any concurrent room governance command before invoking the Keeper.
-      if (!await withRoomCommand(this.roomId, async () => canRunTurn())) return
+      if (!await withRoomCommand(this.roomId, async () => canRunTurn() && await this.renewWorkerLease())) return
       const chatMessages = buildRoomTurnMessages(
         this.promptInput(knowledge.storyName, history),
         knowledge.ragContext,
@@ -851,6 +929,7 @@ export class RoomService {
       events: [] as RoomEvent[],
       content: '',
       ownerChanged: false,
+      failed: false,
     } : null
 
     const stage = (event: RoomEvent) => {
@@ -941,6 +1020,7 @@ export class RoomService {
             }
           },
           onError: () => {
+            if (draft) draft.failed = true
             // 回合失败可见化：系统消息进流（同时供客户端清除「KP 推进中」占位）
             append(
               { id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), role: 'system', content: 'KP 回合失败，请稍后重试。' },
@@ -974,6 +1054,8 @@ export class RoomService {
         event.type === 'message_appended' ? [event.payload.message] : [],
       )]
       snapshot.pendingTurnMessages = ended ? [] : [...this.turnBuffer]
+      snapshot.pendingPlayerTurn = undefined
+      if (this.workerLease && checkpointOpening) snapshot.openingCheckpointed = true
       const checkpointMemory = draft.content
         ? this.appendFallbackTurnMemory(draft.content)
         : this.kpMemory
@@ -988,6 +1070,14 @@ export class RoomService {
         }
       }
 
+      const turnId = checkpointOpening ? 'opening' : this.pendingPlayerTurn?.id
+      const turn = this.workerLease && turnId ? {
+        id: turnId,
+        actionKeys: batch.flatMap((entry) => entry.actionId ? [{ userId: entry.authorUserId, actionId: entry.actionId }] : []),
+        outcome: draft.failed ? 'failed' as const : 'completed' as const,
+        firstEventSeq: events.length ? this.seq + 1 : null,
+        lastEventSeq: events.length ? this.seq + events.length : null,
+      } : undefined
       await this.commitCheckpoint(snapshot, events, () => {
         this.phase = snapshot.phase
         this.ending = snapshot.ending
@@ -996,9 +1086,11 @@ export class RoomService {
         this.characters = new Map(Object.entries(snapshot.characters))
         this.messages = snapshot.messages
         this.activeTurnBatch = []
+        this.pendingPlayerTurn = undefined
+        this.openingCheckpointed = snapshot.openingCheckpointed === true
         this.kpMemory = checkpointMemory
         if (ended) this.clearTurnWindow()
-      }, actionUpdates)
+      }, actionUpdates, turn)
       if (draft.content) {
         this.recordCompletedTurn()
         void this.refineSharedTurnMemory(ownerUserId, draft.content, checkpointMemory)
@@ -1206,7 +1298,7 @@ export class RoomService {
 
   /** opening（ADR-0002）：startRoom / 首次 join 时触发一次，失败不阻塞进入。 */
   beginOpeningIfPending(): void {
-    if (this.disposed || this.openingStarted || this.openingInFlight || this.turnFlushing || this.phase !== 'playing' ||
+    if (this.disposed || this.openingStarted || this.openingCheckpointed || this.openingInFlight || this.turnFlushing || this.phase !== 'playing' ||
         this.messages.some((message) => message.role === 'player' || message.role === 'kp')) return
     this.openingStarted = true
     this.openingInFlight = true
@@ -1256,6 +1348,7 @@ export class RoomService {
         retryOpening = true
         return
       }
+      if (!await this.renewWorkerLease()) return
       const chatMessages = buildRoomOpeningMessages(this.promptInput(knowledge.storyName, this.messages), knowledge.ragContext, {
         workflow: this.workflow,
         sceneBlock: knowledge.sceneBlock,
@@ -1314,20 +1407,38 @@ export class RoomService {
   /** Persist a complete transition before making it visible to clients. Requires the room command slot. */
   private async commitCheckpoint(
     snapshot: RoomSnapshot, events: RoomEvent[], install: () => void, actions: readonly roomStorage.RoomActionWrite[] = [],
+    turn?: roomStorage.RoomCheckpoint['turn'],
   ): Promise<void> {
     snapshot.seq = this.seq + events.length
-    if (!await this.writeSnapshot(snapshot, actions)) {
+    const stagedEvents = events.map((event, index) => ({ seq: this.seq + index + 1, event }))
+    if (!await this.writeSnapshot(snapshot, actions, stagedEvents, turn)) {
       throw new Error('Room was disposed before its checkpoint could commit')
     }
     install()
     for (const event of events) this.emit(event)
   }
 
-  async writeSnapshot(snapshot = this.snapshot(), actions: readonly roomStorage.RoomActionWrite[] = []): Promise<boolean> {
+  async writeSnapshot(
+    snapshot = this.snapshot(), actions: readonly roomStorage.RoomActionWrite[] = [],
+    stagedEvents: { seq: number; event: RoomEvent }[] = [], turn?: roomStorage.RoomCheckpoint['turn'],
+  ): Promise<boolean> {
     if (this.disposed) return false
-    await roomStorage.updateRoomStateSnapshot(
-      this.roomId, serializeRoomState(snapshot), snapshot.phase === 'ended' ? 'ended' : undefined, actions,
-    )
+    const checkpoint = this.workerLease ? {
+      lease: this.workerLease,
+      events: [...this.eventLog.filter(({ seq }) => seq > this.persistedSeq), ...stagedEvents]
+        .map(({ seq, event }) => ({ seq, type: event.type, payload: event.payload })),
+      turn,
+    } : undefined
+    try {
+      await roomStorage.updateRoomStateSnapshot(
+        this.roomId, serializeRoomState(snapshot), snapshot.phase === 'ended' ? 'ended' : undefined, actions, checkpoint,
+      )
+    } catch (error) {
+      // A failed COMMIT response can still mean PostgreSQL committed. Discard
+      // the local state before replay so it reloads receipts and the turn result.
+      if (this.workerLease) this.retireWorker()
+      throw error
+    }
     this.persistedSeq = Math.max(this.persistedSeq, snapshot.seq)
     this.lastSnapshotAt = Date.now()
     return true
@@ -1351,6 +1462,8 @@ export class RoomService {
     this.lifetime.abort()
     if (this.snapshotTimer) clearInterval(this.snapshotTimer)
     this.snapshotTimer = null
+    if (this.leaseTimer) clearInterval(this.leaseTimer)
+    this.leaseTimer = null
     this.clearTurnWindow()
     this.listeners.clear()
   }
@@ -1364,11 +1477,13 @@ const roomCommands = new Map<string | symbol, Promise<unknown>>()
 const roomCreationSlot = Symbol('room creation')
 
 /** Hold the same room's command slot across database I/O without blocking other rooms. */
-function withRoomCommand<T>(roomId: string | symbol, command: () => Promise<T>): Promise<T> {
+function withRoomCommand<T>(
+  roomId: string | symbol, command: (workerLease?: roomStorage.RoomWorkerLease) => Promise<T>,
+): Promise<T> {
   const previous = roomCommands.get(roomId)
   const run = async () => {
     try { await previous } catch { /* failures do not block later commands */ }
-    return command()
+    return command(typeof roomId === 'string' ? getRoom(roomId)?.workerLease : undefined)
   }
   const next = run().finally(() => {
     if (roomCommands.get(roomId) === next) roomCommands.delete(roomId)
@@ -1398,6 +1513,8 @@ async function materializeRoom(
 ): Promise<RoomService> {
   let room = roomRegistry.get(roomId)
   if (!room) {
+    const workerLease = ROOM_WORKER_FAILOVER_ENABLED ? await roomStorage.claimRoomLease(roomId) : undefined
+    if (ROOM_WORKER_FAILOVER_ENABLED && !workerLease) throw new roomStorage.RoomWorkerBusyError()
     // DB 权威：列（story_id/phase）优先于 state 快照（审查修复 #1：
     // REST start 只更新列，实例 restore 必须拿到最新 storyId/phase）
     const r = await roomStorage.getRoomRow(roomId)
@@ -1412,7 +1529,7 @@ async function materializeRoom(
       // 故它非空即可反推 ended——否则这些房间重启后仍被复活成进行中。
       if (restore.ending != null && restore.phase === 'playing') {
         restore.phase = 'ended'
-        try { await roomStorage.updateRoomPhase(roomId, 'ended') } catch { /* 自愈失败不阻断物化 */ }
+        try { await roomStorage.updateRoomPhase(roomId, 'ended', workerLease) } catch { /* 自愈失败不阻断物化 */ }
       }
     } else if (r) {
       restore = {
@@ -1428,11 +1545,12 @@ async function materializeRoom(
         updatedAt: Date.now(),
       }
     }
-    room = new RoomService({ roomId, ownerId: r?.owner_id ?? ownerId, ownerName: (r ? await roomStorage.usernameOf(r.owner_id) : null) ?? ownerName, storyId: typeof r?.story_id === 'string' ? r.story_id : storyId, storyOwnerId: r?.story_owner_id ?? (typeof r?.story_id === 'string' ? r.owner_id : null), restore })
+    room = new RoomService({ roomId, ownerId: r?.owner_id ?? ownerId, ownerName: (r ? await roomStorage.usernameOf(r.owner_id) : null) ?? ownerName, storyId: typeof r?.story_id === 'string' ? r.story_id : storyId, storyOwnerId: r?.story_owner_id ?? (typeof r?.story_id === 'string' ? r.owner_id : null), restore, workerLease })
     // 对账（ADR-0001）：物化即列优先同步——列（story_id/phase）已入 restore，
     // 绑定角色组从 DB 装载（createSoloRoom 先绑后 join、TTL 回收重进都依赖此步）。
     try { await room.syncFromDb() } catch (error) {
       room.dispose()
+      if (workerLease) await roomStorage.releaseRoomLease(roomId, workerLease).catch(() => {})
       throw error
     }
     roomRegistry.set(roomId, room)
@@ -1486,7 +1604,7 @@ async function syncActiveRoom(roomId: string): Promise<void> {
 async function broadcastMemberMeta(roomId: string): Promise<void> {
   const room = getRoom(roomId)
   if (!room) return
-  room.broadcastMembers(
+  await room.broadcastMembers(
     (await roomStorage.listMembers(roomId)).map(memberRowToInfo),
   )
 }
@@ -1570,13 +1688,13 @@ export async function joinRoomByInviteCode(
 ): Promise<{ ok: true; roomId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string }> {
   const roomId = await roomStorage.findRoomIdByInviteCode(inviteCode)
   if (!roomId) return { ok: false, reason: 'not-found', message: 'room not found' }
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const room = await roomStorage.getRoomRow(roomId)
     if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
     if (room.phase !== 'lobby') {
       return { ok: false, reason: 'conflict', message: 'room already started' }
     }
-    await roomStorage.insertMember(roomId, userId, 'member')
+    await roomStorage.insertMember(roomId, userId, 'member', workerLease)
     await broadcastMemberMeta(roomId)
     return { ok: true, roomId }
   })
@@ -1626,7 +1744,7 @@ export async function startRoom(
   roomId: string,
   storyId: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string }> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can start the game' }
@@ -1658,7 +1776,7 @@ export async function startRoom(
     if (!gate.ok) return gate
     if (getRoom(roomId)?.isEnded()) return { ok: false, reason: 'conflict', message: '\u5bf9\u5c40\u5df2\u7ed3\u675f\uff0c\u65e0\u6cd5\u91cd\u65b0\u5f00\u59cb' }
     try {
-      await roomStorage.updateRoomStart(roomId, storyId, storyOwnerId, gate.pin)
+      await roomStorage.updateRoomStart(roomId, storyId, storyOwnerId, gate.pin, workerLease)
     } catch (error) {
       if (!(error instanceof roomStorage.StoryRevisionChangedError)) throw error
       return { ok: false, reason: 'conflict', message: 'Prepared story changed. Select it again to start.' }
@@ -1697,7 +1815,7 @@ export async function bindRoomCharacter(
   roomId: string,
   characterId: string,
 ): Promise<{ ok: true; roomId: string; characterId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string }> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     if (!await roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
     if (await roomStorage.characterOwnerUserId(characterId) !== userId) {
       return { ok: false, reason: 'not-found', message: 'character not found' }
@@ -1705,7 +1823,7 @@ export async function bindRoomCharacter(
     if (await roomStorage.boundMemberOf(roomId, characterId, userId) !== null) {
       return { ok: false, reason: 'conflict', message: 'character already bound to another member' }
     }
-    await roomStorage.bindMemberCharacter(roomId, userId, characterId)
+    await roomStorage.bindMemberCharacter(roomId, userId, characterId, workerLease)
     await syncActiveRoom(roomId)
     // T4 #31：换绑后广播新绑定卡 sheet（room_meta 只带 member.characterId；
     // characters.<id> 走 state_patch——客户端档案区/队友卡依赖此通道）。
@@ -1713,7 +1831,7 @@ export async function bindRoomCharacter(
     const active = getRoom(roomId)
     const sheet = active?.getCharacter(characterId) ?? null
     if (active && sheet) {
-      active.emitSheetPatch(characterId, sheet)
+      await active.emitSheetPatch(characterId, sheet)
     }
     return { ok: true, roomId, characterId }
   })
@@ -1732,7 +1850,7 @@ export async function setRoomTurnWindow(
   roomId: string,
   rawTurnWindowMs: unknown,
 ): Promise<{ ok: true; turnWindowMs?: number } | { ok: false; reason: 'not-found' | 'not-owner' | 'bad-request'; message: string }> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const room = await roomStorage.getRoomRow(roomId)
     if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
     if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can change room settings' }
@@ -1748,9 +1866,9 @@ export async function setRoomTurnWindow(
       state.turnWindowMs = sanitized
       ms = sanitized
     }
-    await roomStorage.updateRoomStateSettings(roomId, serializeRoomState(state))
+    await roomStorage.updateRoomStateSettings(roomId, serializeRoomState(state), workerLease)
     const active = getRoom(roomId)
-    if (active && typeof ms === 'number') active.setTurnWindowMs(ms)
+    if (active && typeof ms === 'number') await active.setTurnWindowMs(ms)
     return { ok: true, turnWindowMs: ms }
   })
 }
@@ -1760,12 +1878,12 @@ export async function deleteRoomAsOwner(
   userId: number,
   roomId: string,
 ): Promise<{ ok: true } | { ok: false; reason: 'not-found' | 'not-owner' | 'conflict'; message: string }> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const room = await roomStorage.getRoomRow(roomId)
     if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
     if (room.owner_id !== userId) return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
     if (room.phase === 'playing') return { ok: false, reason: 'conflict', message: 'playing rooms cannot be dissolved' }
-    await roomStorage.deleteRoomRows(roomId)
+    await roomStorage.deleteRoomRows(roomId, workerLease)
     disposeDeletedRoom(roomId)
     return { ok: true }
   })
@@ -1806,12 +1924,12 @@ export async function setMemberReady(
   roomId: string,
   ready: boolean,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole === 'owner') return { ok: false, reason: 'not-owner', message: 'only members can toggle ready' }
     if (g.room.phase !== 'lobby') return { ok: true } // playing 后就绪无意义：幂等成功
-    await roomStorage.setMemberReady(roomId, userId, ready)
+    await roomStorage.setMemberReady(roomId, userId, ready, workerLease)
     await syncActiveRoom(roomId)
     return { ok: true }
   })
@@ -1823,14 +1941,14 @@ export async function leaveRoomAsMember(
   userId: number,
   roomId: string,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole === 'owner') {
-      await transferToSuccessorOrDissolve(roomId, userId)
+      await transferToSuccessorOrDissolve(roomId, userId, workerLease)
       return { ok: true }
     }
-    await roomStorage.deleteMemberRow(roomId, userId)
+    await roomStorage.deleteMemberRow(roomId, userId, workerLease)
     await broadcastMemberMeta(roomId)
     return { ok: true }
   })
@@ -1841,33 +1959,37 @@ export async function leaveRoomAsOwner(
   userId: number,
   roomId: string,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
-    await transferToSuccessorOrDissolve(roomId, userId)
+    await transferToSuccessorOrDissolve(roomId, userId, workerLease)
     return { ok: true }
   })
 }
 
 /** 转让房主行写库（新 owner 行 role='owner' + ready 清零；旧 owner 行降为 member 且留在房内）。 */
-async function transferOwnerRow(roomId: string, oldOwnerId: number, newOwnerId: number): Promise<void> {
-  await roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId)
+async function transferOwnerRow(
+  roomId: string, oldOwnerId: number, newOwnerId: number, workerLease?: roomStorage.RoomWorkerLease,
+): Promise<void> {
+  await roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId, workerLease)
   getRoom(roomId)?.updateOwner(newOwnerId)
 }
 
 /** ADR-0005 继位策略单源（决策 6）：还有其他成员 → 立即转让给最早成员（rowid 序）；否则解散房间行。
  *  转让后对活跃实例做 DB→广播对账（syncActiveRoom）；解散路径行已删、无实例对账。
  *  调用方（REST leaveRoomAsOwner / WS handleOwnerWsDisconnect）各持前置 gate，进入时调用者即 multi 房主。 */
-async function transferToSuccessorOrDissolve(roomId: string, oldOwnerId: number): Promise<void> {
+async function transferToSuccessorOrDissolve(
+  roomId: string, oldOwnerId: number, workerLease?: roomStorage.RoomWorkerLease,
+): Promise<void> {
   const members = await roomStorage.listMembersOrdered(roomId)
   const successor = members.find((m) => m.user_id !== oldOwnerId)
   if (!successor) {
-    await roomStorage.deleteRoomRows(roomId)
+    await roomStorage.deleteRoomRows(roomId, workerLease)
     disposeDeletedRoom(roomId)
     return
   }
-  await transferOwnerRow(roomId, oldOwnerId, successor.user_id)
+  await transferOwnerRow(roomId, oldOwnerId, successor.user_id, workerLease)
   await syncActiveRoom(roomId)
 }
 
@@ -1877,12 +1999,12 @@ export async function kickRoomMember(
   roomId: string,
   targetUserId: number,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const g = await governanceGate(callerUserId, roomId, targetUserId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can kick members' }
     if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'owner cannot kick themselves' }
-    await roomStorage.deleteMemberRow(roomId, targetUserId)
+    await roomStorage.deleteMemberRow(roomId, targetUserId, workerLease)
     await broadcastMemberMeta(roomId)
     return { ok: true }
   })
@@ -1894,12 +2016,12 @@ export async function transferOwnership(
   roomId: string,
   targetUserId: number,
 ): Promise<{ ok: true } | RoomGovernanceFail> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
     const g = await governanceGate(callerUserId, roomId, targetUserId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can transfer ownership' }
     if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'target is already the owner' }
-    await transferOwnerRow(roomId, callerUserId, targetUserId)
+    await transferOwnerRow(roomId, callerUserId, targetUserId, workerLease)
     await syncActiveRoom(roomId)
     return { ok: true }
   })
@@ -1909,11 +2031,12 @@ export async function transferOwnership(
  *  供 ws 层断线事件调用——仅当脱机的正是当前 owner 时执行（非 owner 断线不动房间；
  *  刷新即易主是已知取舍）。solo 房主断线不转让（单人房主=唯一成员，solo 无等待室）。 */
 export async function handleOwnerWsDisconnect(roomId: string, userId: number): Promise<void> {
-  return withRoomCommand(roomId, async () => {
+  return withRoomCommand(roomId, async (workerLease) => {
+    if (ROOM_WORKER_FAILOVER_ENABLED && !workerLease) return
     const room = await roomStorage.getRoomRow(roomId)
     if (!room || room.phase === 'ended' || getRoom(roomId)?.isEnded()) return
     if (room.kind !== 'multi' || room.owner_id !== userId) return
-    await transferToSuccessorOrDissolve(roomId, userId)
+    await transferToSuccessorOrDissolve(roomId, userId, workerLease)
   })
 }
 
@@ -1922,7 +2045,7 @@ export async function joinRoom(roomId: string, userId: number, username: string)
   return withRoomCommand(roomId, async () => {
     if (!await roomStorage.isRoomMember(roomId, userId)) return null
     const active = getRoom(roomId)
-    if (active) {
+    if (active && (!active.workerLease || await active.renewWorkerLease())) {
       active.beginOpeningIfPending()
       return active
     }
@@ -1930,6 +2053,8 @@ export async function joinRoom(roomId: string, userId: number, username: string)
     roomsActivating.add(roomId)
     try {
       const room = await materializeRoom(roomId, userId, username)
+      // A member may have been removed while this process waited for a lease.
+      if (room.workerLease && !await roomStorage.isRoomMember(roomId, userId)) return null
       room.beginOpeningIfPending()
       return room
     } finally {
@@ -1956,6 +2081,7 @@ export function reapStaleRooms(canEvict: (roomId: string) => boolean = () => tru
         } finally {
           room.dispose()
           roomRegistry.delete(id)
+          if (room.workerLease) await roomStorage.releaseRoomLease(id, room.workerLease)
         }
       }).catch((err: unknown) => logger.error('room reaper persistSnapshot failed', { roomId: id, error: String(err) }))
     }

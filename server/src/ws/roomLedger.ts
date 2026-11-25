@@ -11,7 +11,7 @@
  * 规划在这里。wire 帧格式不变。
  */
 import type { RoomEvent, RoomService } from '../services/roomService.js'
-import { getRoom, hasRoomCapacity, isRoomMember, joinRoom } from '../services/roomService.js'
+import { getRoom, hasRoomCapacity, isRoomMember, joinRoom, RoomWorkerBusyError } from '../services/roomService.js'
 import type { FrameRecipient } from './sendFrame.js'
 
 /** 订阅者的最小传输面（WebSocket 的结构子集）。readyState === 1 = OPEN。 */
@@ -94,7 +94,11 @@ export async function planJoin(
   username: string,
 ): Promise<{ ok: true; room: RoomService } | { ok: false; error: string }> {
   if (!hasRoomCapacity(roomId)) return { ok: false, error: '服务器活跃房间已满，请稍后重试。' }
-  const room = await joinRoom(roomId, userId, username)
+  const room = await joinRoom(roomId, userId, username).catch((error: unknown) => {
+    if (error instanceof RoomWorkerBusyError) return error
+    throw error
+  })
+  if (room instanceof RoomWorkerBusyError) return { ok: false, error: room.message }
   if (!room) return {
     ok: false,
     error: hasRoomCapacity(roomId) ? 'not a room member' : '\u670d\u52a1\u5668\u6d3b\u8dc3\u623f\u95f4\u5df2\u6ee1\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002',

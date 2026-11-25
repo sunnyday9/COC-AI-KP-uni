@@ -3,11 +3,11 @@ import { fileURLToPath } from 'node:url'
 import cors from 'cors'
 import express from 'express'
 import type { Express, NextFunction, Request, Response } from 'express'
-import { DEPLOYMENT_MODE, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED, PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
+import { DEPLOYMENT_MODE, ROOM_WORKER_FAILOVER_ENABLED, SHARED_ROOMS_ENABLED, SHARED_ROOM_CATALOG_ENABLED, PORT, assertRuntimeConfig, isMockAiMode } from './config.js'
 import { logger } from './utils/logging.js'
 import { getDb } from './db/index.js'
 import { getPostgresPool, initializePostgres } from './db/postgres.js'
-import { initializeSingleProcessRooms } from './db/postgresRoomsSchema.js'
+import { initializePostgresRooms } from './db/postgresRoomsSchema.js'
 import { startRoomReaper } from './services/roomService.js'
 import { createWsServer } from './ws/index.js'
 import { hasSubscribers } from './ws/roomLedger.js'
@@ -120,7 +120,7 @@ async function startServer(): Promise<void> {
     if (SHARED_ROOM_CATALOG_ENABLED && !STORY_PREPARATION_ENABLED) {
       throw new Error('Shared catalog gameplay requires STORY_PREPARATION_ENABLED=1')
     }
-    if (SHARED_ROOMS_ENABLED) await initializeSingleProcessRooms(SHARED_ROOM_CATALOG_ENABLED)
+    if (SHARED_ROOMS_ENABLED) await initializePostgresRooms(ROOM_WORKER_FAILOVER_ENABLED, SHARED_ROOM_CATALOG_ENABLED)
   } else getDb()
   const httpServer = createApp().listen(PORT, () => {
     logger.info(`COC AI KP server listening on http://localhost:${PORT}`)

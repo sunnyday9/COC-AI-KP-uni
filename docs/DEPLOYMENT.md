@@ -156,6 +156,14 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 使用独立的临时 PostgreSQL 数据库设置 `TEST_SHARED_ROOMS_DATABASE_URL`，在仓库根目录运行 `npm run test:server -- src/routes/sharedRooms.test.ts`。测试用同一套既有 REST 和 WebSocket 协议覆盖 SQLite 与 PostgreSQL 的建房、游戏进程重启、房主及剧本归属、角色卡与待处理回合。当前共享房间部署仅面向受控的单游戏进程预发布。
 
+#### 多房间进程故障恢复预发布（#120）
+
+在共享房间配置上额外设置 `ENABLE_ROOM_WORKER_FAILOVER=1`。每个进程使用独立端口，共享 PostgreSQL、JWT 签名配置和准备好的剧本目录。`ROOM_WORKER_LEASE_MS` 默认 15000，允许 1000–120000 毫秒。PostgreSQL 使用数据库时钟判定租约，进程约每三分之一租期续租。加入房间时，新进程只有在租约可接管时才恢复房间。连接仍发往指定进程，跨网关路由和事件投递由 #121 处理。
+
+每次接管取得递增的房间 epoch。行动回执、回合结果、房间快照、按序房间事件和事件待投递记录在当前 epoch 校验下提交。进程在 Keeper 调用中退出后，下一进程从已持久化的行动批次继续。模型请求可能重复，已提交的角色卡、线索和结局效果只保存一次。已订阅的同进程连接在事务提交后接收事件。
+
+单进程模式使用排他启动锁，多进程预发布使用同一锁的共享模式。切换前先停掉正在运行的房间进程，再启动新模式。SQLite 无需配置。使用独立的 PostgreSQL 夹具运行 `npm run test:server -- src/routes/sharedRooms.test.ts`，覆盖抢占租约、延迟旧结果、杀进程恢复、按原批次重放和规则效果只提交一次。
+
 ### 6.4 共享剧本准备进程（#116）
 
 先配置第 6.2 节的 PostgreSQL 和私有对象存储，并在所有网关及独立准备进程中设置 `STORY_PREPARATION_ENABLED=1`。网关负责接受请求并查询状态。每个准备进程同一时间处理一个任务，通过增加准备进程独立扩展 OCR、索引和档案生成。准备进程使用同一数据库、私有存储和 `JWT_SECRET`，由服务管理器注入设置并负责重启。
