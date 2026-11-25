@@ -10,6 +10,11 @@ import { _clearRoomRegistryForTests, RoomService } from '../roomService.js'
 import type { COCCharacterSheet } from '../../../../shared/types/character.js'
 import type { Message } from '../../../../shared/types/game.js'
 
+vi.mock('../settingsService.js', () => ({
+  getAiSetupIssue: () => null,
+  getAiConfig: () => ({}),
+}))
+
 /** 最小 COC 角色卡（E2E 夹具形状）。 */
 function makeSheet(id: string, hp = 10): COCCharacterSheet {
   return {
@@ -117,8 +122,7 @@ describe('RoomService 回合窗口合并（D4）', () => {
 
   it('窗口超时立即处理；无多人时单条消息等价即时', async () => {
     room.bufferPlayerChat('alice', '我看看门。', null, 1)
-    await new Promise((r) => setTimeout(r, 350))
-    expect(runKpTurnMock).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1))
     const userMsg = [...(runKpTurnMock.mock.calls[0]![1] as { messages: { role: string; content: string }[] }).messages].reverse().find((m) => m.role === 'user')
     expect(userMsg?.content).toBe('【alice】我看看门。')
   })

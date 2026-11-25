@@ -146,6 +146,15 @@ function openAiSettings() {
   uni.navigateTo({ url: '/pages/settings/index' })
 }
 
+const kpPressureText = computed(() => {
+  if (roomStore.kpPauseReason === 'queue_full') return 'KP 正忙，待处理的行动已保留。'
+  if (roomStore.kpPauseReason === 'timeout') return 'KP 响应超时，待处理的行动已保留。'
+  return 'AI 服务暂时繁忙，待处理的行动已保留。'
+})
+const kpRetryTime = computed(() => roomStore.kpRetryAt > 0
+  ? new Date(roomStore.kpRetryAt).toLocaleTimeString()
+  : '')
+
 function retryKpTurn() {
   roomStore.retryKpTurn()
 }
@@ -260,6 +269,17 @@ function confirmExit() {
           </view>
           <view v-if="roomStore.isOwner" class="kp-setup-actions">
             <button class="kp-setup-button" @click="openAiSettings">打开 AI 设置</button>
+            <button class="kp-setup-button kp-setup-retry" @click="retryKpTurn">重试 KP</button>
+          </view>
+        </view>
+
+        <view v-else-if="roomStore.kpPauseReason" class="kp-setup-banner" role="status">
+          <view class="kp-setup-copy">
+            <text class="kp-setup-title">KP 暂停中</text>
+            <text class="kp-setup-text">{{ kpPressureText }}</text>
+            <text v-if="kpRetryTime" class="kp-setup-text">可在 {{ kpRetryTime }} 后重试。</text>
+          </view>
+          <view v-if="roomStore.isOwner" class="kp-setup-actions">
             <button class="kp-setup-button kp-setup-retry" @click="retryKpTurn">重试 KP</button>
           </view>
         </view>
