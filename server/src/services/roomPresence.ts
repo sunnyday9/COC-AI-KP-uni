@@ -54,6 +54,7 @@ export async function renewRoomPresence(entries: RoomPresence[]): Promise<Set<st
     FROM unnest($1::text[], $2::bigint[], $3::uuid[]) AS local(room_id, user_id, subscription_id)
     WHERE (presence.room_id, presence.user_id, presence.subscription_id) =
       (local.room_id, local.user_id, local.subscription_id)
+      AND presence.expires_at > clock_timestamp()
     RETURNING presence.subscription_id
   `, [entries.map((entry) => entry.roomId), entries.map((entry) => entry.userId), entries.map((entry) => entry.subscriptionId)])
   return new Set(result.rows.map((row) => row.subscription_id))

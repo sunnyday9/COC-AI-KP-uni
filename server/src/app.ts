@@ -14,7 +14,7 @@ import { roomWorkerId } from './services/roomStorage.js'
 import { executeRoomCommand } from './services/roomCommands.js'
 import { initializeRoomMailbox, runRoomMailbox } from './services/roomMailbox.js'
 import { initializeRoomPresence } from './services/roomPresence.js'
-import { markGatewayDraining, runGatewayPresence } from './ws/gatewayPresence.js'
+import { markGatewayDraining, runGatewayPresence, waitForGatewayPresenceCleanup } from './ws/gatewayPresence.js'
 import { markTransportReset } from './ws/sendFrame.js'
 import { runGatewayRoomFanout } from './ws/gatewayRooms.js'
 import { createWsServer } from './ws/index.js'
@@ -158,9 +158,13 @@ async function startServer(): Promise<void> {
       markGatewayDraining()
       lifetime.abort()
       for (const socket of sockets.clients) markTransportReset(socket)
-      sockets.close()
+      const closed = Promise.all([
+        new Promise<void>((resolve) => sockets.close(() => resolve())),
+        new Promise<void>((resolve) => httpServer.close(() => resolve())),
+      ])
       for (const socket of sockets.clients) socket.terminate()
-      httpServer.close()
+      void closed.then(waitForGatewayPresenceCleanup).then(() => process.exit(0))
+      setTimeout(() => process.exit(0), 5_000).unref()
     }
     process.once('SIGTERM', drain)
     process.once('SIGINT', drain)

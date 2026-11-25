@@ -78,6 +78,7 @@ interface KeeperFixture {
   endingOpeningBarrier?: string
   damageReleaseFile?: string
   ignoreLeaseRenewal?: boolean
+  useByok?: boolean
 }
 
 function keeperFixture(options: KeeperFixture): string {
@@ -87,7 +88,9 @@ function keeperFixture(options: KeeperFixture): string {
     const endingOpeningBarrier = ${JSON.stringify(options.endingOpeningBarrier)};
     const damageReleaseFile = ${JSON.stringify(options.damageReleaseFile)};
     let turns = 0;
-    export async function runKpTurn(_userId, { messages }, turn) {
+    export async function runKpTurn(userId, { messages }, turn) {
+      const ai = ${options.useByok === true} ? await getSharedAiConfig(userId) : null;
+      const identity = ai && ai.apiKey === ai.model + '-key' ? ai.model : null;
       if (${options.failOpeningProvider === true}) {
         turn.handlers.onError('Synthetic provider failure');
         return;
@@ -110,19 +113,24 @@ function keeperFixture(options: KeeperFixture): string {
         }
       }
       turn.handlers.onChunk?.('Narration chunk.');
-      turn.handlers.onEnd({ content: damage ? 'The ledger was recovered.' : 'The archive is quiet.', displayMessages: [] });
+      const narrative = damage ? 'The ledger was recovered.' : 'The archive is quiet.';
+      turn.handlers.onEnd({ content: identity ? narrative + ' Keeper: ' + identity : narrative, displayMessages: [] });
     }
   `
   return 'data:text/javascript,' + encodeURIComponent(`
     import { registerHooks } from 'node:module';
+    const useByok = ${options.useByok === true};
     const withFault = ${options.failOpeningCheckpoint === true};
     const ignoreLeaseRenewal = ${options.ignoreLeaseRenewal === true};
     const fixtureModule = (source) => ({ url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true });
     registerHooks({
       resolve(specifier, context, next) {
         if (!context.parentURL?.endsWith('/roomService.ts')) return next(specifier, context);
-        if (specifier === './kpTurnService.js') return fixtureModule(${JSON.stringify(service)});
-        if (withFault && specifier === './roomMemory.js') {
+        if (specifier === './kpTurnService.js') {
+          const settings = JSON.stringify(next('./settingsService.js', context).url);
+          return fixtureModule('import { getSharedAiConfig } from ' + settings + ';' + ${JSON.stringify(service)});
+        }
+        if ((withFault || useByok) && specifier === './roomMemory.js') {
           return fixtureModule("export async function extractMemoryPoints() { return ['The archive is silent']; }");
         }
         if (ignoreLeaseRenewal && specifier === './roomStorage.js') {
@@ -228,7 +236,7 @@ function duplicateOutboxEvents(): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split'): Promise<void> {
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'split-governance'): Promise<void> {
   const failover = scenario !== undefined
 
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
@@ -246,7 +254,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const pausedAcceptances = new WeakSet<ChildProcess>()
   const shared = backend === 'postgres'
   let base: string
-  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string; runtime?: 'worker' | 'gateway'; activeRooms?: number; duplicateOutbox?: boolean } = {}): Promise<ChildProcess> {
+  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string; runtime?: 'worker' | 'gateway'; activeRooms?: number; duplicateOutbox?: boolean; drainable?: boolean } = {}): Promise<ChildProcess> {
     const port = await freePort()
     base = `http://127.0.0.1:${port}`
     const args = ['--import', 'tsx']
@@ -256,6 +264,9 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     if (options.pauseActionId) args.push('--import', pauseAcceptance(options.pauseActionId))
     if (options.governanceBarrier) args.push('--import', pauseRoomMutations(options.governanceBarrier))
     if (options.duplicateOutbox) args.push('--import', duplicateOutboxEvents())
+    if (options.drainable) args.push('--import', 'data:text/javascript,' + encodeURIComponent(
+      "process.once('message', () => process.emit('SIGTERM'));",
+    ))
     args.push('src/app.ts')
     const child = spawn(process.execPath, args, {
       env: {
@@ -274,12 +285,12 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
         RAG_DATA_DIR: join(root, 'local-rag'),
         UPLOADS_DIR: join(root, 'uploads'),
         JWT_SECRET: jwtSecret,
-        MOCK_AI: '1',
+        MOCK_AI: options.useByok ? '0' : '1',
         KP_CHUNK_STREAM: options.chunkStream ? '1' : undefined,
         KP_ACTIVE_TURNS: options.endingOpeningBarrier ? '1' : undefined,
         PORT: String(port),
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: options.drainable ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
     })
     children.push(child)
     if (options.runtime === 'worker' || options.pauseAfterTool || options.pauseActionId || options.failOpeningCheckpoint || options.endingOpeningBarrier) {
@@ -339,6 +350,8 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     return {
       send: (frame: unknown) => socket.send(JSON.stringify(frame)),
       close: () => socket.close(),
+      reset: () => socket.send('x'.repeat(140 * 1024)),
+      closed: () => once(socket, 'close'),
       frames,
       async waitFor(predicate: (frame: Frame) => boolean): Promise<Frame> {
         const existing = frames.find(predicate)
@@ -491,6 +504,163 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     ]))
     const discarded = new Set(['I cannot reach the worker', abandonedContent])
     expect(resumedState.snapshot?.messages?.filter(({ content }) => discarded.has(content))).toEqual([])
+  }
+
+  async function runSplitGovernance(): Promise<void> {
+    const release = join(root, 'release-governance-turn')
+    const worker = await launch({ runtime: 'worker', pauseAfterTool: true, damageReleaseFile: release, useByok: true })
+    const first = await launch({ runtime: 'gateway', drainable: true })
+    await ready(first)
+    const firstBase = base
+    const second = await launch({ runtime: 'gateway' })
+    await ready(second)
+    const secondBase = base
+    const owner = await register()
+    const successor = await register()
+    const member = await register()
+    const storyId = randomUUID()
+    await prepareDossier(join(fixtureRoot, 'dossiers'), owner.user.id, storyId)
+    const createRoom = (story?: string) => request('/api/rooms', {
+      method: 'POST', token: owner.token, body: { storyId: story, workflow: 'dossier' },
+    })
+    const joinInvite = (player: Account, inviteCode: string) => request('/api/rooms/join', {
+      method: 'POST', token: player.token, body: { inviteCode },
+    })
+    const configure = (player: Account, model: string) => request('/api/settings', {
+      method: 'PUT', token: player.token, body: {
+        ai: { protocol: 'openai_chat', baseUrl: 'https://provider.invalid/v1', model, apiKey: model + '-key' },
+        rag: { supplement: false, useEmbeddings: false },
+      },
+    })
+    const subscribe = async (player: Account, roomId: string, gateway = base) => {
+      const connection = await connect(player.token, gateway)
+      connection.send({ type: 'room:join', roomId })
+      await connection.waitFor((frame) => frame.type === 'room:state')
+      return connection
+    }
+    const takeTurn = async (socket: Awaited<ReturnType<typeof connect>>, roomId: string) => {
+      await rm(release, { force: true })
+      pausedKeepers.delete(worker)
+      const actionId = randomUUID()
+      const action = { ...chat(roomId, 'Recover the damaged ledger'), actionId }
+      socket.send(action)
+      const accepted = await socket.waitFor((frame) => frame.actionId === actionId)
+      expect(accepted).toMatchObject({ status: 'pending', messageId: expect.any(String) })
+      await expect.poll(() => pausedKeepers.has(worker), { timeout: 7_000 }).toBe(true)
+      return { actionId, action, accepted }
+    }
+    const retry = (roomId: string) => ({ type: 'room:action', roomId, action: { type: 'retry_kp' } })
+    const post = (roomId: string, operation: string, token: string, body?: unknown, expected = 200) =>
+      request('/api/rooms/' + roomId + '/' + operation, { method: 'POST', token, body, expected })
+
+    await configure(owner, 'original-fixture')
+    const { roomId, inviteCode } = await createRoom(storyId)
+    await joinInvite(successor, inviteCode)
+    await joinInvite(member, inviteCode)
+    for (const player of [owner, successor, member]) {
+      const card = await request('/api/characters', {
+        method: 'POST', token: player.token, body: { name: 'Archivist', sheet },
+      })
+      await bind(roomId, player.token, card.id)
+    }
+    const [ownerSocket, successorSocket, memberSocket] = await Promise.all([
+      subscribe(owner, roomId, firstBase), subscribe(successor, roomId), subscribe(member, roomId),
+    ])
+    await request('/api/rooms/' + roomId + '/settings', { method: 'PUT', token: owner.token, body: { turnWindowMs: 0 } })
+    await post(roomId, 'start', successor.token, { storyId }, 409)
+    await post(roomId, 'start', owner.token, { storyId })
+    await ownerSocket.waitFor((frame) => frame.payload?.message?.content === 'The archive is quiet. Keeper: original-fixture')
+    const accepted = await takeTurn(ownerSocket, roomId)
+    await post(roomId, 'transfer', owner.token, { userId: successor.user.id })
+    await successorSocket.waitFor((frame) => frame.payload?.path === 'kpSetupRequired')
+    await writeFile(release, '')
+    await expect.poll(async () => (await detail(roomId, successor.token)).state).toMatchObject({
+      kpSetupRequired: true, pendingTurnMessages: [expect.objectContaining({ actionId: accepted.actionId })],
+    })
+    await request('/api/rooms/' + roomId + '/settings', {
+      method: 'PUT', token: owner.token, expected: 409, body: { turnWindowMs: 5000 },
+    })
+    ownerSocket.send(retry(roomId))
+    await ownerSocket.waitFor((frame) => frame.type === 'room:error')
+    await configure(successor, 'successor-fixture')
+    successorSocket.send(retry(roomId))
+    await successorSocket.waitFor((frame) => frame.payload?.message?.content === 'The ledger was recovered. Keeper: successor-fixture')
+    const afterTransfer = await detail(roomId, owner.token)
+    expect(afterTransfer).toMatchObject({ storyId, ownerId: successor.user.id, state: { kpSetupRequired: false } })
+    expect(Object.values(afterTransfer.state.characters).map((card) => (card as typeof sheet).derived.hp).sort()).toEqual([10, 10, 8])
+    expect(afterTransfer.state.messages.some((message: { content: string }) =>
+      message.content === 'The ledger was recovered. Keeper: original-fixture')).toBe(false)
+
+    await takeTurn(memberSocket, roomId)
+    await request('/api/rooms/' + roomId + '/members/' + member.user.id, { method: 'DELETE', token: successor.token })
+    await memberSocket.waitFor((frame) => frame.type === 'room:error' && frame.removedReason === 'kicked')
+    await writeFile(release, '')
+    await expect.poll(async () => (await detail(roomId, successor.token)).state.pendingTurnMessages).toEqual([])
+    const ending = await takeTurn(successorSocket, roomId)
+    await post(roomId, 'end', owner.token, undefined, 409)
+    await post(roomId, 'end', successor.token)
+    await successorSocket.waitFor((frame) => frame.payload?.path === 'ending')
+    await writeFile(release, '')
+    successorSocket.send(ending.action)
+    await expect.poll(() => successorSocket.frames.findLast((frame) => frame.actionId === ending.actionId)).toMatchObject({
+      status: 'cancelled', messageId: ending.accepted.messageId,
+    })
+    const ended = await detail(roomId, successor.token)
+    expect(ended).toMatchObject({ phase: 'ended', state: { pendingTurnMessages: [], ending: { outcome: 'closed' } } })
+    expect(ended.state.messages.filter((message: { content: string }) => message.content.startsWith('The ledger was recovered.')))
+      .toHaveLength(1)
+
+    const lobby = await createRoom()
+    await joinInvite(successor, lobby.inviteCode)
+    const firstDevice = await subscribe(owner, lobby.roomId, firstBase)
+    const secondDevice = await subscribe(owner, lobby.roomId, secondBase)
+    const closing = firstDevice.closed()
+    firstDevice.close()
+    await closing
+    await delay(250)
+    expect((await detail(lobby.roomId, owner.token)).ownerId).toBe(owner.user.id)
+    const reset = secondDevice.closed()
+    secondDevice.reset()
+    expect(await reset).toEqual([1009, expect.any(Buffer)])
+    await delay(250)
+    expect((await detail(lobby.roomId, owner.token)).ownerId).toBe(owner.user.id)
+
+    const drainRoom = await createRoom()
+    await subscribe(owner, drainRoom.roomId, firstBase)
+    const firstExited = once(first, 'exit')
+    first.send('drain')
+    expect(await firstExited).toEqual([0, null])
+    expect((await detail(drainRoom.roomId, owner.token)).ownerId).toBe(owner.user.id)
+    const lostRoom = await createRoom()
+    await subscribe(owner, lostRoom.roomId, secondBase)
+    const third = await launch({ runtime: 'gateway' })
+    await ready(third)
+    const abruptlyClosed = once(second, 'exit')
+    second.kill('SIGKILL')
+    await abruptlyClosed
+    expect((await detail(lostRoom.roomId, owner.token)).ownerId).toBe(owner.user.id)
+
+    const returning = await subscribe(owner, lobby.roomId)
+    returning.close()
+    await expect.poll(async () => (await detail(lobby.roomId, successor.token)).ownerId).toBe(successor.user.id)
+    expect((await detail(lobby.roomId, owner.token)).members).toEqual(expect.arrayContaining([
+      expect.objectContaining({ userId: owner.user.id, role: 'member' }),
+    ]))
+    const leaving = await createRoom()
+    await joinInvite(successor, leaving.inviteCode)
+    await subscribe(owner, leaving.roomId)
+    await post(leaving.roomId, 'leave', owner.token)
+    expect((await detail(leaving.roomId, successor.token)).ownerId).toBe(successor.user.id)
+    await request('/api/rooms/' + leaving.roomId, { token: owner.token, expected: 404 })
+    const soleOwner = await createRoom()
+    const soleSocket = await subscribe(owner, soleOwner.roomId)
+    soleSocket.close()
+    const db = new Pool({ connectionString: databaseUrl })
+    try {
+      await expect.poll(async () => (await db.query('SELECT 1 FROM rooms WHERE room_id = $1', [soleOwner.roomId])).rowCount).toBe(0)
+    } finally {
+      await db.end()
+    }
   }
 
   async function runWorkerFailover(): Promise<void> {
@@ -767,6 +937,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
 
   try {
     if (scenario === 'split') return await runSplitGateways()
+    if (scenario === 'split-governance') return await runSplitGovernance()
     if (scenario === 'governance') return await runGovernanceRace()
     if (scenario === 'membership') return await runMembershipRecovery()
     if (scenario === 'opening') return await runOpeningRetry()
@@ -1094,5 +1265,6 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('serializes competing REST authorizations on an inactive room', () => journey('postgres', 'governance'), 45_000)
   it.skipIf(!databaseUrl)('cancels the original recovered turn when a member was removed', () => journey('postgres', 'membership'), 45_000)
   it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
+  it.skipIf(!databaseUrl)('orders governance with accepted turns and distinguishes split gateway disconnects', () => journey('postgres', 'split-governance'), 80_000)
   it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', 'split'), 70_000)
 })
