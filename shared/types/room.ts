@@ -89,6 +89,8 @@ export interface RoomSnapshot {
   phase: RoomPhase
   storyId: string | null
   messages: Message[]
+  /** Older messages are available through the room history endpoint. Null starts at the newest archived message. */
+  transcript?: { before: string | null }
   characters: Record<string, unknown>
   clues: { id: string; description: string }[]
   scene: string | null
@@ -99,6 +101,11 @@ export interface RoomSnapshot {
   /** Maximum retained conversation history sent to KP for this room, in characters. */
   contextBudgetChars?: number
   updatedAt: number
+}
+
+export interface RoomHistoryPage {
+  messages: Message[]
+  nextBefore: string | null
 }
 
 export type RoomActionReceiptStatus = 'pending' | 'completed' | 'cancelled'

@@ -6,6 +6,7 @@ import { getPostgresPool, inPostgresTransaction, postgresError } from '../db/pos
 import { ROOM_WORKER_FAILOVER_ENABLED, ROOM_WORKER_LEASE_MS, SHARED_ROOMS_ENABLED } from '../config.js'
 import { CapacityError } from '../utils/errors.js'
 import { parseRoomState } from './roomStateCodec.js'
+import type { Message } from '../../../shared/types/game.js'
 import type { RoomActionReceiptStatus, RoomPhase } from '../../../shared/types/room.js'
 
 // The room backend is selected once per process. All room/member/character
@@ -193,6 +194,7 @@ export interface RoomRow {
   kind: string
   phase: string
   state: string
+  transcript_archived?: boolean
   created_at: number
 }
 
@@ -324,10 +326,67 @@ export async function listSoloRoomsForUser(userId: number): Promise<SoloRoomList
 
 export function getRoomRow(roomId: string): Promise<RoomRow | undefined> {
   const revisionColumns = SHARED_ROOMS_ENABLED ? ', story_preparation_revision, story_source_revision' : ''
+  const transcriptColumn = ROOM_WORKER_FAILOVER_ENABLED ? ', transcript_archived' : ''
   return readOne<RoomRow & Row>(
-    `SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, created_at${revisionColumns}
+    `SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, created_at${revisionColumns}${transcriptColumn}
      FROM rooms WHERE room_id = ?`, roomId,
   )
+}
+
+/** Import the original snapshot order once, fenced against any newer room writer. */
+export function archiveRoomTranscript(
+  roomId: string, lease: RoomWorkerLease, legacyMessages: readonly Message[], boundedState: string,
+): Promise<void> {
+  return writeRoom(roomId, [
+    statement(
+      `INSERT INTO room_transcript (room_id, position, message_id, message)
+       SELECT ?, entry.position, entry.message->>'id', entry.message
+       FROM jsonb_array_elements(?::jsonb) WITH ORDINALITY AS entry(message, position)
+       WHERE jsonb_typeof(entry.message->'id') = 'string'
+       ORDER BY entry.position
+       ON CONFLICT (room_id, message_id) DO NOTHING`,
+      roomId, JSON.stringify(legacyMessages),
+    ),
+    statement('UPDATE rooms SET state = ?, transcript_archived = true WHERE room_id = ?', boundedState, roomId),
+  ], lease)
+}
+
+/** Read only a member's own room. Storage returns one lookahead message for pagination. */
+export async function readRoomHistory(
+  roomId: string, userId: number, before: string | null, limit: number,
+): Promise<Message[] | undefined> {
+  if (ROOM_WORKER_FAILOVER_ENABLED) {
+    const result = await readOne<{ legacy_state: string | null; messages: Message[] }>(
+      `SELECT CASE WHEN NOT r.transcript_archived THEN r.state END AS legacy_state,
+              COALESCE(history.messages, '[]'::jsonb) AS messages
+       FROM rooms r JOIN room_members m USING (room_id)
+       LEFT JOIN room_transcript cursor ON cursor.room_id = r.room_id AND cursor.message_id = ?
+       LEFT JOIN LATERAL (
+         SELECT jsonb_agg(page.message ORDER BY page.position DESC) AS messages
+         FROM (
+           SELECT t.message, t.position FROM room_transcript t
+           WHERE t.room_id = r.room_id AND t.position < COALESCE(cursor.position, CASE WHEN ?::text IS NULL THEN 9223372036854775807 END)
+           ORDER BY t.position DESC LIMIT ?
+         ) page
+       ) history ON r.transcript_archived
+       WHERE r.room_id = ? AND m.user_id = ?`,
+      before, before, limit, roomId, userId,
+    )
+    if (!result) return undefined
+    return result.legacy_state === null ? result.messages : readLegacyHistory(result.legacy_state, before, limit)
+  }
+  const result = await readOne<{ state: string }>(
+    'SELECT r.state FROM rooms r JOIN room_members m USING (room_id) WHERE r.room_id = ? AND m.user_id = ?',
+    roomId, userId,
+  )
+  return result ? readLegacyHistory(result.state, before, limit) : undefined
+}
+
+function readLegacyHistory(state: string, before: string | null, limit: number): Message[] {
+  const messages = parseRoomState<{ messages?: Message[] }>(state)?.messages
+  if (!Array.isArray(messages)) return []
+  const end = before === null ? messages.length : messages.findIndex((message) => message?.id === before)
+  return end > 0 ? messages.slice(Math.max(0, end - limit), end).reverse() : []
 }
 
 export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number, pin?: StoryRevisionPin, lease?: RoomWorkerLease): Promise<void> {
@@ -423,6 +482,18 @@ export function updateRoomStateSnapshot(
        )
        INSERT INTO room_event_outbox (room_id, seq) SELECT room_id, seq FROM written`,
       roomId, JSON.stringify(checkpoint.events),
+    ))
+    const messages = checkpoint.events.flatMap((event) => event.type === 'message_appended'
+      ? [(event.payload as { message: Message }).message]
+      : [])
+    if (messages.length) commands.push(statement(
+      `INSERT INTO room_transcript (room_id, position, message_id, message)
+       SELECT ?, latest.position + entry.ordinal, entry.message->>'id', entry.message
+       FROM jsonb_array_elements(?::jsonb) WITH ORDINALITY AS entry(message, ordinal)
+       CROSS JOIN (
+         SELECT COALESCE((SELECT position FROM room_transcript WHERE room_id = ? ORDER BY position DESC LIMIT 1), 0) AS position
+       ) latest`,
+      roomId, JSON.stringify(messages), roomId,
     ))
   }
   return writeRoom(roomId, commands, checkpoint?.lease)

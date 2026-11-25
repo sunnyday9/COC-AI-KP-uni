@@ -6,6 +6,7 @@ import { useRoomStore } from '../../stores/roomStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import ChatMessage from './components/ChatMessage.vue'
 import ChatRetryNotices from './components/ChatRetryNotices.vue'
+import ChatHistoryControl from './components/ChatHistoryControl.vue'
 import PlayerStatsBar from './components/PlayerStatsBar.vue'
 import MemberSwitcher from './components/MemberSwitcher.vue'
 import CharacterSheetCard from '../../components/domain/CharacterSheetCard.vue'
@@ -101,7 +102,7 @@ function scrollToBottom() {
   })
 }
 
-watch(messages, () => scrollToBottom(), { deep: true })
+watch(() => messages.value.at(-1), () => scrollToBottom(), { deep: true })
 
 onLoad((options) => {
   const rid = String(options?.roomId ?? '')
@@ -266,6 +267,7 @@ function confirmExit() {
 
         <!-- 聊天区（scroll-view 自动滚底） -->
         <scroll-view class="chat-area vignette-overlay" :scroll-into-view="lastMsgAnchor" scroll-y scroll-with-animation>
+          <ChatHistoryControl />
           <text v-if="messages.length === 0 && !roomStore.awaitingKp" class="chat-empty">
             "黑暗中，一个故事正在苏醒..."
           </text>

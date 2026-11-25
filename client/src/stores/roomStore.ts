@@ -95,6 +95,11 @@ export const useRoomStore = defineStore('room', () => {
   const members = ref<RoomMemberInfo[]>([])
   /** 消息流（服务端权威，按 seq 应用）。 */
   const messages = ref<RoomMessageRecord[]>([])
+  const historyCursor = ref<string | null | undefined>()
+  const canLoadHistory = computed(() => historyCursor.value !== undefined)
+  const historyLoading = ref(false)
+  const historyError = ref('')
+  let transcriptGeneration = 0
   let actionReceipts = false
   const pendingChats = shallowReactive(new Map<string, PendingChat>())
   const chatRetryNotices = computed(() => [...pendingChats.values()].flatMap(({ message, outsideTranscript }) =>
@@ -162,6 +167,7 @@ export const useRoomStore = defineStore('room', () => {
     ending.value = snap.ending ?? null
     kpSetupRequired.value = snap.kpSetupRequired === true
     characters.value = (snap.characters && typeof snap.characters === 'object') ? snap.characters : {}
+    resetHistory(snap.transcript?.before)
     messages.value = Array.isArray(snap.messages) ? [...snap.messages] : []
     for (const [actionId, pending] of pendingChats) {
       if (pending.outsideTranscript) continue
@@ -172,6 +178,34 @@ export const useRoomStore = defineStore('room', () => {
       }
     }
     // 成员列表来自 REST（room:state 不含 members；room_meta 事件会覆盖）
+  }
+
+  function resetHistory(before?: string | null): void {
+    transcriptGeneration++
+    historyCursor.value = before
+    historyLoading.value = false
+    historyError.value = ''
+  }
+
+  async function loadEarlierMessages(): Promise<void> {
+    const rid = roomId.value
+    const before = historyCursor.value
+    if (!rid || before === undefined || historyLoading.value) return
+    const generation = transcriptGeneration
+    historyLoading.value = true
+    historyError.value = ''
+    try {
+      const page = await getBridge().roomHistory(rid, before)
+      if (generation !== transcriptGeneration) return
+      const present = new Set(messages.value.map((message) => message.id))
+      const earlier = page.messages.filter((message) => !present.has(message.id))
+      messages.value = [...earlier, ...messages.value]
+      historyCursor.value = page.nextBefore ?? undefined
+    } catch {
+      if (generation === transcriptGeneration) historyError.value = '暂时无法读取更早的消息，请重试。'
+    } finally {
+      if (generation === transcriptGeneration) historyLoading.value = false
+    }
   }
 
 type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
@@ -424,6 +458,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     actionReceipts = false
     chatError.value = ''
     messages.value = []
+    resetHistory()
     clues.value = []
     characters.value = {}
     ending.value = null
@@ -601,6 +636,10 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     scene,
     members,
     messages,
+    canLoadHistory,
+    historyLoading,
+    historyError,
+    loadEarlierMessages,
     clues,
     characters,
     ending,

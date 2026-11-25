@@ -145,6 +145,27 @@ describe('roomStore', () => {
     expect(store.scene).toBe('地下室')
   })
 
+  it('loads earlier transcript pages without changing the live cursor or duplicating messages', async () => {
+    await joinAndSync()
+    const previous = { id: 'm1', timestamp: 1, role: 'system', content: 'A ledger was found.' }
+    const recent = { id: 'm2', timestamp: 1, role: 'kp', content: 'The archive is quiet.' }
+    const historyRequest = vi.fn(({ url }: { url: string }) => {
+      expect(url).toContain('/api/rooms/room_x/history?before=m2')
+      return { statusCode: 200, data: { messages: [previous, recent], nextBefore: null } }
+    })
+    state.requestResponder = historyRequest
+    emitFrame({
+      type: 'room:state', roomId: 'room_x', seq: 29,
+      snapshot: { ...SNAP0, seq: 29, messages: [recent], transcript: { before: 'm2' } },
+    })
+    expect(store.canLoadHistory).toBe(true)
+    await store.loadEarlierMessages()
+    expect(historyRequest).toHaveBeenCalledTimes(1)
+    expect(store.messages).toEqual([previous, recent])
+    expect(store.lastSeq).toBe(29)
+    expect(store.canLoadHistory).toBe(false)
+  })
+
   it('applies characters state_patch by merging', async () => {
     await joinAndSync()
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: { ...SNAP0, characters: { char_a: { derived: { hp: 10 } } } } })

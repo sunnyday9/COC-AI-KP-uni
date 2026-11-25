@@ -228,7 +228,7 @@ function duplicateOutboxEvents(): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split'): Promise<void> {
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history'): Promise<void> {
   const failover = scenario !== undefined
 
   const root = await mkdtemp(join(tmpdir(), 'aikp-room-journey-'))
@@ -491,6 +491,61 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     ]))
     const discarded = new Set(['I cannot reach the worker', abandonedContent])
     expect(resumedState.snapshot?.messages?.filter(({ content }) => discarded.has(content))).toEqual([])
+  }
+
+  async function runRoomHistory(): Promise<void> {
+    const first = await launch()
+    await ready(first)
+    const owner = await register()
+    const member = await register()
+    const outsider = await register()
+    const { roomId, inviteCode } = await request('/api/rooms', { method: 'POST', token: owner.token })
+    const api = `/api/rooms/${roomId}/history`
+
+    const legacy = Array.from({ length: 72 }, (_, index) => ({
+      id: `legacy-${index}`, timestamp: 42, role: 'player', playerName: 'Archivist', content: `Ledger ${index}`,
+    }))
+    const pool = new Pool({ connectionString: databaseUrl })
+    try {
+      await pool.query("UPDATE rooms SET state = jsonb_set(state::jsonb, '{messages}', $2::jsonb)::text WHERE room_id = $1", [
+        roomId, JSON.stringify(legacy),
+      ])
+    } finally {
+      await pool.end()
+    }
+
+    expect(await request(api + '?limit=2', { token: owner.token })).toEqual({
+      messages: legacy.slice(70), nextBefore: 'legacy-70',
+    })
+    await request(api, { token: outsider.token, expected: 404 })
+    await request(api + '?limit=0', { token: owner.token, expected: 400 })
+    await request('/api/rooms/join', { method: 'POST', token: member.token, body: { inviteCode } })
+    expect((await request(api + '?limit=2', { token: member.token })).messages).toEqual(legacy.slice(70))
+
+    const socket = await connect(owner.token)
+    socket.send({ type: 'room:join', roomId })
+    const state = await socket.waitFor((frame) => frame.type === 'room:state')
+    const recent = state.snapshot?.messages ?? []
+    expect(recent.map((message) => message.content)).toEqual(legacy.slice(-40).map((message) => message.content))
+    expect(state.snapshot).toMatchObject({ transcript: { before: 'legacy-32' } })
+    expect((await detail(roomId, owner.token)).state.messages).toHaveLength(40)
+
+    const actionId = randomUUID()
+    socket.send({ ...chat(roomId, 'File another ledger'), actionId })
+    const receipt = await socket.waitFor((frame) => frame.actionId === actionId)
+    expect(receipt.status).toBe('completed')
+    await request(`/api/rooms/${roomId}/members/${member.user.id}`, { method: 'DELETE', token: owner.token })
+    await request(api + '?before=legacy-71', { token: member.token, expected: 404 })
+    await stop(first)
+    const second = await launch()
+    await ready(second)
+    const page = await request(api + '?limit=2', { token: owner.token })
+    expect(page).toMatchObject({
+      messages: [legacy.at(-1), { id: receipt.messageId, content: 'File another ledger' }], nextBefore: 'legacy-71',
+    })
+    expect(await request(api + '?before=legacy-2&limit=2', { token: owner.token })).toEqual({
+      messages: legacy.slice(0, 2), nextBefore: null,
+    })
   }
 
   async function runWorkerFailover(): Promise<void> {
@@ -767,6 +822,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
 
   try {
     if (scenario === 'split') return await runSplitGateways()
+    if (scenario === 'history') return await runRoomHistory()
     if (scenario === 'governance') return await runGovernanceRace()
     if (scenario === 'membership') return await runMembershipRecovery()
     if (scenario === 'opening') return await runOpeningRetry()
@@ -1095,4 +1151,5 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('cancels the original recovered turn when a member was removed', () => journey('postgres', 'membership'), 45_000)
   it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
   it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', 'split'), 70_000)
+  it.skipIf(!databaseUrl)('resumes with bounded state and pages earlier transcript in committed order', () => journey('postgres', 'history'), 45_000)
 })

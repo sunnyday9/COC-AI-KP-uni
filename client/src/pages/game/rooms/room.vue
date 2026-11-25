@@ -16,6 +16,7 @@ import { useIndexedStoryPages } from '../../../composables/useIndexedStoryPages'
 import { useToast } from '../../../composables/useToast'
 import ChatMessage from '../components/ChatMessage.vue'
 import ChatRetryNotices from '../components/ChatRetryNotices.vue'
+import ChatHistoryControl from '../components/ChatHistoryControl.vue'
 import ConfirmModal from '../../../components/ui/ConfirmModal.vue'
 import Button from '../../../components/ui/Button.vue'
 import { getBridge } from '../../../platform'
@@ -460,6 +461,7 @@ function readRoomId(): string {
       <!-- 右栏：lobby 聊天（不触发 KP 由服务端 gate） -->
       <view class="main-panel">
         <view class="chat-list">
+          <ChatHistoryControl />
           <view v-if="roomStore.messages.length === 0" class="chat-empty">
             等待室里一片寂静……和队友聊两句，或等房主宣布剧本。
           </view>
