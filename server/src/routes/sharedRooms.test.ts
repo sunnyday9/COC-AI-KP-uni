@@ -626,6 +626,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     await takeTurn(memberSocket, roomId)
     await request('/api/rooms/' + roomId + '/members/' + member.user.id, { method: 'DELETE', token: successor.token })
     await memberSocket.waitFor((frame) => frame.type === 'room:error' && frame.removedReason === 'kicked')
+    await request('/api/rooms/' + roomId, { token: member.token, expected: 404 })
     await writeFile(release, '')
     await expect.poll(async () => (await detail(roomId, successor.token)).state.pendingTurnMessages).toEqual([])
     const ending = await takeTurn(successorSocket, roomId)
@@ -700,6 +701,44 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     const db = new Pool({ connectionString: databaseUrl })
     try {
       await expect.poll(async () => (await db.query('SELECT 1 FROM rooms WHERE room_id = $1', [soleOwner.roomId])).rowCount).toBe(0)
+      await expect.poll(async () => (await db.query(`
+        SELECT 1 FROM room_gateway_presence WHERE room_id = $1 AND expires_at > clock_timestamp()
+      `, [lostRoom.roomId])).rowCount, { timeout: 17_000 }).toBe(0)
+      expect((await detail(lostRoom.roomId, owner.token)).ownerId).toBe(owner.user.id)
+
+      const workerOutage = await createRoom()
+      await joinInvite(successor, workerOutage.inviteCode)
+      const lastDevice = await subscribe(owner, workerOutage.roomId)
+      const retainedAfterReconnect = await createRoom()
+      await joinInvite(successor, retainedAfterReconnect.inviteCode)
+      const departedDevice = await subscribe(owner, retainedAfterReconnect.roomId)
+      departedDevice.send(chat(retainedAfterReconnect.roomId, 'Keep the lobby open'))
+      const replayAnchor = await departedDevice.waitFor((frame) => frame.payload?.message?.content === 'Keep the lobby open')
+      await stop(worker)
+      lastDevice.close()
+      departedDevice.close()
+      const queuedLosses = async (queuedRoomId: string) => (await db.query(
+        'SELECT 1 FROM room_commands WHERE room_id = $1 AND presence_loss', [queuedRoomId],
+      )).rowCount
+      await expect.poll(() => queuedLosses(workerOutage.roomId)).toBe(1)
+      await expect.poll(() => queuedLosses(retainedAfterReconnect.roomId)).toBe(1)
+      expect((await detail(workerOutage.roomId, owner.token)).ownerId).toBe(owner.user.id)
+      const reconnectedOwner = await connect(owner.token)
+      reconnectedOwner.send({ type: 'room:join', roomId: retainedAfterReconnect.roomId, lastSeq: replayAnchor.seq })
+      await reconnectedOwner.waitFor((frame) => frame.type === 'room:sync:done')
+      expect(await queuedLosses(retainedAfterReconnect.roomId)).toBe(0)
+      const reconnectReset = reconnectedOwner.closed()
+      reconnectedOwner.reset()
+      await reconnectReset
+
+      const gatewayBase = base
+      const restoredWorker = await launch({ runtime: 'worker', pauseAfterTool: false })
+      await expect.poll(() => readyWorkers.has(restoredWorker), { timeout: 12_000 }).toBe(true)
+      base = gatewayBase
+      await expect.poll(async () => (await detail(workerOutage.roomId, successor.token)).ownerId, { timeout: 10_000 })
+        .toBe(successor.user.id)
+      await expect.poll(() => queuedLosses(workerOutage.roomId)).toBe(0)
+      expect((await detail(retainedAfterReconnect.roomId, owner.token)).ownerId).toBe(owner.user.id)
     } finally {
       await db.end()
     }

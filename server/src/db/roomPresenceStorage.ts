@@ -1,4 +1,6 @@
-import { inPostgresTransaction, getPostgresPool } from '../db/postgres.js'
+import { randomUUID } from 'node:crypto'
+import type { PoolClient } from 'pg'
+import { inPostgresTransaction, getPostgresPool } from './postgres.js'
 
 const presenceTtl = "interval '15 seconds'"
 
@@ -30,16 +32,56 @@ export async function registerRoomPresence(roomId: string, userId: number, subsc
       FROM room_members WHERE room_id = $1 AND user_id = $2
       ON CONFLICT (room_id, user_id, subscription_id) DO UPDATE SET expires_at = EXCLUDED.expires_at
     `, [roomId, userId, subscriptionId])
+    if (member.rowCount) {
+      await client.query('DELETE FROM room_commands WHERE room_id = $1 AND user_id = $2 AND presence_loss', [roomId, userId])
+    }
     return member.rowCount === 1
   })
 }
 
-export async function removeRoomPresence(roomId: string, userId: number, subscriptionId: string): Promise<boolean> {
-  const result = await getPostgresPool().query<{ live: boolean }>(`
-    DELETE FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND subscription_id = $3
-    RETURNING expires_at > clock_timestamp() AS live
-  `, [roomId, userId, subscriptionId])
-  return result.rows[0]?.live === true
+async function enqueueOwnerPresenceLoss(client: PoolClient, roomId: string, userId: number): Promise<void> {
+  // The presence-loss request and deletion of the final live subscription
+  // survive worker downtime together. Leave room for interactive commands.
+  await client.query('SELECT pg_advisory_xact_lock(17407, 121)')
+  await client.query(
+    'DELETE FROM room_commands WHERE room_id = $1 AND user_id = $2 AND presence_loss AND expires_at <= clock_timestamp()',
+    [roomId, userId],
+  )
+  const requestId = randomUUID()
+  const result = await client.query(`
+    INSERT INTO room_commands (request_id, room_id, user_id, command, expires_at, presence_loss)
+    SELECT $1, $2, $3, $4, clock_timestamp() + interval '5 minutes', true
+    WHERE (SELECT count(*) FROM room_commands WHERE presence_loss AND expires_at > clock_timestamp()) < 4096
+    ON CONFLICT (room_id, user_id) WHERE presence_loss DO NOTHING
+  `, [requestId, roomId, userId, JSON.stringify({ name: 'disconnected', args: [requestId] })])
+  if (!result.rowCount) {
+    const alreadyQueued = await client.query('SELECT 1 FROM room_commands WHERE presence_loss AND room_id = $1 AND user_id = $2', [roomId, userId])
+    if (!alreadyQueued.rowCount) throw new Error('Durable room presence-loss queue is full')
+  }
+}
+
+export async function removeRoomPresence(entry: RoomPresence, isOrdinary: () => boolean): Promise<void> {
+  const { roomId, userId, subscriptionId } = entry
+  const remove = `DELETE FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND subscription_id = $3
+    RETURNING expires_at > clock_timestamp() AS live`
+  if (!isOrdinary()) {
+    await getPostgresPool().query(remove, [roomId, userId, subscriptionId])
+    return
+  }
+  await inPostgresTransaction(async (client) => {
+    const room = await client.query<{ current_owner: boolean }>(`
+      SELECT owner_id = $2 AND kind = 'multi' AND phase <> 'ended' AS current_owner
+      FROM rooms WHERE room_id = $1 FOR NO KEY UPDATE
+    `, [roomId, userId])
+    if (!room.rowCount) return
+    const removed = await client.query<{ live: boolean }>(remove, [roomId, userId, subscriptionId])
+    if (!removed.rows[0]?.live || !room.rows[0]?.current_owner || !isOrdinary()) return
+    const others = await client.query(
+      'SELECT 1 FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND expires_at > clock_timestamp() LIMIT 1',
+      [roomId, userId],
+    )
+    if (!others.rowCount && isOrdinary()) await enqueueOwnerPresenceLoss(client, roomId, userId)
+  })
 }
 
 export interface RoomPresence {

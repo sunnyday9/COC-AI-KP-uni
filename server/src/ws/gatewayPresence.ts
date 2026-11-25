@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { postgresError } from '../db/postgres.js'
-import { routeOwnerDisconnect } from '../services/roomCommands.js'
-import { reapRoomPresence, registerRoomPresence, removeRoomPresence, renewRoomPresence, type RoomPresence } from '../services/roomPresence.js'
+import { reapRoomPresence, registerRoomPresence, removeRoomPresence, renewRoomPresence, type RoomPresence } from '../db/roomPresenceStorage.js'
+import { CapacityError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import type { FrameRecipient } from './sendFrame.js'
 
@@ -39,7 +39,7 @@ export function joinGatewayPresence(socket: FrameRecipient, roomId: string, user
   }
   const previous = rooms.get(roomId)
   if (previous) return previous.ready
-  if (live.size >= capacity) return Promise.resolve(false)
+  if (live.size + pendingRemovals.size >= capacity) throw new CapacityError('Room presence capacity reached. Retry joining.')
   const socketRooms = rooms
   const entry: GatewayPresence = { roomId, userId, subscriptionId: randomUUID(), ready: Promise.resolve(false), active: false }
   live.add(entry)
@@ -68,10 +68,8 @@ export function releaseGatewayPresence(socket: FrameRecipient, roomId: string, o
   const entry = rooms?.get(roomId)
   if (!rooms || !entry) return
   forget(rooms, entry)
-  const removal = entry.ready.catch(() => false).then(async () => {
-    const removedWhileLive = await removeRoomPresence(roomId, entry.userId, entry.subscriptionId)
-    if (removedWhileLive && entry.active && ordinary && !draining) await routeOwnerDisconnect(entry.userId, roomId)
-  }).catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
+  const removal = entry.ready.catch(() => false)
+    .then(() => removeRoomPresence(entry, () => entry.active && ordinary && !draining)).catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
     .finally(() => pendingRemovals.delete(removal))
   pendingRemovals.add(removal)
 }
@@ -85,7 +83,7 @@ export async function runGatewayPresence(signal: AbortSignal): Promise<void> {
         if (renewed.has(entry.subscriptionId) || !live.has(entry) || !await entry.ready) continue
         // Another gateway may have pruned a very old lease after a storage outage.
         await registerRoomPresence(entry.roomId, entry.userId, entry.subscriptionId)
-        if (!live.has(entry)) await removeRoomPresence(entry.roomId, entry.userId, entry.subscriptionId)
+        if (!live.has(entry)) await removeRoomPresence(entry, () => false)
       }
       await reapRoomPresence()
     } catch (error) {

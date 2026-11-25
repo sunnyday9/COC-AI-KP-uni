@@ -91,7 +91,9 @@ async function writeAll(commands: Statement[]): Promise<void> {
 }
 
 export class StoryRevisionChangedError extends Error {}
-export class RoomOwnerPresentError extends Error {}
+export class RoomDisconnectSupersededError extends Error {}
+
+export interface OwnerDisconnect { userId: number; requestId: string }
 
 export interface StoryRevisionPin {
   revision: string
@@ -107,20 +109,22 @@ export type RoomWorkerLease = { epoch: string }
 const workerId = randomUUID()
 export { workerId as roomWorkerId }
 
-export type ClaimedRoomCommand = { request_id: string; room_id: string; user_id: number; command: unknown }
+export type ClaimedRoomCommand = { request_id: string; room_id: string; user_id: number; command: unknown; presence_loss: boolean }
 
 /** Do not claim a later command while this room has an unexpired in-flight command. */
-export async function claimNextRoomCommand(worker: string): Promise<ClaimedRoomCommand | undefined> {
+export async function claimNextRoomCommand(worker: string, active: ReadonlySet<string>): Promise<ClaimedRoomCommand | undefined> {
   return readOne<ClaimedRoomCommand>(
     'WITH command AS (' +
     ' SELECT c.sequence FROM room_commands c LEFT JOIN rooms r USING (room_id)' +
-    ' WHERE c.claimed_by IS NULL AND c.expires_at > clock_timestamp()' +
+    ' WHERE (c.claimed_by IS NULL OR (c.presence_loss AND c.claim_expires_at <= clock_timestamp()))' +
+    ' AND c.expires_at > clock_timestamp() AND c.request_id != ALL(?::uuid[])' +
     ' AND (r.worker_id = ? OR r.worker_expires_at IS NULL OR r.worker_expires_at <= clock_timestamp())' +
     ' AND NOT EXISTS (SELECT 1 FROM room_commands earlier WHERE earlier.room_id = c.room_id' +
     '   AND earlier.sequence < c.sequence AND earlier.result IS NULL AND earlier.expires_at > clock_timestamp())' +
     ' ORDER BY c.sequence LIMIT 1 FOR UPDATE OF c SKIP LOCKED' +
-    ') UPDATE room_commands c SET claimed_by = ? FROM command WHERE c.sequence = command.sequence' +
-    ' RETURNING c.request_id, c.room_id, c.user_id, c.command', worker, worker,
+    ") UPDATE room_commands c SET claimed_by = ?, claim_expires_at = clock_timestamp() + interval '5 seconds'" +
+    ' FROM command WHERE c.sequence = command.sequence' +
+    ' RETURNING c.request_id, c.room_id, c.user_id, c.command, c.presence_loss', '{' + [...active].join(',') + '}', worker, worker,
   )
 }
 
@@ -171,7 +175,7 @@ export function releaseRoomLease(roomId: string, lease: RoomWorkerLease): Promis
 
 /** Fence and write in one transaction. The same room row serializes lease claims with durable mutations. */
 async function writeRoom(
-  roomId: string, commands: Statement[], lease?: RoomWorkerLease, absentOwnerId?: number,
+  roomId: string, commands: Statement[], lease?: RoomWorkerLease, disconnect?: OwnerDisconnect,
 ): Promise<void> {
   if (!ROOM_WORKER_FAILOVER_ENABLED) return writeAll(commands)
   if (!lease) throw new RoomLeaseLostError()
@@ -187,17 +191,19 @@ async function writeRoom(
         'SELECT worker_expires_at > clock_timestamp() AS live FROM rooms WHERE room_id = ?', roomId,
       )))).rows[0]
       if (!state?.live || row.rows[0].worker !== workerId || row.rows[0].epoch !== lease.epoch) throw new RoomLeaseLostError()
-      if (absentOwnerId !== undefined) {
-        const presence = await client.query(
-          'SELECT 1 FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND expires_at > clock_timestamp() LIMIT 1',
-          [roomId, absentOwnerId],
-        )
-        if (presence.rowCount) throw new RoomOwnerPresentError()
+      if (disconnect) {
+        const stillAbsent = await client.query(`
+          SELECT 1 FROM room_commands WHERE room_id = $1 AND user_id = $2 AND request_id = $3::uuid
+            AND presence_loss AND expires_at > clock_timestamp()
+            AND NOT EXISTS (SELECT 1 FROM room_gateway_presence
+              WHERE room_id = $1 AND user_id = $2 AND expires_at > clock_timestamp())
+        `, [roomId, disconnect.userId, disconnect.requestId])
+        if (!stillAbsent.rowCount) throw new RoomDisconnectSupersededError()
       }
       await executeRoomStatements(client, commands)
     })
   } catch (error) {
-    if (error instanceof CapacityError || error instanceof StoryRevisionChangedError || error instanceof RoomOwnerPresentError) throw error
+    if (error instanceof CapacityError || error instanceof StoryRevisionChangedError || error instanceof RoomDisconnectSupersededError) throw error
     throw postgresError(error)
   }
 }
@@ -350,6 +356,32 @@ export function getRoomRow(roomId: string): Promise<RoomRow | undefined> {
     `SELECT room_id, owner_id, invite_code, story_id, story_owner_id, kind, phase, state, created_at${revisionColumns}${transcriptColumn}
      FROM rooms WHERE room_id = ?`, roomId,
   )
+}
+
+/** Read authorized details and current members from one snapshot. */
+export async function readRoomDetailForMember(
+  roomId: string, userId: number,
+): Promise<{ room: RoomRow; members: RoomMemberRow[] } | undefined> {
+  if (!SHARED_ROOMS_ENABLED) {
+    if (!await memberRole(roomId, userId)) return undefined
+    const room = await getRoomRow(roomId)
+    return room && { room, members: await listMembers(roomId) }
+  }
+  const transcriptColumn = ROOM_WORKER_FAILOVER_ENABLED ? ', r.transcript_archived' : ''
+  const result = await readOne<RoomRow & { members: RoomMemberRow[] } & Row>(`
+    SELECT r.room_id, r.owner_id, r.invite_code, r.story_id, r.story_owner_id, r.kind, r.phase, r.state,
+      r.created_at, r.story_preparation_revision, r.story_source_revision${transcriptColumn},
+      (SELECT jsonb_agg(jsonb_build_object(
+        'user_id', m.user_id, 'role', m.role, 'character_id', m.character_id, 'ready', m.ready, 'username', u.username
+      ) ORDER BY m.join_order)
+      FROM room_members m JOIN users u ON u.id = m.user_id WHERE m.room_id = r.room_id) AS members
+    FROM rooms r WHERE r.room_id = ?
+      AND EXISTS (SELECT 1 FROM room_members caller WHERE caller.room_id = r.room_id AND caller.user_id = ?)
+  `, roomId, userId)
+  if (!result) return undefined
+  const { members, ...room } = result
+  if (members.some((member) => !Number.isSafeInteger(member.user_id))) throw new Error('Room member ID exceeds safe range')
+  return { room, members }
 }
 
 /** Import the original snapshot order once, fenced against any newer room writer. */
@@ -571,11 +603,11 @@ export function updateRoomStateSettings(roomId: string, stateJson: string, lease
   return writeRoom(roomId, [statement('UPDATE rooms SET state = ?, updated_at = ? WHERE room_id = ?', stateJson, Date.now(), roomId)], lease)
 }
 
-export function deleteRoomRows(roomId: string, lease?: RoomWorkerLease, absentOwnerId?: number): Promise<void> {
+export function deleteRoomRows(roomId: string, lease?: RoomWorkerLease, disconnect?: OwnerDisconnect): Promise<void> {
   return writeRoom(roomId, [
     statement('DELETE FROM room_members WHERE room_id = ?', roomId),
     statement('DELETE FROM rooms WHERE room_id = ?', roomId),
-  ], lease, absentOwnerId)
+  ], lease, disconnect)
 }
 
 export function insertMember(roomId: string, userId: number, role: 'owner' | 'member', lease?: RoomWorkerLease): Promise<void> {
@@ -629,17 +661,17 @@ export function setMemberReady(roomId: string, userId: number, ready: boolean, l
 
 export function transferRoomOwnership(
   roomId: string, oldOwnerId: number, newOwnerId: number, lease?: RoomWorkerLease,
-  mode: 'transfer' | 'leave' | 'disconnect' = 'transfer',
+  removeOldOwner = false, disconnect?: OwnerDisconnect,
 ): Promise<void> {
   return writeRoom(roomId, [
-    mode === 'leave'
+    removeOldOwner
       ? statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, oldOwnerId)
       : statement(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`, roomId, oldOwnerId),
     statement(`UPDATE room_members SET role = 'owner', ready = 0 WHERE room_id = ? AND user_id = ?`, roomId, newOwnerId),
     statement(`UPDATE rooms SET owner_id = ?, story_owner_id = CASE
         WHEN story_id IS NOT NULL THEN COALESCE(story_owner_id, ?) ELSE story_owner_id END
       WHERE room_id = ?`, newOwnerId, oldOwnerId, roomId),
-  ], lease, mode === 'disconnect' ? oldOwnerId : undefined)
+  ], lease, disconnect)
 }
 
 export function deleteMemberRow(roomId: string, userId: number, lease?: RoomWorkerLease): Promise<void> {

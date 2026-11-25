@@ -20,8 +20,8 @@ const commandHandlers = {
   bind: bindRoomCharacter,
   ready: setMemberReady,
   leave: leaveRoomAsMember,
-  async disconnected(userId: number, roomId: string) {
-    await handleOwnerWsDisconnect(roomId, userId)
+  async disconnected(userId: number, roomId: string, requestId: string) {
+    await handleOwnerWsDisconnect(roomId, userId, undefined, requestId)
     return true
   },
   kick: kickRoomMember,
@@ -103,12 +103,6 @@ export async function routeSocketCommand<K extends SocketCommand>(
     if (!await isRoomMember(roomId, userId)) return null
     return await relay(name, userId, roomId, args, pending, expiresAt)
   })
-}
-
-export async function routeOwnerDisconnect(userId: number, roomId: string): Promise<void> {
-  await withRoomRelayDeadline(undefined, (signal, expiresAt) =>
-    relay('disconnected', userId, roomId, [], signal, expiresAt),
-  )
 }
 
 export async function executeRoomCommand(roomId: string, userId: number, raw: unknown): Promise<unknown> {
