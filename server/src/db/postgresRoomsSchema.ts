@@ -55,7 +55,7 @@ export async function initializePostgresRooms(failover: boolean, catalogEnabled 
         if (failover) {
           await migration.query(ROOM_WORKER_SCHEMA)
           await migration.query(`
-            SELECT worker_id, worker_epoch, worker_expires_at, transcript_archived FROM rooms LIMIT 0;
+            SELECT worker_id, worker_epoch, worker_expires_at, transcript_archived, event_seq FROM rooms LIMIT 0;
             SELECT room_id, turn_id, epoch, action_keys, outcome, first_event_seq, last_event_seq FROM room_turns LIMIT 0;
             SELECT room_id, seq, event_type, payload FROM room_events LIMIT 0;
             SELECT room_id, seq, created_at FROM room_event_outbox LIMIT 0;
@@ -114,6 +114,7 @@ const ROOM_WORKER_SCHEMA = `
   ALTER TABLE rooms ADD COLUMN IF NOT EXISTS worker_id UUID;
   ALTER TABLE rooms ADD COLUMN IF NOT EXISTS worker_epoch BIGINT NOT NULL DEFAULT 0;
   ALTER TABLE rooms ADD COLUMN IF NOT EXISTS worker_expires_at TIMESTAMPTZ;
+  ALTER TABLE rooms ADD COLUMN IF NOT EXISTS event_seq BIGINT;
   ALTER TABLE rooms ADD COLUMN IF NOT EXISTS transcript_archived BOOLEAN NOT NULL DEFAULT false;
 
   CREATE TABLE IF NOT EXISTS room_transcript (

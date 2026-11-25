@@ -297,6 +297,23 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     // 未知路径忽略（服务端未来扩展字段的兼容策略）
   }
 
+  function acceptActionReceipts(supported: boolean): void {
+    actionReceipts = supported
+    if (!supported && pendingChats.size > 0) {
+      for (const actionId of pendingChats.keys()) clearPendingChat(actionId)
+      chatError.value = '当前服务器无法确认刚才的消息，请先查看聊天记录。'
+    }
+  }
+
+  function finishJoin(retryChats: boolean): void {
+    connectionState.value = 'joined'
+    errorMessage.value = ''
+    if (!retryChats || !actionReceipts) return
+    for (const [actionId, pending] of pendingChats) {
+      if (pending.cause !== 'busy') sendPendingChat(actionId)
+    }
+  }
+
   /** 分发服务端帧（roomStore 唯一入口）。 */
   function handleServerFrame(frame: RoomServerFrame): void {
     if (!frame || typeof frame !== 'object') return
@@ -305,24 +322,13 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         if (frame.roomId !== roomId.value) return
         const joining = connectionState.value === 'joining'
         isSyncing.value = false
-        connectionState.value = 'joined'
-        errorMessage.value = ''
-        actionReceipts = frame.actionReceipts === true
-        if (!actionReceipts && pendingChats.size > 0) {
-          for (const actionId of pendingChats.keys()) clearPendingChat(actionId)
-          chatError.value = '当前服务器无法确认刚才的消息，请先查看聊天记录。'
-        }
+        acceptActionReceipts(frame.actionReceipts === true)
         applySnapshot(frame.snapshot)
-        // The reply may already be in the snapshot when the gateway relays a
-        // pending receipt before its event fanout sees the accepted chat.
+        // A pending receipt may trigger a snapshot that already includes the Keeper reply.
         if (kpSetupRequired.value || (frame.kpTurnPending === false && pendingChats.size === 0)) {
           awaitingKp.value = false
         }
-        if (joining && actionReceipts) {
-          for (const [actionId, pending] of pendingChats) {
-            if (pending.cause !== 'busy') sendPendingChat(actionId)
-          }
-        }
+        finishJoin(joining)
         break
       }
       case 'room:event': {
@@ -333,6 +339,10 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       case 'room:sync:done': {
         if (frame.roomId !== roomId.value) return
         isSyncing.value = false
+        if (connectionState.value === 'joining') {
+          acceptActionReceipts(frame.actionReceipts === true)
+          finishJoin(true)
+        }
         break
       }
       case 'room:action:result': {
@@ -409,7 +419,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         connectionState.value = 'joining'
         isSyncing.value = true
         try {
-          getBridge().sendRoomFrame('room:join', { roomId: rid2 })
+          getBridge().sendRoomFrame('room:join', { roomId: rid2, lastSeq: lastSeq.value })
           void refreshMeta()
         } catch {
           connectionState.value = 'error'
@@ -429,7 +439,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         const me = await getBridge().me()
         selfUserId.value = Number(me.user.id)
       } catch { selfUserId.value = null }
-      getBridge().sendRoomFrame('room:join', { roomId: rid })
+      getBridge().sendRoomFrame('room:join', { roomId: rid, lastSeq: lastSeq.value })
       await refreshMeta()
     } catch (err) {
       connectionState.value = 'error'

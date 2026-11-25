@@ -118,7 +118,7 @@ const SNAPSHOT_EVERY_N_EVENTS = 20
 const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
 /** 事件日志环形容量（Phase C1：重连增量窗口；超出 → 全量快照兜底）。 */
-const MAX_EVENT_LOG = 200
+const MAX_EVENT_LOG = roomStorage.ROOM_EVENT_WINDOW
 const HOT_TRANSCRIPT_MESSAGES = 40
 const HOT_TRANSCRIPT_BYTES = 512 * 1024
 
@@ -398,8 +398,11 @@ export class RoomService {
   /** 增量事件（lastSeq 之后；返回 null 表示缺口过大需全量快照）。
    * lastSeq=0（客户端无状态）或 < 日志起始 seq → 全量。 */
   getEventsSince(lastSeq: number): { seq: number; event: RoomEvent }[] | null {
-    if (lastSeq < this.eventLogStartSeq) return null
-    return this.eventLog.filter((e) => e.seq > lastSeq)
+    if (lastSeq <= 0 || lastSeq > this.seq) return null
+    if (lastSeq === this.seq) return []
+    if (lastSeq < this.eventLogStartSeq - 1) return null
+    const events = this.eventLog.filter((e) => e.seq > lastSeq)
+    return events.length === this.seq - lastSeq ? events : null
   }
 
   /* ═══════════════ 动作处理 ═══════════════ */
@@ -1457,6 +1460,7 @@ export class RoomService {
     if (this.disposed) return false
     if (this.workerLease) boundTranscript(snapshot)
     const checkpoint = this.workerLease ? {
+      seq: snapshot.seq,
       lease: this.workerLease,
       events: [...this.eventLog.filter(({ seq }) => seq > this.persistedSeq), ...stagedEvents]
         .map(({ seq, event }) => ({ seq, type: event.type, payload: event.payload })),
@@ -1617,7 +1621,7 @@ async function materializeRoom(
       restore.messages = legacyMessages
       boundTranscript(restore)
       try {
-        await roomStorage.archiveRoomTranscript(roomId, workerLease, legacyMessages, serializeRoomState(restore))
+        await roomStorage.archiveRoomTranscript(roomId, workerLease, legacyMessages, serializeRoomState(restore), restore.seq ?? 0)
       } catch (error) {
         await roomStorage.releaseRoomLease(roomId, workerLease).catch(() => {})
         throw error
@@ -2202,3 +2206,6 @@ export function _clearRoomRegistryForTests(): void {
   for (const room of roomRegistry.values()) room.dispose()
   roomRegistry.clear()
 }
+
+export const readRoomOutbox = roomStorage.readRoomOutbox
+export const ROOM_EVENT_WINDOW = roomStorage.ROOM_EVENT_WINDOW

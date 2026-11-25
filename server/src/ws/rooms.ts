@@ -19,11 +19,11 @@
 import type { WebSocket } from 'ws'
 import { ROOM_RUNTIME } from '../config.js'
 import { routeSocketCommand } from '../services/roomCommands.js'
-import { subscribeGatewaySocket, unsubscribeGatewaySocket } from './gatewayRooms.js'
+import { resumeGatewaySocket } from './gatewayRooms.js'
 import type { RoomActionResult } from '../../../shared/types/room.js'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
 import { handleOwnerWsDisconnect } from '../services/roomService.js'
-import { cleanupSocket, ensureFanout, planAction, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeSocket } from './roomLedger.js'
+import { cleanupSocket, ensureFanout, planAction, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeGatewaySocket, unsubscribeSocket } from './roomLedger.js'
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import { isTransportReset, sendFrame } from './sendFrame.js'
@@ -48,15 +48,9 @@ function broadcast(roomId: string, event: RoomEvent, seq: number): void {
   }
 }
 
-async function sendGatewayState(socket: WebSocket, userId: number, roomId: string, signal?: AbortSignal): Promise<void> {
-  const result = await routeSocketCommand('snapshot', userId, roomId, [], signal)
-  if (!result) {
-    unsubscribeGatewaySocket(socket, roomId)
-    send(socket, { type: 'room:error', roomId, error: 'not a room member' })
-    return
-  }
-  if (socket.readyState !== 1 || !subscribeGatewaySocket(socket, roomId, userId, result.seq)) return
-  send(socket, { type: 'room:state', roomId, actionReceipts: true, ...result })
+function readCursor(raw: unknown): number {
+  const { lastSeq } = raw as { lastSeq?: unknown }
+  return typeof lastSeq === 'number' && Number.isSafeInteger(lastSeq) && lastSeq > 0 ? lastSeq : 0
 }
 
 /** 处理 room:join — 成员资格 → 订阅 → 全量快照。 */
@@ -66,7 +60,8 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
     send(socket, { type: 'room:error', roomId: '', error: 'roomId required' })
     return
   }
-  if (ROOM_RUNTIME === 'gateway') return sendGatewayState(socket, userId, roomId, signal)
+  const lastSeq = readCursor(raw)
+  if (ROOM_RUNTIME === 'gateway') return resumeGatewaySocket(socket, roomId, userId, lastSeq, signal)
   const plan = await planJoin(roomId, userId, `user_${userId}`)
   if (!plan.ok) {
     send(socket, { type: 'room:error', roomId, error: plan.error })
@@ -78,7 +73,12 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
   if (socket.readyState !== 1) return
   subscribeSocket(socket, roomId)
   // 全量快照（加入时）
-  send(socket, { type: 'room:state', roomId, actionReceipts: true, snapshot: room.snapshot(), seq: room.getSeq() })
+  const events = lastSeq > 0 && lastSeq <= room.getSeq() ? room.getEventsSince(lastSeq) : null
+  if (events) {
+    sendReplay(socket, roomId, room.getSeq(), events)
+  } else {
+    send(socket, { type: 'room:state', roomId, actionReceipts: true, snapshot: room.snapshot(), seq: room.getSeq() })
+  }
   logger.info('room join', { roomId, userId })
 }
 
@@ -91,8 +91,8 @@ export function handleRoomLeave(socket: WebSocket, roomId: string): void {
 /** 处理 room:sync — 订阅簿规划增量/全量；编码在本层。 */
 export async function handleRoomSync(socket: WebSocket, userId: number, raw: unknown, signal?: AbortSignal): Promise<void> {
   const roomId = String((raw as { roomId?: unknown }).roomId ?? '')
-  if (ROOM_RUNTIME === 'gateway') return sendGatewayState(socket, userId, roomId, signal)
-  const lastSeq = Number((raw as { lastSeq?: unknown }).lastSeq ?? 0)
+  const lastSeq = readCursor(raw)
+  if (ROOM_RUNTIME === 'gateway') return resumeGatewaySocket(socket, roomId, userId, lastSeq, signal)
   const plan = await planSync(roomId, userId, lastSeq)
   if (plan.kind === 'error') {
     send(socket, { type: 'room:error', roomId, error: plan.error })
@@ -104,10 +104,14 @@ export async function handleRoomSync(socket: WebSocket, userId: number, raw: unk
     return
   }
   // 增量补齐：补发 lastSeq 之后的事件（客户端按 seq 应用）
-  for (const d of plan.events) {
-    send(socket, { type: 'room:event', roomId, seq: d.seq, eventType: d.event.type, payload: d.event.payload })
+  sendReplay(socket, roomId, plan.room.getSeq(), plan.events)
+}
+
+function sendReplay(socket: WebSocket, roomId: string, seq: number, events: { seq: number; event: RoomEvent }[]): void {
+  for (const entry of events) {
+    send(socket, { type: 'room:event', roomId, seq: entry.seq, eventType: entry.event.type, payload: entry.event.payload })
   }
-  send(socket, { type: 'room:sync:done', roomId, seq: plan.room.getSeq() })
+  send(socket, { type: 'room:sync:done', roomId, seq, actionReceipts: true })
 }
 
 /** 处理 room:action — 聊天（触发 KP 回合）/ 表态，串行入队（RoomService.enqueue）。 */

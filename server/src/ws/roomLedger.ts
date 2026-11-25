@@ -131,3 +131,45 @@ export async function planAction(
   if (!room) return { ok: false, error: 'room not active' }
   return { ok: true, room }
 }
+
+interface GatewaySubscription {
+  userId: number
+  seq: number | null
+}
+
+const gatewaySubscriptions = new Map<string, Map<RoomSubscriber, GatewaySubscription>>()
+let gatewaySubscriptionCount = 0
+
+/** Reserve a generation while a join or sync selects its starting cursor. */
+export function reserveGatewaySubscription(socket: RoomSubscriber, roomId: string, userId: number): GatewaySubscription | null {
+  let listeners = gatewaySubscriptions.get(roomId)
+  const alreadySubscribed = listeners?.has(socket)
+  if (!alreadySubscribed && (roomIdsOfSocket(socket).length >= 8 || gatewaySubscriptionCount >= 4096 ||
+      (!listeners && gatewaySubscriptions.size >= 1024) || (listeners?.size ?? 0) >= 256)) return null
+
+  if (!listeners) {
+    listeners = new Map()
+    gatewaySubscriptions.set(roomId, listeners)
+  }
+  const subscription = { userId, seq: null }
+  listeners.set(socket, subscription)
+  subscribeSocket(socket, roomId)
+  if (!alreadySubscribed) gatewaySubscriptionCount++
+  return subscription
+}
+
+export function unsubscribeGatewaySocket(socket: RoomSubscriber, roomId: string): void {
+  const listeners = gatewaySubscriptions.get(roomId)
+  if (!listeners?.delete(socket)) return
+  if (!listeners.size) gatewaySubscriptions.delete(roomId)
+  gatewaySubscriptionCount--
+  unsubscribeSocket(socket, roomId)
+}
+
+export function gatewayRoomIds(): string[] {
+  return [...gatewaySubscriptions.keys()]
+}
+
+export function gatewaySubscribers(roomId: string): ReadonlyMap<RoomSubscriber, GatewaySubscription> | undefined {
+  return gatewaySubscriptions.get(roomId)
+}

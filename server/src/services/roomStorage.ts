@@ -335,7 +335,7 @@ export function getRoomRow(roomId: string): Promise<RoomRow | undefined> {
 
 /** Import the original snapshot order once, fenced against any newer room writer. */
 export function archiveRoomTranscript(
-  roomId: string, lease: RoomWorkerLease, legacyMessages: readonly Message[], boundedState: string,
+  roomId: string, lease: RoomWorkerLease, legacyMessages: readonly Message[], boundedState: string, seq: number,
 ): Promise<void> {
   return writeRoom(roomId, [
     statement(
@@ -347,7 +347,7 @@ export function archiveRoomTranscript(
        ON CONFLICT (room_id, message_id) DO NOTHING`,
       roomId, JSON.stringify(legacyMessages),
     ),
-    statement('UPDATE rooms SET state = ?, transcript_archived = true WHERE room_id = ?', boundedState, roomId),
+    statement('UPDATE rooms SET state = ?, transcript_archived = true, event_seq = ? WHERE room_id = ?', boundedState, seq, roomId),
   ], lease)
 }
 
@@ -410,7 +410,7 @@ export function updateRoomPhase(roomId: string, phase: RoomPhase, lease?: RoomWo
   return writeRoom(roomId, [statement('UPDATE rooms SET phase = ?, updated_at = ? WHERE room_id = ?', phase, Date.now(), roomId)], lease)
 }
 
-const updateSnapshotSql = 'UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE room_id = ?'
+const updateSnapshotSql = 'state = ?, version = version + 1, updated_at = ?'
 
 export interface RoomActionKey {
   userId: number
@@ -434,7 +434,10 @@ export function getRoomAction(roomId: string, userId: number, actionId: string):
   )
 }
 
+export const ROOM_EVENT_WINDOW = 200
+
 export interface RoomCheckpoint {
+  seq: number
   lease: RoomWorkerLease
   events: readonly { seq: number; type: string; payload: unknown }[]
   turn?: {
@@ -449,10 +452,12 @@ export interface RoomCheckpoint {
 export function updateRoomStateSnapshot(
   roomId: string, stateJson: string, phase?: 'ended', actions: readonly RoomActionWrite[] = [], checkpoint?: RoomCheckpoint,
 ): Promise<void> {
-  const sql = phase ? "UPDATE rooms SET phase = 'ended', state = ?, version = version + 1, updated_at = ? WHERE room_id = ?" : updateSnapshotSql
+  const phaseUpdate = phase ? "phase = 'ended', " : ''
+  const watermarkUpdate = checkpoint ? ', event_seq = ?' : ''
+  const sql = `UPDATE rooms SET ${phaseUpdate}${updateSnapshotSql}${watermarkUpdate} WHERE room_id = ?`
   if (ROOM_WORKER_FAILOVER_ENABLED && !checkpoint) throw new RoomLeaseLostError()
   const commands = [
-    statement(sql, stateJson, Date.now(), roomId),
+    statement(sql, stateJson, Date.now(), ...(checkpoint ? [checkpoint.seq] : []), roomId),
     ...actions.map((action) => 'payloadHash' in action
       ? statement(
         'INSERT INTO room_actions (room_id, user_id, action_id, payload_hash, message_id, status) VALUES (?, ?, ?, ?, ?, ?)',
@@ -482,6 +487,9 @@ export function updateRoomStateSnapshot(
        )
        INSERT INTO room_event_outbox (room_id, seq) SELECT room_id, seq FROM written`,
       roomId, JSON.stringify(checkpoint.events),
+    ), statement(
+      'DELETE FROM room_events WHERE room_id = ? AND seq <= ?',
+      roomId, checkpoint.seq - ROOM_EVENT_WINDOW,
     ))
     const messages = checkpoint.events.flatMap((event) => event.type === 'message_appended'
       ? [(event.payload as { message: Message }).message]
@@ -532,7 +540,7 @@ async function flushTurnSnapshots(batch: SnapshotWrite[]): Promise<void> {
     // Capture the latest state so writes preserve settings changed while queued.
     const writes = batch.map((write) => ({ ...write, ...write.capture() }))
     const now = Date.now()
-    await writeAll(writes.map((write) => statement(updateSnapshotSql, write.stateJson, now, write.roomId)))
+    await writeAll(writes.map((write) => statement(`UPDATE rooms SET ${updateSnapshotSql} WHERE room_id = ?`, write.stateJson, now, write.roomId)))
     for (const write of writes) write.committed(write.seq)
   } catch (error) {
     for (const write of batch) write.failed(error)
@@ -651,4 +659,65 @@ export async function boundCharacterSheets(roomId: string): Promise<{ characterI
      JOIN characters c ON c.id = m.character_id WHERE m.room_id = ? AND m.character_id IS NOT NULL`, roomId,
   )
   return rows.map((b) => ({ characterId: b.character_id, userId: b.user_id, sheet: b.sheet }))
+}
+
+type OutboxRow = {
+  room_id: string
+  room_exists: boolean
+  event_seq: string | null
+  members: string[]
+  seq: string | null
+  event_type: string | null
+  payload: unknown
+}
+
+interface RoomOutbox {
+  roomId: string
+  roomExists: boolean
+  highWater: number | null
+  members: Set<number>
+  events: { seq: number; type: string; payload: unknown }[]
+}
+
+export async function readRoomOutbox(
+  cursors: readonly { roomId: string; seq: number; userIds: number[] }[], limit = 16,
+): Promise<RoomOutbox[]> {
+  try {
+    const { rows } = await getPostgresPool().query<OutboxRow>(
+      'WITH cursors AS (' +
+      ' SELECT * FROM jsonb_to_recordset($1) AS c(room_id text, seq bigint, users jsonb)' +
+      ') SELECT c.room_id, r.room_id IS NOT NULL AS room_exists, r.event_seq, member_ids.members, e.seq, e.event_type, e.payload' +
+      ' FROM cursors c LEFT JOIN rooms r ON r.room_id = c.room_id' +
+      ' CROSS JOIN LATERAL (' +
+      ' SELECT ARRAY(SELECT m.user_id::text FROM room_members m' +
+      ' WHERE m.room_id = c.room_id AND c.users @> to_jsonb(ARRAY[m.user_id])) AS members' +
+      ' ) member_ids' +
+      ' LEFT JOIN LATERAL (' +
+      ' SELECT e.seq, e.event_type, e.payload FROM room_event_outbox o JOIN room_events e USING (room_id, seq)' +
+      ' WHERE o.room_id = c.room_id AND o.seq > c.seq AND cardinality(member_ids.members) > 0' +
+      ' ORDER BY o.seq LIMIT $2' +
+      ' ) e ON true ORDER BY c.room_id, e.seq',
+      [JSON.stringify(cursors.map(({ roomId, seq, userIds }) => ({ room_id: roomId, seq, users: userIds }))), limit],
+    )
+    const rooms = new Map<string, RoomOutbox>()
+    for (const row of rows) {
+      let room = rooms.get(row.room_id)
+      if (!room) {
+        room = {
+          roomId: row.room_id,
+          roomExists: row.room_exists,
+          highWater: row.event_seq === null ? null : Number(row.event_seq),
+          members: new Set(row.members.map(Number)),
+          events: [],
+        }
+        rooms.set(row.room_id, room)
+      }
+      if (row.seq !== null && row.event_type !== null) {
+        room.events.push({ seq: Number(row.seq), type: row.event_type, payload: row.payload })
+      }
+    }
+    return [...rooms.values()]
+  } catch (error) {
+    throw postgresError(error)
+  }
 }

@@ -118,7 +118,7 @@ export type RoomActionResult =
 export type RoomServerFrame =
   | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number; actionReceipts?: true; kpTurnPending?: boolean }
   | { type: 'room:event'; roomId: string; seq: number; eventType: RoomEventType; payload: RoomEventFrame['payload'] }
-  | { type: 'room:sync:done'; roomId: string; seq: number }
+  | { type: 'room:sync:done'; roomId: string; seq: number; actionReceipts?: true }
   | ({ type: 'room:action:result'; roomId: string; actionId: string } & RoomActionResult)
   | { type: 'room:error'; roomId: string; error: string; removedReason?: RoomRemovedReason }
 

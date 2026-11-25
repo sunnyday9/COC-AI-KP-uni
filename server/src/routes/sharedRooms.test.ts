@@ -209,8 +209,8 @@ function pauseRoomMutations(directory: string): string {
 /** Simulate at-least-once outbox delivery while observing the public socket. */
 function duplicateOutboxEvents(): string {
   const wrapper = [
-    'export async function readRoomOutbox(cursors) {',
-    '  return (await read(cursors)).map(room => ({',
+    'export async function readRoomOutbox(...args) {',
+    '  return (await read(...args)).map(room => ({',
     '    ...room, events: room.events.flatMap(event => [event, event]),',
     '  }));',
     '}',
@@ -220,8 +220,8 @@ function duplicateOutboxEvents(): string {
     registerHooks({
       resolve(specifier, context, next) {
         const resolved = next(specifier, context)
-        if (specifier !== '../services/roomOutbox.js' || !context.parentURL?.endsWith('/gatewayRooms.ts')) return resolved
-        const source = 'import { readRoomOutbox as read } from ' + JSON.stringify(resolved.url) + ';' + ${JSON.stringify(wrapper)}
+        if (specifier !== '../services/roomService.js' || !context.parentURL?.endsWith('/gatewayRooms.ts')) return resolved
+        const source = 'import { readRoomOutbox as read } from ' + JSON.stringify(resolved.url) + ';' + 'export { ROOM_EVENT_WINDOW } from ' + JSON.stringify(resolved.url) + ';' + ${JSON.stringify(wrapper)}
         return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true }
       },
     })
@@ -237,6 +237,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const dataDir = join(root, 'sqlite')
   const jwtSecret = randomBytes(32).toString('hex')
   const children: ChildProcess[] = []
+  const startupErrors = new WeakMap<ChildProcess, string>()
   const sockets: WebSocket[] = []
   const readyWorkers = new WeakSet<ChildProcess>()
   const pausedKeepers = new WeakSet<ChildProcess>()
@@ -297,7 +298,11 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       child.stderr?.on('data', (data: Buffer) => {
         if (data.toString().includes('Room worker lease lost')) staleCheckpoints.add(child)
       })
-    } else child.stderr?.resume()
+    } else {
+      child.stderr?.on('data', (data: Buffer) => {
+        startupErrors.set(child, ((startupErrors.get(child) ?? '') + data.toString()).slice(-2_000))
+      })
+    }
     return child
   }
   async function ready(child: ChildProcess): Promise<void> {
@@ -307,7 +312,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       if (response?.ok) return
       await delay(50)
     }
-    throw new Error(`${backend} gameplay process did not become ready (exit ${child.exitCode})`)
+    throw new Error(`${backend} gameplay process did not become ready (exit ${child.exitCode}): ${startupErrors.get(child) ?? ""}`)
   }
   async function request(path: string, options: { method?: string; token?: string; body?: unknown; expected?: number } = {}) {
     const headers: Record<string, string> = {}
@@ -483,6 +488,25 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     const replacement = await launch({ runtime: 'worker', pauseAfterTool: false })
     await expect.poll(() => readyWorkers.has(replacement), { timeout: 12_000 }).toBe(true)
     base = gatewayBase
+    await stop(first)
+    const restartedGateway = await launch({ runtime: 'gateway', duplicateOutbox: true })
+    await ready(restartedGateway)
+    const replay = await connect(owner.token)
+    replay.send({ ...joinFrame, lastSeq: beforeAction })
+    const replayDone = await replay.waitFor((frame) => frame.type === 'room:sync:done')
+    expect(replayDone.seq).toBeGreaterThanOrEqual(firstEnd.seq!)
+    expect(committedTurn(replay.frames)).toEqual(turn)
+    expect(replay.frames.some((frame) => frame.type === 'room:state')).toBe(false)
+    replay.send(action)
+    expect(await replay.waitFor((frame) => frame.actionId === actionId)).toMatchObject({
+      status: 'completed', messageId: receipt.messageId,
+    })
+    await request('/api/rooms/' + roomId + '/settings', {
+      method: 'PUT', token: owner.token, body: { turnWindowMs: 125 },
+    })
+    const live = await replay.waitFor((frame) => frame.type === 'room:event' && frame.seq! > replayDone.seq!)
+    expect(live.seq).toBe(replayDone.seq! + 1)
+
     const resumed = await connect(visitor.token)
     resumed.send(joinFrame)
     const resumedState = await resumed.waitFor((frame) => frame.type === 'room:state')
