@@ -334,6 +334,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     await once(socket, 'open')
     return {
       send: (frame: unknown) => socket.send(JSON.stringify(frame)),
+      close: () => socket.close(),
       frames,
       async waitFor(predicate: (frame: Frame) => boolean): Promise<Frame> {
         const existing = frames.find(predicate)
@@ -436,6 +437,25 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     await request('/api/rooms/' + roomId + '/ready', {
       method: 'POST', token: visitor.token, body: { ready: true }, expected: 503,
     })
+    const disconnected = await connect(visitor.token)
+    const abandonedAction = randomUUID()
+    const abandonedContent = 'This disconnected command must expire'
+    const mailbox = new Pool({ connectionString: databaseUrl })
+    const stillQueued = async () => (await mailbox.query(
+      "SELECT 1 FROM room_commands WHERE room_id = $1 AND command->'args'->>1 = $2",
+      [roomId, abandonedAction],
+    )).rowCount
+    try {
+      disconnected.send({ ...chat(roomId, abandonedContent), actionId: abandonedAction })
+      // Observe admission before severing the client connection. With no worker,
+      // early removal is attributable to cancellation, not receipt consumption.
+      await expect.poll(stillQueued, { timeout: 1_000 }).toBe(1)
+      disconnected.close()
+      await expect.poll(stillQueued, { timeout: 1_000 }).toBe(0)
+    } finally {
+      await mailbox.end()
+    }
+
     const gatewayBase = base
     await launch({ runtime: 'worker', pauseAfterTool: false })
     base = gatewayBase
@@ -447,6 +467,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     ]))
     expect(resumedState.snapshot?.messages).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ content: 'I cannot reach the worker' }),
+      expect.objectContaining({ content: abandonedContent }),
     ]))
   }
 
