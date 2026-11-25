@@ -11,6 +11,7 @@
  * 单人模式 = 单成员房间（同一代码路径，FR-M9）。
  */
 import crypto from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { RoomStoryBundle } from './roomStoryRevision.js'
 import * as roomStorage from './roomStorage.js'
 export { RoomWorkerBusyError } from './roomStorage.js'
@@ -325,6 +326,7 @@ export class RoomService {
   getWorkflow(): StoryWorkflow { return this.workflow }
   getScene(): string | null { return this.scene }
   getMessages(): readonly Message[] { return this.messages }
+  getMembers(): RoomMemberInfo[] { return this.members }
   getCharacters(): ReadonlyMap<string, COCCharacterSheet> { return this.characters }
   getClues(): readonly { id: string; description: string }[] { return this.clues }
   getEnding(): unknown { return this.ending }
@@ -1461,6 +1463,7 @@ export class RoomService {
     if (this.workerLease) boundTranscript(snapshot)
     const checkpoint = this.workerLease ? {
       seq: snapshot.seq,
+      turnPending: !snapshot.kpSetupRequired && (snapshot.pendingTurnMessages?.length ?? 0) > 0,
       lease: this.workerLease,
       events: [...this.eventLog.filter(({ seq }) => seq > this.persistedSeq), ...stagedEvents]
         .map(({ seq, event }) => ({ seq, type: event.type, payload: event.payload })),
@@ -2160,6 +2163,30 @@ export async function joinRoom(roomId: string, userId: number, username: string)
       roomsActivating.delete(roomId)
     }
   })
+}
+
+/** A replaying gateway need not contact a worker. Recover committed pending turns on the workers themselves. */
+export async function runPendingRoomRecovery(): Promise<never> {
+  for (;;) {
+    try {
+      if (hasRoomCapacity('')) {
+        const rooms = await roomStorage.listPendingRoomRecoveries(8)
+        await Promise.all(rooms.map(async ({ room_id: roomId, owner_id: ownerId }) => {
+          if (!hasRoomCapacity(roomId)) return
+          try {
+            await joinRoom(roomId, ownerId, 'user_' + ownerId)
+          } catch (error) {
+            if (!(error instanceof roomStorage.RoomWorkerBusyError)) {
+              logger.warn('Pending room recovery failed', { roomId, error: String(error) })
+            }
+          }
+        }))
+      }
+    } catch (error) {
+      logger.warn('Pending room recovery scan failed', { error: String(error) })
+    }
+    await delay(500)
+  }
 }
 
 /** WS 成员资格 gate（sync/action 帧用）。 */

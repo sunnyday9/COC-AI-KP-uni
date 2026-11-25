@@ -177,7 +177,6 @@ export const useRoomStore = defineStore('room', () => {
         pendingChats.set(actionId, { ...pending, outsideTranscript: true })
       }
     }
-    // 成员列表来自 REST（room:state 不含 members；room_meta 事件会覆盖）
   }
 
   function resetHistory(before?: string | null): void {
@@ -244,25 +243,24 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         const p = payload as RoomMetaPayload
         if (!p) break
         if (typeof p.phase === 'string') phase.value = p.phase
-        if (Array.isArray(p.members)) {
-          // 房主行跟踪（room_meta 是全员镜像）：ownerId 跟随 → 转让后治理权即刻生效
-          const ownerRow = p.members.find((m) => m.role === 'owner')
-          if (ownerRow) {
-            const becameOwner = ownerRow.userId === selfUserId.value && ownerId.value !== null && ownerId.value !== selfUserId.value
-            ownerId.value = ownerRow.userId
-            // 房主转让提示（ADR-0005）：被转让为 owner 的成员看到一次性「你已成为房主」
-            if (becameOwner) promotedNotice.value = true
-          }
-          members.value = p.members
-          // 成员资格自检（ADR-0005）：被踢/被移出 → room_meta 不再含自己；
-          // 非主动离开（removedReason 为空）才置位，页面据此提示并回大厅
-          const stillMember = p.members.some((m) => m.userId === selfUserId.value)
-          if (!stillMember && selfUserId.value !== null && removedReason.value === null && connectionState.value !== 'idle') {
-            removedReason.value = 'kicked'
-          }
-        }
+        if (Array.isArray(p.members)) applyRoomMembers(p.members)
         break
       }
+    }
+  }
+
+  function applyRoomMembers(nextMembers: RoomMemberInfo[]): void {
+    const owner = nextMembers.find((member) => member.role === 'owner')
+    if (owner) {
+      if (owner.userId === selfUserId.value && ownerId.value !== null && ownerId.value !== owner.userId) {
+        promotedNotice.value = true
+      }
+      ownerId.value = owner.userId
+    }
+    members.value = nextMembers
+    if (selfUserId.value !== null && connectionState.value !== 'idle' && removedReason.value === null &&
+        !nextMembers.some((member) => member.userId === selfUserId.value)) {
+      removedReason.value = 'kicked'
     }
   }
 
@@ -324,6 +322,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         isSyncing.value = false
         acceptActionReceipts(frame.actionReceipts === true)
         applySnapshot(frame.snapshot)
+        if (Array.isArray(frame.members)) applyRoomMembers(frame.members)
         // A pending receipt may trigger a snapshot that already includes the Keeper reply.
         if (kpSetupRequired.value || (frame.kpTurnPending === false && pendingChats.size === 0)) {
           awaitingKp.value = false
@@ -382,12 +381,15 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
   async function refreshMeta(): Promise<void> {
     const rid = roomId.value
     if (!rid) return
+    const requestedAt = lastSeq.value
     try {
       const detail = await getBridge().roomDetail(rid)
+      if (roomId.value !== rid) return
+      inviteCode.value = detail.inviteCode
+      if (lastSeq.value !== requestedAt) return
       phase.value = detail.phase
       storyId.value = detail.storyId
       members.value = detail.members
-      inviteCode.value = detail.inviteCode
       ownerId.value = detail.ownerId
       // 资格自检也适用于 REST 全量（room_meta 之外的路径：入房即不在成员列表 → 被移出）
       if (removedReason.value === null && selfUserId.value !== null) {

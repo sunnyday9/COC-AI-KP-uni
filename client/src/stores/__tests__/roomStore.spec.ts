@@ -411,6 +411,20 @@ describe('roomStore', () => {
     expect(reconnect.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === 'room:action')).toEqual([uncertain])
   })
 
+  it('applies membership and ownership when a snapshot replaces missed room events', async () => {
+    await joinAndSync()
+    const members = [
+      { userId: 1, username: 'alice', role: 'member', characterId: null, ready: true },
+      { userId: 2, username: 'bob', role: 'owner', characterId: null, ready: false },
+    ]
+    store.resync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 210, snapshot: { ...SNAP0, seq: 210 }, members, actionReceipts: true })
+    expect(store.ownerId).toBe(2)
+    expect(store.members).toEqual(members)
+    expect(store.selfReady).toBe(true)
+    expect(store.connectionState).toBe('joined')
+  })
+
   it('offers manual recovery if the automatic recheck is still uncertain and keeps the transcript authoritative', async () => {
     await joinAndSync()
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })

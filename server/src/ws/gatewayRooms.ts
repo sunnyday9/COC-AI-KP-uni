@@ -46,7 +46,7 @@ export async function resumeGatewaySocket(
   const current = () => socket.readyState === 1 && subscription === gatewaySubscribers(roomId)?.get(socket)
   try {
     if (lastSeq > 0) {
-      const [result] = await readRoomOutbox([{ roomId, userIds: [userId], seq: lastSeq }], ROOM_EVENT_WINDOW)
+      const [result] = await readRoomOutbox([{ roomId, userIds: [userId], seq: lastSeq }], ROOM_EVENT_WINDOW, MAX_REPLAY_BYTES)
       if (!current()) return
       if (!result.members.has(userId)) {
         send({ type: 'room:error', roomId, error: 'not a room member' })

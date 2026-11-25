@@ -64,7 +64,7 @@
 - 服务端 → 客户端推送：`{ "type": "rag:progress", "payload": {...} }`（RAG 索引进度，Task 4）。
 - 当前房间帧（共享类型见 `shared/types/room.ts`）：
   - 客户端 → 服务端：`room:join {roomId,lastSeq?}`、`room:leave {roomId}`、`room:sync {roomId,lastSeq}`、`room:action {roomId,action}`；聊天动作的形状为 `{type:"chat",payload:{content}}`。房主配置 AI 后仍可发送 `{type:"retry_kp"}` 继续已保存的回合。
-  - 服务端 → 客户端：`room:state {roomId,snapshot,seq,actionReceipts:true}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq,actionReceipts?}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义；`kp_chunk` 仅在实验开关开启时广播，客户端仍以完整 `message_appended` 为准。
+  - 服务端 → 客户端：`room:state {roomId,snapshot,seq,actionReceipts:true,members?}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq,actionReceipts?}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义；`kp_chunk` 仅在实验开关开启时广播，客户端仍以完整 `message_appended` 为准。
   - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。断线后的 `room:join` 也可携带客户端已应用的最后一个序号。独立网关从 PostgreSQL 重放到已提交的序号，再继续实时投递。保留窗口最多 200 条事件，单次重放上限为 512 KiB。序号超出范围、事件缺失或重放超出上限时，网关发送最新快照。快照帧中的可选 `kpTurnPending` 表示是否仍有待处理的 Keeper 回合。实时事件按已提交的序列号投递。已订阅的成员被踢出或房间解散时，room:error 附带 removedReason（kicked 或 dissolved），随后该连接不再接收房间事件。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
 
 ### 聊天行动回执

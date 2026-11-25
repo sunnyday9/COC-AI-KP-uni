@@ -9,7 +9,7 @@ import { CapacityError, sendError } from './utils/errors.js'
 import { getDb } from './db/index.js'
 import { getPostgresPool, initializePostgres } from './db/postgres.js'
 import { initializePostgresRooms } from './db/postgresRoomsSchema.js'
-import { startRoomReaper } from './services/roomService.js'
+import { runPendingRoomRecovery, startRoomReaper } from './services/roomService.js'
 import { roomWorkerId } from './services/roomStorage.js'
 import { executeRoomCommand } from './services/roomCommands.js'
 import { initializeRoomMailbox, runRoomMailbox } from './services/roomMailbox.js'
@@ -134,6 +134,7 @@ async function startServer(): Promise<void> {
   if (ROOM_RUNTIME !== 'direct') await initializeRoomMailbox()
   if (ROOM_RUNTIME === 'worker') {
     startRoomReaper()
+    void runPendingRoomRecovery()
     logger.info('Room worker ready')
     await runRoomMailbox(roomWorkerId, executeRoomCommand)
     return
