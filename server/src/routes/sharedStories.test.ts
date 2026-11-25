@@ -909,6 +909,37 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     await call(gateway, '/api/stories/fresh.txt', owner.token, 'DELETE')
   }, 30_000)
 
+  it('continues expiring a backlog larger than one batch while admissions are full', async () => {
+    const gateway = await startGateway(await freePort(), 'expiry-backlog', undefined, true, { STORY_PREPARATION_PENDING_PER_ACCOUNT: '1' })
+    const owner = await account(gateway)
+    await upload(gateway, owner.token, 'fresh.txt', 'fixture')
+    const db = new Pool({ connectionString: databaseUrl })
+    try {
+      // Seed expired work from a previous rollout without starting a worker.
+      await db.query(`
+        WITH imported AS (
+          INSERT INTO story_catalog (owner_id, story_id, name, source_revision, source_size, extension, created_at)
+          SELECT $1, 'expired-' || n || '.txt', 'expired fixture', gen_random_uuid(), 7, '.txt', 1
+          FROM generate_series(1, 258) AS n
+          RETURNING owner_id, story_id, source_revision
+        )
+        INSERT INTO story_preparation_jobs
+          (job_id, owner_id, story_id, source_revision, state, stage, percent, deadline_at)
+        SELECT gen_random_uuid(), owner_id, story_id, source_revision, 'queued', 'queued', 0,
+          clock_timestamp() - interval '1 minute'
+        FROM imported
+      `, [owner.user.id])
+      const route = '/api/stories/fresh.txt/preparation'
+      const payload = JSON.stringify({ operationId: 'admit-after-reaping' })
+      expect((await call(gateway, route, owner.token, 'POST', payload)).status).toBe(503)
+      expect((await call(gateway, route, owner.token, 'POST', payload)).status).toBe(202)
+    } finally {
+      await db.end()
+      await call(gateway, '/api/stories/fresh.txt', owner.token, 'DELETE')
+    }
+  }, 35_000)
+
+
   it('times out queued work without a worker and permits explicit retry', async () => {
     const gateway = await startGateway(await freePort(), 'deadline', undefined, true, { STORY_PREPARATION_DEADLINE_MS: '1200' })
     const owner = await account(gateway)
