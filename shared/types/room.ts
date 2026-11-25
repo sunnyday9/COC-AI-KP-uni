@@ -22,6 +22,7 @@ export type RoomPhase = 'lobby' | 'playing' | 'ended'
 
 /** 房间成员角色（与 server MemberRole 一致）。 */
 export type RoomMemberRole = 'owner' | 'member' | 'observer'
+export type RoomRemovedReason = 'kicked' | 'dissolved'
 
 export interface RoomMemberInfo {
   userId: number
@@ -108,11 +109,11 @@ export type RoomActionResult =
 
 /** 服务端房间帧（room:*，统一入口，roomStore 按 type 分流）。 */
 export type RoomServerFrame =
-  | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number; actionReceipts?: true }
+  | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number; actionReceipts?: true; kpTurnPending?: boolean }
   | { type: 'room:event'; roomId: string; seq: number; eventType: RoomEventType; payload: RoomEventFrame['payload'] }
   | { type: 'room:sync:done'; roomId: string; seq: number }
   | ({ type: 'room:action:result'; roomId: string; actionId: string } & RoomActionResult)
-  | { type: 'room:error'; roomId: string; error: string }
+  | { type: 'room:error'; roomId: string; error: string; removedReason?: RoomRemovedReason }
 
 /** REST /api/rooms 响应（roomService 客户端契约）。 */
 export interface RoomListItem {

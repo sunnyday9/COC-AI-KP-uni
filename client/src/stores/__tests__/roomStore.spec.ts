@@ -277,6 +277,39 @@ describe('roomStore', () => {
     expect(store.messages.map((message) => [message.id, !!message.pending])).toEqual([[expect.any(String), true], [echo.id, false]])
   })
 
+  it('reconciles a Keeper reply delivered in the snapshot after the receipt', async () => {
+    await joinAndSync()
+    const playing = { ...SNAP0, phase: 'playing' }
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: playing, actionReceipts: true })
+    store.sendChat('查看书架')
+    const action = sentFrames().at(-1)!
+    const echo = { id: 'accepted-chat', timestamp: 1, role: 'player', content: '查看书架' }
+    emitFrame({
+      type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'pending', messageId: echo.id,
+    })
+    expect(sentFrames().at(-1)).toMatchObject({ type: 'room:sync', roomId: 'room_x', lastSeq: 0 })
+
+    emitFrame({
+      type: 'room:state', roomId: 'room_x', seq: 1, actionReceipts: true, kpTurnPending: true,
+      snapshot: { ...playing, seq: 1, messages: [echo] },
+    })
+    expect(store.awaitingKp).toBe(true)
+
+    const reply = { id: 'keeper-reply', timestamp: 2, role: 'kp', content: '书架的背板是空心的。' }
+    emitFrame({
+      type: 'room:state', roomId: 'room_x', seq: 2, actionReceipts: true, kpTurnPending: false,
+      snapshot: { ...playing, seq: 2, messages: [echo, reply] },
+    })
+    expect(store.messages).toEqual([echo, reply])
+    expect(store.awaitingKp).toBe(false)
+  })
+
+  it('shows the existing kick notice when a gateway revokes the subscription', async () => {
+    await joinAndSyncAsMember()
+    emitFrame({ type: 'room:error', roomId: 'room_x', error: 'not a room member', removedReason: 'kicked' })
+    expect(store.removedReason).toBe('kicked')
+  })
+
   it('retains the original chat ID when the player retries the same room after an error', async () => {
     await joinAndSync()
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })

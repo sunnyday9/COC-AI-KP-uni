@@ -17,7 +17,7 @@
  */
 import { defineStore } from 'pinia'
 import { computed, ref, shallowReactive } from 'vue'
-import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomMetaPayload } from '../../../shared/types/room'
+import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomMetaPayload, RoomRemovedReason } from '../../../shared/types/room'
 import type { Message, DiceMessage } from '../../../shared/types/game'
 import type { COCCharacterSheet } from '../../../shared/types/character'
 import { getBridge } from '../platform'
@@ -30,7 +30,7 @@ export type RoomConnectionState = 'idle' | 'joining' | 'joined' | 'error'
  *  - dissolved：房间解散（REST 轮询 roomDetail 404 兜底——解散无广播）
  * 仅非主动离开置位；leaveRoom()/leaveAndClear() 是主动离开，不触发。
  */
-export type RoomRemovedReason = 'kicked' | 'dissolved'
+export type { RoomRemovedReason } from '../../../shared/types/room'
 
 /** 全局帧订阅只挂接一次（roomStore 是 pinia 单例，多页面复用同一实例）。 */
 let frameBridgeWired = false
@@ -279,6 +279,11 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
           chatError.value = '当前服务器无法确认刚才的消息，请先查看聊天记录。'
         }
         applySnapshot(frame.snapshot)
+        // The reply may already be in the snapshot when the gateway relays a
+        // pending receipt before its event fanout sees the accepted chat.
+        if (kpSetupRequired.value || (frame.kpTurnPending === false && pendingChats.size === 0)) {
+          awaitingKp.value = false
+        }
         if (joining && actionReceipts) {
           for (const [actionId, pending] of pendingChats) {
             if (pending.cause !== 'busy') sendPendingChat(actionId)
@@ -317,6 +322,9 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       }
       case 'room:error': {
         if (frame.roomId && frame.roomId !== roomId.value) return
+        if (frame.removedReason && removedReason.value === null && connectionState.value !== 'idle') {
+          removedReason.value = frame.removedReason
+        }
         errorMessage.value = frame.error
         connectionState.value = 'error'
         isSyncing.value = false

@@ -59,14 +59,17 @@ export async function runGatewayRoomFanout(signal: AbortSignal): Promise<void> {
           seq: Math.min(...[...listeners.values()].map((sub) => sub.seq)),
           userIds: [...new Set([...listeners.values()].map((sub) => sub.userId))],
         })))
-        for (const { roomId, members, events } of changes) {
+        for (const { roomId, roomExists, members, events } of changes) {
           const selected = page.find((entry) => entry.roomId === roomId)?.listeners
           for (const socket of subscribersOf(roomId)) {
             const subscription = subscriptions.get(roomId)?.get(socket)
             if (!subscription || subscription !== selected?.get(socket)) continue
             if (!members.has(subscription.userId)) {
               unsubscribeGatewaySocket(socket, roomId)
-              sendFrame(socket, JSON.stringify({ type: 'room:error', roomId, error: 'not a room member' }))
+              sendFrame(socket, JSON.stringify({
+                type: 'room:error', roomId, error: 'not a room member',
+                removedReason: roomExists ? 'kicked' : 'dissolved',
+              }))
               continue
             }
             for (const event of events) {

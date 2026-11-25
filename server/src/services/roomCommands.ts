@@ -2,7 +2,7 @@ import { ROOM_RUNTIME } from '../config.js'
 import type { RoomActionResult } from '../../../shared/types/room.js'
 import { RoomRelayUnavailable, sendRoomCommand, withRoomRelayDeadline } from './roomMailbox.js'
 import {
-  bindRoomCharacter, deleteRoomAsOwner, getOrCreateRoom, hasRoomCapacity, isRoomMember, joinRoom,
+  bindRoomCharacter, deleteRoomAsOwner, hasRoomCapacity, isRoomMember, joinRoom,
   joinRoomByInviteCode, kickRoomMember, leaveRoomAsMember, resolveRoomInvite,
   setMemberReady, setRoomTurnWindow, startRoom, transferOwnership,
 } from './roomService.js'
@@ -27,7 +27,11 @@ const commandHandlers = {
     if (!await isRoomMember(roomId, userId)) return null
     if (!hasRoomCapacity(roomId)) throw new RoomRelayUnavailable()
     const room = await joinRoom(roomId, userId, 'user_' + userId)
-    return room && { snapshot: room.snapshot(), seq: room.getSeq() }
+    if (!room) return null
+    const snapshot = room.snapshot()
+    const kpTurnPending = snapshot.phase === 'playing' && !snapshot.kpSetupRequired &&
+      (snapshot.pendingTurnMessages?.length ?? 0) > 0
+    return { snapshot, seq: snapshot.seq, kpTurnPending }
   },
   async chat(userId: number, roomId: string, content: string, actionId?: string): Promise<RoomActionResult> {
     if (!await isRoomMember(roomId, userId)) return notMember
@@ -106,11 +110,8 @@ export async function executeRoomCommand(roomId: string, userId: number, raw: un
     } else if (!await isRoomMember(roomId, userId)) {
       return missing
     }
-    if (!hasRoomCapacity(roomId)) throw new RoomRelayUnavailable()
-    // Governance still runs through RoomService. The already leased actor is
-    // needed for the existing fenced database operations and member events.
-    const room = await getOrCreateRoom(roomId, userId, 'user_' + userId)
-    if (!await room.renewWorkerLease()) throw new RoomRelayUnavailable()
+    // RoomService holds the actor lease or acquires a temporary lease for a
+    // dormant room. REST commands do not use an active room slot.
   }
   return call(command.name, userId, roomId, command.args)
 }

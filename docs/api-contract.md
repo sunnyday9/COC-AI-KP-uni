@@ -65,7 +65,7 @@
 - 当前房间帧（共享类型见 `shared/types/room.ts`）：
   - 客户端 → 服务端：`room:join {roomId}`、`room:leave {roomId}`、`room:sync {roomId,lastSeq}`、`room:action {roomId,action}`；聊天动作的形状为 `{type:"chat",payload:{content}}`。房主配置 AI 后仍可发送 `{type:"retry_kp"}` 继续已保存的回合。
   - 服务端 → 客户端：`room:state {roomId,snapshot,seq,actionReceipts:true}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义；`kp_chunk` 仅在实验开关开启时广播，客户端仍以完整 `message_appended` 为准。
-  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。独立网关使用完整快照响应同步请求，实时事件仍按已提交的序列号投递。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
+  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。独立网关使用完整快照响应同步请求，快照帧中的可选 kpTurnPending 表示是否仍有待处理的 Keeper 回合。实时事件按已提交的序列号投递。已订阅的成员被踢出或房间解散时，room:error 附带 removedReason（kicked 或 dissolved），随后该连接不再接收房间事件。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
 
 ### 聊天行动回执
 
@@ -74,7 +74,7 @@
 - `room:action:result {roomId,actionId,status,messageId}` 表示已持久化。等待室聊天立即为 `completed`。进行中的行动先为 `pending`，KP 回合结果入库后为 `completed`。行动执行前发现作者已离开，或房间在处理前结束，则为 `cancelled`，保留原聊天记录。当前成员可以重发原动作查询自己的回执。
 - `room:action:result {roomId,actionId,status,code,error}` 表示本次请求未得到接收确认。`rejected` 是权限、内容或编号冲突。`busy` 表示房间达到待处理上限。命令入口饱和时可能先返回忙碌，稍后重发原编号即可查询已有回执。`retry` 表示暂时无法确认结果。忙碌、回执丢失和暂时性错误后均可用原编号重试。固定的剧本版本暂时无法读取时，新行动收到 `story_unavailable`。已保存的回执仍可通过同一个编号查询。
 - 旧客户端省略 `actionId` 时仍收到消息回显及原有错误帧，每次提交视作新的聊天。新客户端连接未声明回执能力的服务端时也使用旧协议。旧聊天、结构化骰子消息和 `retry_kp` 的帧格式保持兼容。
-- 当前由单一房间进程执行。SQLite 和 PostgreSQL 均先提交聊天、回执和待处理状态，再广播回显。重启后，房间重新载入时恢复待处理行动。回合结果与已处理状态一并提交。提交前的中断可能使 KP 请求重做。后续跨进程所有权、事件转发和持久化回放见 ADR-0010。
+- 每个房间由一个权威实例执行。SQLite 和 PostgreSQL 均先提交聊天、回执和待处理状态，再广播回显。共享部署由持有 PostgreSQL 租约的 worker 执行，网关投递已提交的事件。房间重新载入时恢复待处理行动。回合结果与已处理状态一并提交。提交前的中断可能使 KP 请求重做。参见 ADR-0010。
 
 
 ## 5. 剧本 / 文件（Task 4）

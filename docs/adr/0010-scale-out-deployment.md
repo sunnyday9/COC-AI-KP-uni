@@ -1,6 +1,6 @@
 # ADR-0010 Scale out gameplay and story preparation independently
 
-- Status: Adopted design. Single-host baseline and opt-in PostgreSQL and object-storage staging are implemented. Multi-worker gameplay and staging capacity validation are pending.
+- Status: Adopted design. Single-host baseline and opt-in PostgreSQL and object-storage staging are implemented. The room worker and gateway split is available for staging. Staging capacity validation is pending.
 - Date: 2026-11-18
 - Related: ADR-0001 RoomStorage, ADR-0002 shared solo and multiplayer protocol, ADR-0007 dossier authority and spoiler protection
 
@@ -58,7 +58,7 @@ Two HTTP gateways can share [sign-in and private account settings](../DEPLOYMENT
 
 The opt-in [shared room staging process](../DEPLOYMENT.md#63-单进程共享房间预发布115) keeps one authoritative gameplay process, stores rooms and membership in PostgreSQL, and restores solo and multiplayer rooms over the existing protocol. With [shared story preparation and storage enabled](../DEPLOYMENT.md#65-共享房间固定剧本版本118), each new room pins the verified source and preparation revisions. Saved rooms retain access to those revisions after regeneration or catalog deletion. Fixture-only staging uses prepared files under a separate root.
 
-A separate opt-in [worker failover stage](../DEPLOYMENT.md#多房间进程故障恢复预发布120) gives each active room a renewable PostgreSQL lease and a monotonic epoch. It restores the accepted batch and fences turn results, state, room events, and outbox rows in one commit. The stage uses direct worker connections. Gateway routing, cross-gateway delivery, replay, and SQLite cutover are later rollout stages.
+A separate opt-in [worker failover stage](../DEPLOYMENT.md#多房间进程故障恢复预发布120) gives each active room a renewable PostgreSQL lease and a monotonic epoch. It restores the accepted batch and fences turn results, state, room events, and outbox rows in one commit. It supports direct worker connections or separate HTTP and WebSocket gateways. The gateways route authenticated room commands to the worker and deliver committed events in sequence. Cursor-based replay and SQLite cutover are later rollout stages.
 
 ## Local capacity check
 

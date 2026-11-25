@@ -105,6 +105,23 @@ export type RoomWorkerLease = { epoch: string }
 const workerId = randomUUID()
 export { workerId as roomWorkerId }
 
+export type ClaimedRoomCommand = { request_id: string; room_id: string; user_id: number; command: unknown }
+
+/** Do not claim a later command while this room has an unexpired in-flight command. */
+export async function claimNextRoomCommand(worker: string): Promise<ClaimedRoomCommand | undefined> {
+  return readOne<ClaimedRoomCommand>(
+    'WITH command AS (' +
+    ' SELECT c.sequence FROM room_commands c LEFT JOIN rooms r USING (room_id)' +
+    ' WHERE c.claimed_by IS NULL AND c.expires_at > clock_timestamp()' +
+    ' AND (r.worker_id = ? OR r.worker_expires_at IS NULL OR r.worker_expires_at <= clock_timestamp())' +
+    ' AND NOT EXISTS (SELECT 1 FROM room_commands earlier WHERE earlier.room_id = c.room_id' +
+    '   AND earlier.sequence < c.sequence AND earlier.result IS NULL AND earlier.expires_at > clock_timestamp())' +
+    ' ORDER BY c.sequence LIMIT 1 FOR UPDATE OF c SKIP LOCKED' +
+    ') UPDATE room_commands c SET claimed_by = ? FROM command WHERE c.sequence = command.sequence' +
+    ' RETURNING c.request_id, c.room_id, c.user_id, c.command', worker, worker,
+  )
+}
+
 export class RoomLeaseLostError extends CapacityError {
   constructor() { super('Room worker lease lost') }
 }

@@ -27,6 +27,7 @@ type Frame = {
   status?: string
   messageId?: string
   code?: string
+  removedReason?: string
   error?: string
   snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string }[]; kpMemory?: string[] }
   eventType?: string
@@ -237,6 +238,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const jwtSecret = randomBytes(32).toString('hex')
   const children: ChildProcess[] = []
   const sockets: WebSocket[] = []
+  const readyWorkers = new WeakSet<ChildProcess>()
   const pausedKeepers = new WeakSet<ChildProcess>()
   const rejectedOpenings = new WeakSet<ChildProcess>()
   const heldOpeningSlots = new WeakSet<ChildProcess>()
@@ -244,7 +246,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const pausedAcceptances = new WeakSet<ChildProcess>()
   const shared = backend === 'postgres'
   let base: string
-  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string; runtime?: 'worker' | 'gateway'; duplicateOutbox?: boolean } = {}): Promise<ChildProcess> {
+  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string; runtime?: 'worker' | 'gateway'; activeRooms?: number; duplicateOutbox?: boolean } = {}): Promise<ChildProcess> {
     const port = await freePort()
     base = `http://127.0.0.1:${port}`
     const args = ['--import', 'tsx']
@@ -264,6 +266,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
         ENABLE_ROOM_WORKER_FAILOVER: failover && !options.singleProcess ? '1' : undefined,
         ROOM_WORKER_LEASE_MS: failover ? '3000' : undefined,
         ROOM_RUNTIME: options.runtime,
+        ROOM_ACTIVE_INSTANCES: options.activeRooms?.toString(),
         SHARED_ROOM_FIXTURE_DIR: fixtureRoot,
         DATABASE_URL: shared ? databaseUrl : undefined,
         DATA_DIR: dataDir,
@@ -279,10 +282,11 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     children.push(child)
-    if (options.pauseAfterTool || options.pauseActionId || options.failOpeningCheckpoint || options.endingOpeningBarrier) {
+    if (options.runtime === 'worker' || options.pauseAfterTool || options.pauseActionId || options.failOpeningCheckpoint || options.endingOpeningBarrier) {
       let output = ''
       child.stdout?.on('data', (data: Buffer) => {
         output = (output + data.toString()).slice(-4_096)
+        if (output.includes('Room worker ready')) readyWorkers.add(child)
         if (output.includes('keeper fixture paused after HP tool')) pausedKeepers.add(child)
         if (output.includes('keeper fixture rejected the opening checkpoint')) rejectedOpenings.add(child)
         if (output.includes('keeper fixture holding the only turn slot')) heldOpeningSlots.add(child)
@@ -339,10 +343,13 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       async waitFor(predicate: (frame: Frame) => boolean): Promise<Frame> {
         const existing = frames.find(predicate)
         if (existing) return existing
+        const timeout = new Error('Missing room protocol frame')
         return new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
             waiters.delete(waiter)
-            reject(new Error(`Missing protocol frame for ${backend}: ${JSON.stringify(frames.map((frame) => [frame.type, frame.eventType]))}`))
+            const recent = frames.slice(-8).map(({ type, seq, error, removedReason }) => ({ type, seq, error, removedReason }))
+            timeout.message = 'Missing protocol frame for ' + backend + ': ' + JSON.stringify(recent)
+            reject(timeout)
           }, 8_000)
           const waiter = (frame: Frame) => {
             if (!predicate(frame)) return
@@ -362,7 +369,8 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const detail = (roomId: string, token: string) => request(`/api/rooms/${roomId}`, { token })
 
   async function runSplitGateways(): Promise<void> {
-    const worker = await launch({ runtime: 'worker', pauseAfterTool: false })
+    const worker = await launch({ runtime: 'worker', pauseAfterTool: false, activeRooms: 1 })
+    await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
     const first = await launch({ runtime: 'gateway', duplicateOutbox: true })
     await ready(first)
     const firstBase = base
@@ -396,6 +404,21 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(await socketB.waitFor((frame) => frame.type === 'room:state')).toMatchObject({ snapshot: { phase: 'lobby' } })
     blocked.send(joinFrame)
     expect(await blocked.waitFor((frame) => frame.type === 'room:error')).toMatchObject({ error: 'not a room member' })
+    expect(blocked.frames.filter((frame) => frame.type === 'room:event' || frame.type === 'room:state')).toEqual([])
+
+    const dormant = await request('/api/rooms', { method: 'POST', token: owner.token, body: {} })
+    await enter(dormant.inviteCode, outsider.token)
+    await request('/api/rooms/' + dormant.roomId + '/settings', {
+      method: 'PUT', token: owner.token, body: { turnWindowMs: 900 },
+    })
+    expect(await detail(dormant.roomId, owner.token)).toMatchObject({ state: { turnWindowMs: 900 } })
+
+    await enter(inviteCode, outsider.token)
+    blocked.send(joinFrame)
+    await blocked.waitFor((frame) => frame.type === 'room:state')
+    await request('/api/rooms/' + roomId + '/members/' + outsider.user.id, { method: 'DELETE', token: owner.token })
+    await blocked.waitFor((frame) => frame.type === 'room:error' && frame.removedReason === 'kicked')
+
     await request('/api/rooms/' + roomId + '/settings', {
       method: 'PUT', token: owner.token, body: { turnWindowMs: 0 },
     })
@@ -420,11 +443,11 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     const sequences = turn.map((frame) => frame.seq)
     expect(sequences).toEqual([...new Set(sequences)].sort((a, b) => a! - b!))
     expect(turn.filter((frame) => frame.payload?.message?.content === 'Recover the damaged ledger')).toHaveLength(1)
-    expect(blocked.frames.filter((frame) => frame.type === 'room:event' || frame.type === 'room:state')).toEqual([])
+    expect(blocked.frames.some((frame) => (frame.seq ?? 0) > beforeAction)).toBe(false)
 
     const duplicate = await connect(owner.token)
     duplicate.send(joinFrame)
-    await duplicate.waitFor((frame) => frame.type === 'room:state')
+    expect(await duplicate.waitFor((frame) => frame.type === 'room:state')).toMatchObject({ kpTurnPending: false })
     duplicate.send(action)
     expect(await duplicate.waitFor((frame) => frame.actionId === actionId)).toMatchObject({
       status: 'completed', messageId: receipt.messageId,
@@ -457,7 +480,8 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     }
 
     const gatewayBase = base
-    await launch({ runtime: 'worker', pauseAfterTool: false })
+    const replacement = await launch({ runtime: 'worker', pauseAfterTool: false })
+    await expect.poll(() => readyWorkers.has(replacement), { timeout: 12_000 }).toBe(true)
     base = gatewayBase
     const resumed = await connect(visitor.token)
     resumed.send(joinFrame)
@@ -465,10 +489,8 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(resumedState.snapshot?.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ content: 'The ledger was recovered.' }),
     ]))
-    expect(resumedState.snapshot?.messages).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: 'I cannot reach the worker' }),
-      expect.objectContaining({ content: abandonedContent }),
-    ]))
+    const discarded = new Set(['I cannot reach the worker', abandonedContent])
+    expect(resumedState.snapshot?.messages?.filter(({ content }) => discarded.has(content))).toEqual([])
   }
 
   async function runWorkerFailover(): Promise<void> {

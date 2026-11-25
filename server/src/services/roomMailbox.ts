@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { getPostgresPool, inPostgresTransaction, postgresError } from '../db/postgres.js'
 import { CapacityError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
+import { claimNextRoomCommand, type ClaimedRoomCommand } from './roomStorage.js'
 
 const deadlineMs = 2_500
 const roomLimit = 32
@@ -117,25 +118,8 @@ export async function sendRoomCommand(
   }
 }
 
-type CommandRow = { request_id: string; room_id: string; user_id: string; command: unknown }
-
-async function claimCommand(workerId: string): Promise<CommandRow | undefined> {
-  const result = await getPostgresPool().query<CommandRow>(
-    'WITH command AS (' +
-    ' SELECT c.sequence FROM room_commands c LEFT JOIN rooms r USING (room_id)' +
-    ' WHERE c.claimed_by IS NULL AND c.expires_at > clock_timestamp()' +
-    ' AND (r.worker_id = $1 OR r.worker_expires_at IS NULL OR r.worker_expires_at <= clock_timestamp())' +
-    ' AND NOT EXISTS (SELECT 1 FROM room_commands earlier WHERE earlier.room_id = c.room_id' +
-    '   AND earlier.sequence < c.sequence AND earlier.result IS NULL AND earlier.expires_at > clock_timestamp())' +
-    ' ORDER BY c.sequence LIMIT 1 FOR UPDATE OF c SKIP LOCKED' +
-    ') UPDATE room_commands c SET claimed_by = $1 FROM command WHERE c.sequence = command.sequence' +
-    ' RETURNING c.request_id, c.room_id, c.user_id, c.command', [workerId],
-  )
-  return result.rows[0]
-}
-
 async function executeClaim(
-  workerId: string, row: CommandRow, execute: (roomId: string, userId: number, command: unknown) => Promise<unknown>,
+  workerId: string, row: ClaimedRoomCommand, execute: (roomId: string, userId: number, command: unknown) => Promise<unknown>,
 ): Promise<void> {
   const pool = getPostgresPool()
   const live = await pool.query(
@@ -145,7 +129,7 @@ async function executeClaim(
   if (!live.rowCount) return
   let result: CommandResult
   try {
-    result = { ok: true, value: await execute(row.room_id, Number(row.user_id), row.command) }
+    result = { ok: true, value: await execute(row.room_id, row.user_id, row.command) }
   } catch (error) {
     logger.warn('Relayed room command failed', { error: postgresError(error).message })
     result = { ok: false }
@@ -170,7 +154,7 @@ export async function runRoomMailbox(
         )
         cleanAfter = Date.now() + deadlineMs
       }
-      const row = active.size < 8 && await claimCommand(workerId)
+      const row = active.size < 8 && await claimNextRoomCommand(workerId)
       if (row) {
         active.add(row.request_id)
         void executeClaim(workerId, row, execute)
