@@ -44,7 +44,7 @@ function mountKeeperMetrics(app: Express, token: string, runtime: 'direct' | 'wo
       res.status(404).json({ error: 'not found' })
       return
     }
-    res.set('Cache-Control', 'no-store').json({ runtime, ...keeperPressureMetrics() })
+    res.set('Cache-Control', 'no-store').json({ runtime, ...keeperPressureMetrics(token) })
   })
 }
 

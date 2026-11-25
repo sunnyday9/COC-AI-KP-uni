@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { acquireKpTurn, keeperPressureMetrics } from '../kpAdmission.js'
+import { acquireKpTurn, createKeeperExecution, keeperLane, keeperPressureMetrics, requestKeeper } from '../kpAdmission.js'
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -45,11 +45,68 @@ it('skips blocked lanes, bounds each lane, and expires older waiters', async () 
   try {
     await expect(acquireKpTurn({ ownerId: 4, provider: 'first' }, signal)).rejects.toMatchObject({ reason: 'queue_full' })
     await expect(acquireKpTurn({ ownerId: 1, provider: 'fourth' }, signal)).rejects.toMatchObject({ reason: 'queue_full' })
-    expect(keeperPressureMetrics()).toMatchObject({ active: 2, pending: 2 })
+    expect(keeperPressureMetrics('test metrics secret')).toMatchObject({ active: 2, pending: 2 })
     await Promise.all([expiry, accountExpiry])
-    expect(keeperPressureMetrics()).toMatchObject({ active: 2, pending: 0 })
+    expect(keeperPressureMetrics('test metrics secret')).toMatchObject({ active: 2, pending: 0 })
   } finally {
     release?.()
     independent?.()
+  }
+})
+
+it('propagates Retry-After to the same credentials, with private and stable lane labels', async () => {
+  vi.stubEnv('KP_ACTIVE_TURNS', '3')
+  vi.stubEnv('KP_ACTIVE_PER_ACCOUNT', '1')
+  vi.stubEnv('KP_ACTIVE_PER_PROVIDER', '2')
+  const signal = new AbortController().signal
+  const owner = 739_174_603
+  const ai = {
+    baseUrl: 'https://cooldown.example/v1', protocol: 'openai_chat', model: 'fixture-model',
+    temperature: 0, maxTokens: 100,
+  } as const
+  const lane = keeperLane(owner, ai)
+  const release = await acquireKpTurn(lane, signal)
+  const execution = createKeeperExecution(ai, lane, signal)
+  try {
+    const queued = acquireKpTurn(keeperLane(owner, { ...ai, baseUrl: 'https://cooldown.example/v2' }), signal)
+    const paused = expect(queued).rejects.toMatchObject({ reason: 'provider_limited', retryAt: expect.any(Number) })
+    const before = keeperPressureMetrics('test metrics secret')
+    const attempt = vi.fn(async () => {
+      throw Object.assign(new Error('Synthetic rate limit'), { status: 429, headers: new Headers({ 'retry-after': '86400' }) })
+    })
+    await expect(requestKeeper(execution, attempt)).rejects.toMatchObject({ reason: 'provider_limited' })
+    await paused
+    await expect(acquireKpTurn(lane, signal)).rejects.toMatchObject({
+      reason: 'provider_limited', retryAt: expect.any(Number),
+    })
+    expect(attempt).toHaveBeenCalledOnce()
+    expect(keeperPressureMetrics('test metrics secret')).toMatchObject({
+      cooldowns: { count: 1, maxLanes: 4096, maxMs: 3_600_000 },
+    })
+    await acquireKpTurn({ ...lane, ownerId: owner + 1 }, signal).then((releaseOther) => {
+      expect(releaseOther).not.toBeNull()
+      releaseOther?.()
+    })
+    release?.()
+    const otherProvider = await acquireKpTurn({ ...lane, provider: 'https://unrelated.example' }, signal)
+    expect(otherProvider).not.toBeNull()
+    otherProvider?.()
+    const after = keeperPressureMetrics('test metrics secret')
+    expect(before.providers.busiest[0]).toMatchObject({ label: after.providers.busiest[0]?.label, active: 1, pending: 1 })
+    expect(before.accounts.busiest[0]).toMatchObject({ label: after.accounts.busiest[0]?.label })
+    expect(after.providers.busiest[0]).toMatchObject({ cooling: 1, active: 0, pending: 0 })
+    expect(after.accounts.busiest[0]?.label).not.toBe(after.providers.busiest[0]?.label)
+    expect(keeperPressureMetrics('rotated metrics secret').accounts.busiest[0]?.label).not.toBe(after.accounts.busiest[0]?.label)
+    expect(JSON.stringify(after)).not.toMatch(/cooldown\.example|739174603|fixture-model/)
+    const afterMaximumCooldown = Date.now() + 3_600_001
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(afterMaximumCooldown)
+    const afterExpiry = await acquireKpTurn(lane, signal)
+    expect(afterExpiry).not.toBeNull()
+    afterExpiry?.()
+  } finally {
+    vi.useRealTimers()
+    execution.close()
+    release?.()
   }
 })

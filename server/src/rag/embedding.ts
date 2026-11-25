@@ -98,8 +98,9 @@ export function createEmbedder(config: { baseUrl?: string; apiKey?: string; mode
       }),
     })
     if (!res.ok) {
-      const err = new Error(`Embedding API ${res.status}: ${res.statusText}`) as Error & { status?: number }
-      err.status = res.status
+      const err = Object.assign(new Error(`Embedding API ${res.status}: ${res.statusText}`), {
+        status: res.status, headers: res.headers,
+      })
       throw err
     }
     const json = (await res.json()) as { data?: { embedding?: unknown }[] }

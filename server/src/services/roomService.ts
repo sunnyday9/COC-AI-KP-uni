@@ -752,7 +752,7 @@ export class RoomService {
     const lane = keeperLane(ownerId, ai)
     const release = optional ? tryAcquireKpTurn(lane, signal) : await acquireKpTurn(lane, signal)
     if (!release) return null
-    const execution = createKeeperExecution(ai, signal)
+    const execution = createKeeperExecution(ai, lane, signal)
     return { execution, release: () => { execution.close(); release() } }
   }
 

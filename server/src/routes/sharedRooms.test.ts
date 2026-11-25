@@ -230,8 +230,9 @@ function duplicateOutboxEvents(): string {
 
 function pressureProvider(directory: string): string {
   const source = `
-    import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+    import { appendFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
     import { join } from 'node:path';
+    import { setTimeout as delay } from 'node:timers/promises';
     const directory = ${JSON.stringify(directory)};
     export async function chatForAgent(_userId, { messages, signal, keeperSettings }) {
       signal?.throwIfAborted();
@@ -253,8 +254,16 @@ function pressureProvider(directory: string): string {
         }
       }
       if (action.includes('Rate-limit this turn') && !existsSync(join(directory, 'allow-rate'))) {
-        appendFileSync(join(directory, 'rate-attempts'), '1');
-        throw Object.assign(new Error('Synthetic rate limit'), { status: 429, headers: new Headers({ 'retry-after': '0' }) });
+        const attempts = join(directory, 'rate-attempts');
+        appendFileSync(attempts, '1');
+        const first = statSync(attempts).size === 1;
+        if (first) {
+          while (!existsSync(join(directory, 'release-rate'))) await delay(15, undefined, { signal });
+        }
+        throw Object.assign(new Error('Synthetic rate limit'), { status: 429, headers: new Headers({ 'retry-after': first ? '2' : '0' }) });
+      }
+      if (action.includes('Wait behind rate-limited credentials')) {
+        writeFileSync(join(directory, 'queued-rate-provider-contacted'), '');
       }
       if (action.includes('Continue after a host handoff')) {
         if (keeperSettings.baseUrl.includes('slower.example')) {
@@ -872,6 +881,12 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(activePressure.active).toBeGreaterThan(0)
     await sendAction(queued, 'Queue at the same provider')
     await expect.poll(async () => (await (await readMetrics()).json()).pending).toBe(1)
+    const queuedPressure = await (await readMetrics()).json()
+    for (const scope of ['providers', 'accounts']) {
+      const lane = queuedPressure[scope].busiest.find((entry: { pending: number }) => entry.pending === 1)
+      expect(lane).toMatchObject({ label: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/), active: 1, cooling: 0 })
+      expect(activePressure[scope].busiest).toContainEqual({ label: lane.label, active: 1, pending: 0, cooling: 0 })
+    }
     const busy = await sendAction(overflow, 'Keep this accepted action pending')
     await sendAction(fast, 'Check unrelated room')
     await fast.socket.waitFor((frame) => frame.payload?.message?.content === 'Independent reply.')
@@ -910,8 +925,21 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(slow.socket.frames.filter((frame) => frame.actionId === pending.actionId).at(-1)).toMatchObject({ status: 'completed' })
 
     const limited = await sendAction(slow, 'Rate-limit this turn')
-    await expect.poll(async () => (await detail(slow.room.roomId, slow.token)).state.kpPauseReason).toBe('provider_limited')
-    expect((await detail(slow.room.roomId, slow.token)).state.pendingTurnMessages).toMatchObject([{ actionId: limited.actionId }])
+    await expect.poll(() => existsSync(join(root, 'rate-attempts'))).toBe(true)
+    const sameCredentials = await sendAction(queued, 'Wait behind rate-limited credentials')
+    await expect.poll(async () => (await (await readMetrics()).json()).pending).toBe(1)
+    await writeFile(join(root, 'release-rate'), '')
+    await sendAction(fast, 'Check unrelated room during cooldown')
+    await expect.poll(() => fast.socket.frames.filter((frame) => frame.payload?.message?.content === 'Independent reply.').length).toBe(2)
+    expect(statSync(join(root, 'rate-attempts')).size).toBe(1)
+    await expect.poll(async () => (await detail(queued.room.roomId, queued.token)).state.kpPauseReason).toBe('provider_limited')
+    const pausedCredentials = (await detail(queued.room.roomId, queued.token)).state
+    expect(pausedCredentials.kpRetryAt).toEqual(expect.any(Number))
+    expect(pausedCredentials.pendingTurnMessages).toMatchObject([{ actionId: sameCredentials.actionId }])
+    expect(existsSync(join(root, 'queued-rate-provider-contacted'))).toBe(false)
+    await expect.poll(async () => (await detail(slow.room.roomId, slow.token)).state.kpPauseReason, { timeout: 5_000 }).toBe('provider_limited')
+    const limitedState = (await detail(slow.room.roomId, slow.token)).state
+    expect(limitedState.pendingTurnMessages).toMatchObject([{ actionId: limited.actionId }])
     expect(statSync(join(root, 'rate-attempts')).size).toBe(2)
 
     expect((await fetch(metricsUrl)).status).toBe(404)
@@ -920,12 +948,13 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(metrics.status).toBe(200)
     expect(metrics.headers.get('cache-control')).toBe('no-store')
     const pressure = await metrics.json()
-    expect(pressure.queue).toMatchObject({ started: expect.any(Number), totalWaitMs: expect.any(Number) })
+    expect(pressure.queue).toMatchObject({ started: expect.any(Number), totalWaitMs: expect.any(Number), cooldownRejected: 1 })
     expect(pressure.provider).toMatchObject({ requests: expect.any(Number), totalLatencyMs: expect.any(Number), retries: 1 })
     expect(pressure.queue.maxWaitMs).toBeGreaterThan(100)
     expect(pressure.provider.maxLatencyMs).toBeGreaterThan(1_000)
     expect(JSON.stringify(pressure)).not.toContain('slower.example')
 
+    await expect.poll(() => Date.now()).toBeGreaterThan(limitedState.kpRetryAt)
     const handoff = await createLobby(slowOwner, 'Handoff archivist')
     await enter(handoff.inviteCode, independent.token)
     await handoff.addCard(independent, 'Successor archivist')
