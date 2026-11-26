@@ -8,6 +8,7 @@ import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
 import type { getAiConfig } from './settingsService.js'
 import { BadRequestError, UpstreamError, errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
+import { KeeperPressureError, requestKeeper, type KeeperExecution } from './kpAdmission.js'
 
 /**
  * KP Agent service (api-contract §4) — migrated from
@@ -90,7 +91,7 @@ function isForceToolCall(msgs: KpMessage[]): boolean {
 export function buildInvokeLLM(
   userId: number,
   ai: ReturnType<typeof getAiConfig>,
-  opts: { stream?: boolean; onChunk?: (chunk: string) => void; tools?: typeof COC_KP_TOOLS },
+  opts: { stream?: boolean; onChunk?: (chunk: string) => void; tools?: typeof COC_KP_TOOLS; execution?: KeeperExecution },
 ): InvokeLLM {
   const tools = opts.tools ?? COC_KP_TOOLS
   return async (msgs: KpMessage[]) => {
@@ -102,14 +103,23 @@ export function buildInvokeLLM(
     const isForceTool = isForceToolCall(msgs)
     const canStream = !!opts.stream && !isClassifier && !isForceTool
 
-    const result = await chatForAgent(userId, {
+    const call = (signal?: AbortSignal) => chatForAgent(userId, {
       messages: msgs,
       temperature: ai.temperature,
       maxTokens: isClassifier ? 32 : ai.maxTokens,
       stream: canStream,
       tools: isClassifier ? undefined : tools,
-      onChunk: canStream ? opts.onChunk : undefined,
+      onChunk: canStream ? (chunk) => { if (!signal?.aborted) opts.onChunk?.(chunk) } : undefined,
+      ...(opts.execution ? { keeperSettings: opts.execution.ai, signal } : {}),
     })
+    const result = opts.execution
+      ? await requestKeeper(opts.execution, call).catch((error: unknown) => {
+        opts.execution?.signal.throwIfAborted()
+        if (error instanceof KeeperPressureError) throw error
+        // Provider libraries may include the configured endpoint or response body in errors.
+        throw new Error('Keeper provider request failed')
+      })
+      : await call()
     return result?.toolCalls
       ? { content: result.content ?? '', toolCalls: result.toolCalls }
       : (result?.content ?? '')

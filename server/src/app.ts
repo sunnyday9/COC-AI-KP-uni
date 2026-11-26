@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto'
+import { once } from 'node:events'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import cors from 'cors'
@@ -9,6 +11,7 @@ import { CapacityError, sendError } from './utils/errors.js'
 import { getDb } from './db/index.js'
 import { getPostgresPool, initializePostgres } from './db/postgres.js'
 import { initializePostgresRooms } from './db/postgresRoomsSchema.js'
+import { keeperPressureMetrics } from './services/kpAdmission.js'
 import { runPendingRoomRecovery, startRoomReaper } from './services/roomService.js'
 import { roomWorkerId } from './services/roomStorage.js'
 import { executeRoomCommand } from './services/roomCommands.js'
@@ -32,6 +35,33 @@ import roomSettingsRoutes from './routes/roomSettings.routes.js'
 import charactersRoutes from './routes/characters.routes.js'
 
 const sharedAccounts = DEPLOYMENT_MODE === 'shared-accounts'
+
+function mountKeeperMetrics(app: Express, token: string, runtime: 'direct' | 'worker'): void {
+  const expected = Buffer.from('Bearer ' + token)
+  app.get('/health/keeper', (req, res) => {
+    const supplied = Buffer.from(req.headers.authorization ?? '')
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      res.status(404).json({ error: 'not found' })
+      return
+    }
+    res.set('Cache-Control', 'no-store').json({ runtime, ...keeperPressureMetrics(token) })
+  })
+}
+
+async function listenForWorkerMetrics() {
+  const rawPort = process.env.KP_METRICS_PORT?.trim()
+  if (!rawPort) return
+  const port = Number(rawPort)
+  const token = process.env.KP_METRICS_TOKEN?.trim()
+  if (!Number.isInteger(port) || port < 1 || port > 65_535 || !token) {
+    throw new Error('Worker metrics require KP_METRICS_PORT from 1 to 65535 and KP_METRICS_TOKEN')
+  }
+  const app = express()
+  mountKeeperMetrics(app, token, 'worker')
+  const server = app.listen(port, '127.0.0.1')
+  await once(server, 'listening')
+  return server
+}
 
 /**
  * Express application factory.
@@ -60,6 +90,9 @@ export function createApp(): Express {
       res.status(503).json({ status: 'unavailable' })
     }
   })
+
+  const keeperToken = process.env.KP_METRICS_TOKEN?.trim()
+  if (ROOM_RUNTIME === 'direct' && keeperToken) mountKeeperMetrics(app, keeperToken, 'direct')
 
   app.use('/api/auth', authRoutes)
   app.use('/api/settings', settingsRoutes)
@@ -133,10 +166,12 @@ async function startServer(): Promise<void> {
   } else getDb()
   if (ROOM_RUNTIME !== 'direct') await initializeRoomMailbox()
   if (ROOM_RUNTIME === 'worker') {
+    const metrics = await listenForWorkerMetrics()
     startRoomReaper()
     void runPendingRoomRecovery()
     logger.info('Room worker ready')
-    await runRoomMailbox(roomWorkerId, executeRoomCommand)
+    try { await runRoomMailbox(roomWorkerId, executeRoomCommand) }
+    finally { metrics?.close() }
     return
   }
   const httpServer = createApp().listen(PORT, () => {

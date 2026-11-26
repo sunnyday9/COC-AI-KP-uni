@@ -17,7 +17,7 @@
  */
 import { defineStore } from 'pinia'
 import { computed, ref, shallowReactive } from 'vue'
-import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomMetaPayload, RoomRemovedReason } from '../../../shared/types/room'
+import type { KpPauseReason, RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomMetaPayload, RoomRemovedReason } from '../../../shared/types/room'
 import type { Message, DiceMessage } from '../../../shared/types/game'
 import type { COCCharacterSheet } from '../../../shared/types/character'
 import { getBridge } from '../platform'
@@ -114,6 +114,8 @@ export const useRoomStore = defineStore('room', () => {
   const ending = ref<unknown | null>(null)
   /** KP turn is paused until the current owner completes AI setup. */
   const kpSetupRequired = ref(false)
+  const kpPauseReason = ref<KpPauseReason | null>(null)
+  const kpRetryAt = ref(0)
   /** 连接状态。 */
   const connectionState = ref<RoomConnectionState>('idle')
   /** 错误信息（error 状态时展示）。 */
@@ -166,6 +168,9 @@ export const useRoomStore = defineStore('room', () => {
     clues.value = Array.isArray(snap.clues) ? snap.clues : []
     ending.value = snap.ending ?? null
     kpSetupRequired.value = snap.kpSetupRequired === true
+    kpPauseReason.value = snap.kpPauseReason ?? null
+    kpRetryAt.value = snap.kpRetryAt ?? 0
+    if (kpSetupRequired.value || kpPauseReason.value) awaitingKp.value = false
     characters.value = (snap.characters && typeof snap.characters === 'object') ? snap.characters : {}
     resetHistory(snap.transcript?.before)
     messages.value = Array.isArray(snap.messages) ? [...snap.messages] : []
@@ -266,6 +271,15 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
 
   /** 应用 state_patch 路径补丁（characters.<id> 全量替换 / clues 全量 / scene / ending）。 */
   function applyPathPatch(path: string, value: unknown): void {
+    if (path === 'kpPauseReason') {
+      kpPauseReason.value = value === 'queue_full' || value === 'provider_limited' || value === 'timeout' ? value : null
+      if (kpPauseReason.value) awaitingKp.value = false
+      return
+    }
+    if (path === 'kpRetryAt') {
+      kpRetryAt.value = typeof value === 'number' ? value : 0
+      return
+    }
     if (path === 'kpSetupRequired') {
       kpSetupRequired.value = value === true
       if (kpSetupRequired.value) awaitingKp.value = false
@@ -358,7 +372,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
             // A receipt can arrive when the echo was missed. Sync the authoritative transcript.
             resync()
           }
-          awaitingKp.value = frame.status === 'pending' && !kpSetupRequired.value
+          awaitingKp.value = frame.status === 'pending' && !kpSetupRequired.value && !kpPauseReason.value
           if (frame.status === 'cancelled') chatError.value = '行动已接收，但在处理前已取消。'
         }
         break
@@ -475,6 +489,8 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     characters.value = {}
     ending.value = null
     kpSetupRequired.value = false
+    kpPauseReason.value = null
+    kpRetryAt.value = 0
     connectionState.value = 'idle'
     errorMessage.value = ''
     lastSeq.value = 0
@@ -563,7 +579,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
   function retryPendingChat(actionId: string): void {
     const pending = pendingChats.get(actionId)
     if (!actionReceipts || connectionState.value !== 'joined' || !pending?.cause) return
-    awaitingKp.value = phase.value === 'playing' && !kpSetupRequired.value
+    awaitingKp.value = phase.value === 'playing' && !kpSetupRequired.value && !kpPauseReason.value
     sendPendingChat(actionId)
   }
 
@@ -580,7 +596,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       id, timestamp: Date.now(), role: 'player', playerName: selfName.value, content: trimmed, pending: true,
     }
     messages.value.push(draft)
-    awaitingKp.value = !actionReceipts || (phase.value === 'playing' && !kpSetupRequired.value)
+    awaitingKp.value = !actionReceipts || (phase.value === 'playing' && !kpSetupRequired.value && !kpPauseReason.value)
     if (actionReceipts) {
       pendingChats.set(id, { message: draft })
       sendPendingChat(id)
@@ -599,7 +615,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
   /** Ask the current room owner to resume a preserved KP opening/turn. */
   function retryKpTurn(): void {
     const rid = roomId.value
-    if (!rid || connectionState.value !== 'joined' || !isOwner.value || !kpSetupRequired.value) return
+    if (!rid || connectionState.value !== 'joined' || !isOwner.value || (!kpSetupRequired.value && !kpPauseReason.value)) return
     try {
       getBridge().sendRoomFrame('room:action', { roomId: rid, action: { type: 'retry_kp' } })
     } catch (err) {
@@ -656,6 +672,8 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     characters,
     ending,
     kpSetupRequired,
+    kpPauseReason,
+    kpRetryAt,
     connectionState,
     errorMessage,
     lastSeq,

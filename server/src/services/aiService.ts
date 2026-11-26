@@ -78,8 +78,8 @@ export async function withRequestTimeout<T>(p: Promise<T>, label: string): Promi
  * without requiring settings.ai.model to be set — mirrors the original
  * invokeChat's `model: model || ai.model` precedence.
  */
-async function resolveAiConfig(userId: number, modelOverride?: string): Promise<{ config: AIProviderConfig; protocol: LLMProtocol }> {
-  const ai = DEPLOYMENT_MODE === 'shared-accounts' ? await getSharedAiConfig(userId) : getAiConfig(userId)
+async function resolveAiConfig(userId: number, modelOverride?: string, supplied?: ReturnType<typeof getAiConfig>): Promise<{ config: AIProviderConfig; protocol: LLMProtocol }> {
+  const ai = supplied ?? (DEPLOYMENT_MODE === 'shared-accounts' ? await getSharedAiConfig(userId) : getAiConfig(userId))
   const protocol = ai.protocol as LLMProtocol
   if (!protocol) throw new BadRequestError('请先在设置中配置 AI 协议')
   if (!ai.model && !modelOverride) throw new BadRequestError('请先在设置中选择或输入模型名称')
@@ -179,8 +179,11 @@ export async function chatForAgent(
     stream?: boolean
     tools?: ChatTool[]
     onChunk?: (chunk: string) => void
+    signal?: AbortSignal
+    keeperSettings?: ReturnType<typeof getAiConfig>
   },
 ): Promise<{ content: string; toolCalls?: ToolCallResult[] }> {
+  params.signal?.throwIfAborted()
   const messages = params.messages
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new BadRequestError('messages must be a non-empty array')
@@ -192,21 +195,23 @@ export async function chatForAgent(
     return mockChatForAgent(messages, !!params.stream, params.onChunk)
   }
 
-  const { config } = await resolveAiConfig(userId)
+  const { config } = await resolveAiConfig(userId, undefined, params.keeperSettings)
+  params.signal?.throwIfAborted()
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
   const stream = !!params.stream
 
   try {
-    const result = stream
-      ? await dispatch(config, { messages, stream, temperature: temp, maxTokens, tools: params.tools, onChunk: params.onChunk })
+    const request = { messages, stream, temperature: temp, maxTokens, tools: params.tools, onChunk: params.onChunk, signal: params.signal }
+    const result = stream || params.signal
+      ? await dispatch(config, request)
       : await withRequestTimeout(
-          dispatch(config, { messages, stream, temperature: temp, maxTokens, tools: params.tools, onChunk: params.onChunk }),
+          dispatch(config, request),
           'kp agent LLM',
         )
     return { content: result.content ?? '', toolCalls: result.toolCalls }
   } catch (err) {
-    if (err instanceof BadRequestError) throw err
+    if (params.signal || err instanceof BadRequestError) throw err
     logger.warn('kp agent LLM call failure', { protocol: config.protocol, error: err instanceof Error ? err.message : String(err) })
     throw new UpstreamError(err instanceof Error ? err.message : String(err))
   }
@@ -229,6 +234,7 @@ export async function chatForRag(
     temperature?: number
     maxTokens?: number
     signal?: AbortSignal
+    keeperSettings?: ReturnType<typeof getAiConfig>
   },
 ): Promise<{ content: string }> {
   const { signal } = params
@@ -245,7 +251,7 @@ export async function chatForRag(
     return mockChatForRag(messages)
   }
 
-  const { config } = await resolveAiConfig(userId, params.model)
+  const { config } = await resolveAiConfig(userId, params.model, params.keeperSettings)
   signal?.throwIfAborted()
   const temp = params.temperature ?? config.temperature ?? 0.7
   const maxTokens = params.maxTokens ?? config.maxTokens ?? 2048
@@ -259,7 +265,7 @@ export async function chatForRag(
     return { content: result.content ?? '' }
   } catch (err) {
     signal?.throwIfAborted()
-    if (err instanceof BadRequestError) throw err
+    if (params.keeperSettings || err instanceof BadRequestError) throw err
     logger.warn('rag graph LLM call failure', { protocol: config.protocol, error: err instanceof Error ? err.message : String(err) })
     throw new UpstreamError(err instanceof Error ? err.message : String(err))
   }

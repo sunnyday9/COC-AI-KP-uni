@@ -271,8 +271,8 @@ export async function buildSupplement(
 }
 
 /** 默认改写器：一次 LLM 调用（低分才触发，见 queryBuild.retrieveWithRewrite）。 */
-export function defaultRewrite(userId: number, model?: string): RewriteFn {
-  return (query, sceneName) => rewriteQuery(query, sceneName, { userId, model })
+export function defaultRewrite(userId: number, model?: string, llm?: import('./queryBuild.js').RewriteQueryDeps['llm']): RewriteFn {
+  return (query, sceneName) => rewriteQuery(query, sceneName, { userId, model, llm })
 }
 
 /** 单块渲染再导出（消费方一律用它，别裸取 block.text——跨场景前缀只在渲染层加）。 */

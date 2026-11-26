@@ -33,6 +33,7 @@ import type { StoryLookupHandler, StoryLookupInput } from '../rag/dossier/dossie
 import type { RoomStoryBundle } from './roomStoryRevision.js'
 import type { DossierEnding } from '../rag/dossier/schema.js'
 import { logger } from '../utils/logging.js'
+import { keeperAuxiliaryChat, type KeeperExecution } from './kpAdmission.js'
 
 /** 查证工具执行器的输入/Handler 形态单源在档案域 dossierLookupTools（类型擦除的
  *  re-export——保持本模块既有导出面，调用方零变化）。 */
@@ -46,6 +47,7 @@ export type TurnStage = 'turn' | 'opening'
 /** 装配输入：RoomService 运行态的一次性快照（装配时刻读取，与原两处装配同时刻）。 */
 export interface TurnKnowledgeInput {
   preparedStory?: RoomStoryBundle
+  execution?: KeeperExecution
   /** 房间知识 workflow：rag = 检索情报块；dossier = 档案场景块 + 补充层。 */
   workflow: StoryWorkflow
   /** Current room owner: AI settings, embeddings, and lookup calls use this identity. */
@@ -206,9 +208,9 @@ async function fetchRagContext(input: TurnKnowledgeInput, query: string): Promis
       },
       {
         ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}),
-        getEmbedding: (await buildGetEmbeddingForUser(input.ownerId)) ?? undefined,
+        getEmbedding: (await buildGetEmbeddingForUser(input.ownerId, input.execution)) ?? undefined,
         // 标准管线的低分改写对两房一致启用（否则 A/B 对照臂被削——审查发现）
-        rewrite: defaultRewrite(input.ownerId),
+        rewrite: defaultRewrite(input.ownerId, undefined, input.execution && keeperAuxiliaryChat(input.execution, input.ownerId)),
         onEvent: (e) => {
           if (process.env.KP_LLM_DEBUG === '1') logger.debug('rag fetch event', { roomId: input.roomId, event: e })
         },
@@ -307,9 +309,9 @@ async function fetchTurnSupplement(
       },
       {
         ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}),
-        getEmbedding: (await buildGetEmbeddingForUser(input.ownerId)) ?? undefined,
+        getEmbedding: (await buildGetEmbeddingForUser(input.ownerId, input.execution)) ?? undefined,
         // 低分改写（ADR-0007 决策 6）：仅在检索最高分低于阈值时触发一次
-        rewrite: defaultRewrite(input.ownerId),
+        rewrite: defaultRewrite(input.ownerId, undefined, input.execution && keeperAuxiliaryChat(input.execution, input.ownerId)),
         onEvent: (e) => {
           if (process.env.KP_LLM_DEBUG === '1') logger.debug('dossier supplement event', { roomId: input.roomId, event: e })
           appendTraceFile('SUPPLEMENT_TRACE', input.roomId, input.storyId, e)
@@ -346,6 +348,7 @@ async function prefetchVerification(
         userId: input.ownerId,
         storyOwnerId: input.storyOwnerId ?? input.ownerId,
         scriptId: input.storyId,
+        ask: input.execution && keeperAuxiliaryChat(input.execution, input.ownerId),
         ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}),
         onEvent: (e) => {
           if (process.env.KP_LLM_DEBUG === '1') logger.debug('dossier prefetch event', { roomId: input.roomId, event: e })

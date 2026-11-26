@@ -29,7 +29,7 @@ const commandHandlers = {
     const room = await joinRoom(roomId, userId, 'user_' + userId)
     if (!room) return null
     const snapshot = room.snapshot()
-    const kpTurnPending = snapshot.phase === 'playing' && !snapshot.kpSetupRequired &&
+    const kpTurnPending = snapshot.phase === 'playing' && !snapshot.kpSetupRequired && !snapshot.kpPauseReason &&
       (snapshot.pendingTurnMessages?.length ?? 0) > 0
     return { snapshot, seq: snapshot.seq, members: room.getMembers(), kpTurnPending }
   },

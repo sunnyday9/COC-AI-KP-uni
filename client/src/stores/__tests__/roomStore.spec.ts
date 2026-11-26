@@ -470,6 +470,25 @@ describe('roomStore', () => {
     expect(store.kpSetupRequired).toBe(false)
   })
 
+  it('shows a provider pause without turning a durable pending receipt into a failed chat', async () => {
+    await joinAndSync()
+    const retryAt = Date.now() + 15_000
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: { ...SNAP0, kpPauseReason: 'provider_limited', kpRetryAt: retryAt }, actionReceipts: true })
+    expect(store.kpPauseReason).toBe('provider_limited')
+    expect(store.kpRetryAt).toBe(retryAt)
+    store.sendChat('调查窗台')
+    const action = sentFrames().at(-1)!
+    emitFrame({ type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'pending', messageId: 'm_pending' })
+    expect(store.awaitingKp).toBe(false)
+    expect(store.chatRetryNotices).toEqual([])
+    store.retryKpTurn()
+    expect(sentFrames().at(-1)?.action).toEqual({ type: 'retry_kp' })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'state_patch', payload: { path: 'kpPauseReason', value: null } })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'state_patch', payload: { path: 'kpRetryAt', value: 0 } })
+    expect(store.kpPauseReason).toBeNull()
+    expect(store.kpRetryAt).toBe(0)
+  })
+
   it('does not send the retry action for a non-owner', async () => {
     await joinAndSyncAsMember()
     expect(store.isOwner).toBe(false)
