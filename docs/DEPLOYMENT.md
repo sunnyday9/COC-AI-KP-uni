@@ -98,7 +98,7 @@ Nginx（TLS / WebSocket 升级）
 
 ## 5. 数据库
 
-- 启动时按序运行 `server/src/db/migrations.ts` 中的事务迁移，并在 SQLite `PRAGMA user_version` 记录 schema 版本（当前为 9）；fresh install 与无版本号的旧库都会自动升级。
+- 启动时按序运行 `server/src/db/migrations.ts` 中的事务迁移，并在 SQLite `PRAGMA user_version` 记录 schema 版本（当前为 10）；fresh install 与无版本号的旧库都会自动升级。
 - 所有待执行迁移在一个事务中提交。失败会回滚本次升级并在 HTTP 监听前中止启动，错误包含失败版本与修复/恢复建议；比当前服务更新的数据库版本会被拒绝，服务不会尝试降级。
 - 备份：升级前停止服务，备份 `${DATA_DIR}/ai-kp.db`，以及配置的 `UPLOADS_DIR`、`RAG_DATA_DIR`、`DOSSIER_DATA_DIR` 目录；它们是独立路径，不保证位于 `DATA_DIR` 下。`MODELS_DIR` 是可重下载缓存，可按恢复时间目标选择是否备份。schema 迁移没有自动 down migration，回滚需恢复匹配版本的数据库备份。
 - **无需手动迁移**：存量文件系统剧本首次 list 时自动导入 DB 映射（脚本导入已随 #97 / ADR-0008 scripts 退役摘除）。
