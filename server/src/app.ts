@@ -156,6 +156,9 @@ const isMain =
 
 async function startServer(): Promise<void> {
   assertRuntimeConfig()
+  // Load the Keeper graph before a shared gameplay process starts taking
+  // leases. Cold module loading can otherwise exhaust a short first lease.
+  if (SHARED_ROOMS_ENABLED && ROOM_RUNTIME !== 'gateway') await import('./services/kpTurnService.js')
   // Apply the configured storage schema before accepting traffic. A failed or
   // unsupported migration must abort startup rather than fail on first use.
   if (sharedAccounts) {
