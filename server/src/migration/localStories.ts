@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { DOSSIER_DATA_DIR, MAX_UPLOAD_BYTES, RAG_DATA_DIR, UPLOADS_DIR } from '../config.js'
 import type { CoverageGapsFile } from '../rag/dossier/coverageGaps.js'
 import { DOSSIER_MIN_COVERAGE_PCT, type StoryDossier } from '../rag/dossier/schema.js'
-import type { StoredIndex } from '../rag/vectorStore.js'
+import { isHydratableStoredIndex, type StoredIndex } from '../rag/vectorStore.js'
 import { encodePreparedStory, isCoherentPreparedStory } from '../services/preparedStoryStorage.js'
 import { sourceKey } from '../services/sharedStoryCatalog.js'
 import { scanStoryArtifacts, type ArtifactKind } from '../services/storyArtifacts.js'
@@ -100,6 +100,30 @@ function decodeArtifact<T extends { scriptId: string }>(bytes: Buffer | undefine
   return value
 }
 
+function indexForTrimmedSource(index: StoredIndex, raw: string, trimmed: string): StoredIndex | undefined {
+  if (!isHydratableStoredIndex(index)) return
+  const verifiedStart = ({ metadata, content }: StoredIndex['docs'][number], text: string) => {
+    const start = metadata.start
+    return typeof start === 'number' && Number.isSafeInteger(start) && start >= 0 &&
+      text.slice(start, start + content.length) === content ? start : undefined
+  }
+  if (index.docs.every(doc => verifiedStart(doc, trimmed) !== undefined)) return index
+
+  const first = raw.length - raw.trimStart().length
+  const last = first + trimmed.length
+  const docs: StoredIndex['docs'] = []
+  for (const doc of index.docs) {
+    // Local indexes address the original parsed text. Only rebase an exact raw span.
+    const start = verifiedStart(doc, raw)
+    if (start === undefined) return
+    const clippedStart = Math.max(start, first)
+    const clippedEnd = Math.min(start + doc.content.length, last)
+    if (clippedStart >= clippedEnd) return
+    docs.push({ ...doc, content: raw.slice(clippedStart, clippedEnd), metadata: { ...doc.metadata, start: clippedStart - first } })
+  }
+  return { ...index, docs }
+}
+
 export async function planStories(db: DatabaseSync, owners: number[], staging: string) {
   const ownerSet = new Set(owners)
   const catalog = []
@@ -142,7 +166,9 @@ export async function planStories(db: DatabaseSync, owners: number[], staging: s
     let preparationRevision: string | null = null
     let preparedAt: number | null = null
     if (index && dossier && gaps && dossier.sourceRevision === gaps.sourceRevision) {
-      const sourceText = (await parseStoryContentForPreparation(ext, original, true, AbortSignal.timeout(120_000))).trim()
+      const rawText = await parseStoryContentForPreparation(ext, original, true, AbortSignal.timeout(120_000))
+      const sourceText = rawText.trim()
+      const preparedIndex = indexForTrimmedSource(index, rawText, sourceText)
       const localRevision = dossier.sourceRevision
       const revision = localRevision && uuid.test(localRevision)
         ? localRevision : migrationId('prepared', ownerId, storyId, sourceRevision, localHashes)
@@ -151,11 +177,11 @@ export async function planStories(db: DatabaseSync, owners: number[], staging: s
       const quality = dossier.quality ?? {
         coveragePct: coverage, degraded: gaps.storyChars > 5_000 && coverage < DOSSIER_MIN_COVERAGE_PCT, at: dossier.generatedAt,
       }
-      const artifacts = {
-        sourceText, index, dossier: { ...dossier, truths: dossier.truths ?? [], quality, sourceRevision: revision },
+      const artifacts = preparedIndex && {
+        sourceText, index: preparedIndex, dossier: { ...dossier, truths: dossier.truths ?? [], quality, sourceRevision: revision },
         gaps: { ...gaps, sourceRevision: revision },
       }
-      if (isCoherentPreparedStory(storyId, revision, artifacts)) {
+      if (artifacts && isCoherentPreparedStory(storyId, revision, artifacts)) {
         const preparedObjects = encodePreparedStory(String(ownerId), revision, artifacts)
         const manifest = Object.fromEntries(preparedObjects.map(entry => [entry.artifact, {
           size: entry.bytes.length, sha256: entry.sha256,

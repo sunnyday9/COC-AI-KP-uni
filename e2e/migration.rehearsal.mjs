@@ -15,6 +15,7 @@ import {
   GetObjectCommand, HeadBucketCommand, ListObjectsV2Command, PutObjectCommand, S3Client,
 } from '@aws-sdk/client-s3'
 import { migrateDatabase } from '../server/src/db/migrations.ts'
+import { chunkStoryText } from '../server/src/rag/chunker.ts'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'aikp-migration-'))
@@ -23,6 +24,7 @@ const frozen = path.join(temp, 'sqlite-backup')
 const password = 'fictitious-investigator-password'
 const original = 'Archive corridor and listening post. Brass lamps illuminate the footprints along the western wall.\n\n' +
   'Hidden vault. The local archivist installed the beacon underneath the stone stairs. The brass key opens the vault door.'
+const legacyOriginal = '\uFEFF \n' + original + '\n \n'
 const storyId = 'fixture-archive.txt'
 const localRevision = 'b926c123-1f15-4317-ae6c-973038aabae0'
 const newerStory = 'fixture-tower.txt'
@@ -77,7 +79,7 @@ async function seed() {
   const insertStory = sqlite.prepare('INSERT INTO stories (user_id, story_id, name, file_path, created_at) VALUES (?, ?, ?, ?, ?)')
   insertStory.run(17, newerStory, newerStory, '741c2976-cd69-44d2-acbd-b04004c64798.txt', now)
   const directory = path.join(source, 'uploads', '17', 'stories')
-  file(path.join(directory, storyId), original)
+  file(path.join(directory, storyId), legacyOriginal)
   file(path.join(directory, '741c2976-cd69-44d2-acbd-b04004c64798.txt'), original)
   file(path.join(directory, 'fixture-unprepared.txt'), 'Fictional source only.')
   for (const [id, revision, fileStem] of [[storyId, undefined, 'legacy-archive'], [newerStory, localRevision, '741c2976-cd69-44d2-acbd-b04004c64798']]) {
@@ -86,8 +88,11 @@ async function seed() {
       scenes, clues: [], npcs: [], truths: [{ title: 'Beacon', detail: 'The archivist installed it.', revealScene: 'vault' }] }
     const gaps = { ...computeCoverageGaps(original, scenes), gapsVersion: GAPS_VERSION, scriptId: id, storyName: id,
       generatedAt: now, sourceRevision: revision }
-    const index = { scriptId: id, storyName: id, indexedAt: now, chunkCount: 1, idf: [],
-      docs: [{ id: 'clip', content: original, type: 'paragraph', metadata: { start: 0, storyId: id }, tf: [], tfidf: [] }] }
+    const chunks = chunkStoryText(revision ? original : legacyOriginal)
+    const index = { scriptId: id, storyName: id, indexedAt: now, chunkCount: chunks.length, idf: [],
+      docs: chunks.map(({ content, start }, index) => ({
+        id: String(index), content, type: 'paragraph', metadata: { start, storyId: id }, tf: [], tfidf: [],
+      })) }
     const data = path.join(source, 'dossiers', '17')
     file(path.join(data, fileStem + '.json'), JSON.stringify(dossier, null, 2))
     file(path.join(data, fileStem + '.gaps.json'), JSON.stringify(gaps, null, 2))
@@ -399,7 +404,7 @@ try {
   const sourceRoute = '/api/stories/' + encodeURIComponent(storyId) + '/source'
   const download = await fetch(base + sourceRoute, { headers: { Authorization: 'Bearer ' + archivist.token } })
   assert.equal(download.status, 200)
-  assert.equal(await download.text(), original)
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), Buffer.from(legacyOriginal))
   const denied = await fetch(base + sourceRoute, { headers: { Authorization: 'Bearer ' + successor.token } })
   assert.equal(denied.status, 404)
   const anonymous = await fetch(endpoint.href.replace(/\/$/, '') + '/' + bucket + '/' + report.objects[0].key)
