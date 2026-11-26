@@ -33,7 +33,7 @@ export async function initializeRoomMailbox(): Promise<void> {
         'ALTER TABLE room_commands ADD COLUMN IF NOT EXISTS presence_loss BOOLEAN NOT NULL DEFAULT false;' +
         'ALTER TABLE room_commands ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ;' +
         'ALTER TABLE room_commands ADD COLUMN IF NOT EXISTS admission_partition SMALLINT GENERATED ALWAYS AS' +
-        ' ((hashtextextended(room_id, 0) & 15)::smallint) STORED;' +
+        ' ((hashtextextended(room_id, 0) & ' + admissionMask + ')::smallint) STORED;' +
         'CREATE INDEX IF NOT EXISTS room_commands_partition_expiry ON room_commands (admission_partition, expires_at)' +
         ' WHERE NOT presence_loss;' +
         'CREATE UNIQUE INDEX IF NOT EXISTS room_commands_presence_loss ON room_commands (room_id, user_id) WHERE presence_loss;' +
