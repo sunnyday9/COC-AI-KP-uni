@@ -41,6 +41,53 @@ export async function initializeRoomMailbox(): Promise<void> {
 }
 
 type CommandResult = { ok: true; value: unknown } | { ok: false }
+type ResultWaiter = (result: CommandResult | undefined) => void
+const resultWaiters = new Map<string, ResultWaiter>()
+let pollingResults = false
+
+/** One indexed result read per gateway tick, including during worker outages. */
+async function pollRoomCommandResults(): Promise<void> {
+  pollingResults = true
+  try {
+    while (resultWaiters.size) {
+      const requests = [...resultWaiters.entries()]
+      try {
+        const response = await getPostgresPool().query<{ request_id: string; result: CommandResult | null }>(
+          'SELECT request_id, result FROM room_commands WHERE request_id = ANY($1::uuid[]) AND expires_at > clock_timestamp()',
+          [requests.map(([requestId]) => requestId)],
+        )
+        const results = new Map(response.rows.map((row) => [row.request_id, row.result]))
+        for (const [requestId, settle] of requests) {
+          const result = results.get(requestId)
+          if (result !== null && resultWaiters.get(requestId) === settle) settle(result)
+        }
+      } catch {
+        for (const [requestId, settle] of requests) {
+          if (resultWaiters.get(requestId) === settle) settle(undefined)
+        }
+      }
+      if (resultWaiters.size) await delay(pollMs)
+    }
+  } finally {
+    pollingResults = false
+  }
+}
+
+function waitForRoomCommandResult(requestId: string, signal: AbortSignal): Promise<unknown> {
+  if (signal.aborted) return Promise.reject(new RoomRelayUnavailable())
+  return new Promise((resolve, reject) => {
+    const settle: ResultWaiter = (result) => {
+      resultWaiters.delete(requestId)
+      signal.removeEventListener('abort', cancel)
+      if (!signal.aborted && result?.ok) resolve(result.value)
+      else reject(new RoomRelayUnavailable())
+    }
+    const cancel = () => settle(undefined)
+    resultWaiters.set(requestId, settle)
+    signal.addEventListener('abort', cancel, { once: true })
+    if (!pollingResults) void pollRoomCommandResults()
+  })
+}
 
 /** Include membership lookup and admission in the same transport deadline. */
 export async function withRoomRelayDeadline<T>(
@@ -96,21 +143,9 @@ export async function sendRoomCommand(
     )
     return true
   })
-  const waitForResult = async (): Promise<unknown> => {
-    if (!await admitted) throw new RoomRelayUnavailable()
-    while (!pending.aborted) {
-      const result = await pool.query<{ result: CommandResult | null }>(
-        'SELECT result FROM room_commands WHERE request_id = $1 AND expires_at > clock_timestamp()', [requestId],
-      )
-      const row = result.rows[0]
-      if (!row || row.result?.ok === false || pending.aborted) throw new RoomRelayUnavailable()
-      if (row.result?.ok) return row.result.value
-      await delay(pollMs, undefined, { signal: pending })
-    }
-    throw new RoomRelayUnavailable()
-  }
   try {
-    return await waitForResult()
+    if (!await admitted) throw new RoomRelayUnavailable()
+    return await waitForRoomCommandResult(requestId, pending)
   } finally {
     // A deleted command cannot be started. If already executing, the actor may
     // still commit: callers retry chat with the original durable action ID.
