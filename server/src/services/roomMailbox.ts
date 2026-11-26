@@ -6,8 +6,10 @@ import { logger } from '../utils/logging.js'
 import { claimNextRoomCommand, type ClaimedRoomCommand } from './roomStorage.js'
 
 const deadlineMs = 2_500
-const roomLimit = 32
-const globalLimit = 512
+// Sixteen independent admission locks preserve a 512-command total bound.
+// Every command for one room uses the same partition.
+const admissionMask = 15
+const partitionLimit = 32
 const commandBytes = 128 * 1024
 const pollMs = 50
 let activeGatewayCalls = 0
@@ -30,6 +32,10 @@ export async function initializeRoomMailbox(): Promise<void> {
         ' claimed_by UUID, result JSONB);' +
         'ALTER TABLE room_commands ADD COLUMN IF NOT EXISTS presence_loss BOOLEAN NOT NULL DEFAULT false;' +
         'ALTER TABLE room_commands ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ;' +
+        'ALTER TABLE room_commands ADD COLUMN IF NOT EXISTS admission_partition SMALLINT GENERATED ALWAYS AS' +
+        ' ((hashtextextended(room_id, 0) & 15)::smallint) STORED;' +
+        'CREATE INDEX IF NOT EXISTS room_commands_partition_expiry ON room_commands (admission_partition, expires_at)' +
+        ' WHERE NOT presence_loss;' +
         'CREATE UNIQUE INDEX IF NOT EXISTS room_commands_presence_loss ON room_commands (room_id, user_id) WHERE presence_loss;' +
         'CREATE INDEX IF NOT EXISTS room_commands_by_room ON room_commands (room_id, sequence);' +
         'CREATE INDEX IF NOT EXISTS room_commands_expiry ON room_commands (expires_at)',
@@ -125,17 +131,22 @@ export async function sendRoomCommand(
   // which was still waiting for a pool client when the transport closed.
   const admitted = inPostgresTransaction(async (client) => {
     await client.query("SET LOCAL lock_timeout = '500ms'")
-    await client.query('SELECT pg_advisory_xact_lock(17407, 121)')
+    const { rows: [{ partition }] } = await client.query<{ partition: number }>(
+      'SELECT partition, pg_advisory_xact_lock(17407, 1210 + partition)' +
+      ' FROM (SELECT (hashtextextended($1, 0) & $2::bigint)::int AS partition) key',
+      [roomId, admissionMask],
+    )
     if (pending.aborted) return false
     await client.query(
       'DELETE FROM room_commands WHERE sequence IN (SELECT sequence FROM room_commands' +
-      ' WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 32)',
+      ' WHERE NOT presence_loss AND admission_partition = $1 AND expires_at <= clock_timestamp()' +
+      ' ORDER BY expires_at LIMIT 32 FOR UPDATE SKIP LOCKED)', [partition],
     )
-    const capacity = await client.query<{ total: number; room: number }>(
-      'SELECT count(*)::int AS total, count(*) FILTER (WHERE room_id = $1)::int AS room' +
-      ' FROM room_commands WHERE NOT presence_loss AND expires_at > clock_timestamp()', [roomId],
+    const { rows: [{ total }] } = await client.query<{ total: number }>(
+      'SELECT count(*)::int AS total FROM room_commands' +
+      ' WHERE NOT presence_loss AND admission_partition = $1 AND expires_at > clock_timestamp()', [partition],
     )
-    if (capacity.rows[0].total >= globalLimit || capacity.rows[0].room >= roomLimit || pending.aborted) return false
+    if (total >= partitionLimit || pending.aborted) return false
     await client.query(
       'INSERT INTO room_commands (request_id, room_id, user_id, command, expires_at)' +
       " VALUES ($1, $2, $3, $4, clock_timestamp() + $5 * interval '1 millisecond')",
