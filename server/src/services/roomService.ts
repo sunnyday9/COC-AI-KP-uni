@@ -142,7 +142,20 @@ function selectReplay<T extends { seq: number }>(lastSeq: number, highWater: num
 const HOT_TRANSCRIPT_MESSAGES = 40
 const HOT_TRANSCRIPT_BYTES = 512 * 1024
 
-function snapshotHasRecoverableTurn(snapshot: RoomSnapshot): boolean {
+async function ownerAiSetupIssue(roomId: string, ownerId: number): Promise<string | null> {
+  if (isMockAiMode()) return null
+  try {
+    const settings = await import('./settingsService.js')
+    return SHARED_ROOMS_ENABLED ? await settings.getSharedAiSetupIssue(ownerId) : settings.getAiSetupIssue(ownerId)
+  } catch (error) {
+    logger.warn('room owner AI setup check failed', { roomId, ownerId, error: String(error) })
+    return '无法读取当前房主的 AI 设置，请检查设置后重试。'
+  }
+}
+
+function snapshotHasRecoverableTurn(
+  snapshot: Pick<RoomSnapshot, 'phase' | 'kpSetupRequired' | 'kpPauseReason' | 'pendingTurnMessages'>,
+): boolean {
   return snapshot.phase === 'playing' && !snapshot.kpSetupRequired && !snapshot.kpPauseReason &&
     (snapshot.pendingTurnMessages?.length ?? 0) > 0
 }
@@ -1416,17 +1429,7 @@ export class RoomService {
 
   private async refreshOwnerAiSetupStatus(): Promise<boolean> {
     const ownerId = this.ownerId
-    let issue: string | null = null
-    // The deterministic mock deliberately bypasses provider settings.
-    if (!isMockAiMode()) {
-      try {
-        const settings = await import('./settingsService.js')
-        issue = SHARED_ROOMS_ENABLED ? await settings.getSharedAiSetupIssue(ownerId) : settings.getAiSetupIssue(ownerId)
-      } catch (error) {
-        logger.warn('room owner AI setup check failed', { roomId: this.roomId, ownerId, error: String(error) })
-        issue = '无法读取当前房主的 AI 设置，请检查设置后重试。'
-      }
-    }
+    const issue = await ownerAiSetupIssue(this.roomId, ownerId)
     if (SHARED_ROOMS_ENABLED) {
       const applied = await withRoomCommand(this.roomId, async () => {
         if (this.disposed || this.isEnded()) return true
@@ -2282,7 +2285,7 @@ export async function leaveRoomAsMember(
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole === 'owner') {
-      await transferToSuccessorOrDissolve(roomId, userId, workerLease, true)
+      await transferToSuccessorOrDissolve(g.room, workerLease, true)
       return { ok: true }
     }
     await roomStorage.deleteMemberRow(roomId, userId, workerLease)
@@ -2300,35 +2303,81 @@ export async function leaveRoomAsOwner(
     const g = await governanceGate(userId, roomId)
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can dissolve the room' }
-    await transferToSuccessorOrDissolve(roomId, userId, workerLease)
+    await transferToSuccessorOrDissolve(g.room, workerLease)
     return { ok: true }
   })
 }
 
 /** 转让房主行写库（新 owner 行 role='owner' + ready 清零；旧 owner 行降为 member 且留在房内）。 */
 async function transferOwnerRow(
-  roomId: string, oldOwnerId: number, newOwnerId: number, workerLease?: roomStorage.RoomWorkerLease,
-  removeOldOwner = false, disconnect?: roomStorage.OwnerDisconnect,
+  room: roomStorage.RoomRow, newOwnerId: number, workerLease?: roomStorage.RoomWorkerLease,
+  options: { removeOldOwner?: boolean; disconnect?: roomStorage.OwnerDisconnect; members?: roomStorage.RoomMemberRow[] } = {},
 ): Promise<void> {
-  await roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId, workerLease, removeOldOwner, disconnect)
-  getRoom(roomId)?.updateOwner(newOwnerId)
+  const roomId = room.room_id
+  const oldOwnerId = room.owner_id
+  const active = getRoom(roomId)
+  let dormant: { stateJson: string; checkpoint: roomStorage.RoomCheckpoint } | undefined
+  if (workerLease && !active) {
+    // Retained gateway subscriptions can outlive the room instance. Commit
+    // the role changes and their replay events before releasing the lease.
+    const members = (options.members ?? await roomStorage.listMembersOrdered(roomId)).map(memberRowToInfo)
+    const updatedMembers = members.filter((member) => !options.removeOldOwner || member.userId !== oldOwnerId)
+    for (const member of updatedMembers) {
+      if (member.userId === oldOwnerId) member.role = 'member'
+      if (member.userId === newOwnerId) {
+        member.role = 'owner'
+        member.ready = false
+      }
+    }
+
+    const state = parseRoomState<Partial<RoomSnapshot>>(room.state) ?? {}
+    const phase: RoomPhase = room.phase === 'playing' || room.phase === 'ended' ? room.phase : 'lobby'
+    const kpSetupRequired = phase === 'playing' && (await ownerAiSetupIssue(roomId, newOwnerId)) !== null
+    const events: RoomEvent[] = []
+    if (state.kpPauseReason) events.push(
+      { type: 'state_patch', payload: { path: 'kpPauseReason', value: null } },
+      { type: 'state_patch', payload: { path: 'kpRetryAt', value: 0 } },
+    )
+    if (kpSetupRequired !== (state.kpSetupRequired === true)) {
+      events.push({ type: 'state_patch', payload: { path: 'kpSetupRequired', value: kpSetupRequired } })
+    }
+    const turnWindowMs = state.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS
+    events.push({ type: 'room_meta', payload: { phase, turnWindowMs, members: updatedMembers } })
+    const previousSeq = state.seq ?? 0
+    const snapshot = {
+      ...state, phase, turnWindowMs, kpSetupRequired, kpPauseReason: null, kpRetryAt: 0, kpPauseOwnerId: undefined,
+      seq: previousSeq + events.length, updatedAt: Date.now(),
+    }
+    dormant = {
+      stateJson: serializeRoomState(snapshot),
+      checkpoint: {
+        seq: snapshot.seq,
+        turnPending: snapshotHasRecoverableTurn(snapshot),
+        lease: workerLease,
+        events: events.map(({ type, payload }, index) => ({ seq: previousSeq + index + 1, type, payload })),
+      },
+    }
+  }
+  await roomStorage.transferRoomOwnership(roomId, oldOwnerId, newOwnerId, workerLease, options.removeOldOwner, options.disconnect, dormant)
+  active?.updateOwner(newOwnerId)
 }
 
 /** ADR-0005 继位策略单源（决策 6）：还有其他成员 → 立即转让给最早成员（rowid 序）；否则解散房间行。
  *  转让后对活跃实例做 DB→广播对账（syncActiveRoom）；解散路径行已删、无实例对账。
  *  调用方（REST leaveRoomAsOwner / WS handleOwnerWsDisconnect）各持前置 gate，进入时调用者即 multi 房主。 */
 async function transferToSuccessorOrDissolve(
-  roomId: string, oldOwnerId: number, workerLease: roomStorage.RoomWorkerLease | undefined,
+  room: roomStorage.RoomRow, workerLease: roomStorage.RoomWorkerLease | undefined,
   removeOldOwner = false, disconnect?: roomStorage.OwnerDisconnect,
 ): Promise<void> {
+  const roomId = room.room_id
   const members = await roomStorage.listMembersOrdered(roomId)
-  const successor = members.find((m) => m.user_id !== oldOwnerId)
+  const successor = members.find((m) => m.user_id !== room.owner_id)
   if (!successor) {
     await roomStorage.deleteRoomRows(roomId, workerLease, disconnect)
     disposeDeletedRoom(roomId)
     return
   }
-  await transferOwnerRow(roomId, oldOwnerId, successor.user_id, workerLease, removeOldOwner, disconnect)
+  await transferOwnerRow(room, successor.user_id, workerLease, { removeOldOwner, disconnect, members })
   await syncActiveRoom(roomId)
 }
 
@@ -2360,7 +2409,7 @@ export async function transferOwnership(
     if (!g.ok) return g
     if (g.callerRole !== 'owner') return { ok: false, reason: 'not-owner', message: 'only the owner can transfer ownership' }
     if (callerUserId === targetUserId) return { ok: false, reason: 'bad-request', message: 'target is already the owner' }
-    await transferOwnerRow(roomId, callerUserId, targetUserId, workerLease)
+    await transferOwnerRow(g.room, targetUserId, workerLease)
     await syncActiveRoom(roomId)
     return { ok: true }
   })
@@ -2377,7 +2426,7 @@ export async function handleOwnerWsDisconnect(
     if (!room || room.phase === 'ended' || getRoom(roomId)?.isEnded()) return
     if (room.kind !== 'multi' || room.owner_id !== userId || !stillAbsent()) return
     try {
-      await transferToSuccessorOrDissolve(roomId, userId, workerLease, false, requestId ? { userId, requestId } : undefined)
+      await transferToSuccessorOrDissolve(room, workerLease, false, requestId ? { userId, requestId } : undefined)
     } catch (error) {
       if (!(error instanceof roomStorage.RoomDisconnectSupersededError)) throw error
     }

@@ -535,10 +535,16 @@ export interface RoomCheckpoint {
 export function updateRoomStateSnapshot(
   roomId: string, stateJson: string, phase?: 'ended', actions: readonly RoomActionWrite[] = [], checkpoint?: RoomCheckpoint,
 ): Promise<void> {
+  if (ROOM_WORKER_FAILOVER_ENABLED && !checkpoint) throw new RoomLeaseLostError()
+  return writeRoom(roomId, roomStateSnapshotStatements(roomId, stateJson, phase, actions, checkpoint), checkpoint?.lease)
+}
+
+function roomStateSnapshotStatements(
+  roomId: string, stateJson: string, phase: 'ended' | undefined, actions: readonly RoomActionWrite[], checkpoint?: RoomCheckpoint,
+): Statement[] {
   const phaseUpdate = phase ? "phase = 'ended', " : ''
   const watermarkUpdate = checkpoint ? ', event_seq = ?, turn_pending = (? = 1)' : ''
   const sql = `UPDATE rooms SET ${phaseUpdate}${updateSnapshotSql}${watermarkUpdate} WHERE room_id = ?`
-  if (ROOM_WORKER_FAILOVER_ENABLED && !checkpoint) throw new RoomLeaseLostError()
   const commands = [
     statement(sql, stateJson, Date.now(), ...(checkpoint ? [checkpoint.seq, checkpoint.turnPending ? 1 : 0] : []), roomId),
     ...actions.map((action) => 'payloadHash' in action
@@ -587,7 +593,7 @@ export function updateRoomStateSnapshot(
       roomId, JSON.stringify(messages), roomId,
     ))
   }
-  return writeRoom(roomId, commands, checkpoint?.lease)
+  return commands
 }
 
 type SnapshotWrite = {
@@ -692,7 +698,7 @@ export function setMemberReady(roomId: string, userId: number, ready: boolean, l
 
 export function transferRoomOwnership(
   roomId: string, oldOwnerId: number, newOwnerId: number, lease?: RoomWorkerLease,
-  removeOldOwner = false, disconnect?: OwnerDisconnect,
+  removeOldOwner = false, disconnect?: OwnerDisconnect, dormant?: { stateJson: string; checkpoint: RoomCheckpoint },
 ): Promise<void> {
   return writeRoom(roomId, [
     removeOldOwner
@@ -702,6 +708,7 @@ export function transferRoomOwnership(
     statement(`UPDATE rooms SET owner_id = ?, story_owner_id = CASE
         WHEN story_id IS NOT NULL THEN COALESCE(story_owner_id, ?) ELSE story_owner_id END
       WHERE room_id = ?`, newOwnerId, oldOwnerId, roomId),
+    ...(dormant ? roomStateSnapshotStatements(roomId, dormant.stateJson, undefined, [], dormant.checkpoint) : []),
   ], lease, disconnect)
 }
 

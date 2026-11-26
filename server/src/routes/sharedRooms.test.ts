@@ -31,7 +31,7 @@ type Frame = {
   error?: string
   snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string; role?: string }[]; kpMemory?: string[]; transcript?: { before: string | null } }
   eventType?: string
-  payload?: { message?: { role: string; content: string }; path?: string }
+  payload?: { message?: { role: string; content: string }; path?: string; value?: unknown; members?: { userId: number; role: string }[] }
 }
 type Account = { token: string; user: { id: number; username: string } }
 
@@ -107,6 +107,7 @@ function keeperFixture(options: KeeperFixture): string {
       }
       const damage = messages.findLast((message) => message.role === 'user')?.content.includes('Recover the damaged ledger');
       if (damage) {
+        if (identity === 'cooling-fixture') throw new DOMException('Synthetic provider timeout', 'TimeoutError');
         if (archivedNarration && !messages.some((message) => message.role === 'user' && message.content.includes(archivedNarration))) {
           turn.handlers.onError('Archived narration was missing from Keeper context');
           return;
@@ -782,11 +783,25 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       `, [lostRoom.roomId])).rowCount, { timeout: 17_000 }).toBe(0)
       expect((await detail(lostRoom.roomId, owner.token)).ownerId).toBe(owner.user.id)
 
-      const workerOutage = await createRoom()
+      await configure(owner, 'cooling-fixture')
+      const workerOutage = await createRoom(storyId)
       await joinInvite(successor, workerOutage.inviteCode)
+      await bind(workerOutage.roomId, owner.token, cards.get(owner.user.id)!)
+      await bind(workerOutage.roomId, successor.token, cards.get(successor.user.id)!)
       const lastDevice = await subscribe(owner, workerOutage.roomId)
+      const retainedSuccessor = await subscribe(successor, workerOutage.roomId)
+      await request('/api/rooms/' + workerOutage.roomId + '/settings', { method: 'PUT', token: owner.token, body: { turnWindowMs: 0 } })
+      await post(workerOutage.roomId, 'start', owner.token, { storyId })
+      await lastDevice.waitFor((frame) => frame.payload?.message?.content === 'The archive is quiet. Keeper: cooling-fixture')
+      const pendingAction = { ...chat(workerOutage.roomId, 'Recover the damaged ledger'), actionId: randomUUID() }
+      lastDevice.send(pendingAction)
+      const pendingReceipt = await lastDevice.waitFor((frame) => frame.actionId === pendingAction.actionId)
+      expect(pendingReceipt.status).toBe('pending')
+      const pressureCursor = await retainedSuccessor.waitFor((frame) => frame.payload?.path === 'kpPauseReason' && frame.payload.value === 'timeout')
+
       const retainedAfterReconnect = await createRoom()
       await joinInvite(successor, retainedAfterReconnect.inviteCode)
+      const retainedMember = await subscribe(successor, retainedAfterReconnect.roomId)
       const departedDevice = await subscribe(owner, retainedAfterReconnect.roomId)
       departedDevice.send(chat(retainedAfterReconnect.roomId, 'Keep the lobby open'))
       const replayAnchor = await departedDevice.waitFor((frame) => frame.payload?.message?.content === 'Keep the lobby open')
@@ -808,13 +823,38 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       await reconnectReset
 
       const gatewayBase = base
-      const restoredWorker = await launch({ runtime: 'worker', pauseAfterTool: false })
+      const restoredWorker = await launch({ runtime: 'worker', pauseAfterTool: false, useByok: true })
       await expect.poll(() => readyWorkers.has(restoredWorker), { timeout: 12_000 }).toBe(true)
       base = gatewayBase
-      await expect.poll(async () => (await detail(workerOutage.roomId, successor.token)).ownerId, { timeout: 10_000 })
-        .toBe(successor.user.id)
+      const successorIsOwner = (frame: Frame) => frame.eventType === 'room_meta' &&
+        frame.payload?.members?.some((member) => member.userId === successor.user.id && member.role === 'owner') === true
+      const succession = await retainedSuccessor.waitFor(successorIsOwner)
+      const resumed = await retainedSuccessor.waitFor((frame) => frame.payload?.message?.content === 'The ledger was recovered. Keeper: successor-fixture')
+      expect(resumed.seq).toBeGreaterThan(succession.seq!)
+      const replay = await connect(successor.token)
+      replay.send({ type: 'room:join', roomId: workerOutage.roomId, lastSeq: pressureCursor.seq })
+      await replay.waitFor((frame) => frame.type === 'room:sync:done')
+      expect(replay.frames.filter(successorIsOwner).map((frame) => frame.seq)).toEqual([succession.seq])
+      expect(replay.frames.some((frame) => frame.payload?.path === 'kpPauseReason' && frame.payload.value === null)).toBe(true)
+      expect(replay.frames.some((frame) => frame.type === 'room:state')).toBe(false)
+      expect(await detail(workerOutage.roomId, successor.token)).toMatchObject({
+        ownerId: successor.user.id, storyId, phase: 'playing', state: { pendingTurnMessages: [] },
+      })
+      await expect.poll(async () => (await db.query(
+        'SELECT status, message_id FROM room_actions WHERE room_id = $1 AND action_id = $2',
+        [workerOutage.roomId, pendingAction.actionId],
+      )).rows).toEqual([{ status: 'completed', message_id: pendingReceipt.messageId }])
       await expect.poll(() => queuedLosses(workerOutage.roomId)).toBe(0)
+
       expect((await detail(retainedAfterReconnect.roomId, owner.token)).ownerId).toBe(owner.user.id)
+      await post(retainedAfterReconnect.roomId, 'transfer', owner.token, { userId: successor.user.id })
+      const explicitTransfer = await retainedMember.waitFor(successorIsOwner)
+      expect(explicitTransfer.seq).toBe(replayAnchor.seq! + 1)
+      const transferReplay = await connect(successor.token)
+      transferReplay.send({ type: 'room:join', roomId: retainedAfterReconnect.roomId, lastSeq: replayAnchor.seq })
+      await transferReplay.waitFor((frame) => frame.type === 'room:sync:done')
+      expect(transferReplay.frames.filter(successorIsOwner).map((frame) => frame.seq)).toEqual([explicitTransfer.seq])
+      expect(transferReplay.frames.some((frame) => frame.type === 'room:state')).toBe(false)
     } finally {
       await db.end()
     }
