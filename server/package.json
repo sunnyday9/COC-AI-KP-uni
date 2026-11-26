@@ -12,7 +12,8 @@
     "start": "node dist/server/src/app.js",
     "dev:story-preparation": "tsx src/workers/storyPreparation.ts",
     "start:story-preparation": "node dist/server/src/workers/storyPreparation.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "migrate:sqlite": "tsx src/migration/importSqlite.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1171.0",

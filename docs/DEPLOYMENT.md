@@ -254,3 +254,7 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts STORY_PREPARATION_ENABLED=1 
 - 路径安全：外部 id 不参与 fs 路径；fs 使用内部 uuid 文件名，并执行 lexical + realpath 边界检查，拒绝符号链接逃逸（D-09）
 - 房间权限：邀请码鉴权 + owner 校验 + 角色卡归属校验
 - 骰子/规则服务端权威（防作弊）
+
+## SQLite 迁移与回滚演练（#125）
+
+参见 [SQLite 与私有对象存储迁移演练](MIGRATION-REHEARSAL.md)。

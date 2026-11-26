@@ -50,15 +50,20 @@ export async function writePreparedStory(
   signal: AbortSignal,
 ): Promise<PreparedStoryManifest> {
   const manifest = {} as PreparedStoryManifest
-  for (const artifact of ARTIFACTS) {
+  for (const { artifact, key, bytes, sha256 } of encodePreparedStory(ownerId, revision, artifacts)) {
+    await store.putArtifact(key, bytes, sha256, signal)
+    manifest[artifact] = { size: bytes.length, sha256 }
+  }
+  return manifest
+}
+
+export function encodePreparedStory(ownerId: string, revision: string, artifacts: PreparedStoryArtifacts) {
+  return ARTIFACTS.map((artifact) => {
     const payload = artifacts[artifact]
     const bytes = Buffer.from(typeof payload === 'string' ? payload : JSON.stringify(payload))
     if (bytes.length > MAX_OBJECT_BYTES) throw new Error('prepared story object exceeds size limit')
-    const metadata = { size: bytes.length, sha256: digest(bytes) }
-    await store.putArtifact(artifactKey(ownerId, revision, artifact), bytes, metadata.sha256, signal)
-    manifest[artifact] = metadata
-  }
-  return manifest
+    return { artifact, key: artifactKey(ownerId, revision, artifact), bytes, sha256: digest(bytes) }
+  })
 }
 
 function hasCanonicalCoverage(sourceText: string, dossier: StoryDossier, gaps: CoverageGapsFile): boolean {

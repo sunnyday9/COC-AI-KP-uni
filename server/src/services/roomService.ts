@@ -28,6 +28,7 @@ import { acquireKpTurn, createKeeperExecution, keeperLane, KeeperPressureError, 
 import { checkStartGate, sanitizeWorkflow } from './startGate.js'
 // rooms.state JSON 文档 codec（#61）：读点容错解析 / 写点序列化单点收口。
 import { parseRoomState, parseRoomStateOr, serializeRoomState } from './roomStateCodec.js'
+import { boundTranscript, isNarrative } from './roomTranscript.js'
 import type {
   KpPauseReason,
   RoomActionResult,
@@ -139,8 +140,6 @@ function selectReplay<T extends { seq: number }>(lastSeq: number, highWater: num
   }
   return seq === highWater ? replay : null
 }
-const HOT_TRANSCRIPT_MESSAGES = 40
-const HOT_TRANSCRIPT_BYTES = 512 * 1024
 
 async function ownerAiSetupIssue(roomId: string, ownerId: number): Promise<string | null> {
   if (isMockAiMode()) return null
@@ -158,25 +157,6 @@ function snapshotHasRecoverableTurn(
 ): boolean {
   return snapshot.phase === 'playing' && !snapshot.kpSetupRequired && !snapshot.kpPauseReason &&
     (snapshot.pendingTurnMessages?.length ?? 0) > 0
-}
-
-function isNarrative(message: Message): boolean {
-  return message?.role === 'player' || message?.role === 'kp'
-}
-
-function boundTranscript(snapshot: Pick<RoomSnapshot, 'messages' | 'transcript' | 'hasNarrative'>): void {
-  const { messages } = snapshot
-  if (!snapshot.hasNarrative && messages.some(isNarrative)) snapshot.hasNarrative = true
-  let cutoff = messages.length
-  let bytes = 0
-  const earliest = Math.max(0, messages.length - HOT_TRANSCRIPT_MESSAGES)
-  while (cutoff > earliest) {
-    bytes += Buffer.byteLength(JSON.stringify(messages[cutoff - 1])) + 1
-    if (bytes > HOT_TRANSCRIPT_BYTES) break
-    cutoff--
-  }
-  if (cutoff > 0) snapshot.messages = messages.slice(cutoff)
-  if (cutoff > 0 || snapshot.transcript) snapshot.transcript = { before: snapshot.messages[0]?.id ?? null }
 }
 
 const MAX_PENDING_PLAYER_ACTIONS = 32

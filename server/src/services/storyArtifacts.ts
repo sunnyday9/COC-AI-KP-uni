@@ -5,7 +5,7 @@ import { getDb } from '../db/index.js'
 import { findJsonArtifactPaths, isInternalJsonArtifactPath } from '../utils/jsonArtifact.js'
 import { assertPathInDir } from '../utils/pathSafety.js'
 
-type ArtifactKind = 'index' | 'dossier' | 'gaps' | 'annex'
+export type ArtifactKind = 'index' | 'dossier' | 'gaps' | 'annex'
 
 const suffixes = { index: '.json', dossier: '.json', gaps: '.gaps.json', annex: '.annex.json' }
 const dossierSidecars = [suffixes.gaps, suffixes.annex]
@@ -41,14 +41,19 @@ export function findStoryArtifacts(kind: ArtifactKind, userId: number, storyId: 
   const registered = findRegisteredStoryArtifact(kind, userId, storyId)
   if (registered) return [registered]
 
-  const files = findJsonArtifactPaths(storyArtifactDirectory(kind, userId), storyId, {
-    suffix: suffixes[kind],
-    excludeSuffixes: kind === 'dossier' ? dossierSidecars : undefined,
-  })
+  const files = scanStoryArtifacts(kind, storyArtifactDirectory(kind, userId), storyId)
   if (!SHARED_ROOMS_ENABLED && files.length === 1 && isInternalJsonArtifactPath(files[0]!)) {
     rememberStoryArtifact(kind, userId, storyId, files[0]!)
   }
   return files
+}
+
+/** Search a single owner directory by external ID without registering files. */
+export function scanStoryArtifacts(kind: ArtifactKind, directory: string, storyId: string): string[] {
+  return findJsonArtifactPaths(directory, storyId, {
+    suffix: suffixes[kind],
+    excludeSuffixes: kind === 'dossier' ? dossierSidecars : undefined,
+  })
 }
 
 /** Publish a server-generated filename after the complete blob has been committed. */
