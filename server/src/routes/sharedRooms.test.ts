@@ -106,6 +106,7 @@ function keeperFixture(options: KeeperFixture): string {
         });
       }
       const damage = messages.findLast((message) => message.role === 'user')?.content.includes('Recover the damaged ledger');
+      if (!damage && identity === 'opening-cooling-fixture') throw new DOMException('Synthetic opening timeout', 'TimeoutError');
       if (damage) {
         if (identity === 'cooling-fixture') throw new DOMException('Synthetic provider timeout', 'TimeoutError');
         if (archivedNarration && !messages.some((message) => message.role === 'user' && message.content.includes(archivedNarration))) {
@@ -216,7 +217,7 @@ function pauseRoomMutations(directory: string): string {
           '  while (!existsSync(join(directory, "release-" + operation))) await delay(20);',
           '}',
           'export async function insertMember(...args) { await pause("join"); return storage.insertMember(...args); }',
-          'export async function transferRoomOwnership(...args) { await pause("transfer"); return storage.transferRoomOwnership(...args); }',
+          'export async function updateRoomStateSnapshot(...args) { if (args[5]?.type === "transfer") await pause("transfer"); return storage.updateRoomStateSnapshot(...args); }',
         ].join(String.fromCharCode(10));
         return { url: 'data:text/javascript,' + encodeURIComponent(wrapper), shortCircuit: true };
       }
@@ -305,7 +306,7 @@ function pressureProvider(directory: string): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history' | 'replay' | 'replay-pending' | 'pressure' | 'split-pressure' | 'split-governance'): Promise<void> {
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history' | 'replay' | 'replay-pending' | 'pressure' | 'split-pressure' | 'split-governance' | 'dormant-governance'): Promise<void> {
   const failover = scenario !== undefined
   const pressureScenario = scenario === 'pressure' || scenario === 'split-pressure'
 
@@ -727,10 +728,11 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     await bind(dormant.roomId, owner.token, cards.get(owner.user.id)!)
     await post(dormant.roomId, 'start', owner.token, { storyId })
     await post(dormant.roomId, 'end', owner.token)
+    const endedSeq = (await detail(dormant.roomId, owner.token)).state.seq
     await post(dormant.roomId, 'end', owner.token)
     const endedLobby = await subscribe(owner, dormant.roomId)
     expect(await endedLobby.waitFor((frame) => frame.type === 'room:state')).toMatchObject({
-      seq: 2, snapshot: { phase: 'ended', messages: [] },
+      seq: endedSeq, snapshot: { phase: 'ended' },
     })
 
     const lobby = await createRoom()
@@ -860,6 +862,131 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       expect(transferReplay.frames.some((frame) => frame.type === 'room:state')).toBe(false)
     } finally {
       await db.end()
+    }
+  }
+
+  async function runDormantGovernance(): Promise<void> {
+    const worker = await launch({ runtime: 'worker', pauseAfterTool: false, useByok: true })
+    await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
+    const gateway = await launch({ runtime: 'gateway' })
+    await ready(gateway)
+    const gatewayBase = base
+    const owner = await register()
+    const successor = await register()
+    const departing = await register()
+    const kicked = await register()
+    const pausedOwner = await register()
+    const settings = (roomId: string, ms: number) => request('/api/rooms/' + roomId + '/settings', {
+      method: 'PUT', token: owner.token, body: { turnWindowMs: ms },
+    })
+    const post = (roomId: string, operation: string, token: string, body?: unknown) =>
+      request('/api/rooms/' + roomId + '/' + operation, { method: 'POST', token, body })
+    const model = 'dormant-successor'
+    for (const [player, provider] of [[owner, model], [successor, model], [pausedOwner, 'opening-cooling-fixture']] as const) {
+      await request('/api/settings', {
+        method: 'PUT', token: player.token, body: {
+          ai: { protocol: 'openai_chat', baseUrl: 'https://provider.invalid/v1', model: provider, apiKey: provider + '-key' },
+          rag: { supplement: false, useEmbeddings: false },
+        },
+      })
+    }
+
+    const lobby = await createLobby(owner, 'Dormant archivist')
+    for (const player of [departing, kicked]) await enter(lobby.inviteCode, player.token)
+    const retained = await connect(owner.token)
+    retained.send({ type: 'room:join', roomId: lobby.roomId })
+    await retained.waitFor((frame) => frame.type === 'room:state')
+    await settings(lobby.roomId, 1600)
+    const anchor = await retained.waitFor((frame) => frame.eventType === 'room_meta')
+
+    const paused = await createLobby(pausedOwner, 'Paused archivist')
+    await enter(paused.inviteCode, successor.token)
+    await paused.addCard(successor, 'Successor archivist')
+    const pausedSocket = await connect(successor.token)
+    pausedSocket.send({ type: 'room:join', roomId: paused.roomId })
+    await pausedSocket.waitFor((frame) => frame.type === 'room:state')
+    await post(paused.roomId, 'start', pausedOwner.token, { storyId: paused.storyId })
+    const pausedCursor = await pausedSocket.waitFor((frame) =>
+      frame.payload?.path === 'kpPauseReason' && frame.payload.value === 'timeout')
+    expect(await detail(paused.roomId, successor.token)).toMatchObject({
+      phase: 'playing', state: { kpPauseReason: 'timeout', openingRequired: true },
+    })
+
+    const database = new Pool({ connectionString: databaseUrl })
+    try {
+      await database.query(`
+        CREATE FUNCTION test_reject_governance_event() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'Synthetic governance checkpoint failure'; END; $$;
+        CREATE TRIGGER test_reject_governance_event BEFORE INSERT ON room_events FOR EACH ROW
+          WHEN (NEW.room_id = '${lobby.roomId}' AND NEW.event_type = 'room_meta')
+          EXECUTE FUNCTION test_reject_governance_event();
+      `)
+      try {
+        await request('/api/rooms/' + lobby.roomId + '/transfer', {
+          method: 'POST', token: owner.token, body: { userId: kicked.user.id }, expected: 503,
+        })
+        expect(await detail(lobby.roomId, owner.token)).toMatchObject({
+          ownerId: owner.user.id, state: { seq: anchor.seq }, members: expect.arrayContaining([
+            expect.objectContaining({ userId: owner.user.id, role: 'owner' }),
+            expect.objectContaining({ userId: kicked.user.id, role: 'member' }),
+          ]),
+        })
+      } finally {
+        await database.query('DROP TRIGGER test_reject_governance_event ON room_events; DROP FUNCTION test_reject_governance_event()')
+      }
+
+      await stop(worker)
+      const replacement = await launch({ runtime: 'worker', pauseAfterTool: false, useByok: true })
+      await expect.poll(() => readyWorkers.has(replacement), { timeout: 12_000 }).toBe(true)
+      base = gatewayBase
+      await expect.poll(async () => (await database.query(
+        'SELECT room_id FROM rooms WHERE room_id = ANY($1::text[]) AND worker_expires_at > clock_timestamp()',
+        [[lobby.roomId, paused.roomId]],
+      )).rowCount, { timeout: 7_000 }).toBe(0)
+
+      await settings(lobby.roomId, 900)
+      await post(lobby.roomId, 'leave', departing.token)
+      await request('/api/rooms/' + lobby.roomId + '/members/' + kicked.user.id, { method: 'DELETE', token: owner.token })
+      await post(lobby.roomId, 'start', owner.token, { storyId: lobby.storyId })
+      await retained.waitFor(isKpMessage)
+      const retainedMeta = retained.frames.filter((frame) =>
+        frame.eventType === 'room_meta' && frame.seq! > anchor.seq!)
+      expect(retainedMeta).toMatchObject([
+        { seq: anchor.seq! + 1, payload: { phase: 'lobby', turnWindowMs: 900, members: expect.arrayContaining([
+          expect.objectContaining({ userId: departing.user.id }), expect.objectContaining({ userId: kicked.user.id }),
+        ]) } },
+        { seq: anchor.seq! + 2, payload: { phase: 'lobby', members: expect.arrayContaining([
+          expect.objectContaining({ userId: owner.user.id }), expect.objectContaining({ userId: kicked.user.id }),
+        ]) } },
+        { seq: anchor.seq! + 3, payload: { phase: 'lobby', members: [expect.objectContaining({ userId: owner.user.id })] } },
+        { seq: anchor.seq! + 4, payload: { phase: 'playing', turnWindowMs: 900 } },
+      ])
+      expect(retainedMeta[1]?.payload?.members).toHaveLength(2)
+      const replay = await connect(owner.token)
+      replay.send({ type: 'room:join', roomId: lobby.roomId, lastSeq: anchor.seq })
+      await replay.waitFor((frame) => frame.type === 'room:sync:done')
+      expect(replay.frames.filter((frame) => frame.eventType === 'room_meta')).toEqual(retainedMeta)
+      expect(replay.frames.some(isKpMessage)).toBe(true)
+      expect(replay.frames.some((frame) => frame.type === 'room:state')).toBe(false)
+
+      expect((await database.query(
+        'SELECT turn_pending, worker_expires_at > clock_timestamp() AS lease_live FROM rooms WHERE room_id = $1', [paused.roomId],
+      )).rows).toEqual([{ turn_pending: false, lease_live: false }])
+      expect(pausedSocket.frames.some(isKpMessage)).toBe(false)
+      await post(paused.roomId, 'transfer', pausedOwner.token, { userId: successor.user.id })
+      const cleared = await pausedSocket.waitFor((frame) => frame.payload?.path === 'kpPauseReason' && frame.payload.value === null)
+      const resumed = await pausedSocket.waitFor((frame) => frame.payload?.message?.content === 'The archive is quiet. Keeper: ' + model)
+      expect(cleared.seq).toBeGreaterThan(pausedCursor.seq!)
+      expect(resumed.seq).toBeGreaterThan(cleared.seq!)
+      expect(await detail(paused.roomId, successor.token)).toMatchObject({
+        phase: 'playing', ownerId: successor.user.id, storyId: paused.storyId, state: { kpSetupRequired: false },
+      })
+      expect((await database.query(
+        "SELECT room_id FROM room_turns WHERE room_id = ANY($1::text[]) AND turn_id = 'opening' AND outcome = 'completed' ORDER BY room_id",
+        [[lobby.roomId, paused.roomId]],
+      )).rows.map((row) => row.room_id)).toEqual([lobby.roomId, paused.roomId].sort())
+    } finally {
+      await database.end()
     }
   }
 
@@ -1495,6 +1622,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   try {
     if (scenario === 'split') return await runSplitGateways()
     if (scenario === 'split-governance') return await runSplitGovernance()
+    if (scenario === 'dormant-governance') return await runDormantGovernance()
     if (scenario === 'replay-pending') return await runReplayPendingTurn()
     if (scenario === 'replay') return await runGatewayRecovery()
     if (scenario === 'history') return await runRoomHistory()
@@ -1828,6 +1956,7 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('holds accepted work on provider pressure and keeps unrelated rooms responsive', () => journey('postgres', 'pressure'), 45_000)
   it.skipIf(!databaseUrl)('reports provider pressure on a split room worker', () => journey('postgres', 'split-pressure'), 70_000)
   it.skipIf(!databaseUrl)('retries an effect-free failed opening after worker restart', () => journey('postgres', 'opening'), 45_000)
+  it.skipIf(!databaseUrl)('replays committed dormant governance and opens without client input', () => journey('postgres', 'dormant-governance'), 65_000)
   it.skipIf(!databaseUrl)('orders governance with accepted turns and distinguishes split gateway disconnects', () => journey('postgres', 'split-governance'), 80_000)
   it.skipIf(!databaseUrl)('routes play through two gateways and a dedicated PostgreSQL worker', () => journey('postgres', 'split'), 70_000)
   it.skipIf(!databaseUrl)('finishes a pending Keeper turn after replay while its original worker and gateway are gone', () => journey('postgres', 'replay-pending'), 60_000)

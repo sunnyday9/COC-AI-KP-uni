@@ -403,6 +403,7 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
         type: string
         eventType?: string
         payload?: { message?: { role: string; content: string } }
+        snapshot?: { messages?: { role: string }[] }
         actionId?: string
         code?: string
         error?: string
@@ -413,9 +414,16 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       ws.once('open', () => ws.send(JSON.stringify({ type: 'room:join', roomId })))
       sockets.push(ws)
       return {
-        ready: () => expect.poll(() => frames.some((frame) => frame.type === 'room:state'), { timeout: 12_000 }).toBe(true),
+        async ready() {
+          await expect.poll(() => frames.find((frame) => frame.type === 'room:state' || frame.type === 'room:error'),
+            { timeout: 12_000 }).toMatchObject({ type: 'room:state' })
+        },
         kpMessages: () => frames.flatMap((frame) =>
           frame.eventType === 'message_appended' && frame.payload?.message?.role === 'kp' ? [frame.payload.message.content] : [],
+        ),
+        hasOpening: () => frames.some((frame) =>
+          (frame.eventType === 'message_appended' && frame.payload?.message?.role === 'kp') ||
+          frame.snapshot?.messages?.some((message) => message.role === 'kp') === true
         ),
         countKp: () => frames.filter((frame) => frame.eventType === 'message_appended' && frame.payload?.message?.role === 'kp').length,
         error: () => frames.find((frame) => frame.type === 'room:error')?.error,
@@ -455,7 +463,7 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       expect((await call(gateway, multiPath + '/settings', host.token, 'PUT', '{"turnWindowMs":0}')).status).toBe(200)
       const oldMulti = roomSocket(host.token, multi.body.roomId)
       await oldMulti.ready()
-      await expect.poll(oldMulti.countKp, { timeout: 12_000 }).toBe(1)
+      await expect.poll(oldMulti.hasOpening, { timeout: 12_000 }).toBe(true)
 
       const renewedRevision = await prepare()
       expect(renewedRevision).not.toBe(originalRevision)

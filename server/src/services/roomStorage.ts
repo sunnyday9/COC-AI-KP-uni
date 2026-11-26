@@ -137,14 +137,15 @@ export class RoomWorkerBusyError extends CapacityError {
 }
 
 /** Every activation claims a new epoch. Renewal of an existing epoch is separate. */
-export async function claimRoomLease(roomId: string): Promise<RoomWorkerLease | undefined> {
+export async function claimRoomLease(roomId: string, recoveryOwnerId?: number): Promise<RoomWorkerLease | undefined> {
   return readOne<RoomWorkerLease>(
     `UPDATE rooms
      SET worker_id = ?::uuid, worker_expires_at = clock_timestamp() + ? * interval '1 millisecond',
          worker_epoch = worker_epoch + 1
      WHERE room_id = ? AND (worker_id = ?::uuid OR worker_expires_at <= clock_timestamp() OR worker_id IS NULL)
+     AND (?::bigint IS NULL OR (owner_id = ?::bigint AND turn_pending AND phase = 'playing'))
      RETURNING worker_epoch::text AS epoch`,
-    workerId, ROOM_WORKER_LEASE_MS, roomId, workerId,
+    workerId, ROOM_WORKER_LEASE_MS, roomId, workerId, recoveryOwnerId ?? null, recoveryOwnerId ?? null,
   )
 }
 
@@ -500,7 +501,11 @@ function readLegacyHistory(state: string, before: string | null, limit: number):
 }
 
 export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: number, pin?: StoryRevisionPin, lease?: RoomWorkerLease): Promise<void> {
-  if (pin) return writeRoom(roomId, [{
+  return writeRoom(roomId, startRoomStatements(roomId, storyId, storyOwnerId, pin), lease)
+}
+
+function startRoomStatements(roomId: string, storyId: string, storyOwnerId: number, pin?: StoryRevisionPin): Statement[] {
+  if (pin) return [{
     ...statement(
       `UPDATE rooms SET story_id = ?, story_owner_id = ?, story_preparation_revision = ?,
          story_source_revision = ?, phase = 'playing', updated_at = ?
@@ -509,11 +514,11 @@ export function updateRoomStart(roomId: string, storyId: string, storyOwnerId: n
       storyOwnerId, storyId, pin.revision, pin.sourceRevision,
     ),
     requireSelectableRevision: true,
-  }], lease)
-  return writeRoom(roomId, [statement(
+  }]
+  return [statement(
     `UPDATE rooms SET story_id = ?, story_owner_id = ?, phase = 'playing', updated_at = ? WHERE room_id = ?`,
     storyId, storyOwnerId, Date.now(), roomId,
-  )], lease)
+  )]
 }
 
 export function updateRoomPhase(roomId: string, phase: RoomPhase, lease?: RoomWorkerLease): Promise<void> {
@@ -546,6 +551,21 @@ export function getRoomAction(roomId: string, userId: number, actionId: string):
 
 export const ROOM_EVENT_WINDOW = 200
 
+export type RoomGovernanceWrite =
+  | { type: 'settings' }
+  | { type: 'start'; storyId: string; storyOwnerId: number; pin?: StoryRevisionPin }
+  | { type: 'remove-member'; userId: number }
+  | { type: 'transfer'; oldOwnerId: number; newOwnerId: number; removeOldOwner: boolean; disconnect?: OwnerDisconnect }
+
+function governanceStatements(roomId: string, write: RoomGovernanceWrite): Statement[] {
+  switch (write.type) {
+    case 'settings': return []
+    case 'start': return startRoomStatements(roomId, write.storyId, write.storyOwnerId, write.pin)
+    case 'remove-member': return [deleteMemberStatement(roomId, write.userId)]
+    case 'transfer': return transferRoomStatements(roomId, write.oldOwnerId, write.newOwnerId, write.removeOldOwner)
+  }
+}
+
 export interface RoomCheckpoint {
   seq: number
   turnPending: boolean
@@ -562,9 +582,13 @@ export interface RoomCheckpoint {
 
 export function updateRoomStateSnapshot(
   roomId: string, stateJson: string, phase?: 'ended', actions: readonly RoomActionWrite[] = [], checkpoint?: RoomCheckpoint,
+  governance?: RoomGovernanceWrite,
 ): Promise<void> {
   if (ROOM_WORKER_FAILOVER_ENABLED && !checkpoint) throw new RoomLeaseLostError()
-  return writeRoom(roomId, roomStateSnapshotStatements(roomId, stateJson, phase, actions, checkpoint), checkpoint?.lease)
+  return writeRoom(roomId, [
+    ...(governance ? governanceStatements(roomId, governance) : []),
+    ...roomStateSnapshotStatements(roomId, stateJson, phase, actions, checkpoint),
+  ], checkpoint?.lease, governance?.type === 'transfer' ? governance.disconnect : undefined)
 }
 
 function roomStateSnapshotStatements(
@@ -726,22 +750,29 @@ export function setMemberReady(roomId: string, userId: number, ready: boolean, l
 
 export function transferRoomOwnership(
   roomId: string, oldOwnerId: number, newOwnerId: number, lease?: RoomWorkerLease,
-  removeOldOwner = false, disconnect?: OwnerDisconnect, dormant?: { stateJson: string; checkpoint: RoomCheckpoint },
+  removeOldOwner = false, disconnect?: OwnerDisconnect,
 ): Promise<void> {
-  return writeRoom(roomId, [
+  return writeRoom(roomId, transferRoomStatements(roomId, oldOwnerId, newOwnerId, removeOldOwner), lease, disconnect)
+}
+
+function transferRoomStatements(roomId: string, oldOwnerId: number, newOwnerId: number, removeOldOwner: boolean): Statement[] {
+  return [
     removeOldOwner
-      ? statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, oldOwnerId)
+      ? deleteMemberStatement(roomId, oldOwnerId)
       : statement(`UPDATE room_members SET role = 'member' WHERE room_id = ? AND user_id = ?`, roomId, oldOwnerId),
     statement(`UPDATE room_members SET role = 'owner', ready = 0 WHERE room_id = ? AND user_id = ?`, roomId, newOwnerId),
     statement(`UPDATE rooms SET owner_id = ?, story_owner_id = CASE
         WHEN story_id IS NOT NULL THEN COALESCE(story_owner_id, ?) ELSE story_owner_id END
       WHERE room_id = ?`, newOwnerId, oldOwnerId, roomId),
-    ...(dormant ? roomStateSnapshotStatements(roomId, dormant.stateJson, undefined, [], dormant.checkpoint) : []),
-  ], lease, disconnect)
+  ]
+}
+
+function deleteMemberStatement(roomId: string, userId: number): Statement {
+  return statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, userId)
 }
 
 export function deleteMemberRow(roomId: string, userId: number, lease?: RoomWorkerLease): Promise<void> {
-  return writeRoom(roomId, [statement('DELETE FROM room_members WHERE room_id = ? AND user_id = ?', roomId, userId)], lease)
+  return writeRoom(roomId, [deleteMemberStatement(roomId, userId)], lease)
 }
 
 export function listMembersOrdered(roomId: string): Promise<RoomMemberRow[]> {
