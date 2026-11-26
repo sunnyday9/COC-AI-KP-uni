@@ -386,7 +386,8 @@ export async function readRoomDetailForMember(
 
 /** Import the original snapshot order once, fenced against any newer room writer. */
 export function archiveRoomTranscript(
-  roomId: string, lease: RoomWorkerLease, legacyMessages: readonly Message[], boundedState: string, seq: number,
+  roomId: string, lease: RoomWorkerLease, legacyMessages: readonly Message[], boundedState: string,
+  seq: number, turnPending: boolean,
 ): Promise<void> {
   return writeRoom(roomId, [
     statement(
@@ -398,8 +399,38 @@ export function archiveRoomTranscript(
        ON CONFLICT (room_id, message_id) DO NOTHING`,
       roomId, JSON.stringify(legacyMessages),
     ),
-    statement('UPDATE rooms SET state = ?, transcript_archived = true, event_seq = ? WHERE room_id = ?', boundedState, seq, roomId),
+    statement(
+      'UPDATE rooms SET state = ?, transcript_archived = true, event_seq = ?, turn_pending = (? = 1) WHERE room_id = ?',
+      boundedState, seq, turnPending ? 1 : 0, roomId,
+    ),
   ], lease)
+}
+
+/** Continue the existing prompt scan into the archive without hydrating the transcript. */
+export async function readArchivedTurnHistory(
+  roomId: string, before: string | null, excludedMessageIds: Set<string>, skip: number,
+  window: { scan: number; take: number; chars: number },
+): Promise<Message[]> {
+  const rows = await readAll<{ message: Message }>(
+    `SELECT jsonb_set(eligible.message, '{content}', to_jsonb(right(eligible.message->>'content', ?))) AS message
+     FROM (
+       SELECT t.message, t.position FROM room_transcript t
+       WHERE t.room_id = ?
+         AND t.position < COALESCE(
+           (SELECT position FROM room_transcript WHERE room_id = t.room_id AND message_id = ?),
+           CASE WHEN ?::text IS NULL THEN 9223372036854775807 END
+         )
+         AND t.message_id <> ALL (SELECT jsonb_array_elements_text(?::jsonb))
+       ORDER BY t.position DESC LIMIT ? OFFSET ?
+     ) eligible
+     WHERE (eligible.message->>'role' = 'player'
+       OR (eligible.message->>'role' = 'kp' AND eligible.message->>'isStreaming' IS DISTINCT FROM 'true'))
+       AND jsonb_typeof(eligible.message->'content') = 'string'
+     ORDER BY eligible.position DESC LIMIT ?`,
+    Math.min(window.chars + 1, 2_147_483_647), roomId, before, before, JSON.stringify([...excludedMessageIds]),
+    window.scan, skip, window.take,
+  )
+  return rows.reverse().map(({ message }) => message)
 }
 
 /** Read only a member's own room. Storage returns one lookahead message for pagination. */

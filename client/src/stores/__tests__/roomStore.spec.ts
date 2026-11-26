@@ -413,13 +413,14 @@ describe('roomStore', () => {
 
   it('applies membership and ownership when a snapshot replaces missed room events', async () => {
     await joinAndSync()
+    expect(store.isOwner).toBe(true)
     const members = [
       { userId: 1, username: 'alice', role: 'member', characterId: null, ready: true },
       { userId: 2, username: 'bob', role: 'owner', characterId: null, ready: false },
     ]
     store.resync()
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 210, snapshot: { ...SNAP0, seq: 210 }, members, actionReceipts: true })
-    expect(store.ownerId).toBe(2)
+    expect(store.isOwner).toBe(false)
     expect(store.members).toEqual(members)
     expect(store.selfReady).toBe(true)
     expect(store.connectionState).toBe('joined')
