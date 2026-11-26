@@ -126,6 +126,19 @@ const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
 /** 事件日志环形容量（Phase C1：重连增量窗口；超出 → 全量快照兜底）。 */
 const MAX_EVENT_LOG = roomStorage.ROOM_EVENT_WINDOW
+
+function selectReplay<T extends { seq: number }>(lastSeq: number, highWater: number, events: readonly T[]): T[] | null {
+  if (lastSeq <= 0 || lastSeq > highWater || highWater - lastSeq > MAX_EVENT_LOG) return null
+  const replay: T[] = []
+  let seq = lastSeq
+  for (const event of events) {
+    if (event.seq <= seq) continue
+    if (event.seq !== seq + 1 || event.seq > highWater) return null
+    replay.push(event)
+    seq = event.seq
+  }
+  return seq === highWater ? replay : null
+}
 const HOT_TRANSCRIPT_MESSAGES = 40
 const HOT_TRANSCRIPT_BYTES = 512 * 1024
 
@@ -240,7 +253,7 @@ export class RoomService {
   private readonly listeners = new Set<(event: RoomEvent, seq: number) => void>()
   /** 事件日志（Phase C1）：带 seq 的增量事件，环形保留最近 MAX_EVENT_LOG 条。 */
   private eventLog: { seq: number; event: RoomEvent }[] = []
-  private eventLogStartSeq = 0
+
   private snapshotTimer: NodeJS.Timeout | null = null
   private leaseTimer: NodeJS.Timeout | null = null
   private renewingLease = false
@@ -420,7 +433,7 @@ export class RoomService {
     if (this.eventLog.length > MAX_EVENT_LOG) {
       this.eventLog.shift()
     }
-    this.eventLogStartSeq = this.eventLog[0]?.seq ?? this.seq
+
     for (const l of this.listeners) {
       try { l(event, this.seq) } catch { /* 监听器错误不影响广播 */ }
     }
@@ -429,11 +442,7 @@ export class RoomService {
   /** 增量事件（lastSeq 之后；返回 null 表示缺口过大需全量快照）。
    * lastSeq=0（客户端无状态）或 < 日志起始 seq → 全量。 */
   getEventsSince(lastSeq: number): { seq: number; event: RoomEvent }[] | null {
-    if (lastSeq <= 0 || lastSeq > this.seq) return null
-    if (lastSeq === this.seq) return []
-    if (lastSeq < this.eventLogStartSeq - 1) return null
-    const events = this.eventLog.filter((e) => e.seq > lastSeq)
-    return events.length === this.seq - lastSeq ? events : null
+    return selectReplay(lastSeq, this.seq, this.eventLog)
   }
 
   /* ═══════════════ 动作处理 ═══════════════ */
@@ -2468,4 +2477,12 @@ export function _clearRoomRegistryForTests(): void {
 }
 
 export const readRoomOutbox = roomStorage.readRoomOutbox
-export const ROOM_EVENT_WINDOW = roomStorage.ROOM_EVENT_WINDOW
+
+/** Classify reconnects against the membership and high-water mark of one committed view. */
+export async function planCommittedRoomReplay(roomId: string, userId: number, lastSeq: number, maxBytes: number) {
+  const [room] = await readRoomOutbox([{ roomId, userIds: [userId], seq: lastSeq }], MAX_EVENT_LOG, maxBytes)
+  if (!room?.members.has(userId)) return { kind: 'not-member' } as const
+  if (room.highWater === null) return { kind: 'snapshot' } as const
+  const events = selectReplay(lastSeq, room.highWater, room.events)
+  return events === null ? { kind: 'snapshot' } as const : { kind: 'delta', seq: room.highWater, events } as const
+}

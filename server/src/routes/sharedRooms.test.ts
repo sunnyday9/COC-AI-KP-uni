@@ -235,7 +235,7 @@ function duplicateOutboxEvents(): string {
       resolve(specifier, context, next) {
         const resolved = next(specifier, context)
         if (specifier !== '../services/roomService.js' || !context.parentURL?.endsWith('/gatewayRooms.ts')) return resolved
-        const source = 'import { readRoomOutbox as read } from ' + JSON.stringify(resolved.url) + ';' + 'export { ROOM_EVENT_WINDOW } from ' + JSON.stringify(resolved.url) + ';' + ${JSON.stringify(wrapper)}
+        const source = 'import { readRoomOutbox as read } from ' + JSON.stringify(resolved.url) + ';' + 'export { planCommittedRoomReplay } from ' + JSON.stringify(resolved.url) + ';' + ${JSON.stringify(wrapper)}
         return { url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true }
       },
     })

@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { routeSocketCommand } from '../services/roomCommands.js'
-import { readRoomOutbox, ROOM_EVENT_WINDOW } from '../services/roomService.js'
+import { planCommittedRoomReplay, readRoomOutbox } from '../services/roomService.js'
 import { logger } from '../utils/logging.js'
 import { errorMessage } from '../utils/errors.js'
 import {
@@ -17,21 +17,16 @@ function eventFrame(roomId: string, { seq, type, payload }: OutboxEvent): string
   return JSON.stringify({ type: 'room:event', roomId, seq, eventType: type, payload })
 }
 
-function buildReplay(roomId: string, cursor: number, highWater: number | null, events: OutboxEvent[]): string[] | null {
-  if (highWater === null || cursor > highWater || highWater - cursor > ROOM_EVENT_WINDOW) return null
+function encodeReplay(roomId: string, events: OutboxEvent[]): string[] | null {
   const frames: string[] = []
   let bytes = 0
-  let seq = cursor
   for (const event of events) {
-    if (event.seq <= seq) continue
-    if (event.seq !== seq + 1 || event.seq > highWater) return null
     const frame = eventFrame(roomId, event)
     bytes += Buffer.byteLength(frame)
     if (bytes > MAX_REPLAY_BYTES) return null
     frames.push(frame)
-    seq = event.seq
   }
-  return seq === highWater ? frames : null
+  return frames
 }
 
 export async function resumeGatewaySocket(
@@ -53,21 +48,23 @@ export async function resumeGatewaySocket(
       return
     }
     if (lastSeq > 0) {
-      const [result] = await readRoomOutbox([{ roomId, userIds: [userId], seq: lastSeq }], ROOM_EVENT_WINDOW, MAX_REPLAY_BYTES)
+      const replay = await planCommittedRoomReplay(roomId, userId, lastSeq, MAX_REPLAY_BYTES)
       if (!current()) return
-      if (!result.members.has(userId)) {
+      if (replay.kind === 'not-member') {
         send({ type: 'room:error', roomId, error: 'not a room member' })
         return
       }
-      const replay = buildReplay(roomId, lastSeq, result.highWater, result.events)
-      if (replay && result.highWater !== null) {
-        for (const frame of replay) sendFrame(socket, frame)
-        send({ type: 'room:sync:done', roomId, seq: result.highWater, actionReceipts: true })
-        if (current()) {
-          subscription.seq = result.highWater
-          activateGatewayPresence(socket, roomId)
+      if (replay.kind === 'delta') {
+        const frames = encodeReplay(roomId, replay.events)
+        if (frames) {
+          for (const frame of frames) sendFrame(socket, frame)
+          send({ type: 'room:sync:done', roomId, seq: replay.seq, actionReceipts: true })
+          if (current()) {
+            subscription.seq = replay.seq
+            activateGatewayPresence(socket, roomId)
+          }
+          return
         }
-        return
       }
     }
     const result = await routeSocketCommand('snapshot', userId, roomId, [], signal)
