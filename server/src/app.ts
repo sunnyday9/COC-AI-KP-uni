@@ -13,7 +13,7 @@ import { runPendingRoomRecovery, startRoomReaper } from './services/roomService.
 import { roomWorkerId } from './services/roomStorage.js'
 import { executeRoomCommand } from './services/roomCommands.js'
 import { initializeRoomMailbox, runRoomMailbox } from './services/roomMailbox.js'
-import { initializeRoomPresence } from './db/roomPresenceStorage.js'
+import { initializeRoomPresence } from './db/postgresRoomPresenceSchema.js'
 import { markGatewayDraining, runGatewayPresence, waitForGatewayPresenceCleanup } from './ws/gatewayPresence.js'
 import { markTransportReset } from './ws/sendFrame.js'
 import { runGatewayRoomFanout } from './ws/gatewayRooms.js'
