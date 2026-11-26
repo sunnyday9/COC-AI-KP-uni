@@ -47,6 +47,7 @@ Nginx（TLS / WebSocket 升级）
 | `PORT` | 3000 | HTTP/WS 监听端口 |
 | `DEPLOYMENT_MODE` | `local` | `local` 使用 SQLite。预发布环境可用 `shared-accounts` |
 | `DATABASE_URL` | 未设 | `shared-accounts` 必设。两网关使用同一个 PostgreSQL 数据库连接地址 |
+| `PG_POOL_MAX` | 10 | 每个进程的 PostgreSQL 连接上限，允许 1–100。启用共享房间时至少为 2，其中 1 个连接用于常驻部署锁 |
 | `DATA_DIR` | 开发：`server/data`；编译：`server/dist/server/data` | SQLite 数据库目录（`ai-kp.db`）；生产请设置为 `dist` 外的持久化绝对路径 |
 | `RAG_DATA_DIR` | 开发：`server/data/rag`；编译：`server/dist/server/data/rag` | RAG 索引文件；生产单独设置为持久化绝对路径，每用户子目录内使用 UUID 文件名 |
 | `DOSSIER_DATA_DIR` | 开发：`server/data/dossiers`；编译：`server/dist/server/data/dossiers` | 档案及 `.gaps.json` / `.annex.json` sidecar；生产单独设置为持久化绝对路径 |
@@ -125,6 +126,8 @@ npm run dev:h5       # :5175（vite dev）
 
 为此环境准备独立的 PostgreSQL 数据库和登录角色。首次启动时，该角色需要在数据库默认的 schema 中建表。两网关使用同一构建产物，指向同一数据库及 schema。通过服务管理器或密钥管理系统向两进程注入相同的 `DATABASE_URL` 和强随机 `JWT_SECRET`，每套环境使用独立密钥。跨主机连接按数据库的 CA 配置 TLS，使用 `sslmode=verify-full` 验证主机与证书。
 
+扩展实例前请为每个网关、房间 worker 和剧本准备进程显式设置 `PG_POOL_MAX`。所有实例的上限之和，加上监控、迁移及其他客户端所需连接，须低于部署角色可用的 `max_connections` 配额，并预留滚动升级和管理所需连接。共享房间常驻部署锁占用连接池中的 1 个连接，其余连接用于应用查询。
+
 在两个终端从仓库根目录分别启动。两网关同机时使用不同的端口，跨主机时端口可相同。
 
 ```bash
@@ -158,7 +161,7 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 #### 多房间进程故障恢复预发布（#120）
 
-在共享房间配置上额外设置 `ENABLE_ROOM_WORKER_FAILOVER=1`。每个进程使用独立端口，共享 PostgreSQL、JWT 签名配置和准备好的剧本目录。`ROOM_WORKER_LEASE_MS` 默认 15000，允许 1000–120000 毫秒。PostgreSQL 使用数据库时钟判定租约，进程约每三分之一租期续租。加入房间时，新进程只有在租约可接管时才恢复房间。默认的 `ROOM_RUNTIME=direct` 适用于将 HTTP、WebSocket 和房间执行部署在同一进程的环境。
+在共享房间配置上额外设置 `ENABLE_ROOM_WORKER_FAILOVER=1`。每个进程使用独立端口，共享 PostgreSQL、JWT 签名配置和准备好的剧本目录。`ROOM_WORKER_LEASE_MS` 默认 15000，允许 1000–120000 毫秒。PostgreSQL 使用数据库时钟判定租约。进程约每三分之一租期分批续租，每条续租查询最多处理 64 个房间，并将仍有效但被锁定的租约留到下次检查。加入房间时，新进程只有在租约可接管时才恢复房间。默认的 `ROOM_RUNTIME=direct` 适用于将 HTTP、WebSocket 和房间执行部署在同一进程的环境。
 
 跨网关部署请使用以下进程角色。各进程使用相同的 PostgreSQL、JWT 签名配置和剧本存储配置。
 

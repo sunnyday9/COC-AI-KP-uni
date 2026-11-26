@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import WebSocket from 'ws'
 import { Pool } from 'pg'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 const databaseUrl = process.env.TEST_SHARED_ROOMS_DATABASE_URL
 const sheet = {
@@ -142,7 +142,10 @@ function keeperFixture(options: KeeperFixture): string {
         }
         if (ignoreLeaseRenewal && specifier === './roomStorage.js') {
           const real = JSON.stringify(next(specifier, context).url);
-          return fixtureModule('export * from ' + real + '; export async function renewRoomLease() { return true; }');
+          return fixtureModule(
+            'export * from ' + real + '; export async function renewRoomLease() { return true; }' +
+            'export async function renewRoomLeases(batch) { return new Set(batch.map((entry, index) => index)); }'
+          );
         }
         if (withFault && specifier === './roomStorage.js') {
           const real = JSON.stringify(next(specifier, context).url);
@@ -1830,4 +1833,58 @@ describe('room protocol across a gameplay process restart', () => {
   it.skipIf(!databaseUrl)('finishes a pending Keeper turn after replay while its original worker and gateway are gone', () => journey('postgres', 'replay-pending'), 60_000)
   it.skipIf(!databaseUrl)('recovers old and missing cursors and a disconnected slow gateway reader', () => journey('postgres', 'replay'), 85_000)
   it.skipIf(!databaseUrl)('resumes with bounded state and pages earlier transcript in committed order', () => journey('postgres', 'history'), 45_000)
+})
+
+it.skipIf(!databaseUrl)('renews matching live epochs in a batch without waiting on a locked room', async () => {
+  const schema = 'lease_' + randomBytes(6).toString('hex')
+  const database = new Pool({ connectionString: databaseUrl })
+  const isolatedUrl = new URL(databaseUrl!)
+  isolatedUrl.searchParams.set('options', `-c search_path=${schema}`)
+  vi.stubEnv('DATABASE_URL', isolatedUrl.toString())
+  vi.stubEnv('ROOM_WORKER_LEASE_MS', '120000')
+  const { getPostgresPool } = await import('../db/postgres.js')
+  const { renewRoomLeases, roomWorkerId } = await import('../services/roomStorage.js')
+  try {
+    await database.query(`CREATE SCHEMA "${schema}"`)
+    await database.query(`
+      CREATE TABLE "${schema}".rooms (
+        room_id TEXT PRIMARY KEY, worker_id UUID, worker_epoch BIGINT, worker_expires_at TIMESTAMPTZ
+      )
+    `)
+    await database.query(`
+      INSERT INTO "${schema}".rooms
+      VALUES ('live', $1, 2, clock_timestamp() + interval '1 minute'),
+        ('locked', $1, 2, clock_timestamp() + interval '1 minute'),
+        ('expired', $1, 2, clock_timestamp() - interval '1 minute'),
+        ('new-epoch', $1, 3, clock_timestamp() + interval '1 minute'),
+        ('different-worker', $2, 2, clock_timestamp() + interval '1 minute')
+    `, [roomWorkerId, randomUUID()])
+    const lock = await database.connect()
+    try {
+      await lock.query('BEGIN')
+      await lock.query(`SELECT 1 FROM "${schema}".rooms WHERE room_id = 'locked' FOR UPDATE`)
+      const leases = ['expired', 'live', 'new-epoch', 'locked', 'different-worker']
+        .map((roomId) => ({ roomId, lease: { epoch: '2' } }))
+      expect(await renewRoomLeases(leases)).toEqual(new Set([1, 3]))
+      const result = await database.query(`
+        SELECT room_id FROM "${schema}".rooms WHERE worker_expires_at > clock_timestamp() + interval '1 minute'
+      `)
+      expect(result.rows).toEqual([{ room_id: 'live' }])
+      await lock.query('ROLLBACK')
+      expect(await renewRoomLeases([leases[3]!])).toEqual(new Set([0]))
+      const retried = await database.query(`
+        SELECT room_id FROM "${schema}".rooms WHERE worker_expires_at > clock_timestamp() + interval '1 minute'
+        ORDER BY room_id
+      `)
+      expect(retried.rows).toEqual([{ room_id: 'live' }, { room_id: 'locked' }])
+    } finally {
+      // Destroying the test connection also unlocks the row on a failed assertion.
+      lock.release(true)
+    }
+  } finally {
+    vi.unstubAllEnvs()
+    await getPostgresPool().end()
+    await database.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
+    await database.end()
+  }
 })

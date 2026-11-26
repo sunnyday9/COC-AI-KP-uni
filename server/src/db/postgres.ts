@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from 'pg'
+import { PG_POOL_MAX } from '../config.js'
 import { logger } from '../utils/logging.js'
 import { IncompatiblePostgresAccountSchemaError, initializePostgresAccounts } from './postgresAccountsSchema.js'
 
@@ -18,6 +19,7 @@ export function getPostgresPool(): Pool {
   if (!pool) {
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,
+      max: PG_POOL_MAX,
       connectionTimeoutMillis: 5_000,
       statement_timeout: 10_000,
       allowExitOnIdle: true,

@@ -166,6 +166,34 @@ export async function renewRoomLease(roomId: string, lease: RoomWorkerLease): Pr
   )
 }
 
+/** Return batch indexes that renewed or are still live behind a contended room lock. */
+export async function renewRoomLeases(leases: readonly { roomId: string; lease: RoomWorkerLease }[]): Promise<Set<number>> {
+  try {
+    const { rows } = await getPostgresPool().query<{ idx: number }>(`
+      WITH requested AS (
+        SELECT * FROM unnest($1::text[], $2::bigint[]) WITH ORDINALITY AS batch(room_id, epoch, idx)
+      ), locked AS MATERIALIZED (
+        SELECT batch.idx, room.room_id, batch.epoch FROM requested batch JOIN rooms room USING (room_id)
+        WHERE room.worker_id = $3 AND room.worker_epoch = batch.epoch AND room.worker_expires_at > clock_timestamp()
+        FOR NO KEY UPDATE OF room SKIP LOCKED
+      ), renewed AS (
+        UPDATE rooms room SET worker_expires_at = clock_timestamp() + $4 * interval '1 millisecond'
+        FROM locked batch WHERE room.room_id = batch.room_id AND room.worker_id = $3
+          AND room.worker_epoch = batch.epoch AND room.worker_expires_at > clock_timestamp()
+        RETURNING batch.idx
+      )
+      SELECT idx::integer FROM renewed
+      UNION ALL
+      SELECT batch.idx::integer FROM requested batch JOIN rooms room USING (room_id)
+      WHERE NOT EXISTS (SELECT 1 FROM locked WHERE locked.idx = batch.idx)
+        AND room.worker_id = $3 AND room.worker_epoch = batch.epoch AND room.worker_expires_at > clock_timestamp()
+    `, [leases.map(({ roomId }) => roomId), leases.map(({ lease }) => lease.epoch), workerId, ROOM_WORKER_LEASE_MS])
+    return new Set(rows.map(({ idx }) => idx - 1))
+  } catch (error) {
+    throw postgresError(error)
+  }
+}
+
 export function releaseRoomLease(roomId: string, lease: RoomWorkerLease): Promise<void> {
   return writeAll([statement(
     'UPDATE rooms SET worker_id = NULL, worker_expires_at = NULL WHERE room_id = ? AND worker_id = ?::uuid AND worker_epoch = ?::bigint',

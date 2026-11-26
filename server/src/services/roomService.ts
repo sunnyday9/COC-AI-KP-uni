@@ -248,8 +248,7 @@ export class RoomService {
   private eventLog: { seq: number; event: RoomEvent }[] = []
 
   private snapshotTimer: NodeJS.Timeout | null = null
-  private leaseTimer: NodeJS.Timeout | null = null
-  private renewingLease = false
+  private stopLeaseHeartbeat?: () => void
   private pendingPlayerTurn?: PlayerTurnCheckpoint
   private openingCheckpointed = false
   private hasNarrative = false
@@ -316,14 +315,10 @@ export class RoomService {
     }, SNAPSHOT_EVERY_MS)
     this.snapshotTimer.unref?.()
     if (this.workerLease) {
-      this.leaseTimer = setInterval(() => {
-        if (this.renewingLease || this.disposed) return
-        this.renewingLease = true
-        void this.renewWorkerLease().catch((error) => {
-          logger.warn('room worker lease renewal failed', { roomId: this.roomId, error: String(error) })
-        }).finally(() => { this.renewingLease = false })
-      }, Math.floor(ROOM_WORKER_LEASE_MS / 3))
-      this.leaseTimer.unref?.()
+      this.stopLeaseHeartbeat = watchRoomLease(this.roomId, this.workerLease, () => this.retireWorker(), (error) => {
+        this.retireWorker()
+        logger.warn('room worker lease renewal failed', { roomId: this.roomId, error: String(error) })
+      })
     }
   }
 
@@ -1666,8 +1661,7 @@ export class RoomService {
     this.lifetime.abort()
     if (this.snapshotTimer) clearInterval(this.snapshotTimer)
     this.snapshotTimer = null
-    if (this.leaseTimer) clearInterval(this.leaseTimer)
-    this.leaseTimer = null
+    this.stopLeaseHeartbeat?.()
     this.clearTurnWindow()
     this.listeners.clear()
   }
@@ -1679,6 +1673,62 @@ const roomRegistry = new Map<string, RoomService>()
 const roomsActivating = new Set<string>()
 const roomCommands = new Map<string | symbol, Promise<unknown>>()
 const roomCreationSlot = Symbol('room creation')
+
+const LEASE_HEARTBEAT_BATCH_SIZE = 64
+type LeaseHeartbeat = {
+  roomId: string
+  lease: roomStorage.RoomWorkerLease
+  onLost: () => void
+  onError: (error: unknown) => void
+}
+const leaseHeartbeats = new Set<LeaseHeartbeat>()
+let leaseHeartbeatTimer: NodeJS.Timeout | undefined
+let renewingLeaseHeartbeats = false
+
+async function renewLeaseHeartbeats(): Promise<void> {
+  if (renewingLeaseHeartbeats) return
+  renewingLeaseHeartbeats = true
+  try {
+    const scheduled = [...leaseHeartbeats]
+    for (let start = 0; start < scheduled.length; start += LEASE_HEARTBEAT_BATCH_SIZE) {
+      const batch = scheduled.slice(start, start + LEASE_HEARTBEAT_BATCH_SIZE)
+        .filter((entry) => leaseHeartbeats.has(entry))
+      if (!batch.length) continue
+      let live: Set<number>
+      try {
+        live = await roomStorage.renewRoomLeases(batch)
+      } catch (error) {
+        for (const entry of batch) if (leaseHeartbeats.has(entry)) entry.onError(error)
+        // Wait for the next tick before using another pool connection.
+        break
+      }
+      batch.forEach((entry, index) => {
+        if (!live.has(index) && leaseHeartbeats.has(entry)) entry.onLost()
+      })
+    }
+  } finally {
+    renewingLeaseHeartbeats = false
+  }
+}
+
+function watchRoomLease(
+  roomId: string, lease: roomStorage.RoomWorkerLease, onLost: () => void, onError: (error: unknown) => void,
+): () => void {
+  const entry = { roomId, lease, onLost, onError }
+  leaseHeartbeats.add(entry)
+  if (!leaseHeartbeatTimer) {
+    leaseHeartbeatTimer = setInterval(() => {
+      void renewLeaseHeartbeats()
+    }, Math.floor(ROOM_WORKER_LEASE_MS / 3)).unref()
+  }
+  return () => {
+    leaseHeartbeats.delete(entry)
+    if (!leaseHeartbeats.size) {
+      clearInterval(leaseHeartbeatTimer)
+      leaseHeartbeatTimer = undefined
+    }
+  }
+}
 
 /** Hold the same room's command slot across database I/O without blocking other rooms. */
 function withRoomCommand<T>(
@@ -1707,21 +1757,13 @@ function withRoomMutation<T>(
       if (!await roomStorage.getRoomRow(roomId)) return command()
       throw new roomStorage.RoomWorkerBusyError()
     }
-    let renewing = false
-    const heartbeat = setInterval(() => {
-      if (renewing) return
-      renewing = true
-      void roomStorage.renewRoomLease(roomId, temporaryLease).then((live) => {
-        if (!live) clearInterval(heartbeat)
-      }).catch((error) => {
-        logger.warn('temporary room lease renewal failed', { roomId, error: String(error) })
-      }).finally(() => { renewing = false })
-    }, Math.floor(ROOM_WORKER_LEASE_MS / 3))
-    heartbeat.unref?.()
+    const stopHeartbeat = watchRoomLease(roomId, temporaryLease, () => stopHeartbeat(), (error) => {
+      logger.warn('temporary room lease renewal failed', { roomId, error: String(error) })
+    })
     try {
       return await command(temporaryLease)
     } finally {
-      clearInterval(heartbeat)
+      stopHeartbeat()
       await roomStorage.releaseRoomLease(roomId, temporaryLease).catch((error) => {
         logger.warn('temporary room lease release failed', { roomId, error: String(error) })
       })

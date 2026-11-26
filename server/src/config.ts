@@ -9,6 +9,7 @@ export const PORT = Number(process.env.PORT ?? 3000)
 const DEV_JWT_SECRET = 'dev-secret-change-me'
 export const DEPLOYMENT_MODE = process.env.DEPLOYMENT_MODE?.trim() || 'local'
 export const SHARED_ROOMS_ENABLED = DEPLOYMENT_MODE === 'shared-accounts' && process.env.ENABLE_SHARED_ROOMS === '1'
+export const PG_POOL_MAX = Number(process.env.PG_POOL_MAX ?? 10)
 export const SHARED_ROOM_CATALOG_ENABLED = SHARED_ROOMS_ENABLED && !!process.env.STORY_S3_BUCKET?.trim()
 export const ROOM_WORKER_FAILOVER_ENABLED = process.env.ENABLE_ROOM_WORKER_FAILOVER === '1'
 export const ROOM_RUNTIME = process.env.ROOM_RUNTIME?.trim() || 'direct'
@@ -47,6 +48,10 @@ export function assertRuntimeConfig(): void {
     }
   }
   if (DEPLOYMENT_MODE === 'shared-accounts') {
+    const minimumPoolSize = SHARED_ROOMS_ENABLED ? 2 : 1
+    if (!Number.isSafeInteger(PG_POOL_MAX) || PG_POOL_MAX < minimumPoolSize || PG_POOL_MAX > 100) {
+      throw new Error(`PG_POOL_MAX must be an integer from ${minimumPoolSize} to 100`)
+    }
     if (!configuredSecret || configuredSecret === DEV_JWT_SECRET) {
       throw new Error('JWT_SECRET must be set to a non-default value in shared-accounts mode')
     }
