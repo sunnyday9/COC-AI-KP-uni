@@ -28,6 +28,9 @@ export async function initializeRoomMailbox(): Promise<void> {
         ' request_id UUID UNIQUE NOT NULL, room_id TEXT NOT NULL, user_id BIGINT NOT NULL,' +
         ' command JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL,' +
         ' claimed_by UUID, result JSONB);' +
+        'ALTER TABLE room_commands ADD COLUMN IF NOT EXISTS presence_loss BOOLEAN NOT NULL DEFAULT false;' +
+        'ALTER TABLE room_commands ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ;' +
+        'CREATE UNIQUE INDEX IF NOT EXISTS room_commands_presence_loss ON room_commands (room_id, user_id) WHERE presence_loss;' +
         'CREATE INDEX IF NOT EXISTS room_commands_by_room ON room_commands (room_id, sequence);' +
         'CREATE INDEX IF NOT EXISTS room_commands_expiry ON room_commands (expires_at)',
       )
@@ -83,7 +86,7 @@ export async function sendRoomCommand(
     )
     const capacity = await client.query<{ total: number; room: number }>(
       'SELECT count(*)::int AS total, count(*) FILTER (WHERE room_id = $1)::int AS room' +
-      ' FROM room_commands WHERE expires_at > clock_timestamp()', [roomId],
+      ' FROM room_commands WHERE NOT presence_loss AND expires_at > clock_timestamp()', [roomId],
     )
     if (capacity.rows[0].total >= globalLimit || capacity.rows[0].room >= roomLimit || pending.aborted) return false
     await client.query(
@@ -132,7 +135,12 @@ async function executeClaim(
     result = { ok: true, value: await execute(row.room_id, row.user_id, row.command) }
   } catch (error) {
     logger.warn('Relayed room command failed', { error: postgresError(error).message })
+    if (row.presence_loss) return // A worker can reclaim the durable intent.
     result = { ok: false }
+  }
+  if (row.presence_loss) {
+    await pool.query('DELETE FROM room_commands WHERE request_id = $1 AND claimed_by = $2', [row.request_id, workerId])
+    return
   }
   await pool.query(
     'UPDATE room_commands SET result = $3 WHERE request_id = $1 AND claimed_by = $2 AND expires_at > clock_timestamp()',
@@ -154,7 +162,7 @@ export async function runRoomMailbox(
         )
         cleanAfter = Date.now() + deadlineMs
       }
-      const row = active.size < 8 && await claimNextRoomCommand(workerId)
+      const row = active.size < 8 && await claimNextRoomCommand(workerId, active)
       if (row) {
         active.add(row.request_id)
         void executeClaim(workerId, row, execute)

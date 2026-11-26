@@ -2,7 +2,7 @@ import { ROOM_RUNTIME } from '../config.js'
 import type { RoomActionResult } from '../../../shared/types/room.js'
 import { RoomRelayUnavailable, sendRoomCommand, withRoomRelayDeadline } from './roomMailbox.js'
 import {
-  bindRoomCharacter, deleteRoomAsOwner, hasRoomCapacity, isRoomMember, joinRoom,
+  bindRoomCharacter, deleteRoomAsOwner, endRoom, handleOwnerWsDisconnect, hasRoomCapacity, isRoomMember, joinRoom,
   joinRoomByInviteCode, kickRoomMember, leaveRoomAsMember, resolveRoomInvite,
   setMemberReady, setRoomTurnWindow, startRoom, transferOwnership,
 } from './roomService.js'
@@ -16,9 +16,14 @@ const commandHandlers = {
     return joinRoomByInviteCode(userId, code)
   },
   start: startRoom,
+  end: endRoom,
   bind: bindRoomCharacter,
   ready: setMemberReady,
   leave: leaveRoomAsMember,
+  async disconnected(userId: number, roomId: string, requestId: string) {
+    await handleOwnerWsDisconnect(roomId, userId, undefined, requestId)
+    return true
+  },
   kick: kickRoomMember,
   transfer: transferOwnership,
   settings: setRoomTurnWindow,
@@ -49,7 +54,7 @@ const commandHandlers = {
 
 type RoomCommandName = keyof typeof commandHandlers
 type SocketCommand = 'snapshot' | 'chat' | 'retry'
-type RestCommand = Exclude<RoomCommandName, SocketCommand>
+type RestCommand = Exclude<RoomCommandName, SocketCommand | 'disconnected'>
 
 type CommandArgs<K extends RoomCommandName> =
   Parameters<typeof commandHandlers[K]> extends [number, string, ...infer Args] ? Args : never
@@ -103,7 +108,7 @@ export async function routeSocketCommand<K extends SocketCommand>(
 export async function executeRoomCommand(roomId: string, userId: number, raw: unknown): Promise<unknown> {
   const command = raw as { name: RoomCommandName; args: CommandArgs<RoomCommandName> }
   if (!Object.hasOwn(commandHandlers, command.name) || !Array.isArray(command.args)) throw new RoomRelayUnavailable()
-  if (command.name !== 'snapshot' && command.name !== 'chat' && command.name !== 'retry') {
+  if (command.name !== 'snapshot' && command.name !== 'chat' && command.name !== 'retry' && command.name !== 'disconnected') {
     if (command.name === 'invite') {
       const [invite] = command.args
       if (typeof invite !== 'string' || await resolveRoomInvite(invite) !== roomId) return missing

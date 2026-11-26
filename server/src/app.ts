@@ -16,6 +16,9 @@ import { runPendingRoomRecovery, startRoomReaper } from './services/roomService.
 import { roomWorkerId } from './services/roomStorage.js'
 import { executeRoomCommand } from './services/roomCommands.js'
 import { initializeRoomMailbox, runRoomMailbox } from './services/roomMailbox.js'
+import { initializeRoomPresence } from './db/postgresRoomPresenceSchema.js'
+import { markGatewayDraining, runGatewayPresence, waitForGatewayPresenceCleanup } from './ws/gatewayPresence.js'
+import { markTransportReset } from './ws/sendFrame.js'
 import { runGatewayRoomFanout } from './ws/gatewayRooms.js'
 import { createWsServer } from './ws/index.js'
 import { hasSubscribers } from './ws/roomLedger.js'
@@ -164,7 +167,10 @@ async function startServer(): Promise<void> {
     }
     if (SHARED_ROOMS_ENABLED) await initializePostgresRooms(ROOM_WORKER_FAILOVER_ENABLED, SHARED_ROOM_CATALOG_ENABLED)
   } else getDb()
-  if (ROOM_RUNTIME !== 'direct') await initializeRoomMailbox()
+  if (ROOM_RUNTIME !== 'direct') {
+    await initializeRoomMailbox()
+    await initializeRoomPresence()
+  }
   if (ROOM_RUNTIME === 'worker') {
     const metrics = await listenForWorkerMetrics()
     startRoomReaper()
@@ -181,11 +187,30 @@ async function startServer(): Promise<void> {
     }
   })
   if (sharedAccounts && !SHARED_ROOMS_ENABLED) return
-  createWsServer(httpServer)
+  const sockets = createWsServer(httpServer)
   if (ROOM_RUNTIME === 'gateway') {
-    const fanout = new AbortController()
-    httpServer.once('close', () => fanout.abort())
-    void runGatewayRoomFanout(fanout.signal)
+    const lifetime = new AbortController()
+    const drain = () => {
+      markGatewayDraining()
+      lifetime.abort()
+      for (const socket of sockets.clients) markTransportReset(socket)
+      const closed = Promise.all([
+        new Promise<void>((resolve) => sockets.close(() => resolve())),
+        new Promise<void>((resolve) => httpServer.close(() => resolve())),
+      ])
+      for (const socket of sockets.clients) socket.terminate()
+      void closed.then(waitForGatewayPresenceCleanup).then(() => process.exit(0))
+      setTimeout(() => process.exit(0), 5_000).unref()
+    }
+    process.once('SIGTERM', drain)
+    process.once('SIGINT', drain)
+    httpServer.once('close', () => {
+      lifetime.abort()
+      process.off('SIGTERM', drain)
+      process.off('SIGINT', drain)
+    })
+    void runGatewayRoomFanout(lifetime.signal)
+    void runGatewayPresence(lifetime.signal)
     return
   }
   // 房间 TTL 回收（#86）：CONTEXT.md「活跃实例·TTL 回收」与 roomService 头注释

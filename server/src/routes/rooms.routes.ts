@@ -5,6 +5,7 @@
  *  - GET    /api/rooms/:id       房间详情（成员/阶段/剧本）
  *  - POST   /api/rooms/join      邀请码加入
  *  - POST   /api/rooms/:id/start 房主开始游戏（绑定剧本）
+ *  - POST   /api/rooms/:id/end   房主结束游戏
  *  - DELETE /api/rooms/:id       房主解散
  *
  * ADR-0001：路由只做「解析请求 → 调 RoomService 领域方法 → 映射响应」，
@@ -120,6 +121,15 @@ router.post('/:id/start', async (req: AuthRequest, res) => {
   const roomId = String(req.params.id ?? '')
   const storyId = String((req.body as { storyId?: unknown } | undefined)?.storyId ?? '')
   const result = await routeRoomMutation('start', userId, roomId, [storyId], roomRequestSignal(res))
+  if (!result.ok) {
+    sendDomainError(res, result)
+    return
+  }
+  res.json({ ok: true })
+})
+
+router.post('/:id/end', async (req: AuthRequest, res) => {
+  const result = await routeRoomMutation('end', req.userId as number, String(req.params.id ?? ''), [], roomRequestSignal(res))
   if (!result.ok) {
     sendDomainError(res, result)
     return

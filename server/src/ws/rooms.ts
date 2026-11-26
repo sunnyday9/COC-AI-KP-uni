@@ -19,6 +19,7 @@
 import type { WebSocket } from 'ws'
 import { ROOM_RUNTIME } from '../config.js'
 import { routeSocketCommand } from '../services/roomCommands.js'
+import { releaseGatewaySocketPresence } from './gatewayPresence.js'
 import { resumeGatewaySocket } from './gatewayRooms.js'
 import type { RoomActionResult } from '../../../shared/types/room.js'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
@@ -27,6 +28,8 @@ import { cleanupSocket, ensureFanout, planAction, planJoin, planSync, roomIdsOfS
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import { isTransportReset, sendFrame } from './sendFrame.js'
+
+const directUsers = new WeakMap<object, number>()
 
 function send(socket: WebSocket, obj: unknown): void {
   if (socket.readyState !== 1 /* WebSocket.OPEN */) return
@@ -71,6 +74,7 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
   // 扇出挂接：RoomService 事件 → 房间订阅组（幂等由订阅簿保证）
   ensureFanout(room, (event, seq) => broadcast(roomId, event, seq))
   if (socket.readyState !== 1) return
+  directUsers.set(socket, userId)
   subscribeSocket(socket, roomId)
   // 全量快照（加入时）
   const events = lastSeq > 0 && lastSeq <= room.getSeq() ? room.getEventsSince(lastSeq) : null
@@ -227,10 +231,13 @@ export async function handleRoomAction(socket: WebSocket, userId: number, raw: u
 export async function cleanupSocketRooms(socket: WebSocket, userId?: number | null): Promise<void> {
   const roomIds = roomIdsOfSocket(socket)
   if (ROOM_RUNTIME === 'gateway') {
+    releaseGatewaySocketPresence(socket, !isTransportReset(socket))
     for (const roomId of roomIds) unsubscribeGatewaySocket(socket, roomId)
     return
   }
   cleanupSocket(socket)
   if (!userId || isTransportReset(socket)) return
-  await Promise.all(roomIds.map((roomId) => handleOwnerWsDisconnect(roomId, userId)))
+  await Promise.all(roomIds.map((roomId) => handleOwnerWsDisconnect(roomId, userId, () =>
+    !subscribersOf(roomId).some((subscriber) => subscriber.readyState === 1 && directUsers.get(subscriber) === userId),
+  )))
 }

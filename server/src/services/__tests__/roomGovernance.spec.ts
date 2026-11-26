@@ -172,7 +172,7 @@ describe('leave（成员主动离开）', () => {
     const ownerLeft = await leaveRoomAsMember(owner, created.roomId)
     expect(ownerLeft.ok).toBe(true)
     expect(getDb().prepare(`SELECT owner_id FROM rooms WHERE room_id = ?`).get(created.roomId)).toMatchObject({ owner_id: memberB })
-    expect(memberRow(created.roomId, owner).role).toBe('member')
+    expect(memberRow(created.roomId, owner)).toBeUndefined()
     expect(memberRow(created.roomId, memberB).role).toBe('owner')
   })
 

@@ -12,6 +12,7 @@
  */
 import type { RoomEvent, RoomService } from '../services/roomService.js'
 import { getRoom, hasRoomCapacity, isRoomMember, joinRoom, RoomWorkerBusyError } from '../services/roomService.js'
+import { releaseGatewayPresence } from './gatewayPresence.js'
 import type { FrameRecipient } from './sendFrame.js'
 
 /** 订阅者的最小传输面（WebSocket 的结构子集）。readyState === 1 = OPEN。 */
@@ -159,6 +160,7 @@ export function reserveGatewaySubscription(socket: RoomSubscriber, roomId: strin
 }
 
 export function unsubscribeGatewaySocket(socket: RoomSubscriber, roomId: string): void {
+  releaseGatewayPresence(socket, roomId)
   const listeners = gatewaySubscriptions.get(roomId)
   if (!listeners?.delete(socket)) return
   if (!listeners.size) gatewaySubscriptions.delete(roomId)

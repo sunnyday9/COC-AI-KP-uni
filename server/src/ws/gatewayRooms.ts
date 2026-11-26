@@ -6,6 +6,7 @@ import { errorMessage } from '../utils/errors.js'
 import {
   gatewayRoomIds, gatewaySubscribers, reserveGatewaySubscription, unsubscribeGatewaySocket, type RoomSubscriber,
 } from './roomLedger.js'
+import { activateGatewayPresence, joinGatewayPresence } from './gatewayPresence.js'
 import { markTransportReset, sendFrame } from './sendFrame.js'
 
 const MAX_REPLAY_BYTES = 512 * 1024
@@ -45,6 +46,12 @@ export async function resumeGatewaySocket(
 
   const current = () => socket.readyState === 1 && subscription === gatewaySubscribers(roomId)?.get(socket)
   try {
+    const present = await joinGatewayPresence(socket, roomId, userId)
+    if (!current()) return
+    if (!present) {
+      send({ type: 'room:error', roomId, error: 'not a room member' })
+      return
+    }
     if (lastSeq > 0) {
       const [result] = await readRoomOutbox([{ roomId, userIds: [userId], seq: lastSeq }], ROOM_EVENT_WINDOW, MAX_REPLAY_BYTES)
       if (!current()) return
@@ -56,7 +63,10 @@ export async function resumeGatewaySocket(
       if (replay && result.highWater !== null) {
         for (const frame of replay) sendFrame(socket, frame)
         send({ type: 'room:sync:done', roomId, seq: result.highWater, actionReceipts: true })
-        subscription.seq = result.highWater
+        if (current()) {
+          subscription.seq = result.highWater
+          activateGatewayPresence(socket, roomId)
+        }
         return
       }
     }
@@ -67,7 +77,10 @@ export async function resumeGatewaySocket(
       return
     }
     send({ type: 'room:state', roomId, actionReceipts: true, ...result })
-    subscription.seq = result.seq
+    if (current()) {
+      subscription.seq = result.seq
+      activateGatewayPresence(socket, roomId)
+    }
   } finally {
     if (subscription.seq === null && subscription === gatewaySubscribers(roomId)?.get(socket)) {
       unsubscribeGatewaySocket(socket, roomId)

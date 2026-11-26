@@ -49,6 +49,7 @@ const outcomeLabel = computed(() => {
   if (o === 'defeat') return '失败'
   if (o === 'partial') return '部分成功'
   if (o === 'survival') return '幸存'
+  if (o === 'closed') return '房主结束'
   return '未知'
 })
 
