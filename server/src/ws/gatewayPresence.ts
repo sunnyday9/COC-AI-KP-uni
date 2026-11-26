@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { postgresError } from '../db/postgres.js'
-import { reapRoomPresence, registerRoomPresence, removeRoomPresence, renewRoomPresence, type RoomPresence } from '../services/roomStorage.js'
+import { reapRoomPresence, registerRoomPresence, removeRoomPresence, renewRoomPresence, type RoomPresence } from '../services/roomService.js'
 import { CapacityError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import type { FrameRecipient } from './sendFrame.js'
