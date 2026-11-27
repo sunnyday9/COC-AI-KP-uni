@@ -5,22 +5,28 @@
 ## 词汇表
 
 ### 房间（Room）
-多人联机的会话单元。DB 权威 = `rooms`/`room_members` 两张表（列 + `rooms.state` JSON 快照）；运行时权威 = 活跃实例。
+承载一场调查的会话单元，包含阶段、成员资格、选定的剧本、回合状态和聊天记录。单人调查同样使用房间。
 
 ### 房间存储（RoomStorage）
-房间领域的持久化 module：拥有 `rooms`/`room_members` 的全部 SQL 与对账原语。落点 `server/src/services/roomStorage.ts`。**REST 路由与 ws 层不接触房间表结构**（ADR-0001）；外部 id 只作为 DB 键进入查询（D-09）。
+房间领域保存和恢复持久状态的接口，包含房间、成员、行动回执、事件和聊天记录。默认部署使用 SQLite，共享部署使用 PostgreSQL。房间业务决策归领域执行层所有（ADR-0001、ADR-0010）。
 
 ### RoomService（房间领域）
 房间领域的唯一 interface：REST 与 ws 只通过它的领域方法（`createRoom` / `joinRoomByInviteCode` / `getRoomDetail` / `startRoom` / `bindRoomCharacter` / `setRoomTurnWindow` / `joinRoom` / `submitPlayerChat`…）触碰房间。每房间一个实例承载运行时状态。
 
 ### 活跃实例（active instance）
-内存注册表中该房间的 RoomService 实例：状态真源（消息流/角色组/seq 水位）、串行队列、节流落库、TTL 回收。**懒激活**：仅在 WS join 时 materialize（REST 建房只持久化，不激活）。
+在执行期间持有房间状态、回合队列和事件序号的实例。共享部署中，持有有效租约的 worker 可在玩家重连前恢复已接受的行动和未完成的开场。
+
+### 房间租约与所有权代次（room lease and epoch）
+共享部署中房间 worker 获得的限时写入权。接管房间会取得递增的所有权代次，旧代次的执行结果无法提交。
+
+### 行动回执（action receipt）
+记录一笔聊天行动的接收和处理状态。房间内同一成员可以用原行动编号和内容重试，取回同一条消息的回执。
 
 ### 对账（reconcile）
 DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执行 `syncFromDb`（列优先：`story_id`/`phase` 列覆盖 state 快照）+ 成员广播。实例 materialize 时的 restore 同样列优先。
 
 ### 房间订阅簿（RoomLedger）
-房间事件流的传输决策 module：订阅注册表（socket↔room）、扇出挂接幂等、join/sync/action 的帧规划（该发什么帧）。落点 `server/src/ws/roomLedger.ts`；`ws/rooms.ts` 只是 JSON 编解码 + socket 生命周期 adapter。「缺口过大 → 全量兜底」的语义留在领域（D-16）。
+房间传输层用于登记连接订阅和规划 join、sync、action 回复的模块。共享网关使用房间序号跟踪实时投递与重放。缺口过大时由领域选择快照（D-16）。
 
 ### 回合窗口（turnWindowMs）
 房主可调的 KP 回合合并窗口（0 = 严格排队）。运行时由活跃实例**唯一持有**；REST 设置经领域方法一次写库 + 同步实例，无每消息重读。
@@ -39,6 +45,9 @@ DB 权威与活跃实例的一致化：领域方法写库后对活跃实例执�
 
 ### 剧本准备（story preparation）
 从用户上传的剧本生成可供开局与回合使用的索引、档案和原文锚点。它有独立的处理状态和容量预算。
+
+### 固定剧本版本（pinned story revision）
+一场调查选定的剧本归属、原文修订和完整准备修订。共享部署中，目录重新生成、删除或房主移交后，房间仍使用所选版本。
 
 ### 开局门闩（start gate）
 `lobby → playing` 的迁移约束：多人房主已选剧本 + **每名成员已绑定角色卡**，任一不满足则开局被拒（服务端 409 带缺项提示）；单人虽无等待室/成员闩，也必须通过同一 workflow artifact 可用性检查。角色卡绑定是多人硬前提；就绪是软信号。判定单源落点 `server/src/services/startGate.ts`（`checkStartGate`：结束态终态/已选剧本/workflow 可用性/成员绑卡全收编；startRoom 与 createSoloRoom 双入口差异用 `gateFor: 'lobby-start' | 'solo-create'` 表达；dossier workflow 要求档案已生成且未降质；rag workflow 要求已索引，并且档案至少含一条 truth revealScene，各真相揭晓点均有匹配的原文锚点）。
@@ -112,7 +121,7 @@ RAG 在双轨制中的角色：只供**纹理**（环境描写、原文措辞、
 - D-09：外部 id 不参与 fs 路径；上传文件由 DB 映射到 uuid 文件名，RAG/档案
   JSON artifact 也使用服务端生成的 uuid 文件名，并按 JSON 元数据解析外部 id。
   所有文件 sink 同时做 lexical boundary + realpath 校验，拒绝符号链接逃逸。
-- D7/D-10：当前运行态采用单进程内存注册表、节流快照和 TTL 回收。跨主机方案沿用房间单写者语义，见 ADR-0010。
+- D7/D-10：SQLite 部署使用单进程注册表、节流快照和 TTL 回收。共享部署通过房间租约和代次约束单写者，见 ADR-0010。
 - 服务端权威单轨：客户端无规则、无工具循环（`docs/history/ARCHITECTURE-MULTIPLAYER.md` §四）。
 - ADR-0003：LLM 接入协议一等公民（协议模型 / 适配器 / 本地端点不豁免 / Responses 流式策略）。
 - ADR-0007：知识供给双轨——档案为权威框架，标准 RAG 只作纹理补充；放弃 GraphRAG；分块搬服务端；本地 cross-encoder rerank（禁用 pipeline text-classification 取分）。

@@ -2,7 +2,7 @@
 
 > **单人 + 多人联机的 AI 跑团（TRPG）平台**：导入你的剧本 → AI 守密人（Keeper）驱动克苏鲁 7th 规则跑团——探索、战斗、SAN 检定、线索门控、结局结算。全栈 TypeScript monorepo，H5 / 微信小程序 / App 三端。
 
-COC 7th 规则 AI 跑团助手，由原 Electron 单机应用重构而来。服务端（Express + TypeScript）承载 AI 守密人 Agent 的全部规则与记忆：LangGraph 状态机、RAG 剧本检索、SQLite 持久化、WebSocket 实时帧。前端 uni-app（Vue 3 + Pinia），暗色克苏鲁哥特 UI（ADRs 驱动的完整设计令牌体系）。
+COC 7th 规则 AI 跑团助手，由原 Electron 单机应用重构而来。服务端（Express + TypeScript）承载 AI 守密人 Agent 的规则与记忆，使用 LangGraph 状态机、RAG 剧本检索和 WebSocket 房间协议。前端使用 uni-app（Vue 3 + Pinia）和克苏鲁哥特设计系统。
 
 > 核心玩法闭环：**导入剧本 → RAG 索引 → 创建角色 → 与 AI 守密人对话 → 工具链驱动探索 / 战斗 / SAN 检定 → 线索门控推进剧情 → 结局结算 → 房间快照持久化与续玩**。
 
@@ -17,7 +17,7 @@ COC 7th 规则 AI 跑团助手，由原 Electron 单机应用重构而来。服�
 
 ### 👥 多人联机（ADR-0005）
 - **等待室（lobby）**：房主选已索引剧本、房间码邀请、成员各自绑定角色卡、全员就绪、开局门闩（未绑卡 / 未选剧本 → 开局被拒）；
-- **房间治理**：踢出 / 主动转让 / 房主断线立即转让 / 解散，成员被移出有明确提示回大厅；
+- **房间治理**支持踢出、主动转让和解散。房主最后一个有效订阅普通断线会触发继任判断。网关退出和服务端重置连接按传输中断处理，已知边界见 [部署指南](docs/DEPLOYMENT.md#多房间进程故障恢复预发布120)。
 - 开局后进入**同一张游戏桌**：桌面三栏（左场景线索 / 中对话流 / 右调查员档案），移动端单栏 + bottom sheet；
 - **队友档案切换**：随时查看任一成员的调查员档案（含未绑卡空态）；
 - KP 回合使用**当前房主**的模型 / Key，故事文件与 RAG 索引按原故事所有者读取（房主转让后仍可续玩；成员无需任何 AI 配置）。
@@ -47,19 +47,20 @@ server (Express + TypeScript)
   │              → Generate → Validate → forceTools）
   ├─ RAG         服务端递归切块 → 本地嵌入 → 向量召回 → cross-encoder 重排（无图）
   ├─ 房间        状态机 + 快照（solo = 单成员房间；multi = 治理状态机）
-  ├─ SQLite      node:sqlite（WAL），零原生依赖
+  ├─ 本地模式    SQLite（WAL）与本地剧本文件，默认启用
+  ├─ 共享模式    PostgreSQL 与私有 S3 兼容存储，需显式配置
   └─ WS          帧协议：消息 / 骰子 / 工具 / 档案 / 回合（全序 seq + 增量同步）
 ```
 
-- **规则与记忆全在服务端**（ADR-0002）：客户端无规则、无工具循环、无提示词组装——房间事件流是唯一事实源，重进 / 刷新即恢复；
+- **规则与记忆全在服务端**（ADR-0002）。客户端根据已提交的房间事件和快照恢复视图。
 - **多端一码**：同一套 Vue 代码跑 H5 / 微信小程序 / App，条件编译处理平台差异；
-- 架构决策见 `docs/adr/`，术语统一见 `CONTEXT.md`。面向更大规模的部署方案见 [ADR-0010](docs/adr/0010-scale-out-deployment.md)。
+- **共享预发布**可独立运行 HTTP/WebSocket 网关、房间 worker 和剧本准备 worker。房间 worker 持租约执行回合，共享目录按账号分页，进行中的调查沿用开局时固定的剧本版本。配置与边界见 [ADR-0010](docs/adr/0010-scale-out-deployment.md) 和 [部署指南](docs/DEPLOYMENT.md)。
 
 ## 目录结构
 
 ```
 AI-COC-KP/
-├── server/        # Express + TS 后端（JWT、SQLite、LangGraph KP、RAG、WS 帧协议）
+├── server/        # Express + TS 后端（网关、房间执行、剧本准备、SQLite/PostgreSQL）
 ├── client/        # uni-app 前端（H5 / 微信小程序 / App）
 ├── shared/        # 共享 TS 源码包（COC 规则定义、类型、provider 清单）
 ├── training/      # KP 自训工作区（distill 数据管线 + eval 评测，ADR-0006）
@@ -146,6 +147,9 @@ MODELS_DIR="$PWD/data/models" RERANK_SMOKE=1 npx vitest run src/rag/__tests__/re
 | `AGENTS.md` | Agent 工作流约定（issue tracker / triage 标签 / 领域文档入口） |
 | `docs/DEVELOPMENT-LOG.md` | 实现决策记录（D-01 起，与 ADR 分工的第二决策流） |
 | `docs/DEPLOYMENT.md` | 部署上线指南（含 BYOK 玩家引导、安全基线、回滚） |
+| [SQLite 迁移与回滚演练](docs/MIGRATION-REHEARSAL.md) | 匹配备份、离线导入、切换后恢复与对账 |
+| [扩容验收方案](docs/scale-out-staging.md) | 参考拓扑、合成负载、服务预算与签收条件 |
+| [扩容测试结果](docs/scale-out-staging-results.md) | 按提交记录本地实测、未达标项与未测项目 |
 | `docs/api-contract.md` | 前后端 API 契约（唯一接口基准；§10 安全约束） |
 | `test-agent/README.md` | 当前 REST + WebSocket 房间协议旅程与运行方式 |
 
@@ -164,6 +168,7 @@ MODELS_DIR="$PWD/data/models" RERANK_SMOKE=1 npx vitest run src/rag/__tests__/re
 
 - **MVP 完成**：单人 + 多人全功能闭环落地 main；历史回归记录见 `docs/DEVELOPMENT-LOG.md`，当前工作树请以 CI/test runner 实际输出为准；
 - 主要里程碑：Electron → 服务端重构（ADR-0002）→ LLM 协议化（ADR-0003）→ UI 全面重设计（ADR-0004）→ 多人房间（ADR-0005）→ BYOK / 依赖安全收口；
+- 共享部署已完成隔离环境的功能验证和迁移演练。本地 2,000 连接、1,000 房间的混合负载未达到延迟及集中重连预算。扩大部署仍需完成参考环境验收并处理房主续连问题。见 [扩容验收 #126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126) 和 [房主续连 #127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127)。
 - 路线图候选（未立项）：流式输出、observer 观战、多人结局、故事共享。
 
 ## 安全设计

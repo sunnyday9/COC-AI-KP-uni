@@ -45,6 +45,8 @@ Use a separately approved staging account, provider, credential, time window, an
 
 Record each budget as passed, missed, or unmeasured. Attach the migration and rollback rehearsal evidence and the deterministic and live BYOK results. A reference run is pending until staging is provisioned. See the [local measurements and raw report identifiers](scale-out-staging-results.md).
 
+Retain the underlying counts with the scorecard. Reconnect offers can include failed resumes, and the full-run first-send threshold currently requires all 180,000 paced dispatches even with planned disconnects. The diagnostic counts and issue history are needed to interpret those checks. See [#131](https://github.com/sunnyday9/COC-AI-KP-uni/issues/131), [#132](https://github.com/sunnyday9/COC-AI-KP-uni/issues/132), and [#134](https://github.com/sunnyday9/COC-AI-KP-uni/issues/134).
+
 ## Running the synthetic load generator
 
 Use Node 24 or later and install the workspace dependencies with `npm ci`. Provision an empty PostgreSQL database and a same-named role matching stage126_<10 lower-case hexadecimal digits>. Provision an empty private S3-compatible bucket named fixture-stage126-<10 lower-case hexadecimal digits>. Supply the PostgreSQL connection URI in `STAGING_DATABASE_URL` and the S3 fixture JSON in STAGING_S3_FIXTURE. The object contains endpoint, region, bucket, forcePathStyle and credentials as used by the shared-story integration test. Supply secrets through the environment without echoing either variable. Both endpoints must use explicit IPv4 loopback addresses and ports. Dispose of the dedicated database, role and bucket after each run.

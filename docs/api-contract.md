@@ -75,6 +75,7 @@
 - `room:action:result {roomId,actionId,status,code,error}` 表示本次请求未得到接收确认。`rejected` 是权限、内容或编号冲突。`busy` 表示房间达到待处理上限。命令入口饱和时可能先返回忙碌，稍后重发原编号即可查询已有回执。`retry` 表示暂时无法确认结果。忙碌、回执丢失和暂时性错误后均可用原编号重试。固定的剧本版本暂时无法读取时，新行动收到 `story_unavailable`。已保存的回执仍可通过同一个编号查询。
 - 旧客户端省略 `actionId` 时仍收到消息回显及原有错误帧，每次提交视作新的聊天。新客户端连接未声明回执能力的服务端时也使用旧协议。旧聊天、结构化骰子消息和 `retry_kp` 的帧格式保持兼容。
 - 每个房间由一个权威实例执行。SQLite 和 PostgreSQL 均先提交聊天、回执和待处理状态，再广播回显。共享部署由持有 PostgreSQL 租约的 worker 执行，网关投递已提交的事件。房间重新载入时恢复待处理行动。回合结果与已处理状态一并提交。提交前的中断可能使 KP 请求重做。参见 ADR-0010。
+- 网关暂时无法取得命令结果时，客户端可以重发同一 `actionId`。direct 连接收到 `room_inactive` 时，先重新加入房间，再重试原行动编号。失去 worker 租约后的旧连接存在已知恢复缺口。见 [#129](https://github.com/sunnyday9/COC-AI-KP-uni/issues/129)。
 
 
 ### 房间聊天记录
@@ -172,7 +173,7 @@
 
 ## 11. 实挂路由组一览（与 `server/src/app.ts` 对齐，9 组）
 
-`local`（默认）挂载下表 9 组路由及 §4 的 WebSocket。`shared-accounts` 挂载第 1、2 组 HTTP 路由。配置私有对象存储后，同时挂载第 4 组共享目录路由（原文下载可用，RAG 解析路由留在本地模式）。设置 `ENABLE_SHARED_ROOMS=1` 的单个共享游戏进程还挂载第 7–9 组 HTTP 路由及 §4 的 WebSocket。该阶段使用独立的只读测试剧本目录。两种模式均提供 §12 的健康探针。启动配置与各阶段流程见 [部署指南](DEPLOYMENT.md)。
+`local`（默认）挂载下表 9 组路由及 §4 的 WebSocket。`shared-accounts` 挂载第 1、2 组 HTTP 路由，配置私有对象存储后还挂载第 4 组的共享剧本目录。启用共享剧本准备后，`/api/stories` 增加准备任务接口，`/api/rag` 提供已准备剧本的目录接口。设置 `ENABLE_SHARED_ROOMS=1` 后，direct 实例或独立网关提供第 7–9 组路由及 §4 的 WebSocket。独立房间 worker 执行网关提交的房间命令。HTTP 进程提供 §12 的健康探针。配置与预发布流程见 [部署指南](DEPLOYMENT.md)。
 
 | # | 挂载路径 | 路由文件 | 端点（Path 级） | 导览 |
 |---|---|---|---|---|

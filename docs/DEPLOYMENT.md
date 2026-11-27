@@ -1,6 +1,6 @@
 # 部署与上线指南（AI-COC-KP 多人版）
 
-> 版本：v0.2.0（2026-09-04 tag）· 分支：main
+> 适用于 main 的默认本地部署与可选共享预发布。历史发布包请查阅对应版本标签的文档。
 > 本文档覆盖：环境要求、构建、部署拓扑、环境变量、数据库迁移、上线检查清单、回滚。
 
 ---
@@ -11,8 +11,8 @@
 |---|---|
 | Node.js | **≥ 24**（node:sqlite 内置，零原生依赖） |
 | 操作系统 | Linux（生产）/ Windows / macOS（开发均可） |
-| 数据库 | SQLite（内置，无外部服务）——文件：`<DATA_DIR>/ai-kp.db` |
-| 内存 | ≥ 512MB（单进程；≤100 并发房间） |
+| 数据库与剧本存储 | 默认使用 `<DATA_DIR>/ai-kp.db` 和本地文件。共享预发布使用 PostgreSQL，启用共享目录或准备时还需私有 S3 兼容存储。 |
+| 内存 | 单进程基线 ≥ 512 MB，原目标为 ≤100 个活跃房间。共享部署按网关、房间与剧本准备的实测峰值分别规划。 |
 | 出网 | 需访问 LLM 提供商 API（OpenAI 兼容 / Anthropic / Google） |
 
 ## 2. 构建
@@ -25,7 +25,7 @@ cd server && npm run build  # 服务端 → server/dist
 
 微信小程序：`npm run build:mp-weixin`（产物 `client/dist/build/mp-weixin`，用微信开发者工具上传）。
 
-## 3. 部署拓扑（单进程，v2.0 NFR-M9）
+## 3. 默认本地部署拓扑
 
 ```
 Nginx（TLS / WebSocket 升级）
@@ -157,7 +157,7 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 共享房间在发送玩家聊天回显前提交待处理行动。守秘人回合（含开场）的角色卡、场景、线索、结局、消息及消耗的行动一同提交，随后广播事件。进程在回合提交前终止时，重启从完整快照继续待处理行动。
 
-使用独立的临时 PostgreSQL 数据库设置 `TEST_SHARED_ROOMS_DATABASE_URL`，在仓库根目录运行 `npm run test:server -- src/routes/sharedRooms.test.ts`。测试用同一套既有 REST 和 WebSocket 协议覆盖 SQLite 与 PostgreSQL 的建房、游戏进程重启、房主及剧本归属、角色卡与待处理回合。当前共享房间部署仅面向受控的单游戏进程预发布。
+使用独立的临时 PostgreSQL 数据库设置 `TEST_SHARED_ROOMS_DATABASE_URL`，在仓库根目录运行 `npm run test:server -- src/routes/sharedRooms.test.ts`。测试用同一套既有 REST 和 WebSocket 协议覆盖 SQLite 与 PostgreSQL 的建房、游戏进程重启、房主及剧本归属、角色卡与待处理回合。此配置用于单游戏进程预发布。分离网关与房间执行时使用下一节的角色设置。
 
 #### 多房间进程故障恢复预发布（#120）
 
@@ -168,6 +168,8 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 - `ROOM_RUNTIME=gateway` 提供 HTTP 和 WebSocket，可以配置多个实例。负载均衡器将 HTTP 和 WebSocket 连接指向网关。
 - `ROOM_RUNTIME=worker` 执行房间命令和 Keeper 回合，无需 HTTP 端口。每个房间由持有有效 PostgreSQL 租约的 worker 执行。切换到独立网关前，请先停止仍持有房间租约的 direct 实例。
 
+开始接入前验证各网关的 `/health/ready` 并等待各房间 worker 输出 `Room worker ready`。网关探针只检查数据库连通性。再通过网关完成一次建房、订阅和行动回执，确认房间命令能由 worker 接收并返回结果。
+
 跨网关使用已提交事件的序列号排序。加入和同步使用已授权的房间快照。房间命令的等待期限为 2.5 秒。交互命令按房间散列到 16 组，每组最多 32 条等待结果的命令。网关批量读取这些命令的结果。确认房主离线的持久通知使用独立的配额。暂时没有可用 worker 时，HTTP 房间命令返回 503，带行动编号的 WebSocket 聊天返回可重试结果。连接关闭后，已经开始执行的命令仍可能提交。重试聊天时请复用原有的 `actionId`，以便读取已有回执。
 
 从使用全局房间命令配额的预发布构建升级时，请先在负载均衡器关闭新接入，并让旧网关排空连接后停止，然后启动采用分组配额的网关。两种构建使用不同的 PostgreSQL 接入锁，同时接入会突破配额。升级完成后再打开接入。已确认的行动保存在 PostgreSQL 中，客户端重连后可复用原有的 `actionId` 查询。
@@ -175,6 +177,8 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 每次接管取得递增的房间 epoch。行动回执、回合结果、房间快照、按序房间事件和事件待投递记录在当前 epoch 校验下提交。进程在 Keeper 调用中退出后，下一进程从已持久化的行动批次继续。模型请求可能重复，已提交的角色卡、线索和结局效果只保存一次。已订阅的同进程连接在事务提交后接收事件。候选批次的成员或绑定角色在恢复时有变动，会记录原回合为已取消，再以新回合编号处理仍有资格的行动。未激活房间的 REST 写操作会临时获取租约，在同一 epoch 内完成权限检查和写入。
 
 单进程模式使用排他启动锁，多进程预发布使用同一锁的共享模式。切换前先停掉正在运行的房间进程，再启动新模式。SQLite 无需配置。使用独立的 PostgreSQL 夹具运行 `npm run test:server -- src/routes/sharedRooms.test.ts`，覆盖抢占租约、延迟旧结果、杀进程恢复、按原批次重放和规则效果只提交一次。
+
+共享模式仍处于受控预发布。扩大流量前需处理首次续连中断可能误触发房主交接或解散的问题，并完成分布式的 30 分钟混合负载与独立的真实 BYOK 验证。快照断线后排空、direct 模式旧连接恢复及单回合大量事件的边界也列入跟踪。见 [验收方案](scale-out-staging.md)、[结果](scale-out-staging-results.md) 和 [#127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127)。
 
 ### 6.4 共享剧本准备进程（#116）
 
@@ -207,7 +211,7 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts STORY_PREPARATION_ENABLED=1 
 
 ### 6.5 共享房间固定剧本版本（#118）
 
-为唯一的共享游戏进程配置私有对象存储、`STORY_PREPARATION_ENABLED=1` 和 `ENABLE_SHARED_ROOMS=1`。单人和多人开局时会检查已发布的完整版本并保存剧本所有者、原文版本和准备版本。续玩、房主移交及再处理均沿用房间的固定版本。剧本目录删除采用软删除，已保存的房间仍可使用其版本。保留房间所引用的对象及数据库记录，冷加载遇到缺失或不一致的产物时会暂停回合。
+为共享游戏进程配置私有对象存储、`STORY_PREPARATION_ENABLED=1` 和 `ENABLE_SHARED_ROOMS=1`。分离运行时，所有网关和房间 worker 使用匹配的配置。单人和多人开局时会检查已发布的完整版本并保存剧本所有者、原文版本和准备版本。续玩、房主移交及再处理均沿用房间的固定版本。剧本目录删除采用软删除，已保存的房间仍可使用其版本。保留房间所引用的对象及数据库记录，冷加载遇到缺失或不一致的产物时会暂停回合。
 
 共享游戏进程的分页索引清单返回 `canStartInvestigation: true`。未启用共享游戏的目录服务继续提供准备状态。未配置对象存储的受控预发布仍可按 6.3 使用隔离夹具。
 

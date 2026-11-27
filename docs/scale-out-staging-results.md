@@ -127,6 +127,16 @@ PostgreSQL peaked at 64 of 100 client backends, with up to 22 lock waiters, one 
 
 The raw report is `stage126-integrated-million-b6c04c6-20261127-113504.json`, SHA-256 `bc94c37a0d4a000f81eae25aa63689dbeaf5260d05ed82a53e591c2ee0e90b74`.
 
+## Review-fix runtime verification, 2026-11-27
+
+Runtime revision `9e83b513dddec99be344d544dad425111c07d2ef` passed 998 server tests with PostgreSQL 16 and SeaweedFS fixtures. Two tests were conditionally skipped. Three path-safety assertions excluded on Windows passed separately under WSL. The server build, 135 client tests, 49 training tests, 23 training evaluation tests, six scorecard tests and the [migration and restore fixture rerun](MIGRATION-REHEARSAL.md#recorded-fixture-result) passed.
+
+The local smoke opened 64 connections across 32 playing rooms using three gateways, two room workers and one preparation worker. During the 30-second paced window it offered 240 actions and made 236 first sends. It dispatched 16 burst actions in their one-second window. All 272 acknowledged actions reconciled to terminal receipts without missing, pending or mismatched results, and the triggered gateway and worker recovery checks passed. Paced echo p95 was 1.90 seconds and deterministic Keeper p95 was 2.71 seconds. The paced-failure, latency and fault-overlap budgets were missed. The scorecard marked the reference workload missed and distributed acceptance unmeasured.
+
+The raw report is `aikp-review-workload-9e83b51-20261127-180852.json`, SHA-256 `024d66cf836956e246d8cb9fb989ca2617b766e526f87461730d4edadd1d4700`.
+
 ## Sign-off
 
 The reference deployment, its 30-minute mixed test, PostgreSQL host resource telemetry and the separately authorized live BYOK check remain unmeasured. The local runs exercise isolated PostgreSQL and S3 fixtures and cannot establish production capacity. See the [staging plan](scale-out-staging.md) for the target workload and budgets.
+
+Capacity acceptance remains open under [#126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126). The room recovery and replay findings [#127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127) through [#130](https://github.com/sunnyday9/COC-AI-KP-uni/issues/130) remain open, including the P1 first-resume room dissolution case.

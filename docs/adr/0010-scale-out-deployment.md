@@ -1,6 +1,6 @@
 # ADR-0010 Scale out gameplay and story preparation independently
 
-- Status: Adopted design. The split deployment and SQLite migration tooling are implemented. Reference capacity validation is pending.
+- Status: Adopted. The split runtime and fixture migration rehearsal are complete. Rollout beyond controlled staging awaits reference capacity validation and tracked recovery fixes.
 - Date: 2026-11-18
 - Related: ADR-0001 RoomStorage, ADR-0002 shared solo and multiplayer protocol, ADR-0007 dossier authority and spoiler protection
 
@@ -14,17 +14,16 @@ The initial deployment runs REST, WebSockets, room execution, and story preparat
 flowchart LR
   A[Players] --> G[HTTP and WebSocket gateways]
   G --> C[Account and story catalog]
-  G --> R[Room workers by room ID]
-  R --> P[Shared PostgreSQL]
+  G -->|Enqueue room commands| P[Shared PostgreSQL]
+  P -->|Claim commands| R[Room workers by room ID]
+  R -->|Commit state, receipts and events| P
   R --> L[BYOK model providers]
   C --> P
   C --> O[Private object storage]
-  C --> J[Durable story preparation jobs]
-  J --> W[Story preparation workers]
+  P -->|Claim preparation jobs| W[Story preparation workers]
   W --> O
   W --> P
-  R --> E[Durable room events and outbox]
-  E --> G
+  P -->|Replay and fan out committed events| G
 ```
 
 ### Room execution
@@ -62,7 +61,7 @@ Two HTTP gateways can share [sign-in and private account settings](../DEPLOYMENT
 
 The opt-in [shared room staging process](../DEPLOYMENT.md#63-单进程共享房间预发布115) keeps one authoritative gameplay process, stores rooms and membership in PostgreSQL, and restores solo and multiplayer rooms over the existing protocol. With [shared story preparation and storage enabled](../DEPLOYMENT.md#65-共享房间固定剧本版本118), each new room pins the verified source and preparation revisions. Saved rooms retain access to those revisions after regeneration or catalog deletion. Fixture-only staging uses prepared files under a separate root.
 
-A separate opt-in [worker failover stage](../DEPLOYMENT.md#多房间进程故障恢复预发布120) gives each active room a renewable PostgreSQL lease and a monotonic epoch. It restores the accepted batch and fences turn results, state, room events, and outbox rows in one commit. It supports direct worker connections or separate HTTP and WebSocket gateways. The gateways route authenticated room commands to the worker and deliver committed events in sequence. Gateways replay recent events directly from the committed sequence in PostgreSQL. Workers scan a bounded, indexed set of expired leases for queued turns and unfinished openings. A committed start can run its opening without another client command. Rooms paused for Keeper setup or provider pressure stay out of recovery until the pause clears. Workers retain the latest 200 event sequences and archive transcript messages separately. The Keeper reads past the hot snapshot only when its existing prompt window can fit older narrative. An expired or incomplete cursor, or a replay above 512 KiB, receives a snapshot with at most 40 messages and a transcript cursor. SQLite cutover remains a later rollout stage.
+A separate opt-in [worker failover stage](../DEPLOYMENT.md#多房间进程故障恢复预发布120) gives each active room a renewable PostgreSQL lease and a monotonic epoch. It restores the accepted batch and fences turn results, state, room events, and outbox rows in one commit. It supports direct worker connections or separate HTTP and WebSocket gateways. The gateways route authenticated room commands to the worker and deliver committed events in sequence. Gateways replay recent events directly from the committed sequence in PostgreSQL. Workers scan a bounded, indexed set of expired leases for queued turns and unfinished openings. A committed start can run its opening without another client command. Rooms paused for Keeper setup or provider pressure stay out of recovery until the pause clears. Workers retain the latest 200 event sequences and archive transcript messages separately. The Keeper reads past the hot snapshot only when its existing prompt window can fit older narrative. An expired or incomplete cursor, or a replay above 512 KiB, receives a snapshot with at most 40 messages and a transcript cursor. The fixture import and restore exercise the cutover tooling. Actual cutover still requires an operator-owned checkpoint and reconciliation.
 
 ## Local capacity check
 
@@ -94,5 +93,7 @@ Each catalog p95 comes from only three page reads. Latency varied between local 
 3. Add gateways and fenced room workers. Test two-host ordering, duplicate action submission, worker loss mid-turn, replay, and rolling upgrades before routing live traffic to multiple gameplay instances.
 
 Use the [SQLite migration and rollback rehearsal](../MIGRATION-REHEARSAL.md) for cutover and the [scale-out acceptance plan](../scale-out-staging.md) for rollout sign-off. The [staging evidence](../scale-out-staging-results.md) records the measured budgets and remaining validation.
+
+The room governance rules above describe the intended behavior. Before widening traffic, resolve the first-resume presence race that can trigger succession or dissolution during an aborted join. Snapshot cleanup during drain, stale direct-mode subscriptions, and large event commits also have tracked recovery gaps. See [#127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127), [#128](https://github.com/sunnyday9/COC-AI-KP-uni/issues/128), [#129](https://github.com/sunnyday9/COC-AI-KP-uni/issues/129), and [#130](https://github.com/sunnyday9/COC-AI-KP-uni/issues/130).
 
 The single-host stage retains full room history in snapshots. Catalog pages address story metadata. Source bytes, derived artifacts, live providers, long sessions, and cross-host recovery need independent capacity and fault tests.
