@@ -67,6 +67,8 @@ The database probe p95/p99 were 42.71/80.02 ms across 207 samples. Peak simultan
 
 Sampled peak RSS was 168.7 MiB for a gateway, 242.5 MiB for a room worker, 676.8 MiB for a preparation worker and 291.4 MiB for the generator. Generator event-loop delay p99 was 46.1 ms. Physical PostgreSQL storage latency, host CPU and enforced process ceilings remain unmeasured.
 
+The gateway result in this run covers client rejoin and membership count. The later overlapping-recovery smoke also checks the membership roster and replacement readiness.
+
 The raw report is `stage126-resume-million-20261127-000934.json`, SHA-256 `6ba7c7a862fe571b514b68eb1236b2ed9f3e027deb6f3782324df54e8e59b445`.
 
 ## Local worker targeting smoke, 2026-11-27 China Standard Time
@@ -76,6 +78,32 @@ Clean revision `29b892c5fb38fdc276772041b966cc735aa526ad` tested the revised fau
 All four worker fault barriers fired. Kills occurred at 41.01, 50.43, 59.18 and 68.13 seconds into the 60-second paced window, so the last fault fell outside it. In each case ownership advanced and the acknowledged action returned a completed receipt from another gateway after 3.01–3.45 seconds. Both staged effects ended at 8 HP with one patch each. Reconciliation found zero lost, pending or mismatched receipts among 503 acknowledged actions, zero duplicate committed action keys and zero sequence mismatches or regressions across 777 paired events. Within 30 seconds, 12 of 12 client-wave clients, 22 of 22 gateway-drain clients and four of four worker-failure clients resumed.
 
 The raw report is `stage126-resume-faults-20261127-001431.json`, SHA-256 `0546484f5a1aaf4528465b0f8bf8f2bc27160ff7292b59bf0723581737ac331e`.
+
+## Local overlapping-recovery smoke on the final room runtime, 2026-11-27
+
+Clean revision `6175e17b92356b508b95cbc74708baea06b53650` includes the room-governance runtime at `231ab03`. The single-host run started at 03:18:47 UTC with three gateways, two room workers, one preparation worker, six PostgreSQL connections per application pool, 64 initially open sockets and 5,000 metadata rows. PostgreSQL 16.15 and SeaweedFS 4.54 ran through WSL on loopback. The 55-second paced window offered 440 actions at 8/s and observed 437 live completions and 437 durable terminal receipts. The three actions without live completion (0.68%) exceeded the 0.5% budget. Paced echo p95/p99 were 1,179/2,287 ms, missing its budget. Deterministic Keeper p95/p99 were 1,824/2,823 ms, within its budget. All 220 catalog requests and all eight preparations, including three startup fixtures, succeeded. All 16 burst actions reached a terminal receipt within 30 seconds.
+
+The gateway drain began 22.01 seconds into the paced window. Its replacement passed readiness after 3.21 seconds. Room, user and role were unchanged for all 56 membership rows, and 25 paced actions were dispatched on other gateways during the disruption. Both worker fault barriers fired. The workers were killed at 30.62 and 37.14 seconds into the window. Durable terminal receipts were observed at 33.99 and 40.50 seconds, with 26 and 25 unrelated-room dispatches respectively during the disruptions. Both actions advanced ownership epoch and returned completed wire receipts on retry. The client wave resumed 12 of 12 clients within 30 seconds, split evenly between replay and bounded snapshots. The gateway drain resumed 18 of 18 clients, and both worker fault clients resumed within 30 seconds.
+
+Reconciliation found zero missing, pending or mismatched receipts among 477 acknowledged actions, zero duplicate committed action keys, and zero sequence mismatches or regressions among 743 paired events. The staged effect left 8 HP and one character patch. There were zero unexpected transport closures. PostgreSQL peaked at 32 client backends of 100 available and zero sampled lock waiters. The query probe p95/p99 were 12.10/32.70 ms through loopback.
+
+The raw report is `stage126-final-overlap-20261127-111846.json`, SHA-256 `053f147b88f1de99aa8ed9c476040fb08a4867a1db2a5f2f0b044be3ca0711c2`. An earlier attempt at `7df0c3c` stopped during gateway replacement because the harness shadowed its process startup function. Its raw report is `stage126-final-overlap-20261127-111622.json`, SHA-256 `c289f9a6ada0b2a4a02afb31e359d9d890b92fa53e82c5153c03de22cff2d04a`.
+
+## Local three-million-row catalog smoke, 2026-11-27
+
+Clean revision `6175e17b92356b508b95cbc74708baea06b53650` served 480 catalog requests at 12 per second on the same loopback PostgreSQL and object store. The post-run SQL count found 3,000,000 synthetic metadata rows across 5,000 owners, including 250,000 rows for the largest library. The three prepared text, DOCX and OCR fixtures brought the total to 3,000,003 catalog entries.
+
+All catalog requests succeeded. The 161 first-observed owner pages had p95/p99 of 7.31/10.50 ms. The 319 later pages had p95/p99 of 8.00/12.37 ms. The PostgreSQL cache was not flushed. This 40-second smoke had 16 open sockets and eight playing rooms. It sampled metadata paging with light gameplay and kept paced and burst imports disabled.
+
+The raw report is `stage126-final-catalog-20261127-112003.json`, SHA-256 `a186642a19ac3ee2aad05f0a3f2fe0bc7a3f9a404671d9e9277237bf175acecc`. The SQL count is recorded in `stage126-final-catalog-20261127-112003-counts.csv`, SHA-256 `f4f3ee01a2f9431dc7a84646ca9dd043eda9b3f5010f23ba6f7ea6d3b08667f7`.
+
+## Integrated replay and mixed-failure smoke, 2026-11-27
+
+Clean deployment-branch revision `37e1a25f4f18f772c730e1527b61ac5725fe9fbd` repeated the 64-socket, 55-second run. In separate failure budgets, one of 440 paced actions lacked live completion, zero of 220 catalog requests failed, both paced imports completed, and none of the 96 established connections counted during pacing closed unexpectedly. Echo and deterministic Keeper p95/p99 were 1,493/2,460 ms and 2,139/3,147 ms, respectively. Each missed its p95 target.
+
+The gateway and both worker replacements passed readiness within the paced window. The gateway preserved all 56 membership identities and roles. Both workers advanced the target room epoch and returned the completed receipt through a different gateway than the one that acknowledged the action. All 32 targeted reconnects completed within 30 seconds. There were 476 acknowledged actions with zero missing, pending or mismatched receipts, and 747 paired events with zero mismatches. One staged rule effect left 8 HP and one character patch.
+
+The raw report is `stage126-integrated-37e1a25-20261127-113258.json`, SHA-256 `c78e7d23c82213ed10cdffe3784b9e0361f420812581bdaaacdfff98e0bfcb0`.
 
 ## Sign-off
 
