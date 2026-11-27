@@ -12,7 +12,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { seedAccounts, seedRooms, formats, source } from './staging/fixtures.mjs'
-import { occupancy, referenceScorecard } from './staging/workload.mjs'
+import { measureOffers, occupancy, referenceScorecard } from './staging/workload.mjs'
 
 const require = createRequire(import.meta.url)
 const { Pool } = require('pg')
@@ -108,7 +108,6 @@ const report = {
   scope: {
     placement: 'Generator and child processes share one host. PostgreSQL and S3 use IPv4 loopback endpoints.',
     dependencies: 'Dedicated synthetic PostgreSQL database and S3 bucket, deterministic Keeper, real preparation pipeline',
-    replicas: {},
   },
 }
 const loop = monitorEventLoopDelay({ resolution: 20 })
@@ -179,13 +178,15 @@ async function start(role, index, priorPort) {
   })
   const processRecord = { role, index, p, child, base: 'http://127.0.0.1:' + p, active: true, fault: new Map(), disarmed: new Set() }
   children.add(processRecord)
-  let workerReady = false
   let diagnostic = ''
   child.on('error', (error) => { processRecord.startError = errorTag(error) })
   child.on('exit', () => { processRecord.active = false })
-  child.stdout.on('data', (chunk) => { if (String(chunk).includes('Room worker ready')) workerReady = true })
+  child.stdout.on('data', (chunk) => {
+    if (role === 'worker' && String(chunk).includes('Room worker ready')) processRecord.ready = true
+  })
   child.stderr.on('data', (chunk) => { diagnostic = (diagnostic + String(chunk)).slice(-6000) })
   child.on('message', (message) => {
+    if (role === 'prep' && message.type === 'preparation-ready') processRecord.ready = true
     if (message.type === 'sample') {
       const { type, ...measurements } = message
       samples.push({ t: performance.now(), phase: trafficStarted ? 'mixed' : 'setup', role, index, ...measurements })
@@ -197,11 +198,11 @@ async function start(role, index, priorPort) {
   try {
     await until(async () => {
       if (!processRecord.active || processRecord.startError) return false
-      if (role === 'worker') return workerReady
-      if (role === 'prep') return child.connected
+      if (role !== 'gateway') return processRecord.ready
       const ready = await fetch(processRecord.base + '/health/ready', { signal: AbortSignal.timeout(1000) }).catch(() => null)
       return ready?.ok
     }, 30000, role + '_startup')
+    processRecord.ready = true
     return processRecord
   } catch (error) {
     // Report only recognized error classes, never raw driver errors or credentials.
@@ -233,7 +234,7 @@ async function importStory(serial, phase) {
   const format = formats[(serial - 1) % formats.length]
   const id = 2 + (serial % Math.max(1, report.users - 1))
   const file = 'synthetic-' + serial + '.' + format
-  const result = { serial, id, file, format, phase, startedAt: Date.now() }
+  const result = { serial, id, file, format, phase, startedAt: Date.now(), offeredAt: performance.now() }
   const gateway = () => {
     const available = activeGateways()
     return available[serial % available.length]
@@ -821,6 +822,8 @@ function summarizeOccupancy() {
       openSockets: range('openSockets'),
       playingRooms: range('playingRooms'),
       crossGatewayMultiplayerRooms: range('crossGatewayMultiplayerRooms'),
+      samplesWithReferenceSocketAndRoomCounts: observed.filter((sample) =>
+        sample.openSockets === 5000 && sample.playingRooms === 2500).length,
     }]
   }))
 }
@@ -918,8 +921,6 @@ try {
     ...Array.from({ length: config.roomWorkers }, (_, index) => start('worker', index).then((worker) => { workers[index] = worker })),
     ...Array.from({ length: config.prepWorkers }, (_, index) => start('prep', index)),
   ])
-  Object.assign(report.scope.replicas, { gateways: gates.length, roomWorkers: workers.length,
-    preparationWorkers: [...children].filter((entry) => entry.role === 'prep' && entry.active).length })
   loop.enable()
   sampling = setInterval(() => {
     for (const entry of children) if (entry.active && entry.child.connected) entry.child.send('sample', () => {})
@@ -1001,6 +1002,11 @@ try {
   const warmupEnded = performance.now()
   sampleOccupancy(occupancyPhase, warmupEnded)
   workload.actual.warmupMs = warmupEnded - warmupStarted
+  const readyReplicas = (role) => [...children].filter((entry) =>
+    entry.role === role && entry.active && entry.ready && entry.child.connected).length
+  report.scope.pacedReadyReplicas = {
+    gateways: readyReplicas('gateway'), roomWorkers: readyReplicas('worker'), preparationWorkers: readyReplicas('prep'),
+  }
   trafficStarted = performance.now()
   occupancyPhase = 'paced'
   workload.pacedStart = sampleOccupancy(occupancyPhase, trafficStarted)
@@ -1017,16 +1023,20 @@ try {
   const catalogWork = schedule(config.pacedSec * config.catalogPerSec, duration, (index) => browse(index, 'mixed'), trafficStarted)
   const regularImports = schedule(Math.ceil(config.pacedSec * config.importPerMinute / 60), duration,
     (index) => importStory(sourceCount + index + 1, 'paced'), trafficStarted)
-  const importBurst = delay(Math.floor(duration * .18)).then(() => schedule(config.importBurst,
-    Math.min(60000, Math.floor(duration * .35)), (index) => importStory(sourceCount + 1000 + index, 'burst')))
-  const burst = delay(Math.floor(duration * .22)).then(async () => {
+  const importBurstStart = trafficStarted + Math.floor(duration * .18)
+  const importBurstDuration = Math.min(60000, Math.floor(duration * .35))
+  const importBurst = waitForWindowEnd(importBurstStart).then(() => schedule(config.importBurst,
+    importBurstDuration, (index) => importStory(sourceCount + 1000 + index, 'burst'), importBurstStart))
+  const actionBurstStart = trafficStarted + Math.floor(duration * .22)
+  const actionBurstDuration = 1000
+  const burst = waitForWindowEnd(actionBurstStart).then(async () => {
     let records = []
-    await schedule(config.burst, 1000, (index, at) => {
+    await schedule(config.burst, actionBurstDuration, (index, at) => {
       const owner = owners()[index % config.rooms]
       const action = offer(owner, 'burst', 'burst-' + index, at)
       records.push(action)
       track(admit(owner, action, 25000))
-    })
+    }, actionBurstStart)
     await waitForDurable(records, 29000, 'burst_terminal_timeout')
   })
   const reconnectWave = delay(Math.floor(duration * .25)).then(async () => {
@@ -1043,11 +1053,21 @@ try {
   const workerRestarts = delay(Math.floor(duration * .55)).then(restartRoomWorkers)
   await Promise.all([pacedWindow, mixed, catalogWork, regularImports, importBurst, burst, reconnectWave, gatewayRestart, workerRestarts])
   occupancyPhase = undefined
+  const offeredActions = (phase) => [...actions.values()].filter((row) => row.phase === phase).map((row) => row.started)
+  const offeredImports = (phase) => imports.filter((row) => row.phase === phase).map((row) => row.offeredAt)
+  const offered = workload.offers = {
+    pacedActions: measureOffers(offeredActions('paced'), trafficStarted, duration),
+    pacedImports: measureOffers(offeredImports('paced'), trafficStarted, duration),
+    burstActions: measureOffers(offeredActions('burst'), actionBurstStart, actionBurstDuration),
+    burstImports: measureOffers(offeredImports('burst'), importBurstStart, importBurstDuration),
+  }
   Object.assign(workload.actual, {
-    pacedActions: [...actions.values()].filter((action) => action.phase === 'paced').length,
-    burstActions: [...actions.values()].filter((action) => action.phase === 'burst').length,
-    pacedImports: imports.filter((row) => row.phase === 'paced').length,
-    burstImports: imports.filter((row) => row.phase === 'burst').length,
+    pacedActions: offered.pacedActions.withinWindow,
+    burstActions: offered.burstActions.withinWindow,
+    pacedImports: offered.pacedImports.withinWindow,
+    burstImports: offered.burstImports.withinWindow,
+    pacedActionOffersPerSecond: offered.pacedActions.offeredPerSecond,
+    pacedImportOffersPerMinute: offered.pacedImports.offeredPerSecond * 60,
     reconnectClients: new Set(reconnects.filter((row) => row.phase === 'client_wave').map((row) => row.clientId)).size,
   })
   stage = 'reconcile'

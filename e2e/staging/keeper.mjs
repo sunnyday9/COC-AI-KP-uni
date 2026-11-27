@@ -90,6 +90,9 @@ export async function chatForRag(_userId, { messages, signal }) {
 
 if (isMainThread) registerHooks({
   resolve(specifier, context, next) {
+    if (specifier === '../services/storyPreparationClaims.js' && context.parentURL?.endsWith('/workers/storyPreparation.ts')) {
+      return { url: new URL('./preparation-ready.mjs', import.meta.url).href, shortCircuit: true }
+    }
     if ((specifier === './kpTurnService.js' && context.parentURL?.endsWith('/roomService.ts')) ||
         (specifier === '../../services/aiService.js' && context.parentURL?.endsWith('/dossierGenerate.ts'))) {
       return { url: import.meta.url, shortCircuit: true }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { occupancy, referenceScorecard } from './workload.mjs'
+import { measureOffers, occupancy, referenceScorecard } from './workload.mjs'
 
 const OPEN = 1
 const formats = ['txt', 'docx', 'pdf']
@@ -23,12 +23,12 @@ function referenceEvidence() {
     actual: {
       metadataRows: 3_000_000, catalogOwners: 5000, largestLibrary: 250_000, warmupMs: 300_000,
       pacedMs: 1_800_000, pacedActions: 180_000, pacedImports: 60, burstImports: 20,
-      burstActions: 500, reconnectClients: 1000,
+      burstActions: 500, reconnectClients: 1000, pacedActionOffersPerSecond: 100, pacedImportOffersPerMinute: 2,
     },
     initial,
     pacedStart: initial,
     samples: [initial],
-    scope: { replicas: { gateways: 6, roomWorkers: 5, preparationWorkers: 2 } },
+    scope: { pacedReadyReplicas: { gateways: 6, roomWorkers: 5, preparationWorkers: 2 } },
   }
 }
 
@@ -41,7 +41,8 @@ test('the observed reference workload can pass while deployment acceptance remai
   evidence.samples.push(recovery)
   const { referenceWorkload, referenceAcceptance } = referenceScorecard(evidence)
   assert.deepEqual(evidence.initial.gateways.map((gateway) => gateway.rooms), [750, 751, 751, 750, 749, 749])
-  assert.equal(referenceWorkload.roomSubscriptionCap.observedPeak, 1010)
+  assert.equal(referenceWorkload.sampledConfirmedSubscriptionCap.observedPeak, 1010)
+  assert.equal(referenceWorkload.sustainedOccupancy.status, 'unmeasured')
   assert.equal(referenceWorkload.status, 'passed')
   assert.equal(referenceAcceptance.status, 'unmeasured')
 })
@@ -71,4 +72,35 @@ test('an aborted run cannot earn a reference workload pass', () => {
   const evidence = referenceEvidence()
   const { referenceWorkload } = referenceScorecard({ ...evidence, setupFailure: { stage: 'reconcile' } })
   assert.equal(referenceWorkload.status, 'unmeasured')
+})
+
+test('longer low-rate traffic and late burst offers miss the reference offer rates and counts', () => {
+  const evidence = referenceEvidence()
+  const slowPacedActions = measureOffers(Array.from({ length: 180_000 }, (_, index) => index * 40), 0, 7_200_000)
+  const slowPacedImports = measureOffers(Array.from({ length: 60 }, (_, index) => index * 120_000), 0, 7_200_000)
+  const lateBurst = measureOffers([...Array.from({ length: 499 }, (_, index) => 20_000 + index * 2), 21_001], 20_000, 1000)
+  Object.assign(evidence.actual, {
+    pacedMs: 7_200_000,
+    pacedActions: slowPacedActions.withinWindow,
+    pacedImports: slowPacedImports.withinWindow,
+    pacedActionOffersPerSecond: slowPacedActions.offeredPerSecond,
+    pacedImportOffersPerMinute: slowPacedImports.offeredPerSecond * 60,
+    burstActions: lateBurst.withinWindow,
+  })
+  const { referenceWorkload } = referenceScorecard(evidence)
+  assert.equal(referenceWorkload.counts.pacedActions.status, 'passed')
+  assert.equal(referenceWorkload.pacedRates.actionOffersPerSecond.observed, 25)
+  assert.equal(referenceWorkload.pacedRates.actionOffersPerSecond.status, 'missed')
+  assert.equal(referenceWorkload.pacedRates.importOffersPerMinute.status, 'missed')
+  assert.equal(lateBurst.offerSpanMs, 1001)
+  assert.equal(referenceWorkload.counts.burstActions.observed, 499)
+  assert.equal(referenceWorkload.status, 'missed')
+})
+
+test('reference workload requires preparation readiness when paced traffic starts', () => {
+  const evidence = referenceEvidence()
+  evidence.scope.pacedReadyReplicas.preparationWorkers = 1
+  const { referenceWorkload } = referenceScorecard(evidence)
+  assert.equal(referenceWorkload.pacedReadyReplicas.preparationWorkers.status, 'missed')
+  assert.equal(referenceWorkload.status, 'missed')
 })

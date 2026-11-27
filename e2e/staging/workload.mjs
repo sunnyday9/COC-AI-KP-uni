@@ -51,6 +51,21 @@ export function occupancy(clients, gatewayCount, openState) {
   }
 }
 
+export function measureOffers(timestamps, start, durationMs) {
+  const end = start + durationMs
+  let first = Infinity
+  let last = -Infinity
+  let withinWindow = 0
+  for (const time of timestamps) {
+    first = Math.min(first, time)
+    last = Math.max(last, time)
+    if (time >= start && time < end) withinWindow++
+  }
+  return { windowStartMs: start, durationMs, offered: timestamps.length, withinWindow,
+    offerSpanMs: timestamps.length ? last - first : null,
+    offeredPerSecond: withinWindow / (durationMs / 1000) }
+}
+
 export function referenceScorecard({ formats, preparedByFormat, actual, initial, pacedStart, samples, scope, setupFailure }) {
   const equals = (target, observed) => ({ target, observed: observed ?? null, status:
     observed == null ? 'unmeasured' : observed === target ? 'passed' : 'missed' })
@@ -64,26 +79,35 @@ export function referenceScorecard({ formats, preparedByFormat, actual, initial,
   const initialOccupancy = topology(initial)
   const pacedStartOccupancy = topology(pacedStart)
   const initialPlacement = equals(true, initial?.matchesPlannedGateways)
-  const startedReplicas = {
-    gateways: equals(6, scope.replicas?.gateways),
-    roomWorkers: equals(5, scope.replicas?.roomWorkers),
-    preparationWorkers: equals(2, scope.replicas?.preparationWorkers),
+  const pacedReadyReplicas = {
+    gateways: equals(6, scope.pacedReadyReplicas?.gateways),
+    roomWorkers: equals(5, scope.pacedReadyReplicas?.roomWorkers),
+    preparationWorkers: equals(2, scope.pacedReadyReplicas?.preparationWorkers),
+  }
+  const pacedRates = {
+    actionOffersPerSecond: atLeast(100, actual.pacedActionOffersPerSecond),
+    importOffersPerMinute: atLeast(2, actual.pacedImportOffersPerMinute),
   }
   const peakRoomSubscriptions = samples.length ? samples.reduce((peak, sample) =>
     Math.max(peak, ...sample.gateways.map((gateway) => gateway.rooms)), 0) : null
-  const roomSubscriptionCap = {
+  const sampledConfirmedSubscriptionCap = {
     targetMaximum: 1024, observedPeak: peakRoomSubscriptions,
     status: peakRoomSubscriptions === null ? 'unmeasured' : peakRoomSubscriptions <= 1024 ? 'passed' : 'missed',
   }
   const checks = [
     ...Object.values(counts), ...Object.values(prepared), ...Object.values(initialOccupancy),
-    ...Object.values(pacedStartOccupancy), ...Object.values(startedReplicas), initialPlacement, roomSubscriptionCap,
+    ...Object.values(pacedStartOccupancy), ...Object.values(pacedReadyReplicas), ...Object.values(pacedRates),
+    initialPlacement, sampledConfirmedSubscriptionCap,
   ]
   const status = checks.some((check) => check.status === 'missed') ? 'missed'
     : setupFailure || checks.some((check) => check.status === 'unmeasured') ? 'unmeasured' : 'passed'
   return {
     referenceWorkload: { status, counts, prepared, initialOccupancy, pacedStartOccupancy, initialPlacement,
-      startedReplicas, roomSubscriptionCap },
+      pacedReadyReplicas, pacedRates, sampledConfirmedSubscriptionCap,
+      sustainedOccupancy: {
+        status: 'unmeasured',
+        reason: 'Client samples describe occupancy at discrete instants. Intentional disconnects and faults interrupt occupancy during paced traffic.',
+      } },
     referenceAcceptance: {
       status: 'unmeasured',
       reason: 'Generator, gateways and workers share one host and use loopback database and object storage endpoints. Distributed resource limits and live BYOK remain unmeasured.',
