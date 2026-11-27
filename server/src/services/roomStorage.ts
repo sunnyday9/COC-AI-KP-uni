@@ -913,7 +913,7 @@ export async function registerRoomPresence(
     // Serialize a new subscriber with the fenced absence check before succession.
     const room = await client.query('SELECT 1 FROM rooms WHERE room_id = $1 FOR NO KEY UPDATE', [roomId])
     if (!room.rowCount || !stillCurrent()) return false
-    const member = await client.query<{ replacing_disconnect: boolean }>(`
+    const member = await client.query(`
       WITH confirmed AS (
         INSERT INTO room_gateway_presence (room_id, user_id, subscription_id, expires_at)
         SELECT room_id, user_id, $3, clock_timestamp() + ${roomPresenceTtl}
@@ -925,13 +925,13 @@ export async function registerRoomPresence(
           AND EXISTS (SELECT 1 FROM confirmed)
         RETURNING 1
       )
-      SELECT EXISTS (SELECT 1 FROM superseded) AS replacing_disconnect FROM confirmed
+      SELECT 1 FROM confirmed
     `, [roomId, userId, subscriptionId])
     if (!stillCurrent()) throw abandonedPresence
     if (member.rowCount !== 1) return false
-    // The gateway bounds this write. A drain before completion rolls back the
-    // presence and preserves any older ordinary-disconnect request.
-    if (member.rows[0]?.replacing_disconnect && writeResume && !await writeResume()) throw abandonedPresence
+    // Publish presence only after the gateway's bounded terminal write. An
+    // interrupted join must not suppress another gateway's ordinary departure.
+    if (writeResume && !await writeResume()) throw abandonedPresence
     return true
   }).catch((error: unknown) => {
     if (error === abandonedPresence) return false

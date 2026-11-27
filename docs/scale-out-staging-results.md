@@ -139,4 +139,4 @@ The raw report is `aikp-review-workload-9e83b51-20261127-180852.json`, SHA-256 `
 
 The reference deployment, its 30-minute mixed test, PostgreSQL host resource telemetry and the separately authorized live BYOK check remain unmeasured. The local runs exercise isolated PostgreSQL and S3 fixtures and cannot establish production capacity. See the [staging plan](scale-out-staging.md) for the target workload and budgets.
 
-Capacity acceptance remains open under [#126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126). The room recovery and replay findings [#127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127) through [#130](https://github.com/sunnyday9/COC-AI-KP-uni/issues/130) remain open, including the P1 first-resume room dissolution case.
+Capacity acceptance remains open under [#126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126). At the tested runtime revision, the room recovery and replay findings [#127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127) through [#130](https://github.com/sunnyday9/COC-AI-KP-uni/issues/130) were open, including the P1 first-resume room dissolution case.

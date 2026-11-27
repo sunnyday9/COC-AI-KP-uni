@@ -178,7 +178,7 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 单进程模式使用排他启动锁，多进程预发布使用同一锁的共享模式。切换前先停掉正在运行的房间进程，再启动新模式。SQLite 无需配置。使用独立的 PostgreSQL 夹具运行 `npm run test:server -- src/routes/sharedRooms.test.ts`，覆盖抢占租约、延迟旧结果、杀进程恢复、按原批次重放和规则效果只提交一次。
 
-共享模式仍处于受控预发布。扩大流量前需处理首次续连中断可能误触发房主交接或解散的问题，并完成分布式的 30 分钟混合负载与独立的真实 BYOK 验证。快照断线后排空、direct 模式旧连接恢复及单回合大量事件的边界也列入跟踪。见 [验收方案](scale-out-staging.md)、[结果](scale-out-staging-results.md) 和 [#127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127)。
+共享模式仍处于受控预发布。扩大流量前需完成分布式的 30 分钟混合负载与独立的真实 BYOK 验证。普通断线与网关排空重叠、direct 模式旧连接恢复及单回合大量事件的边界仍在跟踪。见 [验收方案](scale-out-staging.md)、[结果](scale-out-staging-results.md) 和 [#128](https://github.com/sunnyday9/COC-AI-KP-uni/issues/128)。
 
 ### 6.4 共享剧本准备进程（#116）
 
