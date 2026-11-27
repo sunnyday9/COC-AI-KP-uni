@@ -18,13 +18,18 @@ export function roomEventFrame(roomId: string, seq: number, { type, payload }: {
 }
 
 /** Permit one large restored snapshot. Stop adding frames behind a slow client. */
-export function sendFrame(socket: FrameRecipient, frame: string): void {
-  if (socket.readyState !== WebSocket.OPEN) return
+export function canSendFrame(socket: FrameRecipient, frame: string): boolean {
+  if (socket.readyState !== WebSocket.OPEN) return false
   if (socket.bufferedAmount > 0 && socket.bufferedAmount + Buffer.byteLength(frame) > MAX_PENDING_BYTES) {
     markTransportReset(socket)
     socket.terminate()
-    return
+    return false
   }
+  return true
+}
+
+export function sendFrame(socket: FrameRecipient, frame: string): void {
+  if (!canSendFrame(socket, frame)) return
   socket.send(frame, (error) => {
     if (error) socket.terminate()
   })

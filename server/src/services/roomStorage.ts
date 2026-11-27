@@ -551,16 +551,22 @@ export function getRoomAction(roomId: string, userId: number, actionId: string):
 
 export const ROOM_EVENT_WINDOW = 200
 
-export type RoomGovernanceWrite =
+export type RoomCheckpointWrite =
   | { type: 'settings' }
   | { type: 'start'; storyId: string; storyOwnerId: number; pin?: StoryRevisionPin }
+  | { type: 'add-member'; userId: number }
+  | { type: 'set-ready'; userId: number; ready: boolean }
+  | { type: 'bind-character'; userId: number; characterId: string }
   | { type: 'remove-member'; userId: number }
   | { type: 'transfer'; oldOwnerId: number; newOwnerId: number; removeOldOwner: boolean; disconnect?: OwnerDisconnect }
 
-function governanceStatements(roomId: string, write: RoomGovernanceWrite): Statement[] {
+function roomMutationStatements(roomId: string, write: RoomCheckpointWrite): Statement[] {
   switch (write.type) {
     case 'settings': return []
     case 'start': return startRoomStatements(roomId, write.storyId, write.storyOwnerId, write.pin)
+    case 'add-member': return [insertMemberStatement(roomId, write.userId)]
+    case 'set-ready': return [setMemberReadyStatement(roomId, write.userId, write.ready)]
+    case 'bind-character': return [bindMemberCharacterStatement(roomId, write.userId, write.characterId)]
     case 'remove-member': return [deleteMemberStatement(roomId, write.userId)]
     case 'transfer': return transferRoomStatements(roomId, write.oldOwnerId, write.newOwnerId, write.removeOldOwner)
   }
@@ -582,13 +588,13 @@ export interface RoomCheckpoint {
 
 export function updateRoomStateSnapshot(
   roomId: string, stateJson: string, phase?: 'ended', actions: readonly RoomActionWrite[] = [], checkpoint?: RoomCheckpoint,
-  governance?: RoomGovernanceWrite,
+  mutation?: RoomCheckpointWrite,
 ): Promise<void> {
   if (ROOM_WORKER_FAILOVER_ENABLED && !checkpoint) throw new RoomLeaseLostError()
   return writeRoom(roomId, [
-    ...(governance ? governanceStatements(roomId, governance) : []),
+    ...(mutation ? roomMutationStatements(roomId, mutation) : []),
     ...roomStateSnapshotStatements(roomId, stateJson, phase, actions, checkpoint),
-  ], checkpoint?.lease, governance?.type === 'transfer' ? governance.disconnect : undefined)
+  ], checkpoint?.lease, mutation?.type === 'transfer' ? mutation.disconnect : undefined)
 }
 
 function roomStateSnapshotStatements(
@@ -700,10 +706,14 @@ export function deleteRoomRows(roomId: string, lease?: RoomWorkerLease, disconne
 }
 
 export function insertMember(roomId: string, userId: number, role: 'owner' | 'member', lease?: RoomWorkerLease): Promise<void> {
-  return writeRoom(roomId, [role === 'owner' ? ownerMember(roomId, userId, null) : statement(
+  return writeRoom(roomId, [role === 'owner' ? ownerMember(roomId, userId, null) : insertMemberStatement(roomId, userId)], lease)
+}
+
+function insertMemberStatement(roomId: string, userId: number): Statement {
+  return statement(
     `INSERT INTO room_members (room_id, user_id, role, character_id) VALUES (?, ?, 'member', NULL)
      ON CONFLICT (room_id, user_id) DO NOTHING`, roomId, userId,
-  )], lease)
+  )
 }
 
 export async function isRoomMember(roomId: string, userId: number): Promise<boolean> {
@@ -732,7 +742,11 @@ export async function memberCharacterId(roomId: string, userId: number): Promise
 }
 
 export function bindMemberCharacter(roomId: string, userId: number, characterId: string, lease?: RoomWorkerLease): Promise<void> {
-  return writeRoom(roomId, [statement('UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?', characterId, roomId, userId)], lease)
+  return writeRoom(roomId, [bindMemberCharacterStatement(roomId, userId, characterId)], lease)
+}
+
+function bindMemberCharacterStatement(roomId: string, userId: number, characterId: string): Statement {
+  return statement('UPDATE room_members SET character_id = ? WHERE room_id = ? AND user_id = ?', characterId, roomId, userId)
 }
 
 export async function boundMemberOf(roomId: string, characterId: string, exceptUserId: number): Promise<number | null> {
@@ -743,9 +757,13 @@ export async function boundMemberOf(roomId: string, characterId: string, exceptU
 }
 
 export function setMemberReady(roomId: string, userId: number, ready: boolean, lease?: RoomWorkerLease): Promise<void> {
-  return writeRoom(roomId, [statement(
+  return writeRoom(roomId, [setMemberReadyStatement(roomId, userId, ready)], lease)
+}
+
+function setMemberReadyStatement(roomId: string, userId: number, ready: boolean): Statement {
+  return statement(
     `UPDATE room_members SET ready = ? WHERE room_id = ? AND user_id = ? AND role = 'member'`, ready ? 1 : 0, roomId, userId,
-  )], lease)
+  )
 }
 
 export function transferRoomOwnership(
@@ -785,9 +803,8 @@ export async function usernameOf(userId: number): Promise<string | null> {
   return row?.username ?? null
 }
 
-export async function characterOwnerUserId(characterId: string): Promise<number | null> {
-  const row = await readOne<{ user_id: number }>('SELECT user_id FROM characters WHERE id = ?', characterId)
-  return row?.user_id ?? null
+export function getOwnedCharacterSheet(characterId: string, userId: number): Promise<{ sheet: string } | undefined> {
+  return readOne<{ sheet: string }>('SELECT sheet FROM characters WHERE id = ? AND user_id = ?', characterId, userId)
 }
 
 function insertCharacterSql(id: string, userId: number, name: string, sheet: string): Statement {
@@ -886,22 +903,33 @@ export async function readRoomOutbox(
 }
 
 const roomPresenceTtl = "interval '15 seconds'"
+const abandonedPresence = Symbol('Gateway room resume no longer current')
 
-export async function registerRoomPresence(roomId: string, userId: number, subscriptionId: string): Promise<boolean> {
+export async function registerRoomPresence(
+  roomId: string, userId: number, subscriptionId: string, stillCurrent = () => true,
+): Promise<boolean> {
   return inPostgresTransaction(async (client) => {
     // Serialize a new subscriber with the fenced absence check before succession.
     const room = await client.query('SELECT 1 FROM rooms WHERE room_id = $1 FOR NO KEY UPDATE', [roomId])
-    if (!room.rowCount) return false
+    if (!room.rowCount || !stillCurrent()) return false
     const member = await client.query(`
-      INSERT INTO room_gateway_presence (room_id, user_id, subscription_id, expires_at)
-      SELECT room_id, user_id, $3, clock_timestamp() + ${roomPresenceTtl}
-      FROM room_members WHERE room_id = $1 AND user_id = $2
-      ON CONFLICT (room_id, user_id, subscription_id) DO UPDATE SET expires_at = EXCLUDED.expires_at
+      WITH confirmed AS (
+        INSERT INTO room_gateway_presence (room_id, user_id, subscription_id, expires_at)
+        SELECT room_id, user_id, $3, clock_timestamp() + ${roomPresenceTtl}
+        FROM room_members WHERE room_id = $1 AND user_id = $2
+        ON CONFLICT (room_id, user_id, subscription_id) DO UPDATE SET expires_at = EXCLUDED.expires_at
+        RETURNING 1
+      ), superseded AS (
+        DELETE FROM room_commands WHERE room_id = $1 AND user_id = $2 AND presence_loss
+          AND EXISTS (SELECT 1 FROM confirmed)
+      )
+      SELECT 1 FROM confirmed
     `, [roomId, userId, subscriptionId])
-    if (member.rowCount) {
-      await client.query('DELETE FROM room_commands WHERE room_id = $1 AND user_id = $2 AND presence_loss', [roomId, userId])
-    }
+    if (!stillCurrent()) throw abandonedPresence
     return member.rowCount === 1
+  }).catch((error: unknown) => {
+    if (error === abandonedPresence) return false
+    throw error
   })
 }
 

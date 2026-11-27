@@ -8,7 +8,7 @@ import type { FrameRecipient } from './sendFrame.js'
 
 interface GatewayPresence extends RoomPresence {
   ready: Promise<boolean>
-  active: boolean
+  confirmed: boolean
 }
 
 const sockets = new WeakMap<FrameRecipient, Map<string, GatewayPresence>>()
@@ -30,8 +30,10 @@ function forget(rooms: Map<string, GatewayPresence>, entry: GatewayPresence): vo
   live.delete(entry)
 }
 
-export function joinGatewayPresence(socket: FrameRecipient, roomId: string, userId: number): Promise<boolean> {
-  if (socket.readyState !== 1 || draining) return Promise.resolve(false)
+export function confirmGatewayPresence(
+  socket: FrameRecipient, roomId: string, userId: number, current: () => boolean,
+): Promise<boolean> {
+  if (!current() || draining) return Promise.resolve(false)
   let rooms = sockets.get(socket)
   if (!rooms) {
     rooms = new Map()
@@ -41,10 +43,11 @@ export function joinGatewayPresence(socket: FrameRecipient, roomId: string, user
   if (previous) return previous.ready
   if (live.size + pendingRemovals.size >= capacity) throw new CapacityError('Room presence capacity reached. Retry joining.')
   const socketRooms = rooms
-  const entry: GatewayPresence = { roomId, userId, subscriptionId: randomUUID(), ready: Promise.resolve(false), active: false }
+  const entry: GatewayPresence = { roomId, userId, subscriptionId: randomUUID(), ready: Promise.resolve(false), confirmed: false }
   live.add(entry)
   rooms.set(roomId, entry)
-  entry.ready = registerRoomPresence(roomId, userId, entry.subscriptionId).then((registered) => {
+  entry.ready = registerRoomPresence(roomId, userId, entry.subscriptionId, () => current() && !draining).then((registered) => {
+    entry.confirmed = registered
     if (!registered) forget(socketRooms, entry)
     return registered && socketRooms.get(roomId) === entry && !draining
   }).catch((error) => {
@@ -52,11 +55,6 @@ export function joinGatewayPresence(socket: FrameRecipient, roomId: string, user
     throw postgresError(error)
   })
   return entry.ready
-}
-
-export function activateGatewayPresence(socket: FrameRecipient, roomId: string): void {
-  const entry = sockets.get(socket)?.get(roomId)
-  if (entry) entry.active = true
 }
 
 export function releaseGatewaySocketPresence(socket: FrameRecipient, ordinary: boolean): void {
@@ -69,7 +67,7 @@ export function releaseGatewayPresence(socket: FrameRecipient, roomId: string, o
   if (!rooms || !entry) return
   forget(rooms, entry)
   const removal = entry.ready.catch(() => false)
-    .then(() => removeRoomPresence(entry, () => entry.active && ordinary && !draining)).catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
+    .then(() => removeRoomPresence(entry, () => entry.confirmed && ordinary && !draining)).catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
     .finally(() => pendingRemovals.delete(removal))
   pendingRemovals.add(removal)
 }
@@ -77,12 +75,12 @@ export function releaseGatewayPresence(socket: FrameRecipient, roomId: string, o
 export async function runGatewayPresence(signal: AbortSignal): Promise<void> {
   while (!signal.aborted) {
     try {
-      const entries = [...live]
+      const entries = [...live].filter((entry) => entry.confirmed)
       const renewed = entries.length ? await renewRoomPresence(entries) : new Set<string>()
       for (const entry of entries) {
-        if (renewed.has(entry.subscriptionId) || !live.has(entry) || !await entry.ready) continue
+        if (renewed.has(entry.subscriptionId) || !live.has(entry)) continue
         // Another gateway may have pruned a very old lease after a storage outage.
-        await registerRoomPresence(entry.roomId, entry.userId, entry.subscriptionId)
+        await registerRoomPresence(entry.roomId, entry.userId, entry.subscriptionId, () => live.has(entry) && !draining)
         if (!live.has(entry)) await removeRoomPresence(entry, () => false)
       }
       await reapRoomPresence()

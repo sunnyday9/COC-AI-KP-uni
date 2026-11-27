@@ -6,8 +6,8 @@ import { errorMessage } from '../utils/errors.js'
 import {
   gatewayRoomIds, gatewaySubscribers, reserveGatewaySubscription, unsubscribeGatewaySocket, type RoomSubscriber,
 } from './roomLedger.js'
-import { activateGatewayPresence, joinGatewayPresence } from './gatewayPresence.js'
-import { markTransportReset, sendFrame } from './sendFrame.js'
+import { confirmGatewayPresence } from './gatewayPresence.js'
+import { canSendFrame, markTransportReset, sendFrame } from './sendFrame.js'
 
 const MAX_REPLAY_BYTES = 512 * 1024
 
@@ -32,6 +32,7 @@ function encodeReplay(roomId: string, events: OutboxEvent[]): string[] | null {
 export async function resumeGatewaySocket(
   socket: RoomSubscriber, roomId: string, userId: number, lastSeq: number, signal?: AbortSignal,
 ): Promise<void> {
+  const previousSeq = gatewaySubscribers(roomId)?.get(socket)?.seq
   const subscription = reserveGatewaySubscription(socket, roomId, userId)
   const send = (frame: unknown) => sendFrame(socket, JSON.stringify(frame))
   if (!subscription) {
@@ -39,30 +40,39 @@ export async function resumeGatewaySocket(
     return
   }
 
+  let membershipLost = false
   const current = () => socket.readyState === 1 && subscription === gatewaySubscribers(roomId)?.get(socket)
-  try {
-    const present = await joinGatewayPresence(socket, roomId, userId)
+  const notMember = () => {
+    membershipLost = true
+    send({ type: 'room:error', roomId, error: 'not a room member' })
+  }
+  const finish = async (frame: unknown, seq: number) => {
+    const encoded = JSON.stringify(frame)
+    if (!current() || !canSendFrame(socket, encoded)) return
+    // Selecting a replay or snapshot can fail. Only a usable resume may
+    // supersede a confirmed owner's durable close request.
+    const present = await confirmGatewayPresence(socket, roomId, userId, () => current() && canSendFrame(socket, encoded))
     if (!current()) return
     if (!present) {
-      send({ type: 'room:error', roomId, error: 'not a room member' })
+      notMember()
       return
     }
+    sendFrame(socket, encoded)
+    if (current()) subscription.seq = seq
+  }
+  try {
     if (lastSeq > 0) {
       const replay = await planCommittedRoomReplay(roomId, userId, lastSeq, MAX_REPLAY_BYTES)
       if (!current()) return
       if (replay.kind === 'not-member') {
-        send({ type: 'room:error', roomId, error: 'not a room member' })
+        notMember()
         return
       }
       if (replay.kind === 'delta') {
         const frames = encodeReplay(roomId, replay.events)
         if (frames) {
           for (const frame of frames) sendFrame(socket, frame)
-          send({ type: 'room:sync:done', roomId, seq: replay.seq, actionReceipts: true })
-          if (current()) {
-            subscription.seq = replay.seq
-            activateGatewayPresence(socket, roomId)
-          }
+          await finish({ type: 'room:sync:done', roomId, seq: replay.seq, actionReceipts: true }, replay.seq)
           return
         }
       }
@@ -70,17 +80,14 @@ export async function resumeGatewaySocket(
     const result = await routeSocketCommand('snapshot', userId, roomId, [], signal)
     if (!current()) return
     if (!result) {
-      send({ type: 'room:error', roomId, error: 'not a room member' })
+      notMember()
       return
     }
-    send({ type: 'room:state', roomId, actionReceipts: true, ...result })
-    if (current()) {
-      subscription.seq = result.seq
-      activateGatewayPresence(socket, roomId)
-    }
+    await finish({ type: 'room:state', roomId, actionReceipts: true, ...result }, result.seq)
   } finally {
     if (subscription.seq === null && subscription === gatewaySubscribers(roomId)?.get(socket)) {
-      unsubscribeGatewaySocket(socket, roomId)
+      if (previousSeq != null && !membershipLost) subscription.seq = previousSeq
+      else unsubscribeGatewaySocket(socket, roomId)
     }
   }
 }

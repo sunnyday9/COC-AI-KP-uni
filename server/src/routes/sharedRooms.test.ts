@@ -223,8 +223,11 @@ function pauseRoomMutations(directory: string): string {
           '  writeFileSync(join(directory, "held-" + operation), "");',
           '  while (!existsSync(join(directory, "release-" + operation))) await delay(20);',
           '}',
-          'export async function insertMember(...args) { await pause("join"); return storage.insertMember(...args); }',
-          'export async function updateRoomStateSnapshot(...args) { if (args[5]?.type === "transfer") await pause("transfer"); return storage.updateRoomStateSnapshot(...args); }',
+          'export async function updateRoomStateSnapshot(...args) {',
+          '  if (args[5]?.type === "add-member") await pause("join");',
+          '  if (args[5]?.type === "transfer") await pause("transfer");',
+          '  return storage.updateRoomStateSnapshot(...args);',
+          '}',
         ].join(String.fromCharCode(10));
         return { url: 'data:text/javascript,' + encodeURIComponent(wrapper), shortCircuit: true };
       }
@@ -824,6 +827,8 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       departedDevice.send(chat(retainedAfterReconnect.roomId, 'Keep the lobby open'))
       const replayAnchor = await departedDevice.waitFor((frame) => frame.payload?.message?.content === 'Keep the lobby open')
       await stop(worker)
+      lastDevice.send({ type: 'room:sync', roomId: workerOutage.roomId })
+      await lastDevice.waitFor((frame) => frame.type === 'room:error')
       lastDevice.close()
       departedDevice.close()
       const queuedLosses = async (queuedRoomId: string) => (await db.query(
@@ -832,6 +837,18 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       await expect.poll(() => queuedLosses(workerOutage.roomId)).toBe(1)
       await expect.poll(() => queuedLosses(retainedAfterReconnect.roomId)).toBe(1)
       expect((await detail(workerOutage.roomId, owner.token)).ownerId).toBe(owner.user.id)
+      const failedReconnect = await connect(owner.token)
+      failedReconnect.send({ type: 'room:join', roomId: workerOutage.roomId })
+      await expect.poll(async () => (await db.query(
+        "SELECT 1 FROM room_commands WHERE room_id = $1 AND command->>'name' = 'snapshot'", [workerOutage.roomId],
+      )).rowCount).toBe(1)
+      expect(await queuedLosses(workerOutage.roomId)).toBe(1)
+      expect((await db.query(
+        'SELECT 1 FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2', [workerOutage.roomId, owner.user.id],
+      )).rowCount).toBe(0)
+      await failedReconnect.waitFor((frame) => frame.type === 'room:error')
+      expect(await queuedLosses(workerOutage.roomId)).toBe(1)
+
       const reconnectedOwner = await connect(owner.token)
       reconnectedOwner.send({ type: 'room:join', roomId: retainedAfterReconnect.roomId, lastSeq: replayAnchor.seq })
       await reconnectedOwner.waitFor((frame) => frame.type === 'room:sync:done')
@@ -912,6 +929,14 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     await settings(lobby.roomId, 1600)
     const anchor = await retained.waitFor((frame) => frame.eventType === 'room_meta')
 
+    const membership = await request('/api/rooms', { method: 'POST', token: owner.token, body: {} })
+    await enter(membership.inviteCode, departing.token)
+    const membershipSocket = await connect(owner.token)
+    membershipSocket.send({ type: 'room:join', roomId: membership.roomId })
+    const membershipAnchor = await membershipSocket.waitFor((frame) => frame.type === 'room:state')
+    const card = await request('/api/characters', { method: 'POST', token: departing.token, body: { name: 'Retained archivist', sheet } })
+    const sheetPatch = (frame: Frame) => frame.eventType === 'state_patch' && frame.payload?.path === 'characters.' + card.id
+
     const paused = await createLobby(pausedOwner, 'Paused archivist')
     await enter(paused.inviteCode, successor.token)
     await paused.addCard(successor, 'Successor archivist')
@@ -931,7 +956,8 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
         CREATE FUNCTION test_reject_governance_event() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'Synthetic governance checkpoint failure'; END; $$;
         CREATE TRIGGER test_reject_governance_event BEFORE INSERT ON room_events FOR EACH ROW
-          WHEN (NEW.room_id = '${lobby.roomId}' AND NEW.event_type = 'room_meta')
+          WHEN ((NEW.room_id = '${lobby.roomId}' AND NEW.event_type = 'room_meta')
+            OR (NEW.room_id = '${membership.roomId}' AND NEW.event_type = 'state_patch'))
           EXECUTE FUNCTION test_reject_governance_event();
       `)
       try {
@@ -944,6 +970,12 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
             expect.objectContaining({ userId: kicked.user.id, role: 'member' }),
           ]),
         })
+        await bind(membership.roomId, departing.token, card.id, 503)
+        expect(await detail(membership.roomId, owner.token)).toMatchObject({
+          state: { seq: membershipAnchor.seq },
+          members: expect.arrayContaining([expect.objectContaining({ userId: departing.user.id, characterId: null })]),
+        })
+        expect(membershipSocket.frames.filter((frame) => frame.type === 'room:event')).toEqual([])
       } finally {
         await database.query('DROP TRIGGER test_reject_governance_event ON room_events; DROP FUNCTION test_reject_governance_event()')
       }
@@ -954,8 +986,36 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       base = gatewayBase
       await expect.poll(async () => (await database.query(
         'SELECT room_id FROM rooms WHERE room_id = ANY($1::text[]) AND worker_expires_at > clock_timestamp()',
-        [[lobby.roomId, paused.roomId]],
+        [[lobby.roomId, membership.roomId, paused.roomId]],
       )).rowCount, { timeout: 7_000 }).toBe(0)
+
+      await enter(membership.inviteCode, successor.token)
+      await post(membership.roomId, 'ready', departing.token, { ready: true })
+      await bind(membership.roomId, departing.token, card.id)
+      const membershipPatch = await membershipSocket.waitFor(sheetPatch)
+      expect(membershipSocket.frames.filter((frame) => frame.type === 'room:event')).toMatchObject([
+        { seq: membershipAnchor.seq! + 1, eventType: 'room_meta', payload: { members: expect.arrayContaining([
+          expect.objectContaining({ userId: successor.user.id, role: 'member', ready: false }),
+        ]) } },
+        { seq: membershipAnchor.seq! + 2, eventType: 'room_meta', payload: { members: expect.arrayContaining([
+          expect.objectContaining({ userId: departing.user.id, ready: true, characterId: null }),
+        ]) } },
+        { seq: membershipAnchor.seq! + 3, eventType: 'room_meta', payload: { members: expect.arrayContaining([
+          expect.objectContaining({ userId: departing.user.id, ready: true, characterId: card.id }),
+        ]) } },
+        { seq: membershipAnchor.seq! + 4, eventType: 'state_patch', payload: { value: sheet } },
+      ])
+      await enter(membership.inviteCode, successor.token)
+      await post(membership.roomId, 'ready', departing.token, { ready: true })
+      await bind(membership.roomId, departing.token, card.id)
+      expect(await detail(membership.roomId, owner.token)).toMatchObject({
+        state: { seq: membershipPatch.seq, characters: { [card.id]: sheet } },
+      })
+      const membershipReplay = await connect(owner.token)
+      membershipReplay.send({ type: 'room:join', roomId: membership.roomId, lastSeq: membershipAnchor.seq })
+      await membershipReplay.waitFor((frame) => frame.type === 'room:sync:done')
+      expect(membershipReplay.frames.filter((frame) => frame.type === 'room:event'))
+        .toEqual(membershipSocket.frames.filter((frame) => frame.type === 'room:event'))
 
       await settings(lobby.roomId, 900)
       await post(lobby.roomId, 'leave', departing.token)

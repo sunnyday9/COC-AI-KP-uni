@@ -510,9 +510,9 @@ export class RoomService {
     }, actions, this.workerLease ? turn : undefined)
   }
 
-  /** Install the new governance state only after its row changes and replay events commit. */
-  async applyGovernance(
-    snapshot: RoomSnapshot, events: RoomEvent[], members: RoomMember[], write: roomStorage.RoomGovernanceWrite,
+  /** Install the new room state only after its row changes and replay events commit. */
+  async applyRoomMutation(
+    snapshot: RoomSnapshot, events: RoomEvent[], members: RoomMember[], write: roomStorage.RoomCheckpointWrite,
   ): Promise<void> {
     await this.commitCheckpoint(snapshot, events, () => {
       this.members = members
@@ -529,6 +529,13 @@ export class RoomService {
         this.openingRequired = snapshot.openingRequired === true
       }
       if (write.type === 'transfer') this.updateOwner(write.newOwnerId)
+      if (write.type === 'bind-character') {
+        const sheet = snapshot.characters[write.characterId]
+        if (sheet) {
+          this.characters.set(write.characterId, sheet)
+          this.characterOwner.set(write.characterId, write.userId)
+        }
+      }
     }, [], undefined, write)
     if ((write.type === 'start' || write.type === 'transfer') &&
         !this.kpSetupRequired && !this.kpPauseReason) {
@@ -1647,11 +1654,11 @@ export class RoomService {
   /** Persist a complete transition before making it visible to clients. Requires the room command slot. */
   private async commitCheckpoint(
     snapshot: RoomSnapshot, events: RoomEvent[], install: () => void, actions: readonly roomStorage.RoomActionWrite[] = [],
-    turn?: roomStorage.RoomCheckpoint['turn'], governance?: roomStorage.RoomGovernanceWrite,
+    turn?: roomStorage.RoomCheckpoint['turn'], mutation?: roomStorage.RoomCheckpointWrite,
   ): Promise<void> {
     snapshot.seq = this.seq + events.length
     const stagedEvents = events.map((event, index) => ({ seq: this.seq + index + 1, event }))
-    if (!await this.writeSnapshot(snapshot, actions, stagedEvents, turn, governance)) {
+    if (!await this.writeSnapshot(snapshot, actions, stagedEvents, turn, mutation)) {
       throw new Error('Room was disposed before its checkpoint could commit')
     }
     install()
@@ -1661,7 +1668,7 @@ export class RoomService {
   async writeSnapshot(
     snapshot = this.snapshot(), actions: readonly roomStorage.RoomActionWrite[] = [],
     stagedEvents: { seq: number; event: RoomEvent }[] = [], turn?: roomStorage.RoomCheckpoint['turn'],
-    governance?: roomStorage.RoomGovernanceWrite,
+    mutation?: roomStorage.RoomCheckpointWrite,
   ): Promise<boolean> {
     if (this.disposed) return false
     if (this.workerLease) boundTranscript(snapshot)
@@ -1675,7 +1682,7 @@ export class RoomService {
     } : undefined
     try {
       await roomStorage.updateRoomStateSnapshot(
-        this.roomId, serializeRoomState(snapshot), snapshot.phase === 'ended' ? 'ended' : undefined, actions, checkpoint, governance,
+        this.roomId, serializeRoomState(snapshot), snapshot.phase === 'ended' ? 'ended' : undefined, actions, checkpoint, mutation,
       )
     } catch (error) {
       // A failed COMMIT response can still mean PostgreSQL committed. Discard
@@ -1963,9 +1970,10 @@ function memberRowToInfo(m: roomStorage.RoomMemberRow): RoomMember {
   }
 }
 
-async function checkpointGovernance(
+async function checkpointRoomMutation(
   room: roomStorage.RoomRow, lease: roomStorage.RoomWorkerLease,
-  write: roomStorage.RoomGovernanceWrite, members: RoomMember[], updates: Partial<RoomSnapshot> = {},
+  write: roomStorage.RoomCheckpointWrite, members: RoomMember[], updates: Partial<RoomSnapshot> = {},
+  newSheet?: COCCharacterSheet | null,
 ): Promise<void> {
   const roomId = room.room_id
   const active = getRoom(roomId)
@@ -1973,8 +1981,8 @@ async function checkpointGovernance(
   const state = activeState ?? parseRoomState<Partial<RoomSnapshot>>(room.state) ?? {}
   const phase: RoomPhase = room.phase === 'playing' || room.phase === 'ended' ? room.phase : 'lobby'
   const snapshot = {
-    ...state, phase, storyId: room.story_id, turnWindowMs: state.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS,
-    ...updates, updatedAt: Date.now(),
+    ...state, storyId: room.story_id, ...updates, phase: updates.phase ?? phase,
+    turnWindowMs: updates.turnWindowMs ?? state.turnWindowMs ?? DEFAULT_TURN_WINDOW_MS, updatedAt: Date.now(),
   }
   const events: RoomEvent[] = []
   if (state.kpPauseReason && write.type === 'transfer') {
@@ -1987,8 +1995,17 @@ async function checkpointGovernance(
     events.push({ type: 'state_patch', payload: { path: 'kpSetupRequired', value: updates.kpSetupRequired } })
   }
   events.push({ type: 'room_meta', payload: { phase: snapshot.phase, turnWindowMs: snapshot.turnWindowMs, members } })
+  if (write.type === 'bind-character') {
+    const sheet = state.characters?.[write.characterId] ?? newSheet
+    if (sheet) {
+      snapshot.characters = { ...state.characters, [write.characterId]: sheet }
+      events.push({ type: 'state_patch', payload: { path: `characters.${write.characterId}`, value: sheet } })
+    }
+  }
   if (active && activeState) {
-    await active.applyGovernance({ ...activeState, ...updates }, events, members, write)
+    await active.applyRoomMutation({
+      ...activeState, ...updates, characters: snapshot.characters ?? activeState.characters,
+    }, events, members, write)
     return
   }
   const previousSeq = state.seq ?? 0
@@ -2080,8 +2097,17 @@ export async function joinRoomByInviteCode(
     if (room.phase !== 'lobby') {
       return { ok: false, reason: 'conflict', message: 'room already started' }
     }
-    await roomStorage.insertMember(roomId, userId, 'member', workerLease)
-    await broadcastMemberMeta(roomId)
+    if (workerLease) {
+      const members = (await roomStorage.listMembers(roomId)).map(memberRowToInfo)
+      if (members.some((member) => member.userId === userId)) return { ok: true, roomId }
+      members.push({
+        userId, username: await roomStorage.usernameOf(userId) ?? `user_${userId}`, role: 'member', characterId: null, ready: false,
+      })
+      await checkpointRoomMutation(room, workerLease, { type: 'add-member', userId }, members)
+    } else {
+      await roomStorage.insertMember(roomId, userId, 'member')
+      await broadcastMemberMeta(roomId)
+    }
     return { ok: true, roomId }
   })
 }
@@ -2171,7 +2197,7 @@ export async function startRoom(
     try {
       if (workerLease) {
         const kpSetupRequired = (await ownerAiSetupIssue(roomId, userId)) !== null
-        await checkpointGovernance(g.room, workerLease, { type: 'start', storyId, storyOwnerId, pin: gate.pin },
+        await checkpointRoomMutation(g.room, workerLease, { type: 'start', storyId, storyOwnerId, pin: gate.pin },
           members.map(memberRowToInfo), {
             phase: 'playing', storyId, kpSetupRequired,
             ...(g.room.phase === 'lobby' ? { openingRequired: true } : {}),
@@ -2218,13 +2244,28 @@ export async function bindRoomCharacter(
 ): Promise<{ ok: true; roomId: string; characterId: string } | { ok: false; reason: 'not-found' | 'conflict'; message: string }> {
   return withRoomMutation(roomId, async (workerLease) => {
     if (!await roomStorage.memberRole(roomId, userId)) return { ok: false, reason: 'not-found', message: 'room not found' }
-    if (await roomStorage.characterOwnerUserId(characterId) !== userId) {
+    const character = await roomStorage.getOwnedCharacterSheet(characterId, userId)
+    if (!character) {
       return { ok: false, reason: 'not-found', message: 'character not found' }
     }
     if (await roomStorage.boundMemberOf(roomId, characterId, userId) !== null) {
       return { ok: false, reason: 'conflict', message: 'character already bound to another member' }
     }
-    await roomStorage.bindMemberCharacter(roomId, userId, characterId, workerLease)
+    if (workerLease) {
+      const room = await roomStorage.getRoomRow(roomId)
+      if (!room) return { ok: false, reason: 'not-found', message: 'room not found' }
+      const members = (await roomStorage.listMembers(roomId)).map(memberRowToInfo)
+      const member = members.find((entry) => entry.userId === userId)
+      if (!member) return { ok: false, reason: 'not-found', message: 'room not found' }
+      const storedSheet = parseRoomState<COCCharacterSheet>(character.sheet)
+      const currentSheet = parseRoomState<Partial<RoomSnapshot>>(room.state)?.characters?.[characterId]
+      if (member.characterId !== characterId || (!currentSheet && storedSheet)) {
+        member.characterId = characterId
+        await checkpointRoomMutation(room, workerLease, { type: 'bind-character', userId, characterId }, members, {}, storedSheet)
+      }
+      return { ok: true, roomId, characterId }
+    }
+    await roomStorage.bindMemberCharacter(roomId, userId, characterId)
     await syncActiveRoom(roomId)
     // T4 #31：换绑后广播新绑定卡 sheet（room_meta 只带 member.characterId；
     // characters.<id> 走 state_patch——客户端档案区/队友卡依赖此通道）。
@@ -2262,7 +2303,7 @@ export async function setRoomTurnWindow(
     if (workerLease) {
       if (ms !== undefined) {
         const members = (await roomStorage.listMembers(roomId)).map(memberRowToInfo)
-        await checkpointGovernance(room, workerLease, { type: 'settings' }, members, { turnWindowMs: ms })
+        await checkpointRoomMutation(room, workerLease, { type: 'settings' }, members, { turnWindowMs: ms })
       }
     } else {
       const state = parseRoomStateOr(room.state, {}) as Record<string, unknown>
@@ -2390,8 +2431,17 @@ export async function setMemberReady(
     if (!g.ok) return g
     if (g.callerRole === 'owner') return { ok: false, reason: 'not-owner', message: 'only members can toggle ready' }
     if (g.room.phase !== 'lobby') return { ok: true } // playing 后就绪无意义：幂等成功
-    await roomStorage.setMemberReady(roomId, userId, ready, workerLease)
-    await syncActiveRoom(roomId)
+    if (workerLease) {
+      const members = (await roomStorage.listMembers(roomId)).map(memberRowToInfo)
+      const member = members.find((entry) => entry.userId === userId)
+      if (!member) return { ok: false, reason: 'not-found', message: 'room not found' }
+      if (member.ready === ready) return { ok: true }
+      member.ready = ready
+      await checkpointRoomMutation(g.room, workerLease, { type: 'set-ready', userId, ready }, members)
+    } else {
+      await roomStorage.setMemberReady(roomId, userId, ready)
+      await syncActiveRoom(roomId)
+    }
     return { ok: true }
   })
 }
@@ -2453,7 +2503,7 @@ async function transferOwnerRow(
     }
   }
   const kpSetupRequired = room.phase === 'playing' && (await ownerAiSetupIssue(roomId, newOwnerId)) !== null
-  await checkpointGovernance(room, workerLease, { type: 'transfer', oldOwnerId, newOwnerId, removeOldOwner, disconnect },
+  await checkpointRoomMutation(room, workerLease, { type: 'transfer', oldOwnerId, newOwnerId, removeOldOwner, disconnect },
     members, { kpSetupRequired, kpPauseReason: undefined, kpRetryAt: undefined, kpPauseOwnerId: undefined })
 }
 
@@ -2480,7 +2530,7 @@ async function removeRoomMember(room: roomStorage.RoomRow, userId: number, worke
     const members = (await roomStorage.listMembers(room.room_id))
       .filter((member) => member.user_id !== userId)
       .map(memberRowToInfo)
-    await checkpointGovernance(room, workerLease, { type: 'remove-member', userId }, members)
+    await checkpointRoomMutation(room, workerLease, { type: 'remove-member', userId }, members)
   } else {
     await roomStorage.deleteMemberRow(room.room_id, userId)
     await broadcastMemberMeta(room.room_id)
