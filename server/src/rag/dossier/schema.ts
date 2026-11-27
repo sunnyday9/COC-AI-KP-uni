@@ -17,6 +17,8 @@ export interface StoryDossier {
   scriptId: string
   storyName: string
   generatedAt: number
+  /** Identifies the dossier and its matching reveal anchors. Legacy files omit it. */
+  sourceRevision?: string
   /** LLM model id used for generation ('' when unknown). */
   generatedByModel?: string
   /** Structured layer — same shape as the COC script JSON schema. */
@@ -291,6 +293,7 @@ export function parseDossierJson(raw: string): StoryDossier | null {
     scriptId,
     storyName,
     generatedAt: typeof obj.generatedAt === 'number' ? obj.generatedAt : Date.now(),
+    ...(typeof obj.sourceRevision === 'string' ? { sourceRevision: obj.sourceRevision } : {}),
     generatedByModel: typeof obj.generatedByModel === 'string' ? obj.generatedByModel : undefined,
     scenes,
     clues,
@@ -679,6 +682,32 @@ export function assessDossier(d: StoryDossier, storyChars?: number): DossierQual
     gapChars: d.coverageGaps?.chars ?? 0,
     gapPct: d.coverageGaps?.pct ?? 0,
   }
+}
+
+/** Shared prepared revisions must already have the shapes gameplay consumes. */
+export function hasPlayableDossierShape(dossier: StoryDossier): boolean {
+  const text = (value: unknown) => typeof value === 'string' && value.trim().length > 0
+  const optionalText = (value: unknown) => value === undefined || typeof value === 'string'
+  const optionalStrings = (value: unknown) =>
+    value === undefined || (Array.isArray(value) && value.every((item) => typeof item === 'string'))
+
+  return text(dossier?.storyName)
+    && Array.isArray(dossier.scenes) && dossier.scenes.length > 0
+    && dossier.scenes.every((scene) => !!scene && text(scene.id) && text(scene.name) && typeof scene.sceneText === 'string'
+      && optionalText(scene.description) && optionalText(scene.transitionCondition)
+      && optionalStrings(scene.npcIds) && optionalStrings(scene.clueIds)
+      && optionalStrings(scene.requiredClues) && optionalStrings(scene.hooks) && optionalStrings(scene.keywords))
+    && new Set(dossier.scenes.map((scene) => scene.id)).size === dossier.scenes.length
+    && Array.isArray(dossier.clues)
+    && dossier.clues.every((clue) => !!clue && text(clue.id) && text(clue.description)
+      && optionalText(clue.obtainCondition) && optionalStrings(clue.requiredClues))
+    && Array.isArray(dossier.npcs)
+    && dossier.npcs.every((npc) => !!npc && text(npc.id) && text(npc.name)
+      && optionalText(npc.description) && optionalText(npc.role))
+    && Array.isArray(dossier.truths)
+    && dossier.truths.every((truth) => !!truth && text(truth.revealScene))
+    && (dossier.endings === undefined || (Array.isArray(dossier.endings)
+      && dossier.endings.every((ending) => !!ending && text(ending.name) && text(ending.condition) && optionalText(ending.outcome))))
 }
 
 /** Convert a dossier into the graph-facing ScriptContext shape. */

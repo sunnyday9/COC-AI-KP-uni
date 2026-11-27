@@ -131,10 +131,10 @@ describe('#55 startRoom 门闩（dossier workflow）', () => {
   it('残档（degraded）→ conflict 提示重新生成，文案不是「尚未生成档案」', async () => {
     const owner = seedUser('sr_owner')
     const memberA = seedUser('sr_a')
-    const created = createRoom(owner, null, { workflow: 'dossier' })
-    joinRoomByInviteCode(memberA, created.inviteCode)
-    bindRoomCharacter(owner, created.roomId, seedChar(owner, 'oc'))
-    bindRoomCharacter(memberA, created.roomId, seedChar(memberA, 'ac'))
+    const created = await createRoom(owner, null, { workflow: 'dossier' })
+    await joinRoomByInviteCode(memberA, created.inviteCode)
+    await bindRoomCharacter(owner, created.roomId, seedChar(owner, 'oc'))
+    await bindRoomCharacter(memberA, created.roomId, seedChar(memberA, 'ac'))
 
     listDossiersMock.mockResolvedValue([item('story_x', { degraded: true, coveragePct: 3, failedBatches: 3 })])
 
@@ -154,8 +154,8 @@ describe('#55 startRoom 门闩（dossier workflow）', () => {
 
   it('健康档案（degraded=false）→ 门闩全过开局成功', async () => {
     const owner = seedUser('sr_ok_owner')
-    const created = createRoom(owner, null, { workflow: 'dossier' })
-    bindRoomCharacter(owner, created.roomId, seedChar(owner, 'oc'))
+    const created = await createRoom(owner, null, { workflow: 'dossier' })
+    await bindRoomCharacter(owner, created.roomId, seedChar(owner, 'oc'))
 
     listDossiersMock.mockResolvedValue([item('story_ok', { degraded: false, coveragePct: 54.7 })])
 
@@ -165,8 +165,8 @@ describe('#55 startRoom 门闩（dossier workflow）', () => {
 
   it('旧档案（无质量数据 degraded=undefined）→ 放行', async () => {
     const owner = seedUser('sr_legacy_owner')
-    const created = createRoom(owner, null, { workflow: 'dossier' })
-    bindRoomCharacter(owner, created.roomId, seedChar(owner, 'oc'))
+    const created = await createRoom(owner, null, { workflow: 'dossier' })
+    await bindRoomCharacter(owner, created.roomId, seedChar(owner, 'oc'))
 
     listDossiersMock.mockResolvedValue([item('story_legacy', {})])
 
@@ -176,8 +176,8 @@ describe('#55 startRoom 门闩（dossier workflow）', () => {
 
   it('未生成档案 → 维持原有「尚未生成档案」文案（回归钉住）', async () => {
     const owner = seedUser('sr_miss_owner')
-    const created = createRoom(owner, null, { workflow: 'dossier' })
-    bindRoomCharacter(owner, created.roomId, seedChar(owner, 'oc'))
+    const created = await createRoom(owner, null, { workflow: 'dossier' })
+    await bindRoomCharacter(owner, created.roomId, seedChar(owner, 'oc'))
 
     listDossiersMock.mockResolvedValue([])
 
@@ -410,8 +410,8 @@ describe('#55 createSoloRoom 门闩（solo 出生即 playing，不经 startRoom�
 describe('rag workflow multiplayer start gate', () => {
   it('已索引但 revealScene 未匹配 gaps 锚点 → conflict，房间保留 lobby', async () => {
     const owner = seedUser('multi_rag_missing_anchor')
-    const created = createRoom(owner, null)
-    bindRoomCharacter(owner, created.roomId, seedChar(owner, 'multi_rag_card'))
+    const created = await createRoom(owner, null)
+    await bindRoomCharacter(owner, created.roomId, seedChar(owner, 'multi_rag_card'))
     listStoriesMock.mockReturnValue([{ storyId: 'story_multi', name: 'x', chunkCount: 1, indexedAt: 1 }])
     listDossiersMock.mockResolvedValue([item('story_multi', { degraded: false, coveragePct: 54.7 })])
     loadDossierMock.mockResolvedValue(usableRagDossier('story_multi'))
@@ -431,8 +431,8 @@ describe('rag workflow multiplayer start gate', () => {
 
   it('已索引且 revealScene 锚点可用 → 多人开局成功', async () => {
     const owner = seedUser('multi_rag_ready')
-    const created = createRoom(owner, null)
-    bindRoomCharacter(owner, created.roomId, seedChar(owner, 'multi_rag_card'))
+    const created = await createRoom(owner, null)
+    await bindRoomCharacter(owner, created.roomId, seedChar(owner, 'multi_rag_card'))
     listStoriesMock.mockReturnValue([{ storyId: 'story_multi_ready', name: 'x', chunkCount: 1, indexedAt: 1 }])
     listDossiersMock.mockResolvedValue([item('story_multi_ready', { degraded: false, coveragePct: 54.7 })])
     loadDossierMock.mockResolvedValue(usableRagDossier('story_multi_ready'))

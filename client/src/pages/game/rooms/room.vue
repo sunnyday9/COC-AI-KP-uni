@@ -12,8 +12,11 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { useRoomStore } from '../../../stores/roomStore'
+import { useIndexedStoryPages } from '../../../composables/useIndexedStoryPages'
 import { useToast } from '../../../composables/useToast'
 import ChatMessage from '../components/ChatMessage.vue'
+import ChatRetryNotices from '../components/ChatRetryNotices.vue'
+import ChatHistoryControl from '../components/ChatHistoryControl.vue'
 import ConfirmModal from '../../../components/ui/ConfirmModal.vue'
 import Button from '../../../components/ui/Button.vue'
 import { getBridge } from '../../../platform'
@@ -32,7 +35,11 @@ const selectedCharId = ref('')
 const hasAnyCharacter = ref(false)
 
 // ── 故事选择 ──
-const indexedStories = ref<IndexedStory[]>([])
+const {
+  stories: indexedStories, nextCursor: nextStoryCursor, isLoading: loadingStories, error: storyPickerError,
+  refresh: refreshStories, loadMore: loadMoreStories,
+} = useIndexedStoryPages()
+const pickedStory = ref<IndexedStory | null>(null)
 const storyPickerOpen = ref(false)
 /** 选中故事（storyId；null=未选）。本地选择源；开局时随 roomStart 提交（T1 无独立选故事端点）。 */
 const pickedStoryId = ref<string | null>(null)
@@ -40,7 +47,9 @@ const pickedStoryId = ref<string | null>(null)
 /** 已选剧本展示名（本地选择 or 服务端已开局登记）。 */
 function storyNameOf(id: string | null): string {
   if (!id) return ''
-  return indexedStories.value.find((s) => s.storyId === id)?.name ?? ''
+  return pickedStory.value?.storyId === id
+    ? pickedStory.value.name
+    : indexedStories.value.find((s) => s.storyId === id)?.name ?? ''
 }
 
 /** 剧本展示 id/名（本地已选优先；服务端登记（storyId 列）兜底——开局后/建房带故事）。 */
@@ -100,14 +109,6 @@ const isOwner = computed(() => roomStore.isOwner)
 /** 服务端已登记剧本（开局后 / 建房带 storyId / 恢复）。成员视角显示服务端登记。 */
 const storyConfirmed = computed(() => roomStore.storyId !== null)
 
-async function loadIndexedStories() {
-  try {
-    indexedStories.value = await getBridge().ragListStories()
-  } catch {
-    indexedStories.value = []
-  }
-}
-
 /** 门闩提示（房主开局条）：本地未选 → 提示；已选但有人未绑卡 → 提示（与服务端 409 语义一致）。 */
 const startHint = computed(() => {
   const storyIdToStart = roomStore.storyId ?? pickedStoryId.value
@@ -120,12 +121,16 @@ const startHint = computed(() => {
 /** 剧本选择器打开：同步当前选择 + 刷新已索引列表（未索引不列）。 */
 function openStoryPicker() {
   if (roomStore.storyId) pickedStoryId.value = roomStore.storyId
-  void loadIndexedStories()
+  void refreshStories()
   storyPickerOpen.value = true
 }
 
+function pickStory(story: IndexedStory) {
+  pickedStoryId.value = story.storyId
+  pickedStory.value = story
+}
+
 /** 房间消息流（服务端事件回灌）。 */
-const displayMessages = computed(() => roomStore.messages.map((m) => roomStore.toMessage(m)))
 
 async function loadMyCharacters() {
   try {
@@ -456,19 +461,28 @@ function readRoomId(): string {
       <!-- 右栏：lobby 聊天（不触发 KP 由服务端 gate） -->
       <view class="main-panel">
         <view class="chat-list">
+          <ChatHistoryControl />
           <view v-if="roomStore.messages.length === 0" class="chat-empty">
             等待室里一片寂静……和队友聊两句，或等房主宣布剧本。
           </view>
           <view
-            v-for="msg in displayMessages"
+            v-for="msg in roomStore.messages"
             :key="msg.id"
             class="msg-wrap"
             :id="'msg-' + msg.id"
           >
-            <chat-message :msg="msg" />
+            <chat-message
+              :msg="roomStore.toMessage(msg)"
+              :pending="msg.pending"
+              :send-error="msg.sendError"
+              :retry-disabled="roomStore.connectionState !== 'joined'"
+              @retry="roomStore.retryPendingChat(msg.id)"
+            />
           </view>
         </view>
 
+        <ChatRetryNotices />
+        <text v-if="roomStore.chatError" role="alert">{{ roomStore.chatError }}</text>
         <view class="chat-input-row">
           <input
             v-model="chatText"
@@ -492,14 +506,22 @@ function readRoomId(): string {
             :key="s.storyId"
             class="story-option"
             :class="{ active: pickedStoryId === s.storyId }"
-            @click="pickedStoryId = s.storyId"
+            @click="pickStory(s)"
           >
             <text class="story-option-name">{{ s.name }}</text>
             <text class="story-option-meta">{{ s.chunkCount }} 段</text>
           </view>
-          <view v-if="indexedStories.length === 0" class="picker-empty">
+          <view v-if="loadingStories && !indexedStories.length" class="picker-empty" role="status">正在加载故事...</view>
+          <view v-else-if="storyPickerError" class="picker-empty" role="alert">
+            <text>{{ storyPickerError }}</text>
+            <button v-if="!nextStoryCursor" class="mini-btn" @click="refreshStories">重试</button>
+          </view>
+          <view v-else-if="indexedStories.length === 0" class="picker-empty">
             暂无已索引故事 — 请先到「故事管理」导入并索引剧本
           </view>
+          <button v-if="nextStoryCursor" class="mini-btn picker-more" :disabled="loadingStories" @click="loadMoreStories">
+            {{ loadingStories ? '加载中...' : '加载更多故事' }}
+          </button>
         </scroll-view>
         <view class="picker-foot">
           <Button variant="ghost" extra-class="picker-btn" @click="storyPickerOpen = false">取消</Button>

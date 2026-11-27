@@ -28,6 +28,8 @@ import { assertId, assertStoredFilePath, generateFilePath, isInternalUuidFileNam
 import { readFileOr404, unlinkOr404 } from '../utils/fsSafe.js'
 import { assertPathInDir, resolveFileInDir } from '../utils/pathSafety.js'
 import { NotFoundError } from '../utils/errors.js'
+import { parseStoryPage, formatStoryPage, type StoryPageRow } from './storyPagination.js'
+import { BoundedCache } from '../utils/boundedCache.js'
 
 /** Story extensions — mirrors STORY_EXTENSIONS in fileHandlers.cjs verbatim. */
 export const STORY_EXTENSIONS = ['.txt', '.md', '.json', '.pdf', '.docx', '.epub', '.html', '.htm']
@@ -123,24 +125,58 @@ export async function readStoryFileBytes(userId: number, id: string): Promise<{ 
   return { name, ext, buffer }
 }
 
-/** file:listStories — DB 为主 + 存量文件系统兜底导入。 */
-export async function listStories(userId: number): Promise<StoryListItem[]> {
-  // 存量文件系统数据（旧版）自动导入 DB，保证列表完整。
-  const dir = await ensureStoriesDir(userId)
+const scannedLegacyDirectories = new BoundedCache<bigint>(1024 * 1024)
+const legacyImports = new Map<number, Promise<void>>()
+
+async function importLegacyStories(userId: number): Promise<void> {
+  const dir = storiesDir(userId)
   try {
+    const stamp = (await fs.stat(dir, { bigint: true })).mtimeNs
+    const key = String(userId)
+    if (scannedLegacyDirectories.get(key) === stamp) return
     const entries = await fs.readdir(dir, { withFileTypes: true })
     for (const e of entries) {
       if (e.isFile() && isStoryFile(e.name)) {
         await importLegacyFile(userId, e.name)
       }
     }
+    scannedLegacyDirectories.set(key, stamp, 0)
   } catch {
     // 目录不存在或不可读 → 忽略，仅返回 DB 记录
   }
+}
+
+function syncLegacyStories(userId: number): Promise<void> {
+  const existing = legacyImports.get(userId)
+  if (existing) return existing
+  const task = importLegacyStories(userId).finally(() => { legacyImports.delete(userId) })
+  legacyImports.set(userId, task)
+  return task
+}
+
+/** Compatibility list for existing clients. */
+export async function listStories(userId: number): Promise<StoryListItem[]> {
+  await syncLegacyStories(userId)
   const rows = getDb()
     .prepare(`SELECT story_id, name FROM stories WHERE user_id = ? ORDER BY created_at DESC`)
     .all(userId) as { story_id: string; name: string }[]
   return rows.map((r) => ({ name: r.name, id: r.story_id }))
+}
+
+export async function listStoryPage(
+  userId: number,
+  rawLimit: unknown,
+  rawCursor: unknown,
+): Promise<{ stories: StoryListItem[]; nextCursor: string | null }> {
+  const { limit, cursor } = parseStoryPage(rawLimit, rawCursor)
+  await syncLegacyStories(userId)
+  const query = getDb().prepare(`
+    SELECT story_id, name, created_at FROM stories WHERE user_id = ?
+    ${cursor ? 'AND (created_at, story_id) < (?, ?)' : ''}
+    ORDER BY created_at DESC, story_id DESC LIMIT ?
+  `)
+  const bounds = cursor ? [userId, ...cursor, limit + 1] : [userId, limit + 1]
+  return formatStoryPage(query.all(...bounds) as unknown as StoryPageRow[], limit)
 }
 
 /** file:readStory — raw text for txt/md/json, parsed text for pdf/docx/epub/html. */
@@ -150,33 +186,23 @@ export async function readStory(userId: number, id: string): Promise<{ name: str
   // fs 只用 DB 内部 file_path；就近守卫：必须落在 storiesDir 内。
   const safePath = assertPathInDir(storiesDir(userId), resolveFileInDir(storiesDir(userId), filePath, 'story file'), 'story file (sink)')
   const ext = path.extname(safePath).toLowerCase()
-  if (ext === '.pdf') {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    const pdfData = await pdfParse(dataBuffer)
-    return { name, content: pdfData.text }
-  }
-  if (['.docx', '.epub'].includes(ext)) {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    try {
-      const storyParsers = await import('../rag/storyParsers.js')
-      const text = await storyParsers.parseByExtension(ext, dataBuffer)
-      return { name, content: text || '' }
-    } catch {
-      return { name, content: '' }
-    }
-  }
-  if (['.html', '.htm'].includes(ext)) {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    try {
-      const storyParsers = await import('../rag/storyParsers.js')
-      const text = await storyParsers.parseByExtension(ext, dataBuffer.toString('utf-8'))
-      return { name, content: text || '' }
-    } catch {
-      return { name, content: '' }
-    }
-  }
   const dataBuffer = await readFileOr404(safePath, 'story')
-  return { name, content: dataBuffer.toString('utf-8') }
+  return { name, content: await parseStoryContent(ext, dataBuffer) }
+}
+
+/** Parse a source for the existing story read API without running preparation. */
+export async function parseStoryContent(ext: string, dataBuffer: Buffer): Promise<string> {
+  if (ext === '.pdf') return (await pdfParse(dataBuffer)).text
+  if (['.docx', '.epub', '.html', '.htm'].includes(ext)) {
+    try {
+      const storyParsers = await import('../rag/storyParsers.js')
+      const source = ['.html', '.htm'].includes(ext) ? dataBuffer.toString('utf-8') : dataBuffer
+      return await storyParsers.parseByExtension(ext, source) || ''
+    } catch {
+      return ''
+    }
+  }
+  return dataBuffer.toString('utf-8')
 }
 
 /**
@@ -189,34 +215,24 @@ export async function readStoryForRag(userId: number, id: string): Promise<{ nam
   const { filePath, name } = await resolveStoryFilePath(userId, id)
   const safePath = assertPathInDir(storiesDir(userId), resolveFileInDir(storiesDir(userId), filePath, 'story file'), 'story file (sink)')
   const ext = path.extname(safePath).toLowerCase()
-  if (['.docx', '.epub'].includes(ext)) {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    try {
-      const storyParsers = await import('../rag/storyParsers.js')
-      const text = await storyParsers.parseByExtension(ext, dataBuffer)
-      return { name, content: text || '' }
-    } catch {
-      return { name, content: '' }
-    }
-  }
-  if (['.html', '.htm'].includes(ext)) {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    try {
-      const storyParsers = await import('../rag/storyParsers.js')
-      const text = await storyParsers.parseByExtension(ext, dataBuffer.toString('utf-8'))
-      return { name, content: text || '' }
-    } catch {
-      return { name, content: '' }
-    }
-  }
-  if (ext !== '.pdf') {
-    const dataBuffer = await readFileOr404(safePath, 'story')
-    return { name, content: dataBuffer.toString('utf-8') }
-  }
   const dataBuffer = await readFileOr404(safePath, 'story')
-  const storyParsers = await import('../rag/storyParsers.js')
-  const mainText = await storyParsers.parsePdfWithOcr(dataBuffer)
-  return { name, content: mainText }
+  return { name, content: await parseStoryContentForPreparation(ext, dataBuffer) }
+}
+
+/** Shared source parsing for local indexing and the durable worker. */
+export async function parseStoryContentForPreparation(ext: string, dataBuffer: Buffer, requireComplete = false, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted()
+  if (ext === '.pdf') {
+    const { parsePdfWithOcr } = await import('../rag/storyParsers.js')
+    return parsePdfWithOcr(dataBuffer, { requireComplete, signal })
+  }
+  if (ext === '.epub' && requireComplete) {
+    const { parseEpub } = await import('../rag/storyParsers.js')
+    return parseEpub(dataBuffer, true, signal)
+  }
+  const text = await parseStoryContent(ext, dataBuffer)
+  signal?.throwIfAborted()
+  return text
 }
 
 /**
@@ -240,18 +256,26 @@ export async function importStory(
     return { ok: false, error: `unsupported file type: ${ext || '(none)'}` }
   }
   // 同名冲突：追加短随机后缀（保留原行为）。
-  const db = getDb()
-  const existing = db.prepare(`SELECT 1 FROM stories WHERE user_id = ? AND story_id = ?`).get(userId, id)
-  if (existing) {
-    const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
-    id = `${id.slice(0, id.length - ext.length)}-${stamp}${ext}`
-  }
   const filePath = generateFilePath(id, '.txt')
   const dir = await ensureStoriesDir(userId)
   const target = assertPathInDir(dir, resolveFileInDir(dir, filePath, 'story file'), 'story file (sink)')
-  await fs.writeFile(target, file.buffer)
-  db.prepare(`INSERT INTO stories (user_id, story_id, name, file_path, created_at) VALUES (?, ?, ?, ?, ?)`)
-    .run(userId, id, id, filePath, Date.now())
+  await fs.writeFile(target, file.buffer, { flag: 'wx' })
+  try {
+    const insert = getDb().prepare(`
+      INSERT INTO stories (user_id, story_id, name, file_path, created_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (user_id, story_id) DO NOTHING
+    `)
+    if (insert.run(userId, id, id, filePath, Date.now()).changes === 0) {
+      const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+      id = `${id.slice(0, Math.min(id.length - ext.length, 120 - stamp.length - ext.length - 1))}-${stamp}${ext}`
+      if (insert.run(userId, id, id, filePath, Date.now()).changes === 0) {
+        throw new Error('Could not assign a unique id to the uploaded story')
+      }
+    }
+  } catch (error) {
+    await fs.unlink(target).catch(() => undefined)
+    throw error
+  }
   return { ok: true, name: id, id }
 }
 

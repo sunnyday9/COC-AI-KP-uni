@@ -40,6 +40,35 @@ export interface RAGQueryParams {
   topK?: number
 }
 
+export type StoryPreparationStage = 'queued' | 'read' | 'index' | 'dossier' | 'publish' | 'complete' | 'source_failed' | 'index_failed' | 'dossier_failed' | 'anchors_failed' | 'publish_failed' | 'cancelled' | 'timed_out' | 'retry_exhausted'
+export interface StoryPreparationStatus {
+  activeRevision: string | null
+  job: {
+    id: string
+    /** Monotonic per story across jobs and worker lease recovery. */
+    version: string
+    operationId?: string
+    state: 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
+    stage: StoryPreparationStage
+    percent: number
+  } | null
+}
+
+export interface StoryCatalogPage {
+  stories: { id: string; name: string; preparation?: StoryPreparationStatus }[]
+  preparationMode?: 'durable'
+  preparationOwnerId?: string
+  nextCursor: string | null
+  /** False on shared gateways before durable preparation is available. */
+  canPrepare?: boolean
+}
+
+export interface IndexedStoryPage {
+  stories: IndexedStory[]
+  nextCursor: string | null
+  canStartInvestigation?: boolean
+}
+
 export interface IndexedStory {
   storyId: string
   name: string

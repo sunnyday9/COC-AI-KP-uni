@@ -36,3 +36,7 @@ ADR-0004 UI 重设计验收后，多人房间只有「创建/邀请码加入/聊
 - game 页档案区加成员切换（纯 UI，数据已在 roomStore）。
 - e2e：rooms.journey 重写为完整多人局（建房→加入→选故事→门闩→绑卡/准备→开局→game 聊天/KP/重连）；h5.journey 单人链路不动；multiroom WS 层若 lobby 禁 KP 需同步。
 - 出界（后续票）：observer 旁观角色、多人结局/存档归属、AI 按触发成员计费、故事跨账号共享。
+
+## 共享部署
+
+主动 REST 离开继续触发房主继任。普通断线在最后一个有效订阅消失后触发继任判断。网关退出、服务端主动重置连接和在线租约过期按传输中断处理。首次续连中断与快照断线后排空仍有待处理的竞态。见 [ADR-0010](0010-scale-out-deployment.md)、[#127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127) 和 [#128](https://github.com/sunnyday9/COC-AI-KP-uni/issues/128)。

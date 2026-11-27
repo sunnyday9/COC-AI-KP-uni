@@ -110,6 +110,7 @@ export async function openaiResponsesAdapter(
 
   const res = (await client.responses.create(
     body as unknown as Parameters<OpenAI['responses']['create']>[0],
+    ...(params.signal ? [{ signal: params.signal, maxRetries: 0 }] : []),
   )) as unknown as {
     output?: {
       type?: string

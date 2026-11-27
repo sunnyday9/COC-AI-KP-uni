@@ -145,6 +145,27 @@ describe('roomStore', () => {
     expect(store.scene).toBe('地下室')
   })
 
+  it('loads earlier transcript pages without changing the live cursor or duplicating messages', async () => {
+    await joinAndSync()
+    const previous = { id: 'm1', timestamp: 1, role: 'system', content: 'A ledger was found.' }
+    const recent = { id: 'm2', timestamp: 1, role: 'kp', content: 'The archive is quiet.' }
+    const historyRequest = vi.fn(({ url }: { url: string }) => {
+      expect(url).toContain('/api/rooms/room_x/history?before=m2')
+      return { statusCode: 200, data: { messages: [previous, recent], nextBefore: null } }
+    })
+    state.requestResponder = historyRequest
+    emitFrame({
+      type: 'room:state', roomId: 'room_x', seq: 29,
+      snapshot: { ...SNAP0, seq: 29, messages: [recent], transcript: { before: 'm2' } },
+    })
+    expect(store.canLoadHistory).toBe(true)
+    await store.loadEarlierMessages()
+    expect(historyRequest).toHaveBeenCalledTimes(1)
+    expect(store.messages).toEqual([previous, recent])
+    expect(store.lastSeq).toBe(29)
+    expect(store.canLoadHistory).toBe(false)
+  })
+
   it('applies characters state_patch by merging', async () => {
     await joinAndSync()
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: { ...SNAP0, characters: { char_a: { derived: { hp: 10 } } } } })
@@ -255,6 +276,187 @@ describe('roomStore', () => {
     expect(((action!.action as { payload: { content: string } }).payload).content).toBe('我要调查书架')
   })
 
+  it('retries a busy chat with the original action ID and reconciles identical messages independently', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    store.sendChat('调查书架')
+    store.sendChat('调查书架')
+    const [first, second] = sentFrames().filter((frame) => frame.type === 'room:action')
+    expect(first.actionId).toEqual(expect.any(String))
+    expect(second.actionId).not.toBe(first.actionId)
+
+    emitFrame({ type: 'room:action:result', roomId: 'room_x', actionId: second.actionId, status: 'busy', error: '房间忙，请稍后重试。' })
+    const failed = store.messages.find((message) => message.sendError)
+    expect(failed?.sendError).toBe('房间忙，请稍后重试。')
+    expect(store.connectionState).toBe('joined')
+    store.retryPendingChat(failed!.id)
+    expect(sentFrames().at(-1)).toEqual(second)
+
+    const echo = { id: 'second-message', timestamp: 1, role: 'player', playerName: 'alice', content: '调查书架' }
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'message_appended', payload: { message: echo, author: { userId: 1, roleName: 'alice' }, actionId: second.actionId } })
+    emitFrame({ type: 'room:action:result', roomId: 'room_x', actionId: second.actionId, status: 'completed', messageId: echo.id })
+    expect(store.messages.map((message) => [message.id, !!message.pending])).toEqual([[expect.any(String), true], [echo.id, false]])
+  })
+
+  it('reconciles a Keeper reply delivered in the snapshot after the receipt', async () => {
+    await joinAndSync()
+    const playing = { ...SNAP0, phase: 'playing' }
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: playing, actionReceipts: true })
+    store.sendChat('查看书架')
+    const action = sentFrames().at(-1)!
+    const echo = { id: 'accepted-chat', timestamp: 1, role: 'player', content: '查看书架' }
+    emitFrame({
+      type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'pending', messageId: echo.id,
+    })
+    expect(sentFrames().at(-1)).toMatchObject({ type: 'room:sync', roomId: 'room_x', lastSeq: 0 })
+
+    emitFrame({
+      type: 'room:state', roomId: 'room_x', seq: 1, actionReceipts: true, kpTurnPending: true,
+      snapshot: { ...playing, seq: 1, messages: [echo] },
+    })
+    expect(store.awaitingKp).toBe(true)
+
+    const reply = { id: 'keeper-reply', timestamp: 2, role: 'kp', content: '书架的背板是空心的。' }
+    emitFrame({
+      type: 'room:state', roomId: 'room_x', seq: 2, actionReceipts: true, kpTurnPending: false,
+      snapshot: { ...playing, seq: 2, messages: [echo, reply] },
+    })
+    expect(store.messages).toEqual([echo, reply])
+    expect(store.awaitingKp).toBe(false)
+  })
+
+  it('shows the existing kick notice when a gateway revokes the subscription', async () => {
+    await joinAndSyncAsMember()
+    emitFrame({ type: 'room:error', roomId: 'room_x', error: 'not a room member', removedReason: 'kicked' })
+    expect(store.removedReason).toBe('kicked')
+  })
+
+  it('retains the original chat ID when the player retries the same room after an error', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    store.sendChat('查看走廊')
+    const action = sentFrames().at(-1)!
+    emitFrame({ type: 'room:error', roomId: 'room_x', error: '房间暂时无法连接。' })
+    expect(store.connectionState).toBe('error')
+
+    await store.joinRoom('room_x')
+    expect(sentFrames().some((frame) => frame.type === 'room:leave')).toBe(false)
+    expect(sentFrames().at(-1)).toMatchObject({ type: 'room:join', roomId: 'room_x' })
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    expect(sentFrames().at(-1)).toEqual(action)
+  })
+
+  it('checks the server capability before resending an uncertain chat after a manual rejoin', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    store.sendChat('查看走廊')
+    emitFrame({ type: 'room:error', roomId: 'room_x', error: '房间暂时无法连接。' })
+    await store.joinRoom('room_x')
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0 })
+    expect(sentFrames().filter((frame) => frame.type === 'room:action')).toHaveLength(1)
+    expect(store.messages).toEqual([])
+    expect(store.chatError).toBe('当前服务器无法确认刚才的消息，请先查看聊天记录。')
+  })
+
+  it('rechecks a lost receipt with the same ID after reconnect without duplicating the snapshot message', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    store.sendChat('查阅档案')
+    const action = sentFrames().at(-1)!
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(store.messages.at(-1)?.sendError).toContain('暂未确认送达')
+    state.sockets[0].emitClose()
+    await vi.advanceTimersByTimeAsync(1_000)
+    const reconnect = state.sockets[1]
+    reconnect.emitOpen()
+    expect(JSON.parse(reconnect.sent[0])).toMatchObject({ type: 'room:join', roomId: 'room_x' })
+    const echo = { id: 'existing-message', timestamp: 1, role: 'player', playerName: 'alice', content: '查阅档案' }
+    reconnect.emitMessage({
+      type: 'room:state', roomId: 'room_x', seq: 1, snapshot: { ...SNAP0, seq: 1, messages: [echo] }, actionReceipts: true,
+    })
+    expect(JSON.parse(reconnect.sent.at(-1)!)).toEqual(action)
+    expect(store.messages).toEqual([echo])
+    reconnect.emitMessage({
+      type: 'room:state', roomId: 'room_x', seq: 1, snapshot: { ...SNAP0, seq: 1, messages: [echo] }, actionReceipts: true,
+    })
+    expect(reconnect.sent.filter((sent) => JSON.parse(sent).type === 'room:action')).toHaveLength(1)
+    reconnect.emitMessage({ type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'completed', messageId: echo.id })
+    expect(store.messages).toEqual([echo])
+  })
+
+  it('reattaches at the last applied sequence and retries only chats missing from replay', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 5, snapshot: { ...SNAP0, seq: 5 }, actionReceipts: true })
+    store.sendChat('Inspect the ledger')
+    const confirmed = sentFrames().at(-1)!
+    store.sendChat('Open the cabinet')
+    const uncertain = sentFrames().at(-1)!
+
+    state.sockets[0].emitClose()
+    await vi.advanceTimersByTimeAsync(1_000)
+    const reconnect = state.sockets[1]
+    reconnect.emitOpen()
+    expect(JSON.parse(reconnect.sent[0])).toMatchObject({ type: 'room:join', roomId: 'room_x', lastSeq: 5 })
+    const echo = { id: 'replayed-message', timestamp: 1, role: 'player', playerName: 'alice', content: 'Inspect the ledger' }
+    const replay = { type: 'room:event', roomId: 'room_x', seq: 6, eventType: 'message_appended',
+      payload: { message: echo, author: { userId: 1, roleName: 'alice' }, actionId: confirmed.actionId } }
+    reconnect.emitMessage(replay)
+    reconnect.emitMessage(replay)
+    reconnect.emitMessage({ type: 'room:sync:done', roomId: 'room_x', seq: 6, actionReceipts: true })
+
+    expect(store.connectionState).toBe('joined')
+    expect(store.isSyncing).toBe(false)
+    expect(store.lastSeq).toBe(6)
+    expect(store.messages.filter((message) => message.id === echo.id)).toEqual([echo])
+    expect(reconnect.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === 'room:action')).toEqual([uncertain])
+  })
+
+  it('applies membership and ownership when a snapshot replaces missed room events', async () => {
+    await joinAndSync()
+    expect(store.isOwner).toBe(true)
+    const members = [
+      { userId: 1, username: 'alice', role: 'member', characterId: null, ready: true },
+      { userId: 2, username: 'bob', role: 'owner', characterId: null, ready: false },
+    ]
+    store.resync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 210, snapshot: { ...SNAP0, seq: 210 }, members, actionReceipts: true })
+    expect(store.isOwner).toBe(false)
+    expect(store.members).toEqual(members)
+    expect(store.selfReady).toBe(true)
+    expect(store.connectionState).toBe('joined')
+  })
+
+  it('offers manual recovery if the automatic recheck is still uncertain and keeps the transcript authoritative', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    store.sendChat('查阅档案')
+    const action = sentFrames().at(-1)!
+    emitFrame({ type: 'room:error', roomId: 'room_x', error: '短暂断线' })
+    await store.joinRoom('room_x')
+    const message = { id: 'committed-message', timestamp: 1, role: 'player', content: '查阅档案' }
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 1, snapshot: { ...SNAP0, seq: 1, messages: [message] }, actionReceipts: true })
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(store.messages).toEqual([message])
+    expect(store.chatRetryNotices).toMatchObject([{ id: action.actionId, content: '查阅档案', sendError: expect.stringContaining('暂未确认送达') }])
+    store.retryPendingChat(String(action.actionId))
+    expect(sentFrames().at(-1)).toEqual(action)
+  })
+
+  it('keeps a busy rejection available for manual retry across rejoin', async () => {
+    await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    store.sendChat('继续调查')
+    const action = sentFrames().at(-1)!
+    emitFrame({ type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'busy', error: '房间忙，请稍后重试。' })
+    emitFrame({ type: 'room:error', roomId: 'room_x', error: '短暂断线' })
+    await store.joinRoom('room_x')
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
+    expect(sentFrames().filter((frame) => frame.type === 'room:action')).toHaveLength(1)
+    expect(store.messages.at(-1)).toMatchObject({ content: '继续调查', sendError: '房间忙，请稍后重试。' })
+    store.retryPendingChat(String(action.actionId))
+    expect(sentFrames().at(-1)).toEqual(action)
+  })
+
   it('restores the setup pause from snapshots and sends owner-only retry actions', async () => {
     await joinAndSync()
     emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: { ...SNAP0, kpSetupRequired: true } })
@@ -266,6 +468,25 @@ describe('roomStore', () => {
 
     emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'state_patch', payload: { path: 'kpSetupRequired', value: false } })
     expect(store.kpSetupRequired).toBe(false)
+  })
+
+  it('shows a provider pause without turning a durable pending receipt into a failed chat', async () => {
+    await joinAndSync()
+    const retryAt = Date.now() + 15_000
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: { ...SNAP0, kpPauseReason: 'provider_limited', kpRetryAt: retryAt }, actionReceipts: true })
+    expect(store.kpPauseReason).toBe('provider_limited')
+    expect(store.kpRetryAt).toBe(retryAt)
+    store.sendChat('调查窗台')
+    const action = sentFrames().at(-1)!
+    emitFrame({ type: 'room:action:result', roomId: 'room_x', actionId: action.actionId, status: 'pending', messageId: 'm_pending' })
+    expect(store.awaitingKp).toBe(false)
+    expect(store.chatRetryNotices).toEqual([])
+    store.retryKpTurn()
+    expect(sentFrames().at(-1)?.action).toEqual({ type: 'retry_kp' })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 1, eventType: 'state_patch', payload: { path: 'kpPauseReason', value: null } })
+    emitFrame({ type: 'room:event', roomId: 'room_x', seq: 2, eventType: 'state_patch', payload: { path: 'kpRetryAt', value: 0 } })
+    expect(store.kpPauseReason).toBeNull()
+    expect(store.kpRetryAt).toBe(0)
   })
 
   it('does not send the retry action for a non-owner', async () => {
@@ -316,6 +537,7 @@ describe('roomStore', () => {
 
   it('leaveRoom clears state and sends room:leave', async () => {
     await joinAndSync()
+    emitFrame({ type: 'room:state', roomId: 'room_x', seq: 0, snapshot: SNAP0, actionReceipts: true })
     store.sendChat('hi')
 
     store.leaveRoom()

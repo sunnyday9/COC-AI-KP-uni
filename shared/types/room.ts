@@ -4,7 +4,7 @@
  *
  * 事件流设计（全序 seq 由服务端 RoomService 串行分配）：
  *  - 客户端帧（经共享 WS 连接，见 ws/index.ts）：
- *      room:join   { roomId }
+ *      room:join   { roomId, lastSeq? }
  *      room:leave  { roomId }
  *      room:sync   { roomId, lastSeq }   —— 断线重连增量补齐
  *      room:action { roomId, action }    —— 聊天/表态，串行入队
@@ -22,6 +22,7 @@ export type RoomPhase = 'lobby' | 'playing' | 'ended'
 
 /** 房间成员角色（与 server MemberRole 一致）。 */
 export type RoomMemberRole = 'owner' | 'member' | 'observer'
+export type RoomRemovedReason = 'kicked' | 'dissolved'
 
 export interface RoomMemberInfo {
   userId: number
@@ -57,6 +58,8 @@ export type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
 export interface RoomMessageAppendedPayload {
   /** 服务端完整消息（id/timestamp/role/playerName）——客户端直接 append，无需重建。 */
   message: Message
+  /** Client-supplied identity. Match it only for the authenticated author's own echo. */
+  actionId?: string
   /** 发言者（玩家消息 roleName=username；KP 消息 roleName='KP'）。 */
   author: { userId: number; roleName: string }
 }
@@ -80,12 +83,16 @@ export interface RoomEventFrame {
   payload: RoomEventPayload
 }
 
+export type KpPauseReason = 'queue_full' | 'provider_limited' | 'timeout'
+
 /** 房间全量快照（room:state 帧；与 server RoomSnapshot 对齐）。 */
 export interface RoomSnapshot {
   seq: number
   phase: RoomPhase
   storyId: string | null
   messages: Message[]
+  /** Older messages are available through the room history endpoint. Null starts at the newest archived message. */
+  transcript?: { before: string | null }
   characters: Record<string, unknown>
   clues: { id: string; description: string }[]
   scene: string | null
@@ -93,17 +100,31 @@ export interface RoomSnapshot {
   turnWindowMs: number
   /** KP is paused until the current owner completes provider setup. */
   kpSetupRequired?: boolean
+  kpPauseReason?: KpPauseReason | null
+  kpRetryAt?: number
   /** Maximum retained conversation history sent to KP for this room, in characters. */
   contextBudgetChars?: number
   updatedAt: number
 }
 
+export interface RoomHistoryPage {
+  messages: Message[]
+  nextBefore: string | null
+}
+
+export type RoomActionReceiptStatus = 'pending' | 'completed' | 'cancelled'
+
+export type RoomActionResult =
+  | { status: RoomActionReceiptStatus; messageId: string }
+  | { status: 'busy' | 'retry' | 'rejected'; error: string; code: string }
+
 /** 服务端房间帧（room:*，统一入口，roomStore 按 type 分流）。 */
 export type RoomServerFrame =
-  | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number }
+  | { type: 'room:state'; roomId: string; snapshot: RoomSnapshot; seq: number; actionReceipts?: true; kpTurnPending?: boolean; members?: RoomMemberInfo[] }
   | { type: 'room:event'; roomId: string; seq: number; eventType: RoomEventType; payload: RoomEventFrame['payload'] }
-  | { type: 'room:sync:done'; roomId: string; seq: number }
-  | { type: 'room:error'; roomId: string; error: string }
+  | { type: 'room:sync:done'; roomId: string; seq: number; actionReceipts?: true }
+  | ({ type: 'room:action:result'; roomId: string; actionId: string } & RoomActionResult)
+  | { type: 'room:error'; roomId: string; error: string; removedReason?: RoomRemovedReason }
 
 /** REST /api/rooms 响应（roomService 客户端契约）。 */
 export interface RoomListItem {

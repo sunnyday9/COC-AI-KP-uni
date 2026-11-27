@@ -24,13 +24,16 @@
  * 门禁安全边界：轻消费方不背重依赖链，RoomService → 本模块同样走动态 import）。
  * 任何失败一律静默降级为空串/空块——回合不因知识装配中断（既有约定）。
  */
+import { SHARED_ROOMS_ENABLED } from '../config.js'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { OPENING_RAG_QUERY, type StoryWorkflow } from './kpPromptService.js'
 import type { SceneCoverage } from '../rag/dossier/coverageGaps.js'
 import type { StoryLookupHandler, StoryLookupInput } from '../rag/dossier/dossierLookupTools.js'
+import type { RoomStoryBundle } from './roomStoryRevision.js'
 import type { DossierEnding } from '../rag/dossier/schema.js'
 import { logger } from '../utils/logging.js'
+import { keeperAuxiliaryChat, type KeeperExecution } from './kpAdmission.js'
 
 /** 查证工具执行器的输入/Handler 形态单源在档案域 dossierLookupTools（类型擦除的
  *  re-export——保持本模块既有导出面，调用方零变化）。 */
@@ -43,6 +46,8 @@ export type TurnStage = 'turn' | 'opening'
 
 /** 装配输入：RoomService 运行态的一次性快照（装配时刻读取，与原两处装配同时刻）。 */
 export interface TurnKnowledgeInput {
+  preparedStory?: RoomStoryBundle
+  execution?: KeeperExecution
   /** 房间知识 workflow：rag = 检索情报块；dossier = 档案场景块 + 补充层。 */
   workflow: StoryWorkflow
   /** Current room owner: AI settings, embeddings, and lookup calls use this identity. */
@@ -158,6 +163,7 @@ async function fetchKnowledge(
 /** 剧本名（rag 索引清单 / dossier 档案；失败回退 ''）。 */
 async function fetchStoryName(input: TurnKnowledgeInput): Promise<string> {
   if (!input.storyId) return ''
+  if (input.preparedStory) return input.preparedStory.dossier.storyName
   try {
     if (input.workflow === 'dossier') {
       const { loadDossier } = await import('../rag/dossier/dossierCore.js')
@@ -201,9 +207,10 @@ async function fetchRagContext(input: TurnKnowledgeInput, query: string): Promis
         enabled: true,
       },
       {
-        getEmbedding: (await buildGetEmbeddingForUser(input.ownerId)) ?? undefined,
+        ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}),
+        getEmbedding: (await buildGetEmbeddingForUser(input.ownerId, input.execution)) ?? undefined,
         // 标准管线的低分改写对两房一致启用（否则 A/B 对照臂被削——审查发现）
-        rewrite: defaultRewrite(input.ownerId),
+        rewrite: defaultRewrite(input.ownerId, undefined, input.execution && keeperAuxiliaryChat(input.execution, input.ownerId)),
         onEvent: (e) => {
           if (process.env.KP_LLM_DEBUG === '1') logger.debug('rag fetch event', { roomId: input.roomId, event: e })
         },
@@ -228,7 +235,7 @@ async function fetchDossierContext(
   try {
     const { loadDossier, buildSceneBlock, listScenes, findScene, renderSceneUncovered } = await import('../rag/dossier/dossierCore.js')
     const { computeSceneCoverage, loadGaps } = await import('../rag/dossier/coverageGaps.js')
-    const dossier = await loadDossier(input.storyOwnerId ?? input.ownerId, input.storyId)
+    const dossier = input.preparedStory?.dossier ?? await loadDossier(input.storyOwnerId ?? input.ownerId, input.storyId)
     if (!dossier) return { block: '', terminalEndings: [] }
     const scenes = listScenes(dossier)
     // 场景归属（#53）：房间 scene 为空（新局，还没切过场景）→ 回落档案首场景；
@@ -254,7 +261,7 @@ async function fetchDossierContext(
     // P26：场景块附覆盖提示（该场景原文有多少未入档）——P25 观测到 KP 缺少
     // "档案可能不全"的信号，从不主动查原文。loadGaps 内部已吞错返回 null。
     // 未覆盖时不取覆盖率：那是别的场景的数据，报出来就是冒充。
-    const gaps = unmatched ? null : await loadGaps(input.storyOwnerId ?? input.ownerId, input.storyId)
+    const gaps = unmatched ? null : input.preparedStory?.gaps ?? await loadGaps(input.storyOwnerId ?? input.ownerId, input.storyId)
     const coverage = resolved?.id ? computeSceneCoverage(gaps, resolved.id) : null
     const block = unmatched
       ? renderSceneUncovered(wanted, scenes.map((s) => s.name))
@@ -285,8 +292,11 @@ async function fetchTurnSupplement(
 ): Promise<string> {
   if (input.workflow !== 'dossier' || !input.storyId) return ''
   try {
-    const { getSettings } = await import('./settingsService.js')
-    if (getSettings(input.ownerId)?.rag?.supplement === false) return ''
+    const accountSettings = await import('./settingsService.js')
+    const settings = SHARED_ROOMS_ENABLED
+      ? await accountSettings.getGatewaySettings(input.ownerId)
+      : accountSettings.getSettings(input.ownerId)
+    if (settings?.rag?.supplement === false) return ''
     const { buildSupplement, defaultRewrite } = await import('../rag/supplementService.js')
     const { buildGetEmbeddingForUser } = await import('./ragService.js')
     const res = await buildSupplement(
@@ -298,9 +308,10 @@ async function fetchTurnSupplement(
         enabled: true,
       },
       {
-        getEmbedding: (await buildGetEmbeddingForUser(input.ownerId)) ?? undefined,
+        ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}),
+        getEmbedding: (await buildGetEmbeddingForUser(input.ownerId, input.execution)) ?? undefined,
         // 低分改写（ADR-0007 决策 6）：仅在检索最高分低于阈值时触发一次
-        rewrite: defaultRewrite(input.ownerId),
+        rewrite: defaultRewrite(input.ownerId, undefined, input.execution && keeperAuxiliaryChat(input.execution, input.ownerId)),
         onEvent: (e) => {
           if (process.env.KP_LLM_DEBUG === '1') logger.debug('dossier supplement event', { roomId: input.roomId, event: e })
           appendTraceFile('SUPPLEMENT_TRACE', input.roomId, input.storyId, e)
@@ -337,6 +348,8 @@ async function prefetchVerification(
         userId: input.ownerId,
         storyOwnerId: input.storyOwnerId ?? input.ownerId,
         scriptId: input.storyId,
+        ask: input.execution && keeperAuxiliaryChat(input.execution, input.ownerId),
+        ...(input.preparedStory ? { preparedStory: input.preparedStory } : {}),
         onEvent: (e) => {
           if (process.env.KP_LLM_DEBUG === '1') logger.debug('dossier prefetch event', { roomId: input.roomId, event: e })
           appendTraceFile('PREFETCH_TRACE', input.roomId, input.storyId, e)

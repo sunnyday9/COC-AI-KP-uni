@@ -25,3 +25,7 @@
 - 新增房间字段/端点只动 roomStorage + 领域方法；领域行为可用 node:sqlite 临时库直测，不再需要「supertest + 动态 import 实例」组合拳。
 - REST 外部输入以校验后参数进入领域方法，取代「每消息重读 DB」的污点隔离；外部 id 仍只作 DB 键（D-09 不变）。若 Mimosa 门禁对新形态报 finding，回退面为 bind/settings 两条路径。
 - 顺带修复旧路由 `loadMembers` 的 snake/camel 转换错位（REST 触发的成员广播携带 `undefined` userId/characterId 的潜在 bug）。
+
+## 共享部署
+
+SQLite 继续使用本 ADR 的对账与快照路径。共享部署由房间 worker 作出领域决策，在同一个受房间租约约束的事务中提交状态与事件。独立网关可读取已提交的序号与事件供重放和分发。见 [ADR-0010](0010-scale-out-deployment.md)。

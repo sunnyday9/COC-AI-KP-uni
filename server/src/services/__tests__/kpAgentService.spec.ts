@@ -102,6 +102,19 @@ describe('invokeKp (REST path)', () => {
     expect(state.calls.every((c) => c.stream === false)).toBe(true)
   }, REAL_GRAPH_TIMEOUT_MS)
 
+  it('uses fresh provider settings for consecutive turns by the same user', async () => {
+    const userId = await createUser('kp_changed_settings')
+    const body = { messages: [{ role: 'user', content: '我攻击他' }] }
+    saveSettings(userId, { ai: { maxTokens: 1234 } })
+    await invokeKp(userId, body)
+    expect(state.calls[0]?.maxTokens).toBe(1234)
+
+    state.calls.length = 0
+    saveSettings(userId, { ai: { maxTokens: 2048 } })
+    await invokeKp(userId, body)
+    expect(state.calls[0]?.maxTokens).toBe(2048)
+  }, REAL_GRAPH_TIMEOUT_MS)
+
   it('returns { content: "" } for empty messages without calling the LLM', async () => {
     const userId = await createUser('kp_bob')
     const result = await invokeKp(userId, { messages: [] })

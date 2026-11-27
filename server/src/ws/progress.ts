@@ -1,5 +1,6 @@
-import { WebSocket } from 'ws'
+import type { WebSocket } from 'ws'
 import type { StoryOperationProgress } from '../../../shared/types/bridge.js'
+import { sendFrame } from './sendFrame.js'
 
 /**
  * Server→client `rag:progress` push channel (api-contract §4 通用消息).
@@ -28,6 +29,7 @@ export interface RagProgressPayload {
 }
 
 const userSockets = new Map<number, Set<WebSocket>>()
+const socketUsers = new WeakMap<WebSocket, number>()
 
 /** Attach an authenticated socket to its user's push set. */
 export function registerProgressSocket(userId: number, socket: WebSocket): void {
@@ -37,15 +39,16 @@ export function registerProgressSocket(userId: number, socket: WebSocket): void 
     userSockets.set(userId, set)
   }
   set.add(socket)
+  socketUsers.set(socket, userId)
 }
 
 /** Detach a socket (on close/error). */
 export function unregisterProgressSocket(socket: WebSocket): void {
-  for (const [userId, set] of userSockets) {
-    if (set.delete(socket) && set.size === 0) {
-      userSockets.delete(userId)
-    }
-  }
+  const userId = socketUsers.get(socket)
+  if (userId === undefined) return
+  socketUsers.delete(socket)
+  const set = userSockets.get(userId)
+  if (set?.delete(socket) && set.size === 0) userSockets.delete(userId)
 }
 
 /**
@@ -57,12 +60,6 @@ export function pushRagProgress(userId: number, payload: RagProgressPayload): vo
   if (!sockets || sockets.size === 0) return
   const frame = JSON.stringify({ type: 'rag:progress', payload })
   for (const socket of sockets) {
-    if (socket.readyState === WebSocket.OPEN) {
-      try {
-        socket.send(frame)
-      } catch {
-        // skip dead sockets; close handler will unregister them
-      }
-    }
+    sendFrame(socket, frame)
   }
 }

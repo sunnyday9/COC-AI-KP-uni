@@ -286,7 +286,7 @@ describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
     expect(forbidden.status).toBe(409)
 
     // 活跃实例也必须随解散移出注册表，避免保留快照定时器/事件监听器。
-    getOrCreateRoom(roomId, 1, 'alice')
+    await getOrCreateRoom(roomId, 1, 'alice')
 
     // 房主解散 → 200；之后 404
     const del = await request(app).delete(`/api/rooms/${roomId}`).set(...auth(tokenA))
@@ -323,7 +323,7 @@ describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
     const bind = await request(app).post(`/api/rooms/${roomId}/character`).set(...auth(tokenA)).send({ characterId: charId })
     expect(bind.status).toBe(200)
     // 活跃实例先于 REST start 存在：领域方法写库后立即对账实例（不再依赖路由手动 sync）
-    const room = getOrCreateRoom(roomId, 1, 'alice')
+    const room = await getOrCreateRoom(roomId, 1, 'alice')
     const start = await request(app).post(`/api/rooms/${roomId}/start`).set(...auth(tokenA)).send({ storyId: 'story_x' })
     expect(start.status).toBe(200)
     expect(room.getStoryId()).toBe('story_x')
@@ -331,7 +331,7 @@ describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
     room.dispose()
     _clearRoomRegistryForTests()
     // 无活跃实例时 start → 之后再 materialize，restore 从 DB 列权威拿到 storyId/phase
-    const restored = getOrCreateRoom(roomId, 1, 'alice')
+    const restored = await getOrCreateRoom(roomId, 1, 'alice')
     expect(restored.getStoryId()).toBe('story_x')
     expect(restored.getPhase()).toBe('playing')
     restored.dispose()
@@ -352,7 +352,7 @@ describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
     const charId = (char.body as { id: string }).id
 
     // 创建活跃实例 + 绑定（领域方法内部对账：角色组进内存实例）
-    const room = getOrCreateRoom(roomId, 1, 'alice')
+    const room = await getOrCreateRoom(roomId, 1, 'alice')
     const bind = await request(app).post(`/api/rooms/${roomId}/character`).set(...auth(tokenA)).send({ characterId: charId })
     expect(bind.status).toBe(200)
     const charMap = room.getCharacterMap()
@@ -366,7 +366,7 @@ describe('rooms routes', { timeout: ROOM_ROUTE_TIMEOUT_MS }, () => {
 
   it('成员就绪/取消 → ready 切换 + room_meta 广播（活跃实例订阅可见）', async () => {
     const { roomId } = await createRoomWithB()
-    const room = getOrCreateRoom(roomId, 1, 'alice')
+    const room = await getOrCreateRoom(roomId, 1, 'alice')
     const metas: { members: { userId: number; ready: boolean }[] }[] = []
     room.subscribe((ev) => { if (ev.type === 'room_meta') metas.push(ev.payload as { members: { userId: number; ready: boolean }[] }) })
 

@@ -6,13 +6,13 @@
 > 沿革：原 Electron `window.electronAPI`（见 `original/ai-trpg-web/src/env.d.ts`）的 IPC 面
 > 由 REST + WebSocket 实现，本文节编号沿用至今（§6/§7/§8 等退役节保留注记不重排）。
 > §10 安全约束是 D-09 红线文档：`pathSafety.ts` / `fileNames.ts` 等代码注释引用它，原文逐字节保留。
-> 仅 `POST /api/auth/register` 与 `POST /api/auth/login` 是公开端点；`GET /api/auth/me` 及其余所有 `/api/*` 端点均需要 `Authorization: Bearer <JWT>`；
-> 实挂路由组以 `server/src/app.ts` 为准（9 组，完整清单见 §11）。
+> 公开端点包括 `POST /api/auth/register`、`POST /api/auth/login` 及健康探针（§12）。`GET /api/auth/me` 及其余所有 `/api/*` 端点均需要 `Authorization: Bearer <JWT>`。
+> 各部署模式的实挂路由组以 `server/src/app.ts` 为准，完整清单见 §11。
 
 ## 约定
 
 - 所有请求/响应体均为 JSON（除文件上传 multipart 与文件下载）。
-- 错误响应统一：`{ "error": string }` + 4xx/5xx 状态码。
+- 业务 API 的错误响应使用 `{ "error": string }` 与 4xx/5xx 状态码。
 - 原 IPC 中的绝对文件路径参数一律替换为服务端生成的 `id`（安全要求，禁止暴露路径）。
 
 ---
@@ -26,6 +26,7 @@
 | GET | `/api/auth/me` | 当前用户 |
 
 - JWT 鉴权（30 天有效期）；实现：`server/src/routes/auth.routes.ts` + `services/authService.ts` + `middleware/auth.ts`。
+- 两种部署模式均提供这三个端点。共享模式下，通过任一网关签发的 token 可用于同一部署的其他网关。各模式只接受本模式签发的 token。共享模式的注册与登录在用户名含空字符时返回 400。
 
 ## 2. Settings（Task 2）— 替代 electron-store
 
@@ -36,6 +37,7 @@
 
 - 字段形状以 `shared/types/settings.ts` 为准（该文件注释声明镜像本节）；协议一等公民设计（protocol 取代 provider 两级模型）见 ADR-0003。
 - 实现：`server/src/routes/settings.routes.ts` + `services/settingsService.ts`（apiKey 服务端 AES-256 加密存储，GET 不回传）。
+- 两种部署模式均按登录账号读写设置。共享模式的 `PUT` 按字段合并 `ai` 与 `rag`，未提交的字段保留原值。同一账号的并发更新按事务顺序应用，同一字段以最后一次更新为准。本地模式用默认值填充未提交的非密钥字段。两种模式都在省略 `apiKey` 或提交空字符串、旧占位符 `***` 时保留已保存的密钥。
 
 ## 3. AI（Task 2）
 
@@ -57,26 +59,62 @@
 ### WebSocket（替代原 Electron `onKpStream` / `kp:stream`）
 
 - 端点：`ws://<host>/ws?token=<JWT>`（H5/App）；小程序走 `wss://`；token 无效以 4001 关闭。
+- 客户端发往服务端的单条 WebSocket 消息上限为 128 KiB，跨帧分片按整条消息计。超限时服务端以 1009 关闭连接。服务端因消息大小或发送缓冲超限断开连接时只清理订阅，房主可重连。
 - 心跳：客户端每 30s 发 `{ "type": "ping" }`，服务端回 `{ "type": "pong" }`。
 - 服务端 → 客户端推送：`{ "type": "rag:progress", "payload": {...} }`（RAG 索引进度，Task 4）。
 - 当前房间帧（共享类型见 `shared/types/room.ts`）：
-  - 客户端 → 服务端：`room:join {roomId}`、`room:leave {roomId}`、`room:sync {roomId,lastSeq}`、`room:action {roomId,action}`；当前动作是 `chat`，形状为 `{type:"chat",payload:{content}}`。
-  - 服务端 → 客户端：`room:state {roomId,snapshot,seq}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义；`kp_chunk` 仅在实验开关开启时广播，客户端仍以完整 `message_appended` 为准。
-  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
+  - 客户端 → 服务端：`room:join {roomId,lastSeq?}`、`room:leave {roomId}`、`room:sync {roomId,lastSeq}`、`room:action {roomId,action}`；聊天动作的形状为 `{type:"chat",payload:{content}}`。房主配置 AI 后仍可发送 `{type:"retry_kp"}` 继续已保存的回合。
+  - 服务端 → 客户端：`room:state {roomId,snapshot,seq,actionReceipts:true,members?}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq,actionReceipts?}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义。`kp_chunk` 通过实验开关启用。启用房间 worker 故障接管时，每回合提交最多 8 个片段，内容合计最多 16 KiB。客户端以完整 `message_appended` 为准。
+  - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。断线后的 `room:join` 也可携带客户端已应用的最后一个序号。独立网关从 PostgreSQL 重放到已提交的序号，再继续实时投递。保留窗口最多 200 条事件，单次重放上限为 512 KiB。序号超出范围、事件缺失或重放超出上限时，网关发送最新快照。快照帧中的可选 `kpTurnPending` 表示是否仍有待处理的 Keeper 回合。实时事件按已提交的序列号投递。已订阅的成员被踢出或房间解散时，room:error 附带 removedReason（kicked 或 dissolved），随后该连接不再接收房间事件。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
+
+当前版本的全量 `room:state` 随快照提供房间成员列表和角色卡绑定。共享类型将 `members` 保留为可选字段，以兼容旧服务端。
+
+### 聊天行动回执
+
+支持回执的房间在 `room:state` 或 `room:sync:done` 中声明 `actionReceipts: true`。客户端为每次新聊天生成一个行动编号，并通过 `room:action {roomId,actionId,action}` 发送。编号允许 1–80 个 ASCII 字母、数字、下划线或短横线，按房间和登录账号隔离。消息内容必须是字符串，去除首尾空白后用于判定重试是否相同。相同编号和内容返回原消息编号及当前处理状态。同一编号改发其他内容返回 `action_conflict`。回执只发给提交请求的连接。
+
+- `room:action:result {roomId,actionId,status,messageId}` 表示已持久化。等待室聊天立即为 `completed`。进行中的行动先为 `pending`，KP 回合结果入库后为 `completed`。行动执行前发现作者已离开，或房间在处理前结束，则为 `cancelled`，保留原聊天记录。当前成员可以重发原动作查询自己的回执。
+- `room:action:result {roomId,actionId,status,code,error}` 表示本次请求未得到接收确认。`rejected` 是权限、内容或编号冲突。`busy` 表示房间达到待处理上限。命令入口饱和时可能先返回忙碌，稍后重发原编号即可查询已有回执。`retry` 表示暂时无法确认结果。忙碌、回执丢失和暂时性错误后均可用原编号重试。固定的剧本版本暂时无法读取时，新行动收到 `story_unavailable`。已保存的回执仍可通过同一个编号查询。
+- 旧客户端省略 `actionId` 时仍收到消息回显及原有错误帧，每次提交视作新的聊天。新客户端连接未声明回执能力的服务端时也使用旧协议。旧聊天、结构化骰子消息和 `retry_kp` 的帧格式保持兼容。
+- 每个房间由一个权威实例执行。SQLite 和 PostgreSQL 均先提交聊天、回执和待处理状态，再广播回显。共享部署由持有 PostgreSQL 租约的 worker 执行，网关投递已提交的事件。房间重新载入时恢复待处理行动。回合结果与已处理状态一并提交。提交前的中断可能使 KP 请求重做。参见 ADR-0010。
+- 网关暂时无法取得命令结果时，客户端可以重发同一 `actionId`。direct 连接收到 `room_inactive` 时，先重新加入房间，再重试原行动编号。失去 worker 租约后的旧连接存在已知恢复缺口。见 [#129](https://github.com/sunnyday9/COC-AI-KP-uni/issues/129)。
+
+
+### 房间聊天记录
+
+- 启用 PostgreSQL 房间工作进程时，房间快照最多包含最近 40 条聊天记录，且聊天记录部分最多约 512 KiB。更早的消息保存在独立的聊天记录中。存在更早的消息时，快照包含 `transcript: { before }`。若快照没有可用的消息编号，`before` 为 `null`。
+- `GET /api/rooms/:id/history?before=<消息编号>&limit=40` 只对当前房间成员开放。省略 `before` 可获取最新一页。响应为 `{ messages, nextBefore }`，按原始提交顺序从旧到新排列。用 `nextBefore` 继续读取更早的消息，返回 `null` 表示已经读到开头。页大小允许 1 至 100 条。分页读取不改变实时房间序号。
+- 现存房间由工作进程首次载入时迁移原始聊天记录，保留消息编号、先后顺序和结构化骰子结果。直接运行的 SQLite 模式继续使用原来的房间快照。
 
 ## 5. 剧本 / 文件（Task 4）
 
 | Method | Path | 说明 |
 |---|---|---|
-| GET | `/api/stories` | 剧本列表（id 替代原 path） |
-| GET | `/api/stories/:id` | 读取剧本 |
+| GET | `/api/stories` | 剧本列表。提供 `limit`（1–100）或 `cursor` 时返回 `{stories, nextCursor}`，无参数时返回原数组。 |
+| GET | `/api/stories/:id` | 读取剧本文本（`{ name, content }`）。共享目录支持 `?preview=1` 返回 `{ name, content, truncated }`。 |
+| GET | `/api/stories/:id/source` | 共享剧本目录启用时，由网关流式返回原始文件附件。 |
 | GET | `/api/stories/:id/rag` | 读取供 RAG 解析的原文（服务端解析，含 OCR） |
 | POST | `/api/stories/upload` | 上传导入（multipart `file`） |
 | DELETE | `/api/stories/:id` | 删除剧本 |
 
-- 支持格式、上传上限（见 §10）与异步解析队列等实现细节以 `server/src/routes/stories.routes.ts` + `services/storyService.ts` + `rag/storyParsers.ts` 实码为准。
+- 将返回的 `nextCursor` 用于下一页。上传的并发上限触发 HTTP 503 和 `Retry-After`。本地模式中，剧本准备超出并发上限也返回 503，同一剧本正在准备时删除或另启准备返回 409。运行参数见 [部署指南](DEPLOYMENT.md)。
+- 支持格式、上传上限（见 §10）与解析细节见 `server/src/routes/stories.routes.ts`、`services/storyService.ts` 和 `rag/storyParsers.ts`。
 
-> 桥接死包装 readStory / readStoryForRag 已于 2026-09-13 退役（#97）：客户端零页面调用方（仅 bridge.test 自引用）。端点现行保留——GET /api/stories/:id/rag 由 e2e dossier journey 直接消费；GET /api/stories/:id 现零非自测消费方（存疑待拍板，#97 票面留档）。
+仅启用共享剧本目录时，分页结果附加 `canPrepare: false`。故事管理页提供原文浏览、上传和删除。`GET /api/stories/:id/rag` 仅在本地模式挂载。共享目录的读取和下载需验证账号归属，跨账号请求返回 404，下载由网关传输，不返回对象存储 URL。共享目录删除后，列表和读取接口不再返回该条目。重复使用同一文件名上传会获得新 ID 并保留之前的原文修订。
+
+共享预览最多返回 16,000 个 UTF-16 代码单元。纯文本预览从对象存储读取前 64 KiB；需要解析的文档超过 8 MiB 时返回 413，故事管理页提供文本预览，原始附件由通过身份验证的 `GET /api/stories/:id/source` 提供。每网关最多并发四次剧本文本读取，超限返回 503 和 `Retry-After`。
+
+共享剧本准备启用时，分页目录返回 `canPrepare: true`、`preparationMode: 'durable'`，每个故事同时返回 `preparation`。分页响应的 `preparationOwnerId` 为当前账号 ID 的字符串，用于区分浏览器保存的待确认请求。状态形状为 `{activeRevision: string | null, job: {id, version, state, stage, percent, operationId?} | null}`。任务状态为 `queued`、`running`、`complete`、`failed` 或 `cancelled`。`version` 是十进制字符串，同一故事的已提交状态随版本数值递增。共享目录删除剧本时会取消排队或运行中的任务，并保留已发布的修订。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/stories/:id/preparation` | 提交准备。可传 `{operationId}`。返回 202 和任务状态。未传标识且故事已有待处理任务时，返回现有任务。 |
+| GET | `/api/stories/:id/preparation` | 返回最新准备状态。仅故事所有者可查询。 |
+| POST | `/api/stories/:id/preparation/:jobId/retry` | 传 `{operationId}`。对最近一个失败或已取消的任务创建重试，返回 202 和新任务。 |
+| POST | `/api/stories/:id/preparation/:jobId/cancel` | 取消指定的排队或运行任务并返回 200。重复取消返回同一任务及其取消状态。 |
+| GET | `/api/rag/stories` | 共享准备启用时，按 §8 的分页契约列出已有完整可用版本的故事。分页返回 `canStartInvestigation: false` 时，首页提供准备状态入口。 |
+
+操作标识支持 8 至 100 个 ASCII 字母、数字、下划线或连字符。在同一所有者及故事下，重复提交同一操作返回该操作对应的任务，即使该任务已结束。相同标识用于不同操作、另一个显式提交与已有任务冲突，或任务已结束且不可执行指定操作，均返回 409。超出账号或共享准备预算时返回 503 和 `Retry-After`。准备总时限到期时，失败任务的阶段为 `timed_out`。租约中断且已用完领取次数时，阶段为 `retry_exhausted`。失败或取消后仍可读取上次完整发布的版本。
 
 ## 6. 剧本库脚本（Task 4，原 scripts 库）（已退役，#97）
 
@@ -96,7 +134,7 @@
 | DELETE | `/api/rag/index/:scriptId` | 删除索引 |
 | POST | `/api/rag/query` | 检索查询 |
 | POST | `/api/rag/context` | 组装检索上下文（标准管线，无图扩展） |
-| GET | `/api/rag/stories` | 已索引剧本列表 |
+| GET | `/api/rag/stories` | 已索引剧本列表。提供 `limit`（1–100）或 `cursor` 时返回 `{stories, nextCursor}`，按索引时间和故事 ID 降序翻页。无参数仍返回原数组。 |
 | GET | `/api/rag/index/:scriptId` | 索引详情 |
 
 > `/api/rag/story-overview` 已于 2026-09-13 退役（#91 B 桶「全链退役」拍板，#93）：服务端路由 / `ragService.storyOverview` / `vectorStore.getStoryOverview` 与路由自测段一并删除；客户端 bridge 方法已于 #85 删除。本节编号保留不重排（§8 被 server 路由注释引用）。
@@ -110,9 +148,9 @@
 | Bridge 方法 | 后端调用 |
 |---|---|
 | getSettings / setSettings | GET/PUT `/api/settings` |
-| listStories / importStory / deleteStory | `/api/stories*` |
+| listStories / listStoryPage / readStory / importStory / deleteStory | `/api/stories*` |
 | aiChat / aiListModels | POST `/api/ai/chat`、GET `/api/ai/models` |
-| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragGetIndex / ragTestEmbedding | `/api/rag*` |
+| ragHealth / ragIndex / ragDelete / ragQuery / ragContext / ragListStories / ragListStoryPage / ragGetIndex / ragTestEmbedding | `/api/rag*` |
 | roomCreate / roomList / roomCreateSolo / roomListSolo / roomJoin / roomDetail / roomStart / roomDelete | `/api/rooms*`（`roomListSolo` 由「游戏」调查 hub 用于 solo 续玩） |
 | roomSetTurnWindow | PUT `/api/rooms/:id/settings` |
 | roomBindCharacter / roomSetReady / roomLeave / roomKickMember / roomTransfer | `/api/rooms/:id/*` 房间治理端点 |
@@ -122,7 +160,7 @@
 | connectWs / sendRoomFrame / onRoomFrame / onReconnect | `/ws` 房间帧与客户端重连订阅，具体帧见 §4 |
 | platform | `'h5' \| 'mp-weixin' \| 'app'` |
 
-> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002）；存档/读档语义由房间快照与重新进入房间取代，`/api/saves*` 已按 §7 退役（#60 删除 listSaves/readSave/writeSave bridge 方法，#92 删除服务端链路）。scripts 与 story 读取的桥接死包装（readScript / saveScript / saveScriptToLibrary / deleteScript / readStory / readStoryForRag）与 setImportFilePath 已于 #97 删除（readStoryForRag 对应端点 §5 现行保留，e2e 直接消费）。
+> KP 回合与存档读写不再有 bridge 直连方法：KP 回合走房间协议（ADR-0002）；存档/读档语义由房间快照与重新进入房间取代，`/api/saves*` 已按 §7 退役（#60 删除 listSaves/readSave/writeSave bridge 方法，#92 删除服务端链路）。原 scripts 桥接方法与 setImportFilePath 已于 #97 删除。故事管理页通过 readStory 调用 §5 的共享预览。readStoryForRag 的 bridge 包装已退役，本地端点由 e2e 直接调用。
 
 ## 10. 通用约定
 
@@ -137,20 +175,31 @@
 
 ## 11. 实挂路由组一览（与 `server/src/app.ts` 对齐，9 组）
 
-`createApp()` 实际挂载的 9 组路由如下；每组只给「端点存在性 + 代码入口」，请求/响应形状一律以对应 `routes/*.ts` 与 service 实码为准：
+`local`（默认）挂载下表 9 组路由及 §4 的 WebSocket。`shared-accounts` 挂载第 1、2 组 HTTP 路由，配置私有对象存储后还挂载第 4 组的共享剧本目录。启用共享剧本准备后，`/api/stories` 增加准备任务接口，`/api/rag` 提供已准备剧本的目录接口。设置 `ENABLE_SHARED_ROOMS=1` 后，direct 实例或独立网关提供第 7–9 组路由及 §4 的 WebSocket。独立房间 worker 执行网关提交的房间命令。HTTP 进程提供 §12 的健康探针。配置与预发布流程见 [部署指南](DEPLOYMENT.md)。
 
 | # | 挂载路径 | 路由文件 | 端点（Path 级） | 导览 |
 |---|---|---|---|---|
 | 1 | `/api/auth` | `auth.routes.ts` | POST `/register`、POST `/login`、GET `/me` | §1 |
 | 2 | `/api/settings` | `settings.routes.ts` | GET `/`、PUT `/` | §2 |
 | 3 | `/api/ai` | `ai.routes.ts` | POST `/chat`、GET `/models` | §3 |
-| 4 | `/api/stories` | `stories.routes.ts` | GET `/`、POST `/upload`、GET `/:id`、GET `/:id/rag`、DELETE `/:id` | §5 |
+| 4 | `/api/stories` | `stories.routes.ts`（本地）、`sharedStories.routes.ts`（共享） | GET `/`、POST `/upload`、GET `/:id`、DELETE `/:id`；本地 GET `/:id/rag`，共享 GET `/:id/source` | §5 |
 | 5 | `/api/rag` | `rag.routes.ts` | GET `/health`、POST `/test-embedding`、POST `/index`、DELETE `/index/:scriptId`、POST `/query`、POST `/context`、GET `/stories`、GET `/index/:scriptId` | §8 |
 | 6 | `/api/dossier` | `dossier.routes.ts` | GET `/`、POST `/:scriptId/generate` | 档案 workflow（与 rag 并行）；叙述见 ONBOARDING-GUIDE §7 |
-| 7 | `/api/rooms` | `rooms.routes.ts` | POST `/`、GET `/`、POST `/solo`、GET `/solo`、POST `/join`、GET `/:id`、POST `/:id/start`・`/:id/character`・`/:id/ready`・`/:id/leave`・`/:id/transfer`、DELETE `/:id`、DELETE `/:id/members/:userId` | 房间治理 REST（帧协议见 §4） |
+| 7 | `/api/rooms` | `rooms.routes.ts` | POST `/`、GET `/`、POST `/solo`、GET `/solo`、POST `/join`、GET `/:id`、POST `/:id/start`・`/:id/end`・`/:id/character`・`/:id/ready`・`/:id/leave`・`/:id/transfer`、DELETE `/:id`、DELETE `/:id/members/:userId` | 房间治理 REST（帧协议见 §4） |
 | 8 | `/api/rooms` | `roomSettings.routes.ts` | PUT `/:id/settings` | 房间设置（turnWindowMs） |
 | 9 | `/api/characters` | `characters.routes.ts` | GET `/`、POST `/` | 角色卡存取 |
 
+- `POST /api/rooms/:id/end` 允许房主结束进行中的多人调查，保留聊天记录和最终状态。再次调用返回成功。未开局或调用者为普通成员时返回 409。结束时尚未完成的行动回执会变为 `cancelled`。
+- `POST /api/rooms/:id/leave` 移除调用者的房间成员资格。房主主动离开时由最早加入的成员接任，若无其他成员则解散。WebSocket 的 `room:leave` 只取消当前连接的订阅。
 - 房间解散只允许删除 `lobby` 或已结束房间；`playing` 房间返回 409，避免进行中的快照被 owner 直接删除。
 - KP 回合不占路由组：唯一入口为房间协议（ADR-0002，帧协议细节见 §4）。
 - §6/§7 为退役节：`/api/scripts*`、`/api/saves*` 已不在挂载面。
+
+## 12. 健康探针
+
+以下探针由 `server/src/app.ts` 提供，无需鉴权。
+
+| Method | Path | 响应 |
+|---|---|---|
+| GET | `/health/live` | 200 `{ "status": "ok" }`，进程可响应 |
+| GET | `/health/ready` | 数据库可访问时返回 200 `{ "status": "ready" }`，查询失败时返回 503 `{ "status": "unavailable" }` |

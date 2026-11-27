@@ -22,6 +22,8 @@
  * 会话回填注意：kpTurnService 对工具结果做摘要 + 600 字符截断，本模块渲染上限
  * MAX_CONTENT_CHARS=580，保证 KP 看到的内容不被砍。
  */
+import { SHARED_ROOMS_ENABLED } from '../../config.js'
+import type { PreparedStoryArtifacts } from '../../services/preparedStoryStorage.js'
 import { chatForRag } from '../../services/aiService.js'
 import { readStoryForRag } from '../../services/storyService.js'
 import { loadGaps, SCENE_REGION_LEAD, SCENE_REGION_SPAN, type CoverageGaps } from './coverageGaps.js'
@@ -338,6 +340,7 @@ export interface VerifyMeta {
 }
 
 export interface VerifyOriginalDeps {
+  preparedStory?: PreparedStoryArtifacts
   /** AI credential owner (current room owner). */
   userId: number
   /** Story file owner; defaults to userId for non-room callers. */
@@ -411,6 +414,7 @@ function parseAnswer(raw: string): { answer: string; quote: string; found: boole
 
 /** 默认原文读取：readStoryForRag + 进程内 TTL 缓存（PDF OCR 很贵，逐次读不可行）。 */
 async function defaultLoadStoryText(userId: number, scriptId: string, now: () => number): Promise<string | null> {
+  if (SHARED_ROOMS_ENABLED) return null
   const key = `${userId}:${scriptId}`
   const hit = textCache.get(key)
   if (hit && now() - hit.at < CACHE_TTL_MS) return hit.text
@@ -449,7 +453,20 @@ export async function verifyOriginal(
     }
   }
   const storyOwnerId = deps.storyOwnerId ?? deps.userId
-  const cacheKey = `${storyOwnerId}:${deps.scriptId}:${scene}:${question}`
+  const [gaps, dossier] = await Promise.all([
+    deps.preparedStory?.gaps ?? (deps.loadGaps ?? (() => loadGaps(storyOwnerId, deps.scriptId)))().catch(() => null),
+    deps.preparedStory?.dossier ?? (deps.loadDossier ?? (() => loadDossier(storyOwnerId, deps.scriptId)))().catch(() => null),
+  ])
+  if (gaps?.sourceRevision !== dossier?.sourceRevision) {
+    return {
+      content: renderUnavailable('剧本档案正在更新，请稍后查证'),
+      meta: {
+        ok: false, tier: 'none', spoiler: 'normal', cached: false, chars: 0,
+        reason: 'mismatched-source-revision', durationMs: Date.now() - started,
+      },
+    }
+  }
+  const cacheKey = JSON.stringify([storyOwnerId, deps.scriptId, dossier?.sourceRevision, scene, question])
   const hit = answerCache.get(cacheKey)
   if (hit && now() - hit.at < CACHE_TTL_MS) {
     return { content: hit.content, meta: { ...hit.meta, cached: true, durationMs: Date.now() - started } }
@@ -457,7 +474,9 @@ export async function verifyOriginal(
 
   let storyText: string | null = null
   try {
-    storyText = deps.loadStoryText ? await deps.loadStoryText() : await defaultLoadStoryText(storyOwnerId, deps.scriptId, now)
+    storyText = deps.preparedStory?.sourceText ?? (deps.loadStoryText
+      ? await deps.loadStoryText()
+      : await defaultLoadStoryText(storyOwnerId, deps.scriptId, now))
   } catch {
     storyText = null
   }
@@ -467,11 +486,6 @@ export async function verifyOriginal(
     answerCache.set(cacheKey, { at: now(), content, meta })
     return { content, meta }
   }
-
-  const [gaps, dossier] = await Promise.all([
-    (deps.loadGaps ?? (() => loadGaps(storyOwnerId, deps.scriptId)))().catch(() => null),
-    (deps.loadDossier ?? (() => loadDossier(storyOwnerId, deps.scriptId)))().catch(() => null),
-  ])
 
   const loc = locateForQuestion(storyText, gaps, dossier, scene || undefined, question, deps.budget ?? DEFAULT_BUDGET)
   if (loc.tier === 'none' || !loc.text) {

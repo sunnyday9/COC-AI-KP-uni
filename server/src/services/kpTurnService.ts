@@ -10,8 +10,9 @@
  *   - 一次 runKpTurn 调用内完成 ≤8 轮，LLM 工具结果不再经网络往返；
  *   - 工具结果摘要/截断策略原样保留（防长链劣化）。
  */
-import { isKpChunkStreamEnabled } from '../config.js'
-import { getAiConfig } from './settingsService.js'
+import { isKpChunkStreamEnabled, SHARED_ROOMS_ENABLED } from '../config.js'
+import { KeeperPressureError, type KeeperExecution } from './kpAdmission.js'
+import { getAiConfig, getSharedAiConfig } from './settingsService.js'
 import { processToolCalls } from '../rule-engine/orchestrator.js'
 import { buildToolContext } from '../rule-engine/toolContextFactory.js'
 import { COC_KP_TOOLS } from '../../../shared/tools/cocTools.js'
@@ -94,6 +95,8 @@ export interface KpTurnHandlers {
  */
 /** 一个回合的执行依赖（评审候选 1：8 位置参收窄为对象）。 */
 export interface KpTurnDeps {
+  execution?: KeeperExecution
+  preparedScript?: import('../agent/scriptContext.js').ScriptContext
   /** 角色组（characterId → sheet；多人多卡，单人单卡） */
   characters: Record<string, COCCharacterSheet> | null
   /** 当前行动者（工具缺省 characterId 的回退目标；null = 无角色） */
@@ -217,19 +220,26 @@ function structuredEndGameCall(ending: StructuredTerminalEnding, outcome: string
   }
 }
 
+function loadKeeperAgent() {
+  return Promise.all([import('../agent/kpGraph.js'), import('./kpAgentService.js')])
+}
+
+function loadKeeperStoryTools() {
+  return Promise.all([import('../agent/scriptContext.js'), import('../agent/storyToolGate.js')])
+}
+
+/** Move the first module loads ahead of the short room leases in shared workers. */
+export async function prepareKeeperRuntime(): Promise<void> {
+  await Promise.all([loadKeeperAgent(), loadKeeperStoryTools(), import('./turnKnowledge.js')])
+}
+
 export async function runKpTurn(
   userId: number,
   body: { messages: unknown; storyContext?: Record<string, unknown> | null },
   turn: KpTurnDeps,
 ): Promise<void> {
-  // Keep the room-turn coordinator light: kpGraph pulls LangGraph and the
-  // agent service pulls the provider stack. Load both only when a turn really
-  // runs, which also lets knowledge-only consumers and room construction stay
-  // independent from that heavy graph module.
-  const [{ invokeKPAgent }, { buildInvokeLLM, normalizeMessages, getSharedGraph }] = await Promise.all([
-    import('../agent/kpGraph.js'),
-    import('./kpAgentService.js'),
-  ])
+  // Keep knowledge-only consumers independent of the graph and provider stack.
+  const [{ invokeKPAgent }, { buildInvokeLLM, normalizeMessages, getSharedGraph }] = await loadKeeperAgent()
   if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
     turn.onOwnerChanged?.()
     return
@@ -249,11 +259,8 @@ export async function runKpTurn(
     : userId
   if (scriptId) {
     try {
-      const [scriptContextModule, storyToolGateModule] = await Promise.all([
-        import('../agent/scriptContext.js'),
-        import('../agent/storyToolGate.js'),
-      ])
-      scriptContext = await scriptContextModule.loadScriptContext(storyOwnerId, scriptId)
+      const [scriptContextModule, storyToolGateModule] = await loadKeeperStoryTools()
+      scriptContext = turn.preparedScript ?? await scriptContextModule.loadScriptContext(storyOwnerId, scriptId)
       if (!scriptContext && body.storyContext?.workflow === 'dossier') {
         throw new Error('Dossier story context is unavailable')
       }
@@ -268,6 +275,9 @@ export async function runKpTurn(
       return
     }
   }
+  const graphStoryContext = turn.preparedScript
+    ? { ...body.storyContext, preparedScript: turn.preparedScript }
+    : body.storyContext ?? null
   const obtainedClueIds = getObtainedClueIds(body.storyContext)
   const currentSceneName = typeof body.storyContext?.sceneName === 'string'
     ? body.storyContext.sceneName
@@ -288,20 +298,28 @@ export async function runKpTurn(
     turn.onOwnerChanged?.()
     return
   }
-  const ai = getAiConfig(userId)
+  const ai = turn.execution?.ai ?? (SHARED_ROOMS_ENABLED ? await getSharedAiConfig(userId) : getAiConfig(userId))
   const invokeBase = buildInvokeLLM(userId, ai, {
     stream: true,
     onChunk: turn.handlers.onChunk,
+    execution: turn.execution,
     // dossier workflow: append story-lookup tools to the base COC tool set.
     tools: turn.storyLookup
       ? (COC_KP_TOOLS as unknown[]).concat(STORY_LOOKUP_TOOLS) as typeof COC_KP_TOOLS
       : undefined,
   })
+  let providerPause: KeeperPressureError | undefined
   const invokeLLM: InvokeLLM = async (llmMessages) => {
     if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
       throw new Error('Room ownership changed during KP turn')
     }
-    return invokeBase(llmMessages)
+    if (providerPause) throw providerPause
+    try {
+      return await invokeBase(llmMessages)
+    } catch (error) {
+      if (error instanceof KeeperPressureError) providerPause = error
+      throw error
+    }
   }
 
   let fullContent = ''
@@ -335,12 +353,11 @@ export async function runKpTurn(
     const genStart = Date.now()
     let r: Awaited<ReturnType<typeof invokeKPAgent>>
     try {
-      // chunk 流开启时禁用图缓存：缓存 key 取自 String(invokeLLM)，不含 onChunk 回调身份——
-      // 跨回合命中会带走上一回合（跨房间同理）的叙事流回调，导致 chunk 广播错房/漏播。
+      // 非流式工具链复用当前回合的图实例；流式保留逐次构建。
       r = await invokeKPAgent(
         msgs,
         invokeLLM,
-        body?.storyContext ?? null,
+        graphStoryContext,
         userId,
         await getSharedGraph(invokeLLM, userId, isKpChunkStreamEnabled()),
       )
@@ -349,7 +366,10 @@ export async function runKpTurn(
         recoverForOwnerChange()
         return
       }
-      logger.warn('kp:turn graph iteration failed', { userId, loop, error: errorMessage(err) })
+      turn.execution?.signal.throwIfAborted()
+      if (providerPause) throw providerPause
+      if (turn.execution) logger.warn('kp:turn graph iteration failed', { loop })
+      else logger.warn('kp:turn graph iteration failed', { userId, loop, error: errorMessage(err) })
       graphFailed = true
       break
     }
@@ -359,6 +379,8 @@ export async function runKpTurn(
       recoverForOwnerChange()
       return
     }
+    turn.execution?.signal.throwIfAborted()
+    if (providerPause) throw providerPause
     const iterFinal = r?.content || ''
     if (iterFinal.trim()) {
       fullContent = base ? base + '\n\n' + iterFinal : iterFinal

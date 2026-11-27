@@ -6,6 +6,7 @@ import { sendError } from '../utils/errors.js'
 import { assertId, sanitizeFilename, repairMojibakeFilename } from '../utils/fileNames.js'
 import { MAX_UPLOAD_BYTES } from '../config.js'
 import * as storyService from '../services/storyService.js'
+import { acquireStoryUpload, withStoryMutation } from '../services/storyPreparation.js'
 
 /**
  * Story/file routes (api-contract §5) — migrated from fileHandlers.cjs.
@@ -34,16 +35,36 @@ const upload = multer({
 
 /** GET /api/stories — file:listStories → [{ name, id }]. */
 router.get('/', (req: AuthRequest, res) => {
-  void storyService
-    .listStories(req.userId as number)
+  const userId = req.userId as number
+  const { limit, cursor } = req.query
+  const result = limit === undefined && cursor === undefined
+    ? storyService.listStories(userId)
+    : storyService.listStoryPage(userId, limit, cursor)
+  void result
     .then((stories) => res.json(stories))
     .catch((err) => sendError(res, err))
 })
 
 /** POST /api/stories/upload — file:importStory (multipart field: file). */
 router.post('/upload', (req: AuthRequest, res) => {
+  let release: () => void
+  try {
+    release = acquireStoryUpload()
+  } catch (error) {
+    sendError(res, error)
+    return
+  }
+  let importing = false
+  res.once('close', () => {
+    if (!importing) release()
+  })
   upload.single('file')(req, res, (err: unknown) => {
+    if (res.destroyed) {
+      release()
+      return
+    }
     if (err) {
+      release()
       if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
           res.status(413).json({ error: `file too large (max ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB)` })
@@ -55,6 +76,7 @@ router.post('/upload', (req: AuthRequest, res) => {
       res.status(400).json({ error: err instanceof Error ? err.message : 'upload failed' })
       return
     }
+    importing = true
     void storyService
       .importStory(req.userId as number, req.file)
       .then((result) => {
@@ -70,6 +92,7 @@ router.post('/upload', (req: AuthRequest, res) => {
         return res.json(result)
       })
       .catch((e) => sendError(res, e))
+      .finally(release)
   })
 })
 
@@ -112,8 +135,8 @@ router.delete('/:id', (req: AuthRequest, res) => {
     sendError(res, err)
     return
   }
-  void storyService
-    .deleteStory(req.userId as number, id)
+  const userId = req.userId as number
+  void withStoryMutation(userId, id, () => storyService.deleteStory(userId, id))
     .then(() => res.json({ ok: true }))
     .catch((err) => sendError(res, err))
 })

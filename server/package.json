@@ -10,9 +10,13 @@
     "dev": "tsx watch src/app.ts",
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"require('fs').cpSync('../shared/tools','dist/shared/tools',{recursive:true}); require('fs').cpSync('./assets','dist/server/assets',{recursive:true})\"",
     "start": "node dist/server/src/app.js",
-    "test": "vitest run"
+    "dev:story-preparation": "tsx src/workers/storyPreparation.ts",
+    "start:story-preparation": "node dist/server/src/workers/storyPreparation.js",
+    "test": "vitest run",
+    "migrate:sqlite": "tsx src/migration/importSqlite.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1171.0",
     "@huggingface/transformers": "^3.5.0",
     "@langchain/core": "^1.2.8",
     "@langchain/langgraph": "^1.4.9",
@@ -28,6 +32,7 @@
     "openai": "^4.104.0",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^2.4.5",
+    "pg": "^8.23.1",
     "tesseract.js": "^7.0.0",
     "ws": "^8.18.0"
   },
@@ -39,8 +44,10 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/multer": "^2.2.0",
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.5.13",
+    "jszip": "3.10.1",
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",
     "typescript": "~5.9.3",

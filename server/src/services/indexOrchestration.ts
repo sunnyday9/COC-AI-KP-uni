@@ -18,6 +18,10 @@ import { logger } from '../utils/logging.js'
 import { isRetryableFailure, retryDelayMs, waitForRetry } from '../utils/retry.js'
 
 export interface IndexOptions {
+  source?: { name: string; content: string }
+  persistIndex?: (index: vectorStore.StoredIndex) => void | Promise<void>
+  prefetchReranker?: boolean
+  signal?: AbortSignal
   /** 嵌入函数（缺省由调用方按设置提供；不传则索引只有词面统计）。 */
   getEmbedding?: (text: string) => Promise<number[]>
   onProgress?: (progress: { stage: string; percent: number; message?: string }) => void
@@ -48,7 +52,7 @@ export async function indexStoryForRag(
 
   let raw: { name: string; content: string }
   try {
-    raw = await readStoryForRag(userId, id)
+    raw = options.source ?? await readStoryForRag(userId, id)
   } catch (e) {
     return { ok: false, error: `story not readable: ${e instanceof Error ? e.message : String(e)}` }
   }
@@ -85,7 +89,7 @@ export async function indexStoryForRag(
             }
             const delay = retryDelayMs(attempt + 1)
             report('embedding_retry', Math.min(84, 5 + Math.round((completedChunks / inputs.length) * 80)), `嵌入请求暂时失败，${attempt + 1}/2 次重试中`)
-            await waitForRetry(delay)
+            await waitForRetry(delay, options.signal)
           }
         }
         throw new Error('embedding retries exhausted')
@@ -99,6 +103,7 @@ export async function indexStoryForRag(
       { name: storyMeta?.name ?? raw.name },
       {
         ...(withEmbeddingRetry ? { getEmbedding: withEmbeddingRetry } : {}),
+        persistIndex: options.persistIndex,
         onChunkProgress: ({ completed, total }) => {
           completedChunks = completed
           const percent = 5 + Math.round((completed / total) * 80)
@@ -120,7 +125,8 @@ export async function indexStoryForRag(
   }
   report('rerank', 94, '准备检索排序模型')
   try {
-    await loadRerankModel()
+    // Shared preparation workers do not serve interactive retrieval.
+    if (options.prefetchReranker !== false) await loadRerankModel()
   } catch (e) {
     const rerankWarning = `rerank model prefetch failed: ${e instanceof Error ? e.message : String(e)}`
     warnings.push(rerankWarning)

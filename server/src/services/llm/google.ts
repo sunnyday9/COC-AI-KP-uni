@@ -142,11 +142,16 @@ export async function googleAdapter(config: AIProviderConfig, params: LLMCallPar
 
   const res = await safeOutboundFetch(url, {
     method: 'POST',
+    ...(params.signal ? { signal: params.signal } : {}),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
 
   if (!res.ok) {
+    if (params.signal && (res.status === 429 || res.status === 503)) {
+      await res.body?.cancel().catch(() => {})
+      throw Object.assign(new Error('Provider temporarily unavailable'), { status: res.status, headers: res.headers })
+    }
     const text = await res.text()
     const msg = res.status === 404
       ? `Google: 404 模型不存在或已下线 (当前: ${model})`

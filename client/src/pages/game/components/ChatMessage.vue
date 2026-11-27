@@ -14,8 +14,11 @@ import SystemMessage from './SystemMessage.vue'
  * 对外契约（.option-btn / select-option 事件）保持 ChatMessage 现行为——
  * game 与 room 聊天流无感替换（ticket #19）。
  */
-const props = defineProps<{ msg: Message }>()
-const emit = defineEmits<{ (e: 'select-option', text: string): void }>()
+const props = defineProps<{ msg: Message; pending?: boolean; sendError?: string; retryDisabled?: boolean }>()
+const emit = defineEmits<{
+  (e: 'select-option', text: string): void
+  (e: 'retry'): void
+}>()
 
 const role = computed(() => props.msg.role)
 </script>
@@ -25,4 +28,24 @@ const role = computed(() => props.msg.role)
   <KPMessage v-if="role === 'kp'" :msg="msg" @select-option="(t: string) => emit('select-option', t)" />
   <PlayerMessage v-else-if="role === 'player'" :msg="msg" />
   <SystemMessage v-else :msg="msg" />
+  <view v-if="pending" class="chat-delivery" aria-live="polite">
+    <text>{{ sendError || '发送中…' }}</text>
+    <button v-if="sendError" class="chat-delivery-retry" :disabled="retryDisabled" @click="emit('retry')">重试发送</button>
+  </view>
 </template>
+
+<style scoped>
+.chat-delivery {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.chat-delivery-retry {
+  margin: 0;
+  font-size: inherit;
+  line-height: 2;
+}
+</style>

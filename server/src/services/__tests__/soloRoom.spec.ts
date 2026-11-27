@@ -104,7 +104,7 @@ describe('createSoloRoom 一体领域动作', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    const row = getRoomRow(result.roomId)!
+    const row = (await getRoomRow(result.roomId))!
     expect(row.kind).toBe('solo')
     expect(row.phase).toBe('playing')
     expect(row.story_id).toBe('story_solo_a')
@@ -135,7 +135,7 @@ describe('createSoloRoom 一体领域动作', () => {
     const result = await createSoloRoom(userId, { storyId: 'story_w', name: '温蒂', sheet: validSheet })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    const fail = setRoomTurnWindow(userId, result.roomId, 5000)
+    const fail = await setRoomTurnWindow(userId, result.roomId, 5000)
     expect(fail.ok).toBe(false)
     if (!fail.ok) expect(fail.reason).toBe('bad-request')
   })
@@ -156,13 +156,13 @@ describe('solo 房间列表可见性', () => {
       getDb().prepare(`UPDATE rooms SET phase = 'ended' WHERE room_id = ?`).run(endedSolo.roomId)
     }
 
-    const multiIds = listRoomsForUser(userId).map((r) => r.roomId)
+    const multiIds = (await listRoomsForUser(userId)).map((r) => r.roomId)
     expect(multiIds).toContain(`${suite}_m1`)
     expect(multiIds).not.toContain(solo.ok ? solo.roomId : '')
 
-    const soloIds = listSoloRoomsForUser(userId).map((r) => r.roomId)
+    const soloIds = (await listSoloRoomsForUser(userId)).map((r) => r.roomId)
     expect(soloIds).toEqual(solo.ok ? [solo.roomId] : []) // ended 被排除
-    expect(listSoloRoomsForUser(otherId)).toEqual([]) // 他人不可见
+    expect(await listSoloRoomsForUser(otherId)).toEqual([]) // 他人不可见
   })
 })
 
@@ -173,13 +173,13 @@ describe('solo 房间 wire 面与 multi 一致', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    const detail = getRoomDetail(userId, result.roomId)
+    const detail = await getRoomDetail(userId, result.roomId)
     expect(detail.ok).toBe(true)
     if (detail.ok) {
       expect(detail.detail.phase).toBe('playing')
       expect(detail.detail.ownerId).toBe(userId)
     }
-    const room = getOrCreateRoom(result.roomId, userId, 'solo_eve')
+    const room = await getOrCreateRoom(result.roomId, userId, 'solo_eve')
     expect(room).not.toBeNull()
     expect(room!.getPhase()).toBe('playing')
     expect(room!.getTurnWindowMs()).toBe(0)

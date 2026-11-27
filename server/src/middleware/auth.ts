@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express'
 import jwt from 'jsonwebtoken'
-import { JWT_SECRET } from '../config.js'
+import { DEPLOYMENT_MODE, JWT_SECRET } from '../config.js'
 
 /** Express request augmented with the authenticated user id. */
 export interface AuthRequest extends Request {
@@ -8,20 +8,23 @@ export interface AuthRequest extends Request {
 }
 
 const TOKEN_TTL = '30d'
+const TOKEN_ISSUER = DEPLOYMENT_MODE === 'shared-accounts' ? 'aikp-shared-accounts' : undefined
 
 /** Issue a JWT for the given user id (30-day validity, per api-contract §1). */
 export function signToken(userId: number): string {
-  return jwt.sign({ sub: String(userId) }, JWT_SECRET, { expiresIn: TOKEN_TTL })
+  const claims = TOKEN_ISSUER ? { sub: String(userId), iss: TOKEN_ISSUER } : { sub: String(userId) }
+  return jwt.sign(claims, JWT_SECRET, { expiresIn: TOKEN_TTL })
 }
 
 /** Verify a JWT; returns the user id or null when invalid/expired. */
 export function verifyToken(token: string): { userId: number } | null {
   try {
     const payload = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload
+    if (payload.iss !== TOKEN_ISSUER) return null
     const sub = payload.sub
     if (typeof sub !== 'string') return null
     const userId = Number(sub)
-    return Number.isInteger(userId) && userId > 0 ? { userId } : null
+    return Number.isSafeInteger(userId) && userId > 0 ? { userId } : null
   } catch {
     return null
   }

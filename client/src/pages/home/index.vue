@@ -1,25 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted } from 'vue'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { listIndexedStories, type IndexedStory } from '../../services/ragService'
+import type { IndexedStory } from '../../services/ragService'
+import { useIndexedStoryPages } from '../../composables/useIndexedStoryPages'
 import AppLayout from '../../components/layout/AppLayout.vue'
 import AppIcon from '../../components/ui/AppIcon.vue'
 import Button from '../../components/ui/Button.vue'
 
 const settingsStore = useSettingsStore()
 
-const stories = ref<IndexedStory[]>([])
-const isLoading = ref(false)
+const { stories, nextCursor, canStartInvestigation, isLoading, error, refresh, loadMore } = useIndexedStoryPages()
 
-async function loadStories() {
-  isLoading.value = true
-  try {
-    stories.value = await listIndexedStories()
-  } catch { stories.value = [] }
-  finally { isLoading.value = false }
-}
-
-onMounted(() => { loadStories() })
+onMounted(() => { void refresh() })
 
 function goToSetup(story: IndexedStory) {
   uni.navigateTo({ url: `/pages/character/occupation/index?storyId=${encodeURIComponent(story.storyId)}&storyName=${encodeURIComponent(story.name)}` })
@@ -79,7 +71,7 @@ function goSettings() {
         <view class="stories">
           <view class="stories-head">
             <app-icon name="scroll" :size="15" class="stories-icon" />
-            <text class="stories-title">新的调查</text>
+            <text class="stories-title">{{ canStartInvestigation ? '新的调查' : '已准备的故事' }}</text>
           </view>
 
           <!-- 加载中 -->
@@ -95,7 +87,7 @@ function goSettings() {
               :key="story.storyId"
               class="gothic-card story-card"
               hover-class="story-card-hover"
-              @click="goToSetup(story)"
+              @click="canStartInvestigation ? goToSetup(story) : goScripts()"
             >
               <view class="story-badge">
                 <text class="story-badge-text">{{ story.name.charAt(0) }}</text>
@@ -107,16 +99,24 @@ function goSettings() {
                 <text class="story-meta">{{ story.chunkCount }} 个信息块</text>
               </view>
               <view class="story-cta">
-                <text>开始调查</text>
+                <text>{{ canStartInvestigation ? '开始调查' : '查看准备状态' }}</text>
               </view>
             </view>
           </view>
 
+          <view v-if="error" class="gothic-card empty-card">
+            <text class="empty-hint" role="alert">{{ error }}</text>
+            <button v-if="!nextCursor" class="gothic-btn empty-btn" @click="refresh">重试</button>
+          </view>
+          <button v-if="nextCursor" class="gothic-btn empty-btn" :disabled="isLoading" @click="loadMore">
+            {{ isLoading ? '加载中...' : '加载更多故事' }}
+          </button>
+
           <!-- 空态 -->
-          <view v-else-if="!isLoading" class="gothic-card empty-card">
+          <view v-if="!isLoading && !error && !stories.length" class="gothic-card empty-card">
             <view class="empty-divider ink-divider" />
             <text class="empty-quote">"书架上空无一物..."</text>
-            <text class="empty-hint">调查员，请先导入并索引故事文件</text>
+            <text class="empty-hint">{{ canStartInvestigation ? '调查员，请先导入并索引故事文件' : '请前往故事管理并开始准备剧本' }}</text>
             <view class="empty-divider ink-divider" />
             <button class="gothic-btn empty-btn" @click="goScripts">
               前往故事管理

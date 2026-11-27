@@ -16,8 +16,8 @@
  *                                        └─ leaveRoom() ──▶ idle
  */
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
-import type { RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomMetaPayload } from '../../../shared/types/room'
+import { computed, ref, shallowReactive } from 'vue'
+import type { KpPauseReason, RoomPhase, RoomMemberInfo, RoomServerFrame, RoomSnapshot, RoomEventType, RoomEventPayloadMap, RoomMessageAppendedPayload, RoomStatePatchPayload, RoomMetaPayload, RoomRemovedReason } from '../../../shared/types/room'
 import type { Message, DiceMessage } from '../../../shared/types/game'
 import type { COCCharacterSheet } from '../../../shared/types/character'
 import { getBridge } from '../platform'
@@ -30,13 +30,14 @@ export type RoomConnectionState = 'idle' | 'joining' | 'joined' | 'error'
  *  - dissolved：房间解散（REST 轮询 roomDetail 404 兜底——解散无广播）
  * 仅非主动离开置位；leaveRoom()/leaveAndClear() 是主动离开，不触发。
  */
-export type RoomRemovedReason = 'kicked' | 'dissolved'
+export type { RoomRemovedReason } from '../../../shared/types/room'
 
 /** 全局帧订阅只挂接一次（roomStore 是 pinia 单例，多页面复用同一实例）。 */
 let frameBridgeWired = false
 let frameBridgeOff: (() => void) | null = null
 let reconnectOff: (() => void) | null = null
 let pendingSeq = 0
+const CHAT_CONFIRMATION_TIMEOUT_MS = 8_000
 
 export interface RoomMessageRecord {
   id: string
@@ -47,10 +48,21 @@ export interface RoomMessageRecord {
   isStreaming?: boolean
   /** 乐观消息标记（唯一乐观面 = 自己的 chat，ADR-0002；服务端 echo 到达后移除）。 */
   pending?: boolean
+  sendError?: string
   /** 结构化骰子字段透传（#79）：服务端 rule-engine DiceMessage 完整过 wire/快照，
    *  record 原样持有，toMessage 不再剥掉；旧快照消息无这两个字段（可选，正则兜底）。 */
   type?: DiceMessage['type']
   result?: DiceMessage['result']
+}
+
+type ChatRetryCause = 'busy' | 'uncertain'
+
+interface PendingChat {
+  message: RoomMessageRecord
+  cause?: ChatRetryCause
+  /** A server snapshot can already contain the accepted message under its server ID. */
+  outsideTranscript?: boolean
+  timer?: ReturnType<typeof setTimeout>
 }
 
 function toMessage(m: RoomMessageRecord): Message {
@@ -83,6 +95,17 @@ export const useRoomStore = defineStore('room', () => {
   const members = ref<RoomMemberInfo[]>([])
   /** 消息流（服务端权威，按 seq 应用）。 */
   const messages = ref<RoomMessageRecord[]>([])
+  const historyCursor = ref<string | null | undefined>()
+  const canLoadHistory = computed(() => historyCursor.value !== undefined)
+  const historyLoading = ref(false)
+  const historyError = ref('')
+  let transcriptGeneration = 0
+  let actionReceipts = false
+  const pendingChats = shallowReactive(new Map<string, PendingChat>())
+  const chatRetryNotices = computed(() => [...pendingChats.values()].flatMap(({ message, outsideTranscript }) =>
+    outsideTranscript && message.sendError ? [message] : [],
+  ))
+  const chatError = ref('')
   /** 线索列表。 */
   const clues = ref<{ id: string; description: string }[]>([])
   /** 角色卡组（characterId → sheet）。 */
@@ -91,6 +114,8 @@ export const useRoomStore = defineStore('room', () => {
   const ending = ref<unknown | null>(null)
   /** KP turn is paused until the current owner completes AI setup. */
   const kpSetupRequired = ref(false)
+  const kpPauseReason = ref<KpPauseReason | null>(null)
+  const kpRetryAt = ref(0)
   /** 连接状态。 */
   const connectionState = ref<RoomConnectionState>('idle')
   /** 错误信息（error 状态时展示）。 */
@@ -143,9 +168,48 @@ export const useRoomStore = defineStore('room', () => {
     clues.value = Array.isArray(snap.clues) ? snap.clues : []
     ending.value = snap.ending ?? null
     kpSetupRequired.value = snap.kpSetupRequired === true
+    kpPauseReason.value = snap.kpPauseReason ?? null
+    kpRetryAt.value = snap.kpRetryAt ?? 0
+    if (kpSetupRequired.value || kpPauseReason.value) awaitingKp.value = false
     characters.value = (snap.characters && typeof snap.characters === 'object') ? snap.characters : {}
-    messages.value = Array.isArray(snap.messages) ? snap.messages as RoomMessageRecord[] : []
-    // 成员列表来自 REST（room:state 不含 members；room_meta 事件会覆盖）
+    resetHistory(snap.transcript?.before)
+    messages.value = Array.isArray(snap.messages) ? [...snap.messages] : []
+    for (const [actionId, pending] of pendingChats) {
+      if (pending.outsideTranscript) continue
+      if (pending.cause === 'busy') {
+        messages.value.push(pending.message)
+      } else {
+        pendingChats.set(actionId, { ...pending, outsideTranscript: true })
+      }
+    }
+  }
+
+  function resetHistory(before?: string | null): void {
+    transcriptGeneration++
+    historyCursor.value = before
+    historyLoading.value = false
+    historyError.value = ''
+  }
+
+  async function loadEarlierMessages(): Promise<void> {
+    const rid = roomId.value
+    const before = historyCursor.value
+    if (!rid || before === undefined || historyLoading.value) return
+    const generation = transcriptGeneration
+    historyLoading.value = true
+    historyError.value = ''
+    try {
+      const page = await getBridge().roomHistory(rid, before)
+      if (generation !== transcriptGeneration) return
+      const present = new Set(messages.value.map((message) => message.id))
+      const earlier = page.messages.filter((message) => !present.has(message.id))
+      messages.value = [...earlier, ...messages.value]
+      historyCursor.value = page.nextBefore ?? undefined
+    } catch {
+      if (generation === transcriptGeneration) historyError.value = '暂时无法读取更早的消息，请重试。'
+    } finally {
+      if (generation === transcriptGeneration) historyLoading.value = false
+    }
   }
 
 type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
@@ -159,17 +223,19 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       case 'message_appended': {
         const p = payload as RoomMessageAppendedPayload
         if (!p?.message || typeof p.message.content !== 'string') break
-        // 乐观对齐：自己的玩家消息 echo 到达 → 移除同内容 pending；KP/系统消息到达 → 清推进中
-        if (p.message.role === 'player') {
-          if (p.author?.userId === selfUserId.value) {
-            const idx = messages.value.findIndex((m) => m.pending && m.role === 'player' && m.content === p.message.content)
+        if (p.message.role === 'player' && p.author?.userId === selfUserId.value) {
+          if (p.actionId) {
+            clearPendingChat(p.actionId)
+          } else {
+            const idx = messages.value.findIndex((m) => m.pending && !pendingChats.has(m.id) && m.content === p.message.content)
             if (idx >= 0) messages.value.splice(idx, 1)
           }
-        } else {
+        } else if (p.message.role !== 'player') {
           awaitingKp.value = false
         }
-        // payload 携带服务端完整 Message（含 id/timestamp/playerName）——直接 append
-        messages.value.push(p.message)
+        const idx = messages.value.findIndex((m) => m.id === p.message.id)
+        if (idx >= 0) messages.value[idx] = p.message
+        else messages.value.push(p.message)
         break
       }
       case 'state_patch': {
@@ -182,30 +248,38 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         const p = payload as RoomMetaPayload
         if (!p) break
         if (typeof p.phase === 'string') phase.value = p.phase
-        if (Array.isArray(p.members)) {
-          // 房主行跟踪（room_meta 是全员镜像）：ownerId 跟随 → 转让后治理权即刻生效
-          const ownerRow = p.members.find((m) => m.role === 'owner')
-          if (ownerRow) {
-            const becameOwner = ownerRow.userId === selfUserId.value && ownerId.value !== null && ownerId.value !== selfUserId.value
-            ownerId.value = ownerRow.userId
-            // 房主转让提示（ADR-0005）：被转让为 owner 的成员看到一次性「你已成为房主」
-            if (becameOwner) promotedNotice.value = true
-          }
-          members.value = p.members
-          // 成员资格自检（ADR-0005）：被踢/被移出 → room_meta 不再含自己；
-          // 非主动离开（removedReason 为空）才置位，页面据此提示并回大厅
-          const stillMember = p.members.some((m) => m.userId === selfUserId.value)
-          if (!stillMember && selfUserId.value !== null && removedReason.value === null && connectionState.value !== 'idle') {
-            removedReason.value = 'kicked'
-          }
-        }
+        if (Array.isArray(p.members)) applyRoomMembers(p.members)
         break
       }
     }
   }
 
+  function applyRoomMembers(nextMembers: RoomMemberInfo[]): void {
+    const owner = nextMembers.find((member) => member.role === 'owner')
+    if (owner) {
+      if (owner.userId === selfUserId.value && ownerId.value !== null && ownerId.value !== owner.userId) {
+        promotedNotice.value = true
+      }
+      ownerId.value = owner.userId
+    }
+    members.value = nextMembers
+    if (selfUserId.value !== null && connectionState.value !== 'idle' && removedReason.value === null &&
+        !nextMembers.some((member) => member.userId === selfUserId.value)) {
+      removedReason.value = 'kicked'
+    }
+  }
+
   /** 应用 state_patch 路径补丁（characters.<id> 全量替换 / clues 全量 / scene / ending）。 */
   function applyPathPatch(path: string, value: unknown): void {
+    if (path === 'kpPauseReason') {
+      kpPauseReason.value = value === 'queue_full' || value === 'provider_limited' || value === 'timeout' ? value : null
+      if (kpPauseReason.value) awaitingKp.value = false
+      return
+    }
+    if (path === 'kpRetryAt') {
+      kpRetryAt.value = typeof value === 'number' ? value : 0
+      return
+    }
     if (path === 'kpSetupRequired') {
       kpSetupRequired.value = value === true
       if (kpSetupRequired.value) awaitingKp.value = false
@@ -235,16 +309,39 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     // 未知路径忽略（服务端未来扩展字段的兼容策略）
   }
 
+  function acceptActionReceipts(supported: boolean): void {
+    actionReceipts = supported
+    if (!supported && pendingChats.size > 0) {
+      for (const actionId of pendingChats.keys()) clearPendingChat(actionId)
+      chatError.value = '当前服务器无法确认刚才的消息，请先查看聊天记录。'
+    }
+  }
+
+  function finishJoin(retryChats: boolean): void {
+    connectionState.value = 'joined'
+    errorMessage.value = ''
+    if (!retryChats || !actionReceipts) return
+    for (const [actionId, pending] of pendingChats) {
+      if (pending.cause !== 'busy') sendPendingChat(actionId)
+    }
+  }
+
   /** 分发服务端帧（roomStore 唯一入口）。 */
   function handleServerFrame(frame: RoomServerFrame): void {
     if (!frame || typeof frame !== 'object') return
     switch (frame.type) {
       case 'room:state': {
         if (frame.roomId !== roomId.value) return
+        const joining = connectionState.value === 'joining'
         isSyncing.value = false
-        connectionState.value = 'joined'
-        errorMessage.value = ''
+        acceptActionReceipts(frame.actionReceipts === true)
         applySnapshot(frame.snapshot)
+        if (Array.isArray(frame.members)) applyRoomMembers(frame.members)
+        // A pending receipt may trigger a snapshot that already includes the Keeper reply.
+        if (kpSetupRequired.value || (frame.kpTurnPending === false && pendingChats.size === 0)) {
+          awaitingKp.value = false
+        }
+        finishJoin(joining)
         break
       }
       case 'room:event': {
@@ -255,10 +352,36 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       case 'room:sync:done': {
         if (frame.roomId !== roomId.value) return
         isSyncing.value = false
+        if (connectionState.value === 'joining') {
+          acceptActionReceipts(frame.actionReceipts === true)
+          finishJoin(true)
+        }
+        break
+      }
+      case 'room:action:result': {
+        if (frame.roomId !== roomId.value || !pendingChats.has(frame.actionId)) return
+        if (frame.status === 'busy' || frame.status === 'retry') {
+          markChatForRetry(frame.actionId, frame.error, frame.status === 'busy' ? 'busy' : 'uncertain')
+        } else if (frame.status === 'rejected') {
+          clearPendingChat(frame.actionId)
+          awaitingKp.value = false
+          chatError.value = frame.error
+        } else if ('messageId' in frame) {
+          const pending = clearPendingChat(frame.actionId)
+          if (pending && !messages.value.some((message) => message.id === frame.messageId)) {
+            // A receipt can arrive when the echo was missed. Sync the authoritative transcript.
+            resync()
+          }
+          awaitingKp.value = frame.status === 'pending' && !kpSetupRequired.value && !kpPauseReason.value
+          if (frame.status === 'cancelled') chatError.value = '行动已接收，但在处理前已取消。'
+        }
         break
       }
       case 'room:error': {
         if (frame.roomId && frame.roomId !== roomId.value) return
+        if (frame.removedReason && removedReason.value === null && connectionState.value !== 'idle') {
+          removedReason.value = frame.removedReason
+        }
         errorMessage.value = frame.error
         connectionState.value = 'error'
         isSyncing.value = false
@@ -272,12 +395,15 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
   async function refreshMeta(): Promise<void> {
     const rid = roomId.value
     if (!rid) return
+    const requestedAt = lastSeq.value
     try {
       const detail = await getBridge().roomDetail(rid)
+      if (roomId.value !== rid) return
+      inviteCode.value = detail.inviteCode
+      if (lastSeq.value !== requestedAt) return
       phase.value = detail.phase
       storyId.value = detail.storyId
       members.value = detail.members
-      inviteCode.value = detail.inviteCode
       ownerId.value = detail.ownerId
       // 资格自检也适用于 REST 全量（room_meta 之外的路径：入房即不在成员列表 → 被移出）
       if (removedReason.value === null && selfUserId.value !== null) {
@@ -289,12 +415,13 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     }
   }
 
-  /** 加入房间：订阅帧 → 发送 room:join → 等全量快照。幂等（已加入则重置重同步）。 */
+  /** 加入房间并等待全量快照。同一房间重连时保留待确认的聊天。 */
   async function joinRoom(rid: string): Promise<void> {
-    if (connectionState.value === 'joining' || connectionState.value === 'joined') {
-      if (roomId.value === rid) return
+    if (roomId.value === rid) {
+      if (connectionState.value === 'joining' || connectionState.value === 'joined') return
+    } else {
+      leaveRoom()
     }
-    leaveRoom()
     // 首次使用时挂接全局帧路由 + 重连通知（一次）
     if (!frameBridgeWired) {
       frameBridgeWired = true
@@ -304,11 +431,11 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
       // 审查修复 #2：断线自动重连成功后重新订阅房间（服务端 socket 订阅已丢）
       reconnectOff = getBridge().onReconnect(() => {
         const rid2 = roomId.value
-        if (!rid2 || connectionState.value !== 'joined') return
+        if (!rid2 || (connectionState.value !== 'joined' && connectionState.value !== 'joining')) return
         connectionState.value = 'joining'
         isSyncing.value = true
         try {
-          getBridge().sendRoomFrame('room:join', { roomId: rid2 })
+          getBridge().sendRoomFrame('room:join', { roomId: rid2, lastSeq: lastSeq.value })
           void refreshMeta()
         } catch {
           connectionState.value = 'error'
@@ -320,14 +447,6 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     connectionState.value = 'joining'
     isSyncing.value = true
     errorMessage.value = ''
-    lastSeq.value = 0
-    messages.value = []
-    clues.value = []
-    characters.value = {}
-    scene.value = null
-    ending.value = null
-    kpSetupRequired.value = false
-    phase.value = 'lobby'
 
     try {
       await getBridge().connectWs()
@@ -336,7 +455,7 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
         const me = await getBridge().me()
         selfUserId.value = Number(me.user.id)
       } catch { selfUserId.value = null }
-      getBridge().sendRoomFrame('room:join', { roomId: rid })
+      getBridge().sendRoomFrame('room:join', { roomId: rid, lastSeq: lastSeq.value })
       await refreshMeta()
     } catch (err) {
       connectionState.value = 'error'
@@ -361,11 +480,17 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     storyId.value = null
     scene.value = null
     members.value = []
+    for (const actionId of pendingChats.keys()) clearPendingChat(actionId)
+    actionReceipts = false
+    chatError.value = ''
     messages.value = []
+    resetHistory()
     clues.value = []
     characters.value = {}
     ending.value = null
     kpSetupRequired.value = false
+    kpPauseReason.value = null
+    kpRetryAt.value = 0
     connectionState.value = 'idle'
     errorMessage.value = ''
     lastSeq.value = 0
@@ -405,37 +530,92 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     }
   }
 
-  /** 发送聊天消息：本地乐观追加（pending）→ 服务端串行入队；服务端 echo 到达后对齐。 */
+  function clearPendingChat(actionId: string): boolean {
+    const pending = pendingChats.get(actionId)
+    if (!pending) return false
+    clearTimeout(pending.timer)
+    pendingChats.delete(actionId)
+    const idx = messages.value.findIndex((message) => message.id === actionId)
+    if (idx >= 0) messages.value.splice(idx, 1)
+    return true
+  }
+
+  function markChatForRetry(actionId: string, reason: string, cause: ChatRetryCause): void {
+    const pending = pendingChats.get(actionId)
+    if (!pending) return
+    clearTimeout(pending.timer)
+    const message = { ...pending.message, sendError: reason }
+    pendingChats.set(actionId, { ...pending, cause, message, timer: undefined })
+    if (!pending.outsideTranscript) {
+      const idx = messages.value.findIndex((entry) => entry.id === actionId)
+      if (idx >= 0) messages.value[idx] = message
+    }
+    awaitingKp.value = false
+  }
+
+  function sendPendingChat(actionId: string): void {
+    const rid = roomId.value
+    let pending = pendingChats.get(actionId)
+    if (!rid || !pending) return
+    clearTimeout(pending.timer)
+    if (pending.cause) {
+      const message = { ...pending.message, sendError: undefined }
+      pending = { ...pending, cause: undefined, message }
+      pendingChats.set(actionId, pending)
+      const idx = messages.value.findIndex((entry) => entry.id === actionId)
+      if (idx >= 0) messages.value[idx] = message
+    }
+    const needsRetry = () => markChatForRetry(actionId, '暂未确认送达，可以重试这条消息。', 'uncertain')
+    try {
+      getBridge().sendRoomFrame('room:action', {
+        roomId: rid, actionId, action: { type: 'chat', payload: { content: pending.message.content } },
+      })
+      pending.timer = setTimeout(needsRetry, CHAT_CONFIRMATION_TIMEOUT_MS)
+    } catch {
+      needsRetry()
+    }
+  }
+
+  function retryPendingChat(actionId: string): void {
+    const pending = pendingChats.get(actionId)
+    if (!actionReceipts || connectionState.value !== 'joined' || !pending?.cause) return
+    awaitingKp.value = phase.value === 'playing' && !kpSetupRequired.value && !kpPauseReason.value
+    sendPendingChat(actionId)
+  }
+
+  /** 发送聊天消息：本地乐观追加，收到送达回执或服务端回显后对齐。 */
   function sendChat(content: string): void {
     const rid = roomId.value
     if (!rid || connectionState.value !== 'joined') return
     const trimmed = content.trim()
     if (!trimmed) return
-    // 唯一乐观面（ADR-0002）：自己的消息立即显示；KP 回复前显示推进中占位
-    messages.value.push({
-      id: `local_${Date.now()}_${pendingSeq++}`,
-      timestamp: Date.now(),
-      role: 'player',
-      playerName: selfName.value,
-      content: trimmed,
-      pending: true,
-    })
-    awaitingKp.value = true
+    chatError.value = ''
+    const id = globalThis.crypto?.randomUUID?.() ??
+      ['local', Date.now(), pendingSeq++, Math.random().toString(36).slice(2)].join('_')
+    const draft: RoomMessageRecord = {
+      id, timestamp: Date.now(), role: 'player', playerName: selfName.value, content: trimmed, pending: true,
+    }
+    messages.value.push(draft)
+    awaitingKp.value = !actionReceipts || (phase.value === 'playing' && !kpSetupRequired.value && !kpPauseReason.value)
+    if (actionReceipts) {
+      pendingChats.set(id, { message: draft })
+      sendPendingChat(id)
+      return
+    }
     try {
       getBridge().sendRoomFrame('room:action', { roomId: rid, action: { type: 'chat', payload: { content: trimmed } } })
     } catch (err) {
-      // 发送失败：撤回乐观消息（服务端权威无此消息）
-      const idx = messages.value.findIndex((m) => m.pending && m.content === trimmed)
+      const idx = messages.value.findIndex((m) => m.id === id)
       if (idx >= 0) messages.value.splice(idx, 1)
       awaitingKp.value = false
-      errorMessage.value = err instanceof Error ? err.message : String(err)
+      chatError.value = err instanceof Error ? err.message : String(err)
     }
   }
 
   /** Ask the current room owner to resume a preserved KP opening/turn. */
   function retryKpTurn(): void {
     const rid = roomId.value
-    if (!rid || connectionState.value !== 'joined' || !isOwner.value || !kpSetupRequired.value) return
+    if (!rid || connectionState.value !== 'joined' || !isOwner.value || (!kpSetupRequired.value && !kpPauseReason.value)) return
     try {
       getBridge().sendRoomFrame('room:action', { roomId: rid, action: { type: 'retry_kp' } })
     } catch (err) {
@@ -484,10 +664,16 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     scene,
     members,
     messages,
+    canLoadHistory,
+    historyLoading,
+    historyError,
+    loadEarlierMessages,
     clues,
     characters,
     ending,
     kpSetupRequired,
+    kpPauseReason,
+    kpRetryAt,
     connectionState,
     errorMessage,
     lastSeq,
@@ -508,6 +694,9 @@ type RoomEventPayload = RoomEventPayloadMap[RoomEventType]
     leaveAndClear,
     resync,
     sendChat,
+    retryPendingChat,
+    chatRetryNotices,
+    chatError,
     retryKpTurn,
     setReady,
     kickMember,

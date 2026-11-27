@@ -1,11 +1,20 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import 'dotenv/config'
+import { pathsOverlap } from './utils/pathSafety.js'
 
 /** HTTP listen port (default 3000) */
 export const PORT = Number(process.env.PORT ?? 3000)
 
 const DEV_JWT_SECRET = 'dev-secret-change-me'
+export const DEPLOYMENT_MODE = process.env.DEPLOYMENT_MODE?.trim() || 'local'
+export const SHARED_ROOMS_ENABLED = DEPLOYMENT_MODE === 'shared-accounts' && process.env.ENABLE_SHARED_ROOMS === '1'
+export const PG_POOL_MAX = Number(process.env.PG_POOL_MAX ?? 10)
+export const SHARED_ROOM_CATALOG_ENABLED = SHARED_ROOMS_ENABLED && !!process.env.STORY_S3_BUCKET?.trim()
+export const ROOM_WORKER_FAILOVER_ENABLED = process.env.ENABLE_ROOM_WORKER_FAILOVER === '1'
+export const ROOM_RUNTIME = process.env.ROOM_RUNTIME?.trim() || 'direct'
+export const ROOM_WORKER_LEASE_MS = Number(process.env.ROOM_WORKER_LEASE_MS ?? 15_000)
+export const SHARED_ROOM_FIXTURE_DIR = process.env.SHARED_ROOM_FIXTURE_DIR?.trim()
 
 /**
  * Reject an unsafe production configuration before the HTTP app starts.
@@ -13,8 +22,48 @@ const DEV_JWT_SECRET = 'dev-secret-change-me'
  */
 export function assertRuntimeConfig(): void {
   const configuredSecret = process.env.JWT_SECRET?.trim()
+  if (DEPLOYMENT_MODE !== 'local' && DEPLOYMENT_MODE !== 'shared-accounts') {
+    throw new Error('DEPLOYMENT_MODE must be local or shared-accounts')
+  }
   if (process.env.NODE_ENV === 'production' && (!configuredSecret || configuredSecret === DEV_JWT_SECRET)) {
     throw new Error('JWT_SECRET must be set to a non-default value in production')
+  }
+  if (!['direct', 'gateway', 'worker'].includes(ROOM_RUNTIME)) {
+    throw new Error('ROOM_RUNTIME must be direct, gateway or worker')
+  }
+  if (ROOM_RUNTIME !== 'direct' && !ROOM_WORKER_FAILOVER_ENABLED) {
+    throw new Error('Split room roles require ENABLE_ROOM_WORKER_FAILOVER=1')
+  }
+  if (ROOM_WORKER_FAILOVER_ENABLED && (!SHARED_ROOMS_ENABLED || !Number.isSafeInteger(ROOM_WORKER_LEASE_MS) ||
+      ROOM_WORKER_LEASE_MS < 1_000 || ROOM_WORKER_LEASE_MS > 120_000)) {
+    throw new Error('Room worker failover requires shared rooms and a lease duration from 1000 to 120000 ms')
+  }
+  if (SHARED_ROOMS_ENABLED && !SHARED_ROOM_CATALOG_ENABLED) {
+    const fixtureDir = SHARED_ROOM_FIXTURE_DIR
+    if (!fixtureDir || !path.isAbsolute(fixtureDir)) {
+      throw new Error('SHARED_ROOM_FIXTURE_DIR must be an absolute, dedicated prepared-story fixture directory')
+    }
+    if ([DATA_DIR, RAG_DATA_DIR, DOSSIER_DATA_DIR, UPLOADS_DIR].some((dir) => pathsOverlap(dir, fixtureDir))) {
+      throw new Error('SHARED_ROOM_FIXTURE_DIR must be separate from the local data and artifact directories')
+    }
+  }
+  if (DEPLOYMENT_MODE === 'shared-accounts') {
+    const minimumPoolSize = SHARED_ROOMS_ENABLED ? 2 : 1
+    if (!Number.isSafeInteger(PG_POOL_MAX) || PG_POOL_MAX < minimumPoolSize || PG_POOL_MAX > 100) {
+      throw new Error(`PG_POOL_MAX must be an integer from ${minimumPoolSize} to 100`)
+    }
+    if (!configuredSecret || configuredSecret === DEV_JWT_SECRET) {
+      throw new Error('JWT_SECRET must be set to a non-default value in shared-accounts mode')
+    }
+    const databaseUrl = URL.parse(process.env.DATABASE_URL ?? '')
+    if (
+      !databaseUrl ||
+      !['postgres:', 'postgresql:'].includes(databaseUrl.protocol) ||
+      !databaseUrl.hostname ||
+      !databaseUrl.pathname.slice(1)
+    ) {
+      throw new Error('DATABASE_URL must name a PostgreSQL host and database in shared-accounts mode')
+    }
   }
 }
 
@@ -119,7 +168,7 @@ export function isMockAiMode(): boolean {
  * 实现为函数（同 isMockAiMode），测试可 vi.stubEnv 按用例切换。
  */
 export function isKpWireSamplingEnabled(): boolean {
-  return process.env.KP_WIRE_SAMPLING !== '0'
+  return !SHARED_ROOMS_ENABLED && process.env.KP_WIRE_SAMPLING !== '0'
 }
 
 /**

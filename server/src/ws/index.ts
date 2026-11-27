@@ -1,9 +1,11 @@
 import type { Server } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { verifyToken } from '../middleware/auth.js'
+import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
 import { registerProgressSocket, unregisterProgressSocket } from './progress.js'
 import { cleanupSocketRooms, handleRoomAction, handleRoomJoin, handleRoomLeave, handleRoomSync } from './rooms.js'
+import { markTransportReset, sendFrame } from './sendFrame.js'
 
 /**
  * WebSocket endpoint `ws://<host>/ws?token=<JWT>` (api-contract §4).
@@ -17,7 +19,7 @@ import { cleanupSocketRooms, handleRoomAction, handleRoomJoin, handleRoomLeave, 
  * - JSON text frames only (no binary frames).
  */
 export function createWsServer(httpServer: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', maxPayload: 128 * 1024 })
 
   wss.on('connection', (socket: WebSocket, req) => {
     let userId: number | null = null
@@ -36,6 +38,18 @@ export function createWsServer(httpServer: Server): WebSocketServer {
     logger.info('ws client connected', { userId })
     registerProgressSocket(userId, socket)
 
+    const currentUserId = userId
+    const disconnected = new AbortController()
+    let pending = 0
+    let frameQueue = Promise.resolve()
+    const cleanUp = () => {
+      disconnected.abort()
+      unregisterProgressSocket(socket)
+      void cleanupSocketRooms(socket, currentUserId).catch((error) => {
+        logger.warn('room disconnect cleanup failed', { userId, error: errorMessage(error) })
+      })
+    }
+
     socket.on('message', (data) => {
       let msg: unknown
       try {
@@ -45,40 +59,40 @@ export function createWsServer(httpServer: Server): WebSocketServer {
       }
       if (typeof msg !== 'object' || msg === null) return
       const type = (msg as { type?: unknown }).type
-      switch (type) {
-        case 'ping':
-          socket.send(JSON.stringify({ type: 'pong' }))
-          break
-        case 'room:join':
-          handleRoomJoin(socket, userId as number, msg)
-          break
-        case 'room:leave':
-          handleRoomLeave(socket, String((msg as { roomId?: unknown }).roomId ?? ''))
-          break
-        case 'room:sync':
-          handleRoomSync(socket, userId as number, msg)
-          break
-        case 'room:action':
-          handleRoomAction(socket, userId as number, msg)
-          break
-        case 'rag:progress':
-          // Task 4: RAG index progress (server → client only)
-          break
-        default:
-          // unknown message types ignored（kp: 前缀帧已随 ADR-0002 退役）
-          break
+      if (type === 'ping') {
+        sendFrame(socket, '{"type":"pong"}')
+        return
       }
+      if (type !== 'room:join' && type !== 'room:leave' && type !== 'room:sync' && type !== 'room:action') return
+      const roomId = String((msg as { roomId?: unknown }).roomId ?? '')
+      if (pending >= 64) {
+        sendFrame(socket, JSON.stringify({ type: 'room:error', roomId, error: 'Too many pending room frames. Try again.' }))
+        return
+      }
+      pending++
+      frameQueue = frameQueue.then(async () => {
+        if (socket.readyState !== WebSocket.OPEN) return
+        switch (type) {
+          case 'room:join': return handleRoomJoin(socket, currentUserId, msg, disconnected.signal)
+          case 'room:leave': return handleRoomLeave(socket, roomId)
+          case 'room:sync': return handleRoomSync(socket, currentUserId, msg, disconnected.signal)
+          case 'room:action': return handleRoomAction(socket, currentUserId, msg, disconnected.signal)
+        }
+      }).catch((error) => {
+        logger.warn('room frame failed', { userId, roomId, error: errorMessage(error) })
+        sendFrame(socket, JSON.stringify({ type: 'room:error', roomId, error: 'room operation unavailable' }))
+      }).finally(() => { pending-- })
     })
 
     socket.on('close', () => {
-      unregisterProgressSocket(socket)
-      cleanupSocketRooms(socket, userId)
+      cleanUp()
       logger.info('ws client disconnected', { userId })
     })
 
-    socket.on('error', (err) => {
-      unregisterProgressSocket(socket)
-      cleanupSocketRooms(socket, userId)
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      // ws has already initiated a 1009 close for the inbound message limit.
+      if (err.code === 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH') markTransportReset(socket)
+      cleanUp()
       logger.warn('ws socket error', { userId, error: String(err) })
     })
   })

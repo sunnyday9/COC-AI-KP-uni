@@ -20,13 +20,14 @@
  * userGraphStore（A3 延后特性，与 GraphRAG 不是一回事）2026-09-12 经用户拍板**退役**：
  * 零回合路径消费方，需要时从 git 历史取回。
  */
-import { getSettings, getAiConfig } from './settingsService.js'
-import { isMockAiMode } from '../config.js'
+import { getSettings, getAiConfig, getGatewaySettings, getSharedAiConfig } from './settingsService.js'
+import { DEPLOYMENT_MODE, isMockAiMode } from '../config.js'
 import type { AppSettings } from '../../../shared/types/settings.js'
 import { assertSafeOutboundUrl } from '../utils/outboundUrl.js'
 import { BadRequestError } from '../utils/errors.js'
 import * as vectorStore from '../rag/vectorStore.js'
 import { createEmbedder, createBuiltinEmbedder, type Embedder } from '../rag/embedding.js'
+import { requestKeeper, type KeeperExecution } from './kpAdmission.js'
 
 /* ═══════════════════ Embedding provider resolution ═══════════════════ */
 
@@ -39,22 +40,23 @@ import { createEmbedder, createBuiltinEmbedder, type Embedder } from '../rag/emb
  * 导出（M1-T6）：检索补充层需要同一个嵌入器（同一份 provider 解析与内置模型单例，
  * 两处各写一份会各建一个模型实例）。
  */
-export async function buildGetEmbeddingForUser(userId: number): Promise<Embedder | null> {
-  return buildGetEmbedding(userId)
+export async function buildGetEmbeddingForUser(userId: number, execution?: KeeperExecution): Promise<Embedder | null> {
+  return buildGetEmbedding(userId, execution)
 }
 
-async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
+async function buildGetEmbedding(userId: number, execution?: KeeperExecution): Promise<Embedder | null> {
   if (isMockAiMode()) {
     // MOCK_AI (Task 11): skip the local model download entirely — vectorStore
     // uses its TF-IDF retrieval baseline when dense embeddings are unavailable.
     return null
   }
-  const settings = getSettings(userId)
+  const shared = DEPLOYMENT_MODE === 'shared-accounts'
+  const settings = shared ? await getGatewaySettings(userId) : getSettings(userId)
   const rag = (settings.rag || {}) as NonNullable<AppSettings["rag"]>
   const provider = rag.provider === 'api' ? 'api' : 'builtin'
 
   if (provider === 'api') {
-    const ai = getAiConfig(userId)
+    const ai = execution?.ai ?? (shared ? await getSharedAiConfig(userId) : getAiConfig(userId))
     const baseUrl = (ai.baseUrl || '').trim()
     const apiKey = ai.apiKey && ai.apiKey !== '***' ? ai.apiKey : null
     if (baseUrl && apiKey) {
@@ -69,7 +71,12 @@ async function buildGetEmbedding(userId: number): Promise<Embedder | null> {
         apiKey,
         model: rag.model || 'text-embedding-3-small',
       })
-      if (apiEmbedder) return apiEmbedder
+      if (apiEmbedder) {
+        if (!execution) return apiEmbedder
+        return (input, signal) => requestKeeper(execution, (requestSignal) =>
+          apiEmbedder(input, signal ? AbortSignal.any([signal, requestSignal]) : requestSignal),
+        { retry: false, timeoutMs: 1_000 })
+      }
     }
     // 如果 API 配置不完整，则回退到内置模型（与原实现一致）
   }
@@ -149,14 +156,16 @@ export async function index(
   return { ok: result.ok, indexed: result.indexed ?? 0, error: result.error, warning: result.warning }
 }
 
+export { listIndexedStoryPage } from '../rag/indexedStoryPages.js'
+
 /** GET /api/rag/stories — rag:listStories. */
-export function listStories(userId: number): {
+export function listStories(userId: number, storyId?: string): {
   storyId: string
   name: string
   chunkCount: number
   indexedAt: number
 }[] {
-  return vectorStore.listIndexedStories(userId)
+  return vectorStore.listIndexedStories(userId, storyId)
 }
 
 /** DELETE /api/rag/index/:scriptId — rag:delete (vectors only；M1-T7 起无图)。 */

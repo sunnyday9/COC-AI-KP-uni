@@ -13,6 +13,7 @@
  * returns deterministic JSON for dossier prompts (see mockAi.ts), so e2e can
  * run the whole dossier flow without an LLM.
  */
+import { randomUUID } from 'node:crypto'
 import {
   DOSSIER_BATCH_CHARS,
   DOSSIER_SYSTEM_PROMPT,
@@ -26,12 +27,12 @@ import {
   type StoryDossier,
   type DossierQualitySummary,
 } from './schema.js'
-import { computeCoverageGaps, persistGaps } from './coverageGaps.js'
+import { computeCoverageGaps, GAPS_VERSION, persistGaps, type CoverageGapsFile } from './coverageGaps.js'
 import { persist } from './dossierCore.js'
 import { isRetryableFailure, retryDelayMs, waitForRetry } from '../../utils/retry.js'
 
 /** Max raw story chars fed to the generator overall (safety; ~170k max known). */
-const MAX_GENERATE_CHARS = 200_000
+export const MAX_DOSSIER_SOURCE_CHARS = 200_000
 /** Max generation batches per story (safety). */
 const MAX_BATCHES = 24
 /**
@@ -113,10 +114,16 @@ export async function generateDossier(
   options: {
     model?: string
     annex?: boolean
+    signal?: AbortSignal
+    beforeProviderRequest?: () => Promise<void>
+    /** Canonical source already parsed for a shared preparation attempt. */
+    source?: { name: string; content: string; preparationRevision: string }
+    persistArtifacts?: (dossier: StoryDossier, gaps: CoverageGapsFile | undefined) => void | Promise<void>
     onProgress?: (progress: { stage: string; percent: number; message?: string }) => void
   } = {},
 ): Promise<GenerateResult> {
-  const { model, annex, onProgress } = options
+  const { model, annex, onProgress, source, persistArtifacts, signal, beforeProviderRequest } = options
+  signal?.throwIfAborted()
   const report = (stage: string, percent: number, message?: string) => onProgress?.({ stage, percent, message })
   if (!scriptId) return { ok: false, error: 'missing scriptId' }
 
@@ -124,7 +131,7 @@ export async function generateDossier(
   let raw: { name: string; content: string }
   try {
     const { readStoryForRag } = await import('../../services/storyService.js')
-    raw = await readStoryForRag(userId, scriptId)
+    raw = source ?? await readStoryForRag(userId, scriptId)
   } catch {
     // Fall back to the plain read for txt/md (no OCR needed).
     try {
@@ -134,12 +141,16 @@ export async function generateDossier(
       return { ok: false, error: 'story not found' }
     }
   }
+  signal?.throwIfAborted()
   const content = (raw?.content || '').trim()
   if (!content) return { ok: false, error: 'story content is empty' }
 
-  const storyText = content.slice(0, MAX_GENERATE_CHARS)
+  const storyText = content.slice(0, MAX_DOSSIER_SOURCE_CHARS)
   const sections = splitStorySections(storyText)
   const batches = sections.slice(0, MAX_BATCHES)
+  if (source && (content.length > MAX_DOSSIER_SOURCE_CHARS || sections.length > batches.length)) {
+    return { ok: false, error: 'story exceeds dossier generation limits' }
+  }
   const totalBatches = batches.length
   report('split', 5, `分成 ${totalBatches} 个处理批次`)
 
@@ -166,6 +177,8 @@ export async function generateDossier(
     let parsed: StoryDossier | null = null
     let lastBatchError = ''
     for (let attempt = 0; attempt < DOSSIER_GEN_ATTEMPTS && !parsed; attempt++) {
+      await beforeProviderRequest?.()
+      signal?.throwIfAborted()
       try {
         const res = await chatForRag(userId, {
           messages: [
@@ -175,16 +188,19 @@ export async function generateDossier(
           temperature: 0,
           maxTokens: attempt < 2 ? DOSSIER_GEN_MAX_TOKENS : DOSSIER_GEN_MAX_TOKENS_ESCALATED,
           model,
+          ...(signal ? { signal } : {}),
         })
+        signal?.throwIfAborted()
         parsed = parseDossierJson(stripCodeFence(res?.content || ''))
         if (!parsed) lastBatchError = '解析结果为空/无效 JSON'
       } catch (e) {
+        signal?.throwIfAborted()
         lastBatchError = e instanceof Error ? e.message : String(e)
         if (!isRetryableFailure(e)) break
         if (attempt + 1 < DOSSIER_GEN_ATTEMPTS) {
           const delay = retryDelayMs(attempt + 1)
           report('retry', batchStartPercent, `第 ${bi + 1} 批网络请求失败，等待后重试（${attempt + 1}/${DOSSIER_GEN_ATTEMPTS - 1}）`)
-          await waitForRetry(delay)
+          await waitForRetry(delay, signal)
         }
       }
     }
@@ -211,6 +227,7 @@ export async function generateDossier(
     return { ok: false, error: lastError || 'dossier generation failed' }
   }
 
+  signal?.throwIfAborted()
   const merged = mergeDossierParts(parsedParts)
   const resolved = resolveRefs(merged)
   let dossier: StoryDossier = {
@@ -218,6 +235,7 @@ export async function generateDossier(
     scriptId,
     storyName: resolved.storyName || raw.name || scriptId,
     generatedAt: Date.now(),
+    sourceRevision: source?.preparationRevision ?? randomUUID(),
     generatedByModel: resolved.generatedByModel || model,
   }
 
@@ -243,15 +261,19 @@ export async function generateDossier(
   // coverage gaps（P22）：本地计算原文未被 sceneText 覆盖的区间 + 场景锚点，
   // 落盘 .gaps.json（回退定位/质量门用）；失败不阻断生成。
   let gapsRan = false
+  let gapsArtifact: CoverageGapsFile | undefined
   report('coverage', 90, '计算剧本覆盖与剧透锚点')
   try {
     const gaps = computeCoverageGaps(storyText, dossier.scenes)
-    await persistGaps(userId, {
+    gapsArtifact = {
       ...gaps,
+      gapsVersion: GAPS_VERSION,
       scriptId,
       storyName: dossier.storyName,
       generatedAt: Date.now(),
-    })
+      sourceRevision: dossier.sourceRevision,
+    }
+    if (!persistArtifacts) await persistGaps(userId, gapsArtifact)
     dossier = { ...dossier, coverageGaps: { count: gaps.gapCount, chars: gaps.gapChars, pct: gaps.gapPct, at: Date.now() } }
     gapsRan = true
   } catch {
@@ -277,8 +299,10 @@ export async function generateDossier(
   }
   dossier = { ...dossier, quality: qualitySummary }
 
+  signal?.throwIfAborted()
   report('save', 97, '保存档案与质量信息')
-  await persist(userId, dossier)
+  if (persistArtifacts) await persistArtifacts(dossier, gapsArtifact)
+  else await persist(userId, dossier)
   const result: GenerateResult = {
     ok: true,
     scriptId,

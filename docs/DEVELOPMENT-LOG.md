@@ -15,6 +15,11 @@
 | Phase A3-A5 | 会话自持 / 视图模型 / 存档快照 | ✅ 完成（D-10~D-14/D-35，随 ADR-0002 房间化落地；A5 存档迁移已随 #92 / ADR-0008 退役作废） |
 | Phase B/C | 房间多人 / 同步增强 | ✅ 完成（D-10~D-27：B1-B7 全链 + C1/C2/C5 压测；C3 存档工具随 #92 / ADR-0008 退役作废；观战模式 P2 未实现） |
 | 收尾 | CI/CD 上线文档 | ✅ 完成（.github/workflows ci.yml / release.yml + docs/DEPLOYMENT.md） |
+| 扩容 | 网关、房间 worker、剧本准备 worker、共享存储与迁移工具 | 已完成隔离环境功能验证与迁移演练。参考负载、真实 BYOK 和房间恢复缺陷仍待验收。 |
+
+## 共享部署验收记录（2026-11-27）
+
+扩容版本保留 SQLite 默认部署，并提供可选的 PostgreSQL 房间执行与私有对象存储。测试基线为 `9e83b51`。隔离环境验证覆盖了回执重试、故障恢复和迁移回滚。容量证据及未达标项记录在 [扩容测试结果](scale-out-staging-results.md)。参考验收与代码审查后续分别从 [#126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126) 和 [#127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127) 开始跟踪。
 
 ---
 

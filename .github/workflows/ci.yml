@@ -15,6 +15,20 @@ jobs:
   test-build-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aikp_test
+          POSTGRES_PASSWORD: ci-fixture-only
+          POSTGRES_DB: aikp_shared_accounts_test
+        ports:
+          - '5432'
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U aikp_test -d aikp_shared_accounts_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +38,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        # onnxruntime-node postinstall 下载 GPU 二进制偶发 ECONNRESET → 重试 3 次
+        # CPU-only runners use the bundled ONNX Runtime CPU provider.
         run: |
           for i in 1 2 3; do
             if npm ci; then exit 0; fi
@@ -35,9 +49,13 @@ jobs:
           exit 1
         env:
           npm_config_fund: 'false'
+          ONNXRUNTIME_NODE_INSTALL_CUDA: 'skip'
 
-      - name: Server unit tests
+      - name: Server tests (SQLite and PostgreSQL)
         run: npm run test:server
+        env:
+          TEST_SHARED_ACCOUNTS_DATABASE_URL: postgresql://aikp_test:ci-fixture-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/aikp_shared_accounts_test
+          TEST_SHARED_ROOMS_DATABASE_URL: postgresql://aikp_test:ci-fixture-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/aikp_shared_accounts_test
 
       - name: Test agent room protocol journeys (MOCK_AI)
         run: node test-agent/run-all.mjs

@@ -5,6 +5,8 @@ import { storeToRefs } from 'pinia'
 import { useRoomStore } from '../../stores/roomStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import ChatMessage from './components/ChatMessage.vue'
+import ChatRetryNotices from './components/ChatRetryNotices.vue'
+import ChatHistoryControl from './components/ChatHistoryControl.vue'
 import PlayerStatsBar from './components/PlayerStatsBar.vue'
 import MemberSwitcher from './components/MemberSwitcher.vue'
 import CharacterSheetCard from '../../components/domain/CharacterSheetCard.vue'
@@ -100,7 +102,7 @@ function scrollToBottom() {
   })
 }
 
-watch(messages, () => scrollToBottom(), { deep: true })
+watch(() => messages.value.at(-1), () => scrollToBottom(), { deep: true })
 
 onLoad((options) => {
   const rid = String(options?.roomId ?? '')
@@ -136,9 +138,23 @@ function handleSend() {
   roomStore.sendChat(text)
 }
 
+function reconnectRoom() {
+  const roomId = roomStore.roomId
+  if (roomId) void roomStore.joinRoom(roomId)
+}
+
 function openAiSettings() {
   uni.navigateTo({ url: '/pages/settings/index' })
 }
+
+const kpPressureText = computed(() => {
+  if (roomStore.kpPauseReason === 'queue_full') return 'KP 正忙，待处理的行动已保留。'
+  if (roomStore.kpPauseReason === 'timeout') return 'KP 响应超时，待处理的行动已保留。'
+  return 'AI 服务暂时繁忙，待处理的行动已保留。'
+})
+const kpRetryTime = computed(() => roomStore.kpRetryAt > 0
+  ? new Date(roomStore.kpRetryAt).toLocaleTimeString()
+  : '')
 
 function retryKpTurn() {
   roomStore.retryKpTurn()
@@ -238,6 +254,11 @@ function confirmExit() {
           </view>
         </view>
 
+        <view v-if="roomStore.connectionState === 'error'" class="room-connection-error" role="alert">
+          <text class="room-connection-message">{{ roomStore.errorMessage || '房间连接失败，请重试。' }}</text>
+          <button class="room-connection-retry" @click="reconnectRoom">重新连接</button>
+        </view>
+
         <view v-if="roomStore.kpSetupRequired" class="kp-setup-banner" role="status">
           <view class="kp-setup-copy">
             <text class="kp-setup-title">KP 暂停中</text>
@@ -253,8 +274,20 @@ function confirmExit() {
           </view>
         </view>
 
+        <view v-else-if="roomStore.kpPauseReason" class="kp-setup-banner" role="status">
+          <view class="kp-setup-copy">
+            <text class="kp-setup-title">KP 暂停中</text>
+            <text class="kp-setup-text">{{ kpPressureText }}</text>
+            <text v-if="kpRetryTime" class="kp-setup-text">可在 {{ kpRetryTime }} 后重试。</text>
+          </view>
+          <view v-if="roomStore.isOwner" class="kp-setup-actions">
+            <button class="kp-setup-button kp-setup-retry" @click="retryKpTurn">重试 KP</button>
+          </view>
+        </view>
+
         <!-- 聊天区（scroll-view 自动滚底） -->
         <scroll-view class="chat-area vignette-overlay" :scroll-into-view="lastMsgAnchor" scroll-y scroll-with-animation>
+          <ChatHistoryControl />
           <text v-if="messages.length === 0 && !roomStore.awaitingKp" class="chat-empty">
             "黑暗中，一个故事正在苏醒..."
           </text>
@@ -265,7 +298,14 @@ function confirmExit() {
             class="msg-wrap"
             :class="{ 'msg-pending': msg.pending }"
           >
-            <chat-message :msg="roomStore.toMessage(msg)" @select-option="handleOptionSelected" />
+            <chat-message
+              :msg="roomStore.toMessage(msg)"
+              :pending="msg.pending"
+              :send-error="msg.sendError"
+              :retry-disabled="!isJoined"
+              @retry="roomStore.retryPendingChat(msg.id)"
+              @select-option="handleOptionSelected"
+            />
           </view>
           <view v-if="roomStore.awaitingKp" class="kp-pending">
             <view class="sigil-spinner small-spinner" />
@@ -280,6 +320,8 @@ function confirmExit() {
 
         <!-- 输入区 -->
         <view class="input-area">
+          <ChatRetryNotices />
+          <text v-if="roomStore.chatError" role="alert">{{ roomStore.chatError }}</text>
           <view class="input-row">
             <textarea
               v-model="inputText"
@@ -530,7 +572,8 @@ function confirmExit() {
   color: var(--c-fog);
 }
 
-.kp-setup-banner {
+.kp-setup-banner,
+.room-connection-error {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -550,7 +593,8 @@ function confirmExit() {
   font-family: $font-display;
   font-size: 0.875rem;
 }
-.kp-setup-text {
+.kp-setup-text,
+.room-connection-message {
   color: var(--c-paper-300);
   font-size: 0.75rem;
   line-height: 1.5;
@@ -560,7 +604,8 @@ function confirmExit() {
   flex-shrink: 0;
   gap: 8px;
 }
-.kp-setup-button {
+.kp-setup-button,
+.room-connection-retry {
   margin: 0;
   padding: 7px 10px;
   border: 1px solid color-mix(in srgb, var(--c-paper-400) 40%, transparent);
@@ -570,9 +615,14 @@ function confirmExit() {
   font-size: 0.75rem;
   line-height: 1.2;
 }
-.kp-setup-retry {
+.kp-setup-retry,
+.room-connection-retry {
   border-color: color-mix(in srgb, var(--c-eld-300) 55%, transparent);
   color: var(--c-eld-100);
+}
+
+.room-connection-retry {
+  flex-shrink: 0;
 }
 
 /* ── 输入区 ── */

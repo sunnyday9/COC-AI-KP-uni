@@ -1,13 +1,8 @@
 /**
  * StartGate — 开局门闩 deep module（「能否开局」的唯一判定落点，架构走查候选 4）。
  *
- * 收编自 roomService 两个 REST 入口的门闩判定：startRoom（多人等待室开局）此前自带
- * 结束态/已选剧本/workflow 可用性/成员绑卡四道闩，createSoloRoom（solo 出生即 playing、
- * 不经 startRoom）另有一份 dossier 降质判定——workflow→门闩的映射（rag=已索引+
- * 可评估剧透定位材料 / dossier=已生成+未降质）没有单一落点，且 startRoom 的 dossier 分支对同一目录 readdir
- * 扫两遍（listDossiersForOwner 拿 scriptId 集合 + dossierGateNoticeForOwner 再扫一遍
- * 喂 dossierGateNotice）。本模块把判定收成一处：一次 listDossiers 磁盘扫描同时服务
- * 「已生成」与「未降质」两个判定（scriptId 集合与降质视图同源一份 DossierListItem[]）。
+ * startRoom 与 createSoloRoom 共用剧本可用性判定。产物定位以剧本为单位，
+ * 老版本目录文件通过存量元数据兼容读取。
  *
  * 双入口差异用 gateFor 表达（不是两份 if 链复刻）：
  *  - 'lobby-start'（startRoom）：结束态终态（#54）+ 已选剧本 + workflow 可用性
@@ -16,15 +11,15 @@
  *    已选剧本/绑卡闩，但仍要求所选 workflow 的知识 artifact 已可用；否则不能直接
  *    创建 playing 房间并让 KP 在没有原文的情况下静默空跑。
  *
- * 判定形态：dossier 降质视图经 dossierCore.listDossiers 的磁盘扫描 + 纯函数
- * dossierGateNotice 判定；rag 的剧透保护则必须读取 dossier/gaps 并验证 revealScene
- * 锚点。两类 artifact loader 都按 JSON 内的 scriptId 查找 UUID 文件，不把请求 id
- * 拼成 fs 路径。对知识层实现（dossierCore / coverageGaps / ragService）保持动态 import。
+ * dossier 降质视图由 dossierCore 提供。RAG 的剧透保护还验证档案与 gaps 的
+ * revealScene 锚点。对知识层实现（dossierCore / coverageGaps / ragService）保持动态 import。
  * governanceGate 的 multi-only 前置（kind）留在房间域——它被全部治理动作共享，不是开局门闩。
  * 本模块无状态、无 fs/db 静态运行时依赖（类型除外）：入口只喂「行摘要 + 归属」，
  * 成功路径副作用（写库/对账/opening）不在此——门闩只判定。唯一静态运行时依赖是
  * 零依赖纯函数 codec roomStateCodec（#61 rooms.state 读点收口），不引 fs/db 重量。
  */
+import { SHARED_ROOM_CATALOG_ENABLED } from '../config.js'
+import type { StoryRevisionPin } from './roomStorage.js'
 import type { StoryWorkflow } from './kpPromptService.js'
 import type { DossierListItem } from '../rag/dossier/dossierCore.js'
 import { parseRoomState } from './roomStateCodec.js'
@@ -64,7 +59,7 @@ export interface StartGateInput {
 }
 
 /** 门闩判定结果：放行，或 409 conflict（门闩拒绝全部映射 409，reason 单一）。 */
-export type StartGateResult = { ok: true } | { ok: false; reason: 'conflict'; message: string }
+export type StartGateResult = { ok: true; pin?: StoryRevisionPin } | { ok: false; reason: 'conflict'; message: string }
 
 /** 解析 workflow 入参：仅接受 'dossier'，其余（含 undefined/非法）一律 rag（现状默认）。 */
 export function sanitizeWorkflow(value: unknown): StoryWorkflow {
@@ -77,31 +72,27 @@ function roomWorkflowFromRow(room: StartGateRoomSummary): StoryWorkflow {
   return sanitizeWorkflow(parseRoomState<{ workflow?: unknown }>(room.state)?.workflow)
 }
 
-/** dossier 门闩材料：一次 readdir 拿全——清单（scriptId 集合判「已生成」）与该剧本的
- *  降质提示（纯函数 dossierGateNotice 判「未降质」）同源一份扫描结果，消掉原
- *  listDossiersForOwner + dossierGateNoticeForOwner 对同一目录的双扫描。
- *  扫描/服务异常 → null（调用方按各入口既有容错语义处理）。 */
+/** 读取选定剧本的档案与降质提示。 */
 async function loadDossierGateMaterials(
   ownerId: number,
   storyId: string,
 ): Promise<{ items: DossierListItem[]; degradedNotice: string | null } | null> {
   try {
-    const { listDossiers, dossierGateNotice } = await import('../rag/dossier/dossierCore.js')
-    const items = await listDossiers(ownerId)
+    const { listDossiersWithDiagnostics, dossierGateNotice } = await import('../rag/dossier/dossierCore.js')
+    const { items } = await listDossiersWithDiagnostics(ownerId, storyId)
     return { items, degradedNotice: dossierGateNotice(items, storyId) }
   } catch {
     return null
   }
 }
 
-/** 房主已索引剧本 id 集（rag workflow 门闩；防 KP 无原文静默空跑，ADR-0005）。
- *  清单缺失/服务异常 → []（按未索引处理，与原 roomService 容错一致）。 */
-async function loadIndexedStoryIds(ownerId: number): Promise<string[]> {
+/** 查询选定剧本是否有索引。读取异常视为未索引。 */
+async function isStoryIndexed(ownerId: number, storyId: string): Promise<boolean> {
   try {
     const { listStories } = await import('./ragService.js')
-    return listStories(ownerId).map((s) => s.storyId)
+    return listStories(ownerId, storyId).some((story) => story.storyId === storyId)
   } catch {
-    return []
+    return false
   }
 }
 
@@ -192,7 +183,15 @@ export async function checkStartGate(input: StartGateInput): Promise<StartGateRe
   if (lobby && !input.storyId) return gateConflict('请先在等待室选定剧本')
   // 门闩 2：剧本可用性按 workflow 分派（dossier=已生成+未降质；rag=已索引+可评估剧透锚点）。
   const workflow = input.room ? roomWorkflowFromRow(input.room) : sanitizeWorkflow(input.workflow)
-  if (workflow === 'dossier') {
+  let pin: StoryRevisionPin | undefined
+  if (SHARED_ROOM_CATALOG_ENABLED) {
+    try {
+      const { selectPlayableStory } = await import('./roomStoryRevision.js')
+      pin = await selectPlayableStory(input.ownerId, input.storyId)
+    } catch {
+      return gateConflict('No complete prepared story revision is available.')
+    }
+  } else if (workflow === 'dossier') {
     const materials = await loadDossierGateMaterials(input.ownerId, input.storyId)
     // 「未生成」409：清单拿不到（扫描异常 → []）或 scriptId 不在集合内，均按缺档案处理。
     // solo-create 也必须过这道闩，否则它会绕过 lobby-start 直接出生为 playing。
@@ -204,8 +203,7 @@ export async function checkStartGate(input: StartGateInput): Promise<StartGateRe
     if (materials?.degradedNotice) return gateConflict(materials.degradedNotice)
   } else {
     // rag workflow（两种入口共有）：必须已有索引，避免 playing 房没有原文上下文。
-    const indexed = await loadIndexedStoryIds(input.ownerId)
-    if (!indexed.includes(input.storyId)) {
+    if (!await isStoryIndexed(input.ownerId, input.storyId)) {
       return gateConflict('该剧本尚未索引，请先在「我的故事」中完成索引')
     }
     const spoilerMetadataNotice = await ragSpoilerMetadataNotice(input.ownerId, input.storyId)
@@ -218,5 +216,5 @@ export async function checkStartGate(input: StartGateInput): Promise<StartGateRe
     // 到此处必有未绑成员 → 括注名单恒在（原文案的 length>0 三元为恒真分支，输出逐字节一致）。
     return gateConflict(`${unbound.length} 名成员未绑定角色卡（${unbound.map((m) => m.username).join('、')}）`)
   }
-  return { ok: true }
+  return pin ? { ok: true, pin } : { ok: true }
 }

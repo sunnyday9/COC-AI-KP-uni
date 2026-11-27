@@ -111,8 +111,10 @@ export interface PrefetchDeps {
   /** Persisted story source owner for original-file reads. */
   storyOwnerId?: number
   scriptId: string
+  preparedStory?: VerifyOriginalDeps['preparedStory']
   /** 查证执行（缺省 verifyOriginal；测试注入）。 */
   verify?: (input: { question: string; scene?: string }, deps: VerifyOriginalDeps) => Promise<VerifyOriginalResult>
+  ask?: VerifyOriginalDeps['ask']
   /** 诊断事件（日志/报告；回调抛错被吞，不影响主流程）。 */
   onEvent?: (event: Record<string, unknown>) => void
   timeoutMs?: number
@@ -141,7 +143,11 @@ export async function runPrefetch(input: PrefetchInput, deps: PrefetchDeps): Pro
   const verify = deps.verify ?? verifyOriginal
   const timeoutMs = deps.timeoutMs ?? INLINE_TIMEOUT_MS
   const started = Date.now()
-  const pending = verify({ question: decision.question, scene: input.sceneName }, { userId: deps.userId, storyOwnerId: deps.storyOwnerId ?? deps.userId, scriptId: deps.scriptId })
+  const pending = verify({ question: decision.question, scene: input.sceneName }, {
+    userId: deps.userId, storyOwnerId: deps.storyOwnerId ?? deps.userId, scriptId: deps.scriptId,
+    ...(deps.preparedStory ? { preparedStory: deps.preparedStory } : {}),
+    ...(deps.ask ? { ask: deps.ask } : {}),
+  })
   // 后台完成也要有归宿：超时分支返回后，这个 promise 继续跑（预热缓存）——
   // 但它可能在超时之后再 reject，必须挂一个吞错的处理器避免 unhandledRejection。
   pending.catch(() => undefined)

@@ -22,8 +22,8 @@
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { DOSSIER_DATA_DIR } from '../../config.js'
-import { createJsonArtifactPath, findJsonArtifactPaths, isInternalJsonArtifactPath } from '../../utils/jsonArtifact.js'
+import { createJsonArtifactPath, isInternalJsonArtifactPath, replaceJsonArtifact } from '../../utils/jsonArtifact.js'
+import { findStoryArtifacts, forgetStoryArtifact, rememberStoryArtifact, storyArtifactDirectory } from '../../services/storyArtifacts.js'
 import { assertPathInDir } from '../../utils/pathSafety.js'
 import { type DossierScene } from './schema.js'
 import { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
@@ -63,6 +63,7 @@ export interface SceneAnchor {
 export { SCENE_REGION_LEAD, SCENE_REGION_SPAN, normalizeText } from './regions.js'
 
 export interface CoverageGaps {
+  sourceRevision?: string
   storyChars: number
   sceneTextChars: number
   /** 未覆盖区间数（相邻未覆盖块已合并）。 */
@@ -179,9 +180,9 @@ function rawOffsetAtNormalizedIndex(rawText: string, normalizedIndex: number): n
 /** 短摘录必须在去空白后的原文中唯一匹配，避免将重复文字误当成可靠锚点。 */
 function findUniqueRawOffset(
   rawText: string,
+  normalizedStory: string,
   needle: string,
 ): { offset: number; matchFailure?: SceneAnchor['matchFailure'] } {
-  const normalizedStory = normalizeText(rawText)
   const first = normalizedStory.indexOf(needle)
   if (first < 0) return { offset: -1, matchFailure: 'no-exact-source-match' }
   if (normalizedStory.indexOf(needle, first + 1) >= 0) return { offset: -1, matchFailure: 'ambiguous-short-match' }
@@ -193,11 +194,14 @@ function findUniqueRawOffset(
  * sceneText 在原文中的逐字誊抄位置：跨 sceneText 采样（每 120 字一个 40 字窗，
  * 最多 10 个）找命中——LLM 常在誊抄前后加衔接语，只锚头部会大面积漏。
  */
-function anchorStartsOf(rawText: string, sceneText: string): { starts: number[]; matchFailure?: SceneAnchor['matchFailure'] } {
+function anchorStartsOf(rawText: string, sceneText: string, getNormalizedStory: () => string): {
+  starts: number[]
+  matchFailure?: SceneAnchor['matchFailure']
+} {
   const norm = normalizeText(sceneText)
   if (norm.length < MIN_UNIQUE_SHORT_ANCHOR) return { starts: [], matchFailure: 'too-short' }
   if (norm.length >= MIN_UNIQUE_SHORT_ANCHOR && norm.length < MATCH_WINDOW) {
-    const result = findUniqueRawOffset(rawText, norm)
+    const result = findUniqueRawOffset(rawText, getNormalizedStory(), norm)
     return result.offset >= 0
       ? { starts: [result.offset] }
       : { starts: [], matchFailure: result.matchFailure }
@@ -217,6 +221,18 @@ function anchorStartsOf(rawText: string, sceneText: string): { starts: number[];
   return uniqueStarts.length
     ? { starts: uniqueStarts }
     : { starts: [], matchFailure: 'no-exact-source-match' }
+}
+
+/** Use the same source offsets for generation and verification. */
+export function computeSceneAnchors(storyText: string, scenes: DossierScene[]): SceneAnchor[] {
+  let normalizedStory: string | undefined
+  const getNormalizedStory = () => normalizedStory ??= normalizeText(storyText)
+  return (scenes ?? []).map((scene) => {
+    const { starts, matchFailure } = anchorStartsOf(storyText, scene.sceneText ?? '', getNormalizedStory)
+    return starts.length
+      ? { id: scene.id, name: scene.name, matched: true, starts }
+      : { id: scene.id, name: scene.name, matched: false, matchFailure }
+  })
 }
 
 /**
@@ -261,12 +277,7 @@ export function computeCoverageGaps(storyText: string, scenes: DossierScene[]): 
   closeGap(text.length)
 
   const gapChars = spans.reduce((sum, s) => sum + s.chars, 0)
-  const sceneAnchors: SceneAnchor[] = (scenes ?? []).map((sc) => {
-    const { starts, matchFailure } = anchorStartsOf(text, sc.sceneText ?? '')
-    return starts.length
-      ? { id: sc.id, name: sc.name, matched: true, starts }
-      : { id: sc.id, name: sc.name, matched: false, matchFailure }
-  })
+
   return {
     storyChars: text.length,
     sceneTextChars,
@@ -274,7 +285,7 @@ export function computeCoverageGaps(storyText: string, scenes: DossierScene[]): 
     gapChars,
     gapPct: text.length ? Math.round((gapChars / text.length) * 1000) / 10 : 0,
     spans,
-    sceneAnchors,
+    sceneAnchors: computeSceneAnchors(text, scenes),
   }
 }
 
@@ -329,19 +340,20 @@ export function computeSceneCoverage(gaps: CoverageGaps | null, sceneIdOrName: s
 /* ═══════════════════ 落盘 / 读取（白名单 + resolve 双保险，同 dossier/annex） ═══════════════════ */
 
 function gapsFiles(userId: number, scriptId: string): string[] {
-  return findJsonArtifactPaths(path.join(DOSSIER_DATA_DIR, String(userId)), scriptId, { suffix: '.gaps.json' })
+  return findStoryArtifacts('gaps', userId, scriptId)
 }
 
 export async function persistGaps(userId: number, gaps: CoverageGapsFile): Promise<void> {
-  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  const dir = storyArtifactDirectory('gaps', userId)
   await fs.mkdir(dir, { recursive: true })
   const existing = gapsFiles(userId, gaps.scriptId)
   const file = existing.find(isInternalJsonArtifactPath) ?? createJsonArtifactPath(dir, '.gaps.json')
   const stamped: CoverageGapsFile = { ...gaps, gapsVersion: gaps.gapsVersion ?? GAPS_VERSION }
-  await fs.writeFile(file, JSON.stringify(stamped, null, 2), 'utf-8')
+  await replaceJsonArtifact(file, JSON.stringify(stamped, null, 2))
   for (const oldPath of existing) {
     if (oldPath !== file) await fs.unlink(oldPath).catch(() => undefined)
   }
+  rememberStoryArtifact('gaps', userId, gaps.scriptId, file)
 }
 
 export async function loadGaps(userId: number, scriptId: string): Promise<CoverageGapsFile | null> {
@@ -350,7 +362,7 @@ export async function loadGaps(userId: number, scriptId: string): Promise<Covera
   try {
     const raw = await fs.readFile(file, 'utf-8')
     const parsed = JSON.parse(raw) as CoverageGapsFile
-    return parsed && typeof parsed === 'object' && Array.isArray(parsed.spans) ? parsed : null
+    return parsed?.scriptId === scriptId && Array.isArray(parsed.spans) ? parsed : null
   } catch {
     return null
   }
@@ -365,7 +377,7 @@ export async function getGapsArtifactLoadFailureReason(
   userId: number,
   scriptId: string,
 ): Promise<'artifact_loading_exception' | 'artifact_scan_incomplete' | null> {
-  const dir = path.join(DOSSIER_DATA_DIR, String(userId))
+  const dir = storyArtifactDirectory('gaps', userId)
   let entries: string[]
   try {
     entries = await fs.readdir(dir)
@@ -407,5 +419,6 @@ export async function deleteGaps(userId: number, scriptId: string): Promise<bool
   for (const file of files) {
     await fs.unlink(file).then(() => { deleted = true }).catch(() => undefined)
   }
+  forgetStoryArtifact('gaps', userId, scriptId)
   return deleted
 }

@@ -20,6 +20,9 @@ export class UnauthorizedError extends Error {}
 /** Upstream (AI provider) failure → HTTP 502. */
 export class UpstreamError extends Error {}
 
+/** A bounded runtime is temporarily at capacity → HTTP 503. */
+export class CapacityError extends Error {}
+
 /** Error message extraction without leaking stack traces. */
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -30,6 +33,10 @@ export function errorMessage(err: unknown): string {
  * Unknown errors are logged and returned as a generic 500 (no stack traces).
  */
 export function sendError(res: Response, err: unknown): void {
+  if (err instanceof CapacityError) {
+    res.set('Retry-After', '5').status(503).json({ error: err.message })
+    return
+  }
   if (err instanceof BadRequestError) {
     res.status(400).json({ error: err.message })
     return

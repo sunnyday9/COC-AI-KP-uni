@@ -372,7 +372,7 @@ export class WSService {
     }
 
     // 房间帧（room:*）逐帧转发给订阅者（roomStore）。
-    if (type === 'room:state' || type === 'room:event' || type === 'room:sync:done' || type === 'room:error') {
+    if (type === 'room:state' || type === 'room:event' || type === 'room:sync:done' || type === 'room:error' || type === 'room:action:result') {
       for (const h of this.roomHandlers) {
         try {
           h(frame as unknown as RoomServerFrame)

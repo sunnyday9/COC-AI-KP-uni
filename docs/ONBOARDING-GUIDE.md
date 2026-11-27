@@ -91,7 +91,7 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 编写�
 | 层面 | 选型 | 对比过什么 / 为什么 | 备注 |
 |---|---|---|---|
 | 后端框架 | Express + TypeScript (ESM) | NestJS（重）、Fastify（生态）——原主进程代码是 CJS/MJS，Express 迁移成本最低，路由级迁移可直接对应原 IPC handlers | `server/src/app.ts` |
-| 数据库 | SQLite（Node 24 内置 `node:sqlite`） | Prisma + SQLite（计划书初选）→ 最终弃用 Prisma，改手写 `DatabaseSync` 单例：零原生依赖、无构建步骤；schema 由版本化事务迁移管理 | `server/src/db/migrations.ts`；版本存于 `PRAGMA user_version`，启动前升级 |
+| 数据库 | 默认 SQLite，共享预发布使用 PostgreSQL | SQLite 支持零外部服务开发。PostgreSQL 为共享账号、目录、房间租约、回执和事件提供持久状态。 | 共享部署见 [ADR-0010](adr/0010-scale-out-deployment.md) |
 | 状态机 | LangGraph（`@langchain/langgraph`） | 纯手写状态机（难维护）、LangChain 全量（重）——LangGraph 提供图式声明 + 条件边，且与原 Electron 版一脉相承 | 5 个 agent 变体共享 validate/forceTools |
 | WebSocket | `ws` | Socket.IO（协议重、小程序不友好）——原生 WS 协议 + 自定义 JSON 帧，小程序 `uni.connectSocket` 直接兼容 | 单连接多 streamId 并发 |
 | 认证 | JWT + bcrypt | Session（有状态、跨端难）——无状态、30 天有效期、WS 用 `?token=` 复用 | |
@@ -104,7 +104,7 @@ e2c522a feat(agent): COC-7th 规则书合规 + 工作流性能优化 ← 编写�
 
 **核心架构决策：服务端权威单轨（ADR-0002 现行）**。重构初期（e2c522a 时代）曾采用「工具循环在客户端」设计——服务端每次 invoke 只跑一次 LangGraph 返回 `{content, toolCalls}`，客户端本地执行工具后回传、最多 8 轮。**该设计已被 ADR-0002 整体反转**：上下文注入（提示词组装 / RAG / 记忆编排）与工具循环**全部服务端收口**，`kpTurnService.runKpTurn` 在服务端图内完成 ≤8 轮循环（LLM 调用与工具执行同进程，不再经网络往返，见 §9.2）。现行形态：
 
-- ✅ 规则与状态真源在服务端（RoomService 活跃实例 + DB 节流落库，ADR-0001）——防作弊、多端一致、重进即恢复；
+- ✅ 规则与状态真源在服务端。默认模式通过活跃实例和 SQLite 快照恢复，共享模式通过 PostgreSQL 已提交状态、回执与事件恢复。
 - ✅ 客户端零领域状态：RoomClient 纯视图模型（§9.1），不执行规则、不组装提示词；
 - ✅ 单人游戏 = 单成员房间（`kind='solo'`），与多人共用同一 wire 协议，**没有独立的回合协议**。
 
@@ -436,6 +436,8 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 
 ## 十一、数据模型与持久化
 
+### 默认 SQLite 部署
+
 `server/src/db/index.ts`：`node:sqlite` `DatabaseSync` 单例，懒建 7 张表（幂等；saves 表 #92、scripts 表 #97、rag_index 表 #98 退役摘除，存量死表不迁移）：
 
 | 表 | 用途 |
@@ -449,6 +451,14 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 | `kp_wire_samples` | wire 采样日志（完整 wire 消息序列 + 工具调用 + RAG 注入原文，T1 / ADR-0006，KP_WIRE_SAMPLING=0 关闭） |
 
 **存储约定**：DB 存元数据与 JSON 文档；故事实体文件按 `UPLOADS_DIR/<userId>/stories/` 落盘（`pathSafety` 防护；scripts 目录随 #97 退役不再新增）。
+
+### 共享预发布部署
+
+- 网关从 `server/src/app.ts` 启动，处理 HTTP 和 WebSocket，将共享房间命令写入 PostgreSQL 供 worker 领取，并从已提交的事件流恢复客户端视图。
+- 房间 worker 也从 `server/src/app.ts` 启动。命令队列在 `server/src/services/roomMailbox.ts`，房间表和迁移定义在 `server/src/db/postgresRoomsSchema.ts`。排查回合恢复时先核对房间租约、行动回执和持久事件，再检查客户端订阅。
+- 剧本准备 worker 从 `server/src/workers/storyPreparation.ts` 启动。PostgreSQL 保留账号范围内的目录、任务和修订，私有对象存储保留原文和制品。房间固定已发布的版本。
+
+角色配置及升级顺序见 [部署指南](DEPLOYMENT.md)。已有 SQLite 数据的导入与恢复见 [迁移演练](MIGRATION-REHEARSAL.md)。
 
 ---
 
@@ -541,6 +551,8 @@ txt/md 直读；docx 用 mammoth；epub 用 epub2；html 用 jsdom；**pdf 用 p
 ---
 
 ## 十五、性能特征与已知瓶颈
+
+共享模式的确定性负载实测覆盖 PostgreSQL、网关和 worker 的交互。高并发混合负载观察到命令排队、尾延迟和集中重连压力。历史真实模型单局结果见下表，共享部署的容量测量见 [扩容测试结果](scale-out-staging-results.md)。
 
 实测数据（`test-agent/perf-results.json`，mimo-v2.5）：
 

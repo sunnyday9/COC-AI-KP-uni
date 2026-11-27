@@ -43,6 +43,7 @@ vi.mock('../ragService.js', () => ({
 const getAiSetupIssueMock = vi.hoisted(() => vi.fn((): string | null => null))
 vi.mock('../settingsService.js', () => ({
   getAiSetupIssue: getAiSetupIssueMock,
+  getAiConfig: vi.fn(() => ({})),
   getSettings: vi.fn(() => ({ rag: { supplement: true } })),
 }))
 
@@ -149,12 +150,12 @@ describe('RoomService 回合上下文收口', () => {
     const userId = seedUser('ctx_turn')
     const created = await createSoloRoom(userId, { storyId: 'story_x', name: '艾丽丝', sheet })
     if (!created.ok) throw new Error('unreachable')
-    const room = joinRoom(created.roomId, userId, 'ctx_turn')!
+    const room = (await joinRoom(created.roomId, userId, 'ctx_turn'))!
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1)) // opening 先行
     runKpTurnMock.mockClear()
 
     room.addClue('泥泞脚印', 'c1')
-    room.submitPlayerChat(userId, '我检查校门')
+    await room.submitPlayerChat(userId, '我检查校门')
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1))
 
     const call = runKpTurnMock.mock.calls[0]!
@@ -182,15 +183,15 @@ describe('RoomService 回合上下文收口', () => {
     vi.stubEnv('MOCK_AI', '0')
     const formerOwner = seedUser('handoff_source')
     const successor = seedUser('handoff_successor')
-    const created = createRoom(formerOwner, 'story_x')
-    joinRoomByInviteCode(successor, created.inviteCode)
-    updateRoomStart(created.roomId, 'story_x', formerOwner)
-    expect(transferOwnership(formerOwner, created.roomId, successor).ok).toBe(true)
+    const created = await createRoom(formerOwner, 'story_x')
+    await joinRoomByInviteCode(successor, created.inviteCode)
+    await updateRoomStart(created.roomId, 'story_x', formerOwner)
+    expect((await transferOwnership(formerOwner, created.roomId, successor)).ok).toBe(true)
 
     getAiSetupIssueMock.mockReturnValue('请在设置中选择或输入 KP 模型。')
-    const paused = getOrCreateRoom(created.roomId, successor, 'handoff_successor')
+    const paused = await getOrCreateRoom(created.roomId, successor, 'handoff_successor')
     paused.setTurnWindowMs(0)
-    paused.submitPlayerChat(successor, '我检查保留的铜钥匙')
+    await paused.submitPlayerChat(successor, '我检查保留的铜钥匙')
     await vi.waitFor(() => expect(paused.getKpSetupRequired()).toBe(true))
     await vi.waitFor(() => expect(paused.snapshot().pendingTurnMessages).toHaveLength(1))
     expect(runKpTurnMock).not.toHaveBeenCalled()
@@ -198,7 +199,7 @@ describe('RoomService 回合上下文收口', () => {
     // Simulate process restart: the database snapshot and story-source column
     // are the only durable state carried into the new room instance.
     _clearRoomRegistryForTests()
-    const restored = getOrCreateRoom(created.roomId, successor, 'handoff_successor')
+    const restored = await getOrCreateRoom(created.roomId, successor, 'handoff_successor')
     await vi.waitFor(() => expect(restored.snapshot().pendingTurnMessages).toHaveLength(1))
     expect(restored.getStoryOwnerId()).toBe(formerOwner)
     expect(runKpTurnMock).not.toHaveBeenCalled()
@@ -217,7 +218,7 @@ describe('RoomService 回合上下文收口', () => {
     const userId = seedUser('ctx_mock_ai')
     const room = new RoomService({ roomId: `ctx_mock_${Date.now()}`, ownerId: userId, ownerName: 'ctx_mock_ai', turnWindowMs: 0 })
     room.startGame('story_x', userId)
-    room.submitPlayerChat(userId, '继续行动')
+    await room.submitPlayerChat(userId, '继续行动')
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1))
     expect(getAiSetupIssueMock).not.toHaveBeenCalled()
     room.dispose()
@@ -231,7 +232,7 @@ describe('opening 回合（ADR-0002）', () => {
     expect(created.ok).toBe(true)
     if (!created.ok) return
 
-    const room = joinRoom(created.roomId, userId, 'ctx_open')!
+    const room = (await joinRoom(created.roomId, userId, 'ctx_open'))!
     expect(room).not.toBeNull()
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1))
 
@@ -249,7 +250,7 @@ describe('opening 回合（ADR-0002）', () => {
     const userId = seedUser('ctx_restore')
     const created = await createSoloRoom(userId, { storyId: 'story_r', name: '瑞秋', sheet })
     if (!created.ok) throw new Error('unreachable')
-    const room = joinRoom(created.roomId, userId, 'ctx_restore')!
+    const room = (await joinRoom(created.roomId, userId, 'ctx_restore'))!
     await vi.waitFor(() => expect(room.snapshot().kpMemory).toHaveLength(2))
     room.setScene('地下室') // 触发长期摘要刷新
     await vi.waitFor(() => expect(room.snapshot().longTermSummary).toBe('+摘要v2'))
@@ -257,7 +258,7 @@ describe('opening 回合（ADR-0002）', () => {
     await room.persistSnapshot() // 强制落库（模拟回收前的节流快照）
     _clearRoomRegistryForTests() // 模拟 TTL 回收
 
-    const restored = getOrCreateRoom(created.roomId, userId, 'ctx_restore')
+    const restored = await getOrCreateRoom(created.roomId, userId, 'ctx_restore')
     expect(restored.snapshot().kpMemory).toHaveLength(2)
     expect(restored.snapshot().longTermSummary).toBe('+摘要v2')
     expect(restored.getTurnWindowMs()).toBe(0)
@@ -271,11 +272,11 @@ describe('opening 回合（ADR-0002）', () => {
     runKpTurnMock.mockImplementationOnce(async () => {
       throw new Error('KP agent 不可用')
     })
-    const room = joinRoom(created.roomId, userId, 'ctx_openfail')!
+    const room = (await joinRoom(created.roomId, userId, 'ctx_openfail'))!
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(1))
     expect(room.getMessages()).toHaveLength(0) // opening 失败无消息
 
-    room.submitPlayerChat(userId, '我环顾四周')
+    await room.submitPlayerChat(userId, '我环顾四周')
     await vi.waitFor(() => expect(runKpTurnMock).toHaveBeenCalledTimes(2))
     await vi.waitFor(() => expect(room.getMessages().some((m) => m.role === 'kp')).toBe(true))
   })
