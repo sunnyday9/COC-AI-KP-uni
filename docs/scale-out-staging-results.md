@@ -105,6 +105,28 @@ The gateway and both worker replacements passed readiness within the paced windo
 
 The raw report is `stage126-integrated-37e1a25-20261127-113258.json`, SHA-256 `c78e7d23c82213ed10cdffe3784b9e0361f420812581bdaaacdfff98e0bfcb0`.
 
+## Integrated million-row mixed rerun, 2026-11-27
+
+Clean deployment-branch revision `b6c04c6a5f8114763d1941953166cbf0ed488a7b` repeated the controlled 90-second profile at 100 actions per second. The run opened 2,000 sockets across 1,000 playing rooms with six gateways, four room workers, two preparation workers, and 1,000,000 synthetic metadata rows. Each application pool was capped at six connections. The run used the integrated room-governance runtime and the stricter receipt, readiness and failure checks.
+
+| Measurement | Observed | Budget result |
+| --- | --- | --- |
+| Paced echo p95/p99 | 2,977/6,042 ms | Missed |
+| Paced deterministic Keeper p95/p99 | 4,087/6,370 ms | Missed |
+| Paced failures and terminal outcomes | 7,588 live completions and 7,601 durable terminal receipts out of 9,000 offered. 1,412 actions lacked live completion. There were 43 unexpected closes across 3,112 established connections counted during pacing. | Missed for actions and socket drops |
+| Catalog p95/p99 | 75/139 ms first observed, 35/105 ms for later pages, zero failures in 1,080 requests. | Passed locally |
+| Preparation | All three paced imports and all 20 burst imports completed. | Passed for observed imports |
+| Action burst | All 500 actions had terminal receipts within 30 seconds. | Passed locally |
+| Acknowledged actions and replay | 8,926 acknowledged actions with zero missing, pending or mismatched receipts and zero duplicate committed action keys. 15,032 paired events had no mismatches, regressions or missing partner events on continuously connected pairs. | Passed for observed operations |
+| Reconnect wave | 314 of 800 within 30 seconds, with 43 failed attempts. | Missed |
+| Gateway rollout | 309 of 309 affected clients rejoined within 30 seconds. The replacement was ready after 12.51 seconds and preserved all 1,800 room, user and role entries. | Passed locally |
+| Room worker recovery | All four targeted clients rejoined within 30 seconds. Durable receipts recovered in 3.29–4.38 seconds with advanced ownership epochs. Each retry returned a completed receipt on a different gateway. Both staged effects left 8 HP and one character patch each. | Passed locally |
+| Fault overlap | The gateway recovery and first two worker recoveries finished in the paced window with concurrent unrelated actions. The third worker replacement was ready at 93.23 seconds and the last kill occurred at 93.83 seconds. | Missed |
+
+PostgreSQL peaked at 64 of 100 client backends, with up to 22 lock waiters, one I/O waiter and 491 pending room commands. The oldest pending regular room command observed was 2.56 seconds.
+
+The raw report is `stage126-integrated-million-b6c04c6-20261127-113504.json`, SHA-256 `bc94c37a0d4a000f81eae25aa63689dbeaf5260d05ed82a53e591c2ee0e90b74`.
+
 ## Sign-off
 
 The reference deployment, its 30-minute mixed test, PostgreSQL host resource telemetry and the separately authorized live BYOK check remain unmeasured. The local runs exercise isolated PostgreSQL and S3 fixtures and cannot establish production capacity. See the [staging plan](scale-out-staging.md) for the target workload and budgets.
