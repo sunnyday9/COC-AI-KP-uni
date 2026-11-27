@@ -52,7 +52,7 @@ const config = {
   reconnect: integer('RECONNECT', 12, 1000, 0, 10000),
   leaseMs: integer('LEASE_MS', 3000, 15000, 1000, 120000),
   joinConcurrency: integer('JOIN_CONCURRENCY', 24, 48, 1, 200),
-  pgPoolMax: integer('PG_POOL_MAX', 10, 10, 1, 100),
+  pgPoolMax: integer('PG_POOL_MAX', 10, 10, 2, 100),
 }
 assert(config.multiRooms <= config.rooms && config.largeLibrary <= config.metadataRows, 'Room and catalog fixture sizes disagree')
 const totalSockets = config.rooms + config.multiRooms + config.idle
@@ -224,7 +224,10 @@ async function importStory(serial, phase) {
   const id = 2 + (serial % Math.max(1, report.users - 1))
   const file = 'synthetic-' + serial + '.' + format
   const result = { serial, id, file, format, phase, startedAt: Date.now() }
-  const gateway = () => gates.filter((entry) => entry?.active)[serial % gates.filter((entry) => entry?.active).length]
+  const gateway = () => {
+    const available = activeGateways()
+    return available[serial % available.length]
+  }
   imports.push(result)
   try {
     const bytes = await source(format, serial + config.seed)
@@ -282,7 +285,13 @@ function applyFrame(person, frame) {
     person.seq = Math.max(person.seq, frame.seq)
   }
   if (frame.type === 'room:action:result') {
-    person.status.set(frame.actionId, { ...frame, arrivedAt: performance.now() })
+    const arrivedAt = performance.now()
+    person.status.set(frame.actionId, { ...frame, arrivedAt })
+    const action = actions.get(frame.actionId)
+    if (action?.userId === person.id && ['pending', 'completed', 'cancelled'].includes(frame.status)) {
+      action.ack ??= arrivedAt - action.started
+      action.wireReceipts.push({ roomId: frame.roomId, status: frame.status, messageId: frame.messageId })
+    }
     return
   }
   if (frame.type !== 'room:event') return
@@ -356,7 +365,21 @@ async function connect(person, destination = person.gateway, cursor) {
   }
 }
 
-async function reconnect(person, gateway, phase, started, cursor = person.seq) {
+async function reconnect(person, gateway, phase, started, cursor) {
+  const previous = person.reconnectQueue
+  const attempt = (async () => {
+    await previous
+    await performReconnect(person, gateway, phase, started, cursor ?? person.seq)
+  })()
+  person.reconnectQueue = attempt
+  try {
+    await attempt
+  } finally {
+    if (person.reconnectQueue === attempt) person.reconnectQueue = undefined
+  }
+}
+
+async function performReconnect(person, gateway, phase, started, cursor) {
   person.rejoined = true
   const record = { phase, clientId: person.id, gateway, requestedCursor: cursor, active: !!person.room }
   const attemptStarted = performance.now()
@@ -382,6 +405,10 @@ function send(person, action) {
     type: 'room:action', roomId: action.room, actionId: action.id,
     action: { type: 'chat', payload: { content: 'I examine the archive ' + action.id } },
   }))
+  if (action.phase === 'paced') {
+    action.sentSinceMixedMs = performance.now() - trafficStarted
+    action.sentGateway = person.gateway
+  }
   return true
 }
 
@@ -389,7 +416,7 @@ function offer(person, phase, suffix, scheduledAt = performance.now()) {
   const id = 'load-' + suffix
   const action = {
     id, userId: person.id, phase, room: person.room, scheduledAt,
-    started: performance.now(), sent: false, attempts: 0, replies: [],
+    started: performance.now(), sent: false, attempts: 0, replies: [], wireReceipts: [],
   }
   actions.set(id, action)
   return action
@@ -405,11 +432,7 @@ async function admit(person, action, budgetMs, retry = true) {
       if (result) {
         const ms = result.arrivedAt - action.started
         action.replies.push({ status: result.status, code: result.code, ms })
-        if (['pending', 'completed', 'cancelled'].includes(result.status)) {
-          action.ack ??= ms
-          action.messageId ??= result.messageId
-          return result
-        }
+        if (['pending', 'completed', 'cancelled'].includes(result.status)) return result
         if (result.status === 'rejected') return result
       }
     }
@@ -429,7 +452,8 @@ async function browse(index, phase) {
   const owner = index % 3 === 0 ? 1 : 2 + Math.floor(index / 3) % (report.users - 1)
   const key = phase + ':' + owner
   const cursor = catalogCursors.get(key)
-  const gate = gates.filter((g) => g.active)[index % gates.filter((g) => g.active).length]
+  const available = activeGateways()
+  const gate = available[index % available.length]
   const record = { phase, owner: owner === 1 ? 'large' : 'small', page: cursor ? 'later' : 'first', warm: catalogCursors.has(key) }
   catalog.push(record)
   const begun = performance.now()
@@ -446,7 +470,7 @@ async function browse(index, phase) {
 }
 
 const catalogCursors = new Map()
-const activeGateways = () => gates.filter((gate) => gate?.active)
+const activeGateways = () => gates.filter((gate) => gate?.active && !gate.draining)
 const owners = () => clients.slice(0, config.rooms)
 const pendingTimers = new Set()
 function track(promise) {
@@ -516,27 +540,37 @@ async function waitForDurable(records, timeoutMs, condition) {
   }, timeoutMs, condition).catch((error) => failures.push({ phase: condition, code: errorTag(error) }))
 }
 
+async function membershipRoster() {
+  const { rows } = await pool.query('SELECT room_id, user_id, role FROM room_members ORDER BY room_id, user_id')
+  return rows
+}
+
 async function restartGateway() {
   const dead = gates[0]
+  const membersBefore = await membershipRoster()
   const affected = clients.filter((person) => person.gateway === dead.index && person.socket?.readyState === WebSocket.OPEN)
-  const start = performance.now()
+  const started = performance.now()
+  dead.draining = true
+  const recovery = report.gatewayFailure = {
+    gateway: dead.index, affected: affected.length, membersBefore: membersBefore.length, startedSinceMixedMs: started - trafficStarted,
+  }
   for (const person of affected) person.socket.gatewayFailure = true
   // Signal handlers can be exercised without Windows' forced signal emulation.
   dead.child.send('drain')
   await until(() => !dead.active, 8000, 'gateway_drain_timeout')
   const survivors = activeGateways().map((gate) => gate.index)
   await batches(affected, config.joinConcurrency, (person) =>
-    reconnect(person, survivors[(person.id - 1) % survivors.length], 'gateway_restart', start))
-  const membershipRows = await pool.query("SELECT count(*)::int AS count FROM room_members")
-  report.gatewayFailure = {
-    affected: affected.length, membersBefore: config.rooms + config.multiRooms, membersAfter: membershipRows.rows[0].count,
-    restartAfterRejoin: true, exitCode: dead.child.exitCode, startedSinceMixedMs: start - trafficStarted,
-  }
-  gates[0] = await startGatewayReplacement(dead)
-}
-
-function startGatewayReplacement(dead) {
-  return start('gateway', dead.index, dead.p)
+    reconnect(person, survivors[(person.id - 1) % survivors.length], 'gateway_restart', started))
+  gates[0] = await start('gateway', dead.index, dead.p)
+  const ready = performance.now()
+  recovery.replacementReadyMs = ready - started
+  recovery.replacementReadySinceMixedMs = ready - trafficStarted
+  const membersAfter = await membershipRoster()
+  Object.assign(recovery, {
+    membersAfter: membersAfter.length,
+    membershipPreserved: JSON.stringify(membersBefore) === JSON.stringify(membersAfter),
+    restartAfterRejoin: true, exitCode: dead.child.exitCode,
+  })
 }
 
 async function restartRoomWorkers() {
@@ -549,8 +583,9 @@ async function restartRoomWorkers() {
     results.push(result)
     let action
     try {
-      const victim = owners().find((person) => person.socket?.readyState === WebSocket.OPEN &&
-        !targetedRooms.has(person.room))
+      const eligible = owners().filter((person) => person.socket?.readyState === WebSocket.OPEN &&
+        !person.reconnectQueue && !targetedRooms.has(person.room))
+      const victim = eligible.find((person) => person.gateway !== 0) ?? eligible[0]
       if (!victim) throw Object.assign(new Error('No connected fault target'), { code: 'no_connected_fault_target' })
       targetedRooms.add(victim.room)
       action = offer(victim, 'recovery', stage + '-' + slot)
@@ -578,7 +613,11 @@ async function restartRoomWorkers() {
       await waitForDurable([action], 60000, 'worker_recovery_timeout')
       const replacement = await pool.query('SELECT worker_epoch FROM rooms WHERE room_id = $1', [action.room])
       result.recoveredEpoch = Number(replacement.rows[0].worker_epoch)
-      result.recoveredMs = action.terminal === undefined ? null : action.terminal + action.started - kill
+      if (action.terminal !== undefined) {
+        const recovered = action.terminal + action.started
+        result.recoveredMs = recovered - kill
+        result.recoveredSinceMixedMs = recovered - trafficStarted
+      }
       result.resentElsewhere = !!other
       const replay = await admit(victim, action, 5000)
       result.replayedReceipt = replay?.status
@@ -649,7 +688,9 @@ async function reconcile() {
   return {
     acknowledged: all.filter((a) => a.ack !== undefined).length,
     missingAcknowledged: all.filter((a) => a.ack !== undefined && !a.durableStatus).map((a) => a.id),
-    mismatchedReceipts: all.filter((a) => a.messageId && a.durableMessageId && a.messageId !== a.durableMessageId).map((a) => a.id),
+    mismatchedReceipts: all.filter((action) => action.wireReceipts.some((receipt) =>
+      receipt.roomId !== action.room || (receipt.messageId !== undefined && receipt.messageId !== action.durableMessageId) ||
+      (receipt.status !== 'pending' && receipt.status !== action.durableStatus))).map((action) => action.id),
     pendingAcknowledged: all.filter((a) => a.ack !== undefined && a.durableStatus === 'pending').map((a) => a.id),
     duplicateCommittedActionKeys: duplicate.rows[0].count, compared, mismatches, unpairedDuringContinuousConnection,
     sequenceRegressions: clients.reduce((sum, client) => sum + client.regressions, 0),
@@ -736,6 +777,21 @@ function budgets() {
   const wave = reconnect.client_wave
   const workerClients = reconnect.worker_failover
   const recoveries = report.workerFailures ?? []
+  const gateway = report.gatewayFailure
+  const effectRecoveries = recoveries.filter((row) => row.stage === 'effect')
+  const pacedActions = [...actions.values()].filter((action) => action.phase === 'paced' && action.sent)
+  const overlap = (start, end, unrelated) => {
+    const dispatches = pacedActions.filter((action) =>
+      action.sentSinceMixedMs >= start && action.sentSinceMixedMs < end && unrelated(action)).length
+    return { unrelatedDispatches: dispatches, fullyWithinPaced: start >= 0 && end <= config.pacedSec * 1000 }
+  }
+  if (gateway) gateway.pacedOverlap = overlap(gateway.startedSinceMixedMs, gateway.replacementReadySinceMixedMs,
+    (action) => action.sentGateway !== gateway.gateway)
+  for (const worker of recoveries) {
+    worker.pacedOverlap = overlap(worker.killedSinceMixedMs, worker.recoveredSinceMixedMs,
+      (action) => action.room !== worker.targetRoom)
+  }
+  const overlapsPaced = (fault) => fault?.pacedOverlap?.fullyWithinPaced && fault.pacedOverlap.unrelatedDispatches > 0
   return {
     scope: 'These results apply only to this workload and topology',
     pacedEcho: latency(pace.echo, 500, 1500),
@@ -748,19 +804,20 @@ function budgets() {
     sequenceIntegrity: result(integrity?.compared,
       !integrity?.mismatches && !integrity?.sequenceRegressions && !integrity?.unpairedDuringContinuousConnection &&
       !integrity?.inconsistentReplayFrames),
-    duplicateRuleEffects: result(integrity?.effects.length,
-      integrity?.duplicateCommittedActionKeys === 0 && integrity?.effects.every((effect) => effect.hp === '8' && effect.patches === 1)),
+    duplicateRuleEffects: result(integrity, integrity?.duplicateCommittedActionKeys === 0 &&
+      effectRecoveries.length === Math.floor(config.roomWorkers / 2) &&
+      integrity?.effects.length === effectRecoveries.length && effectRecoveries.every((row) =>
+        row.acknowledgedBeforeKill && row.replayedReceipt === 'completed' && integrity.effects.some((effect) =>
+          effect.action_id === row.id && effect.hp === '8' && effect.patches === 1))),
     clientWaveRecovery: result(config.reconnect && wave.offered, wave.within30s / config.reconnect >= .99),
-    gatewayRecovery: result(report.gatewayFailure?.affected,
-      rolling.within30s / report.gatewayFailure?.affected >= .99 &&
-      report.gatewayFailure?.membersBefore === report.gatewayFailure?.membersAfter),
+    gatewayRecovery: result(gateway, gateway?.affected > 0 && rolling.within30s / gateway.affected >= .99 &&
+      gateway.replacementReadyMs <= 30000 && gateway.membershipPreserved),
     workerRecovery: result(recoveries.length, recoveries.length === config.roomWorkers &&
       workerClients.within30s / recoveries.length >= .99 && recoveries.every((row) =>
         row.acknowledgedBeforeKill && Number.isFinite(row.recoveredMs) && row.recoveredMs <= 60000 &&
         row.recoveredEpoch > row.previousEpoch && row.replayedReceipt === 'completed' && row.resentElsewhere)),
-    pacedFaultOverlap: result(recoveries.length && report.gatewayFailure,
-      report.gatewayFailure?.startedSinceMixedMs <= config.pacedSec * 1000 &&
-      recoveries.every((row) => row.killedSinceMixedMs <= config.pacedSec * 1000)),
+    pacedFaultOverlap: result(recoveries.length || gateway,
+      recoveries.length === config.roomWorkers && overlapsPaced(gateway) && recoveries.every(overlapsPaced)),
     saturation: 'unmeasured',
     liveByok: 'unmeasured',
   }
@@ -862,17 +919,19 @@ try {
     })
     await waitForDurable(records, 29000, 'burst_terminal_timeout')
   })
-  const reconnectWave = delay(Math.floor(duration * .42)).then(async () => {
+  const reconnectWave = delay(Math.floor(duration * .25)).then(async () => {
     const started = performance.now()
-    await batches(clients.filter((entry) => entry.room).slice(0, config.reconnect), config.joinConcurrency,
-      (person) => reconnect(person, (person.gateway + 1) % gates.length, 'client_wave', started, person.id % 2 ? 0 : person.seq))
+    await batches(clients.filter((entry) => entry.room).slice(0, config.reconnect), config.joinConcurrency, (person) => {
+      const survivors = activeGateways().filter((gate) => gate.index !== 0)
+      const alternatives = survivors.filter((gate) => gate.index !== person.gateway)
+      const destinations = alternatives.length ? alternatives : survivors
+      return reconnect(person, destinations[(person.id - 1) % destinations.length].index,
+        'client_wave', started, person.id % 2 ? 0 : person.seq)
+    })
   })
-  const rolling = delay(Math.floor(duration * .55)).then(async () => {
-    await reconnectWave
-    await restartGateway()
-    await restartRoomWorkers()
-  })
-  await Promise.all([mixed, catalogWork, regularImports, importBurst, burst, reconnectWave, rolling])
+  const gatewayRestart = delay(Math.floor(duration * .40)).then(restartGateway)
+  const workerRestarts = delay(Math.floor(duration * .55)).then(restartRoomWorkers)
+  await Promise.all([mixed, catalogWork, regularImports, importBurst, burst, reconnectWave, gatewayRestart, workerRestarts])
   stage = 'reconcile'
   console.log('Reconciling receipts, room events, and preparation jobs')
   await Promise.allSettled(pendingTimers)
