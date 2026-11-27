@@ -66,7 +66,14 @@ export function measureOffers(timestamps, start, durationMs) {
     offeredPerSecond: withinWindow / (durationMs / 1000) }
 }
 
-export function referenceScorecard({ formats, preparedByFormat, actual, initial, pacedStart, samples, scope, setupFailure }) {
+export function measureSubmissions(timestamps, start, durationMs) {
+  const { offered, offerSpanMs, offeredPerSecond, ...window } = measureOffers(
+    timestamps.filter(Number.isFinite), start, durationMs,
+  )
+  return { ...window, attempted: offered, attemptSpanMs: offerSpanMs, attemptedPerSecond: offeredPerSecond }
+}
+
+export function referenceScorecard({ formats, preparedByFormat, actual, submissions, initial, pacedStart, samples, scope, setupFailure }) {
   const equals = (target, observed) => ({ target, observed: observed ?? null, status:
     observed == null ? 'unmeasured' : observed === target ? 'passed' : 'missed' })
   const atLeast = (target, observed) => ({ target, observed: observed ?? null, status:
@@ -88,6 +95,14 @@ export function referenceScorecard({ formats, preparedByFormat, actual, initial,
     actionOffersPerSecond: atLeast(100, actual.pacedActionOffersPerSecond),
     importOffersPerMinute: atLeast(2, actual.pacedImportOffersPerMinute),
   }
+  const submitted = {
+    pacedActions: atLeast(referenceMinimums.pacedActions, submissions?.pacedActions?.withinWindow),
+    pacedImports: atLeast(referenceMinimums.pacedImports, submissions?.pacedImports?.withinWindow),
+    burstActions: atLeast(referenceMinimums.burstActions, submissions?.burstActions?.withinWindow),
+    burstImports: atLeast(referenceMinimums.burstImports, submissions?.burstImports?.withinWindow),
+    pacedActionsPerSecond: atLeast(100, submissions?.pacedActions?.attemptedPerSecond),
+    pacedImportsPerMinute: atLeast(2, submissions?.pacedImports && submissions.pacedImports.attemptedPerSecond * 60),
+  }
   const peakRoomSubscriptions = samples.length ? samples.reduce((peak, sample) =>
     Math.max(peak, ...sample.gateways.map((gateway) => gateway.rooms)), 0) : null
   const sampledConfirmedSubscriptionCap = {
@@ -97,13 +112,13 @@ export function referenceScorecard({ formats, preparedByFormat, actual, initial,
   const checks = [
     ...Object.values(counts), ...Object.values(prepared), ...Object.values(initialOccupancy),
     ...Object.values(pacedStartOccupancy), ...Object.values(pacedReadyReplicas), ...Object.values(pacedRates),
-    initialPlacement, sampledConfirmedSubscriptionCap,
+    ...Object.values(submitted), initialPlacement, sampledConfirmedSubscriptionCap,
   ]
   const status = checks.some((check) => check.status === 'missed') ? 'missed'
     : setupFailure || checks.some((check) => check.status === 'unmeasured') ? 'unmeasured' : 'passed'
   return {
     referenceWorkload: { status, counts, prepared, initialOccupancy, pacedStartOccupancy, initialPlacement,
-      pacedReadyReplicas, pacedRates, sampledConfirmedSubscriptionCap,
+      pacedReadyReplicas, pacedRates, submitted, sampledConfirmedSubscriptionCap,
       sustainedOccupancy: {
         status: 'unmeasured',
         reason: 'Client samples describe occupancy at discrete instants. Intentional disconnects and faults interrupt occupancy during paced traffic.',

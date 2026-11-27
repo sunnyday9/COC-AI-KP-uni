@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { measureOffers, occupancy, referenceScorecard } from './workload.mjs'
+import { measureOffers, measureSubmissions, occupancy, referenceScorecard } from './workload.mjs'
 
 const OPEN = 1
 const formats = ['txt', 'docx', 'pdf']
@@ -24,6 +24,12 @@ function referenceEvidence() {
       metadataRows: 3_000_000, catalogOwners: 5000, largestLibrary: 250_000, warmupMs: 300_000,
       pacedMs: 1_800_000, pacedActions: 180_000, pacedImports: 60, burstImports: 20,
       burstActions: 500, reconnectClients: 1000, pacedActionOffersPerSecond: 100, pacedImportOffersPerMinute: 2,
+    },
+    submissions: {
+      pacedActions: { withinWindow: 180_000, attemptedPerSecond: 100 },
+      pacedImports: { withinWindow: 60, attemptedPerSecond: 2 / 60 },
+      burstActions: { withinWindow: 500 },
+      burstImports: { withinWindow: 20 },
     },
     initial,
     pacedStart: initial,
@@ -102,5 +108,22 @@ test('reference workload requires preparation readiness when paced traffic start
   evidence.scope.pacedReadyReplicas.preparationWorkers = 1
   const { referenceWorkload } = referenceScorecard(evidence)
   assert.equal(referenceWorkload.pacedReadyReplicas.preparationWorkers.status, 'missed')
+  assert.equal(referenceWorkload.status, 'missed')
+})
+
+test('intent without dispatch cannot fill the reference burst and import workload', () => {
+  const evidence = referenceEvidence()
+  const start = 20_000
+  const burstIntents = Array.from({ length: 500 }, (_, index) => start + index * 2)
+  const burstDispatches = [...burstIntents.slice(0, 498), undefined, start + 1001]
+  evidence.submissions.burstActions = measureSubmissions(burstDispatches, start, 1000)
+  evidence.submissions.burstImports = measureSubmissions(Array(20).fill(undefined), start, 60_000)
+  const { referenceWorkload } = referenceScorecard(evidence)
+  assert.equal(measureOffers(burstIntents, start, 1000).withinWindow, 500)
+  assert.equal(referenceWorkload.counts.burstActions.status, 'passed')
+  assert.equal(referenceWorkload.submitted.burstActions.observed, 498)
+  assert.equal(evidence.submissions.burstActions.attempted, 499)
+  assert.equal(evidence.submissions.burstActions.attemptSpanMs, 1001)
+  assert.equal(referenceWorkload.submitted.burstImports.observed, 0)
   assert.equal(referenceWorkload.status, 'missed')
 })

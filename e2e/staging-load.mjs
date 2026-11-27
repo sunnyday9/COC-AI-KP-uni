@@ -12,7 +12,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { seedAccounts, seedRooms, formats, source } from './staging/fixtures.mjs'
-import { measureOffers, occupancy, referenceScorecard } from './staging/workload.mjs'
+import { measureOffers, measureSubmissions, occupancy, referenceScorecard } from './staging/workload.mjs'
 
 const require = createRequire(import.meta.url)
 const { Pool } = require('pg')
@@ -245,7 +245,11 @@ async function importStory(serial, phase) {
     result.sourceBytes = bytes.length
     const form = new FormData()
     form.append('file', new Blob([bytes]), file)
-    const upload = await request(gateway(), '/api/stories/upload', id, { body: form, method: 'POST' })
+    const uploadGateway = gateway()
+    const dispatchAt = performance.now()
+    const uploadRequest = request(uploadGateway, '/api/stories/upload', id, { body: form, method: 'POST' })
+    result.firstDispatchAt = dispatchAt
+    const upload = await uploadRequest
     result.uploadStatus = upload.status
     const uploaded = await upload.json()
     if (!upload.ok || !uploaded.id) return result
@@ -430,10 +434,13 @@ async function performReconnect(person, gateway, phase, started, cursor) {
 function send(person, action) {
   if (person.socket?.readyState !== WebSocket.OPEN) return false
   person.status.delete(action.id)
-  person.socket.send(JSON.stringify({
+  const frame = JSON.stringify({
     type: 'room:action', roomId: action.room, actionId: action.id,
     action: { type: 'chat', payload: { content: 'I examine the archive ' + action.id } },
-  }))
+  })
+  const dispatchAt = performance.now()
+  person.socket.send(frame)
+  action.firstDispatchAt ??= dispatchAt
   if (action.phase === 'paced') {
     action.sentSinceMixedMs = performance.now() - trafficStarted
     action.sentGateway = person.gateway
@@ -1053,14 +1060,18 @@ try {
   const workerRestarts = delay(Math.floor(duration * .55)).then(restartRoomWorkers)
   await Promise.all([pacedWindow, mixed, catalogWork, regularImports, importBurst, burst, reconnectWave, gatewayRestart, workerRestarts])
   occupancyPhase = undefined
-  const offeredActions = (phase) => [...actions.values()].filter((row) => row.phase === phase).map((row) => row.started)
-  const offeredImports = (phase) => imports.filter((row) => row.phase === phase).map((row) => row.offeredAt)
-  const offered = workload.offers = {
-    pacedActions: measureOffers(offeredActions('paced'), trafficStarted, duration),
-    pacedImports: measureOffers(offeredImports('paced'), trafficStarted, duration),
-    burstActions: measureOffers(offeredActions('burst'), actionBurstStart, actionBurstDuration),
-    burstImports: measureOffers(offeredImports('burst'), importBurstStart, importBurstDuration),
+  const observedActions = [...actions.values()]
+  const workloadWindows = {
+    pacedActions: { rows: observedActions.filter((row) => row.phase === 'paced'), field: 'started', start: trafficStarted, length: duration },
+    pacedImports: { rows: imports.filter((row) => row.phase === 'paced'), field: 'offeredAt', start: trafficStarted, length: duration },
+    burstActions: { rows: observedActions.filter((row) => row.phase === 'burst'), field: 'started', start: actionBurstStart, length: actionBurstDuration },
+    burstImports: { rows: imports.filter((row) => row.phase === 'burst'), field: 'offeredAt', start: importBurstStart, length: importBurstDuration },
   }
+  const windows = Object.entries(workloadWindows)
+  const offered = workload.offers = Object.fromEntries(windows.map(([key, { rows, field, start, length }]) =>
+    [key, measureOffers(rows.map((row) => row[field]), start, length)]))
+  workload.submissions = Object.fromEntries(windows.map(([key, { rows, start, length }]) =>
+    [key, measureSubmissions(rows.map((row) => row.firstDispatchAt), start, length)]))
   Object.assign(workload.actual, {
     pacedActions: offered.pacedActions.withinWindow,
     burstActions: offered.burstActions.withinWindow,
