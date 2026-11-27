@@ -4,7 +4,7 @@ import { postgresError } from '../db/postgres.js'
 import { reapRoomPresence, registerRoomPresence, removeRoomPresence, renewRoomPresence, type RoomPresence } from '../services/roomService.js'
 import { CapacityError } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
-import type { FrameRecipient } from './sendFrame.js'
+import { isTransportReset, type FrameRecipient } from './sendFrame.js'
 
 interface GatewayPresence extends RoomPresence {
   ready: Promise<boolean>
@@ -47,7 +47,8 @@ export function confirmGatewayPresence(
   const entry: GatewayPresence = { roomId, userId, subscriptionId: randomUUID(), ready: Promise.resolve(false), confirmed: false }
   live.add(entry)
   rooms.set(roomId, entry)
-  entry.ready = registerRoomPresence(roomId, userId, entry.subscriptionId, stillCurrent, writeResume).then((registered) => {
+  const writeWhileServing = async () => await writeResume() && !draining && !isTransportReset(socket)
+  entry.ready = registerRoomPresence(roomId, userId, entry.subscriptionId, stillCurrent, writeWhileServing).then((registered) => {
     entry.confirmed = registered
     if (!registered) forget(socketRooms, entry)
     return registered && socketRooms.get(roomId) === entry && !draining

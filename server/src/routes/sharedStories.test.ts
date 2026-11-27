@@ -364,13 +364,17 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       ENABLE_ROOM_WORKER_FAILOVER: failover ? '1' : '0',
       ROOM_WORKER_LEASE_MS: '3000',
     }
-    const startPlayingWorker = () => startProcess('src/app.ts', 'pinned-room-worker', undefined, true, undefined, {
-      ...rooms, ROOM_RUNTIME: 'worker',
-    })
+    const startPlayingWorker = async () => {
+      const worker = startProcess('src/app.ts', 'pinned-room-worker', undefined, true, undefined, {
+        ...rooms, ROOM_RUNTIME: 'worker',
+      })
+      await expect.poll(() => startupLogs.get(worker)?.includes('Room worker ready') ?? false, { timeout: 20_000 }).toBe(true)
+      return worker
+    }
     const startPlayingGateway = async (name: string) => startGateway(await freePort(), name, undefined, true, {
       ...rooms, ROOM_RUNTIME: split ? 'gateway' : 'direct',
     })
-    let roomWorker = split ? startPlayingWorker() : undefined
+    let roomWorker = split ? await startPlayingWorker() : undefined
     let gateway = await startPlayingGateway('pinned-gateway')
     let gameplay = children.at(-1)!
     const owner = await account(gateway)
@@ -571,7 +575,7 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
           return result.rows[0]?.live
         }, { timeout: 12_000 }).toBe(0)
       }
-      if (split) roomWorker = startPlayingWorker()
+      if (split) roomWorker = await startPlayingWorker()
       gateway = await startPlayingGateway('pinned-restarted')
       gameplay = children.at(-1)!
       expect((await roomPin()).rows[0]).toEqual(pin)
