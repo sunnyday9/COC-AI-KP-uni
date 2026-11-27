@@ -82,6 +82,7 @@ async function seed() {
   file(path.join(directory, storyId), legacyOriginal)
   file(path.join(directory, '741c2976-cd69-44d2-acbd-b04004c64798.txt'), original)
   file(path.join(directory, 'fixture-unprepared.txt'), 'Fictional source only.')
+  const location = sqlite.prepare('INSERT INTO story_artifact_locations (user_id, story_id, kind, file_name) VALUES (?, ?, ?, ?)')
   for (const [id, revision, fileStem] of [[storyId, undefined, 'legacy-archive'], [newerStory, localRevision, '741c2976-cd69-44d2-acbd-b04004c64798']]) {
     const scenes = [{ id: 'vault', name: 'Hidden vault', sceneText: original }]
     const dossier = { scriptId: id, storyName: id, generatedAt: now, sourceRevision: revision,
@@ -97,8 +98,16 @@ async function seed() {
     file(path.join(data, fileStem + '.json'), JSON.stringify(dossier, null, 2))
     file(path.join(data, fileStem + '.gaps.json'), JSON.stringify(gaps, null, 2))
     file(path.join(source, 'rag', '17', 'rag_index', fileStem + '.json'), JSON.stringify(index, null, 2))
-    if (!revision) file(path.join(data, fileStem + '.annex.json'), JSON.stringify({ scriptId: id, images: [] }))
+    if (!revision) {
+      file(path.join(data, fileStem + '.annex.json'), JSON.stringify({ scriptId: id, images: [] }))
+    } else {
+      location.run(17, id, 'index', fileStem + '.json')
+      location.run(17, id, 'dossier', fileStem + '.json')
+      location.run(17, id, 'gaps', fileStem + '.gaps.json')
+      file(path.join(source, 'rag', '17', 'rag_index', 'ignored-registered-duplicate.json'), JSON.stringify({ scriptId: id }))
+    }
   }
+  fs.mkdirSync(path.join(source, 'rag', '17', 'rag_index', 'non-file.json'))
   const roster = sqlite.prepare('INSERT INTO characters VALUES (?, ?, ?, ?, ?)')
   for (const [id, owner, playerName] of [['char-a', 17, 'Archivist'], ['char-b', 42, 'Successor']]) {
     const sheet = {
@@ -151,7 +160,8 @@ async function command(executable, args, { env = process.env, input, binary = fa
   return { code, output: binary ? Buffer.concat(output) : Buffer.concat(output).toString(), diag: Buffer.concat(diag).toString() }
 }
 
-function migrate(env = sharedEnv(db, bucket, port)) {
+function migrate(overrides = {}) {
+  const env = { ...sharedEnv(db, bucket, port), PG_POOL_MAX: '1', ENABLE_SHARED_ROOMS: '0', ENABLE_ROOM_WORKER_FAILOVER: '0', ...overrides }
   return command(process.execPath, ['--import', 'tsx', 'server/src/migration/importSqlite.ts', '--offline'], { env })
 }
 
@@ -345,9 +355,21 @@ try {
 
   const fixture = await seed()
   const sqliteBytes = hash(fs.readFileSync(path.join(frozen, 'data', 'ai-kp.db')))
-  const badSecret = await migrate({ ...sharedEnv(db, bucket, port), JWT_SECRET: randomBytes(32).toString('hex') })
+  const badSecret = await migrate({ JWT_SECRET: randomBytes(32).toString('hex') })
   assert.notEqual(badSecret.code, 0)
   assert.match(badSecret.diag, /Cannot decrypt a settings row/)
+  const legacyDirectory = path.join(frozen, 'rag', '17', 'rag_index')
+  const invalidCandidate = path.join(legacyDirectory, 'invalid-candidate.json')
+  file(invalidCandidate, JSON.stringify({ scriptId: storyId }))
+  fs.truncateSync(invalidCandidate, 32 * 1024 * 1024 + 1)
+  const oversized = await migrate()
+  assert.notEqual(oversized.code, 0)
+  assert.match(oversized.diag, /legacy story artifact exceeds its supported size/)
+  file(invalidCandidate, JSON.stringify({ scriptId: storyId }))
+  const ambiguous = await migrate()
+  assert.notEqual(ambiguous.code, 0)
+  assert.match(ambiguous.diag, /Ambiguous index artifacts/)
+  fs.unlinkSync(invalidCandidate)
   const first = await migrate()
   assert.equal(first.code, 0, first.diag)
   const report = (await pool.query('SELECT reconciliation FROM sqlite_import')).rows[0].reconciliation

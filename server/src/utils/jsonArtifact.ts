@@ -49,17 +49,8 @@ export function findJsonArtifactPaths(
   externalId: string,
   options: JsonArtifactSearchOptions = {},
 ): string[] {
-  if (!fs.existsSync(rootDir)) return []
-
-  const suffix = options.suffix ?? '.json'
-  const excluded = options.excludeSuffixes ?? []
   const matches: string[] = []
-  for (const fileName of fs.readdirSync(rootDir)) {
-    if (!fileName.endsWith(suffix) || excluded.some((item) => fileName.endsWith(item))) continue
-
-    // Validate the real path before reading. A symlinked artifact must not
-    // turn a content lookup into an outside-root read.
-    const filePath = assertPathInDir(rootDir, path.join(rootDir, fileName), 'artifact path')
+  for (const filePath of listJsonArtifactPaths(rootDir, options)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as { scriptId?: unknown }
       if (parsed && parsed.scriptId === externalId) matches.push(filePath)
@@ -68,6 +59,17 @@ export function findJsonArtifactPaths(
     }
   }
   return matches
+}
+
+/** Enumerate matching names without reading files or following paths outside the owner directory. */
+export function* listJsonArtifactPaths(rootDir: string, options: JsonArtifactSearchOptions): IterableIterator<string> {
+  if (!fs.existsSync(rootDir)) return
+  const suffix = options.suffix ?? '.json'
+  const excluded = options.excludeSuffixes ?? []
+  for (const fileName of fs.readdirSync(rootDir)) {
+    if (!fileName.endsWith(suffix) || excluded.some((item) => fileName.endsWith(item))) continue
+    yield assertPathInDir(rootDir, path.join(rootDir, fileName), 'artifact path')
+  }
 }
 
 /** Whether a persisted artifact path uses the server-owned UUID filename form. */

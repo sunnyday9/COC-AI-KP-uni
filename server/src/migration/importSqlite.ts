@@ -279,7 +279,7 @@ async function main() {
           await client.query('INSERT INTO sqlite_import (singleton, digest, reconciliation) VALUES (TRUE, $1, $2::jsonb)',
             [plan.digest, JSON.stringify(plan.report)])
         }
-      })
+      }, guard)
     } finally {
       guard.release(true)
     }

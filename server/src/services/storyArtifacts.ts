@@ -49,11 +49,15 @@ export function findStoryArtifacts(kind: ArtifactKind, userId: number, storyId: 
 }
 
 /** Search a single owner directory by external ID without registering files. */
-export function scanStoryArtifacts(kind: ArtifactKind, directory: string, storyId: string): string[] {
-  return findJsonArtifactPaths(directory, storyId, {
+function scanStoryArtifacts(kind: ArtifactKind, directory: string, storyId: string): string[] {
+  return findJsonArtifactPaths(directory, storyId, storyArtifactSearchOptions(kind))
+}
+
+export function storyArtifactSearchOptions(kind: ArtifactKind) {
+  return {
     suffix: suffixes[kind],
     excludeSuffixes: kind === 'dossier' ? dossierSidecars : undefined,
-  })
+  }
 }
 
 /** Publish a server-generated filename after the complete blob has been committed. */

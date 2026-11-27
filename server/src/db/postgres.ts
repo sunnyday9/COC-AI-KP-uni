@@ -29,8 +29,9 @@ export function getPostgresPool(): Pool {
   return pool
 }
 
-export async function inPostgresTransaction<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await getPostgresPool().connect()
+/** The caller owns (and must dispose of) a supplied session client. */
+export async function inPostgresTransaction<T>(run: (client: PoolClient) => Promise<T>, session?: PoolClient): Promise<T> {
+  const client = session ?? await getPostgresPool().connect()
   let discard = false
   try {
     await client.query('BEGIN')
@@ -45,7 +46,7 @@ export async function inPostgresTransaction<T>(run: (client: PoolClient) => Prom
     }
     throw error
   } finally {
-    client.release(discard)
+    if (!session) client.release(discard)
   }
 }
 

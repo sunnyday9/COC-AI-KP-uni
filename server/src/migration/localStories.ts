@@ -8,9 +8,10 @@ import { DOSSIER_MIN_COVERAGE_PCT, type StoryDossier } from '../rag/dossier/sche
 import { isHydratableStoredIndex, type StoredIndex } from '../rag/vectorStore.js'
 import { encodePreparedStory, isCoherentPreparedStory } from '../services/preparedStoryStorage.js'
 import { sourceKey } from '../services/sharedStoryCatalog.js'
-import { scanStoryArtifacts, type ArtifactKind } from '../services/storyArtifacts.js'
+import { storyArtifactSearchOptions, type ArtifactKind } from '../services/storyArtifacts.js'
 import { parseStoryContentForPreparation, STORY_EXTENSIONS } from '../services/storyService.js'
 import { assertStoredFilePath, isInternalUuidFileName } from '../utils/fileNames.js'
+import { listJsonArtifactPaths } from '../utils/jsonArtifact.js'
 import { assertPathInDir, assertSafeId } from '../utils/pathSafety.js'
 
 interface LocalStory {
@@ -76,19 +77,54 @@ function originalRows(db: DatabaseSync, ownerIds: number[]): LocalStory[] {
     || Buffer.compare(Buffer.from(left.story_id), Buffer.from(right.story_id)))
 }
 
-function localArtifacts(db: DatabaseSync, ownerId: number, storyId: string, kind: ArtifactKind): Buffer | undefined {
-  const root = kind === 'index' ? RAG_DATA_DIR : DOSSIER_DATA_DIR
-  const directory = assertPathInDir(root, kind === 'index'
-    ? path.join(root, String(ownerId), 'rag_index') : path.join(root, String(ownerId)), 'artifact directory')
-  const location = db.prepare('SELECT file_name FROM story_artifact_locations WHERE user_id = ? AND story_id = ? AND kind = ?')
-    .get(ownerId, storyId, kind) as { file_name: string } | undefined
-  if (location) {
-    const registered = assertPathInDir(directory, path.join(directory, assertSafeId(location.file_name, 'artifact filename')), 'registered artifact')
-    if (fs.existsSync(registered)) return readBytes(registered, maxArtifactBytes)
+function indexLegacyArtifacts(kind: ArtifactKind, directory: string): Map<string, string[]> {
+  const byStory = new Map<string, string[]>()
+  for (const file of listJsonArtifactPaths(directory, storyArtifactSearchOptions(kind))) {
+    const stat = fs.statSync(file, { throwIfNoEntry: false })
+    if (!stat?.isFile()) continue
+    // An oversized candidate could belong to this backup, so stop before reading it.
+    if (stat.size > maxArtifactBytes) throw new Error('A legacy story artifact exceeds its supported size')
+    const bytes = fs.readFileSync(file, 'utf8')
+    let storyId: string
+    try {
+      const artifact = JSON.parse(bytes) as { scriptId?: unknown } | null
+      if (typeof artifact?.scriptId !== 'string') continue
+      storyId = assertSafeId(artifact.scriptId, 'story ID')
+    } catch { continue }
+    const files = byStory.get(storyId)
+    if (files) files.push(file)
+    else byStory.set(storyId, [file])
   }
-  const files = scanStoryArtifacts(kind, directory, storyId)
-  if (files.length > 1) throw new Error(`Ambiguous ${kind} artifacts in a source story`)
-  return files[0] === undefined ? undefined : readBytes(files[0], maxArtifactBytes)
+  return byStory
+}
+
+function localArtifactReader(db: DatabaseSync) {
+  const locations = db.prepare('SELECT file_name FROM story_artifact_locations WHERE user_id = ? AND story_id = ? AND kind = ?')
+  const legacy = new Map<ArtifactKind, Map<string, string[]>>()
+  let lastOwner: number | undefined
+  return (ownerId: number, storyId: string, kind: ArtifactKind): Buffer | undefined => {
+    // Originals are sorted by owner. Retain the lookup only while importing that owner's stories.
+    if (lastOwner !== ownerId) {
+      legacy.clear()
+      lastOwner = ownerId
+    }
+    const root = kind === 'index' ? RAG_DATA_DIR : DOSSIER_DATA_DIR
+    const directory = assertPathInDir(root, kind === 'index'
+      ? path.join(root, String(ownerId), 'rag_index') : path.join(root, String(ownerId)), 'artifact directory')
+    const location = locations.get(ownerId, storyId, kind) as { file_name: string } | undefined
+    if (location) {
+      const registered = assertPathInDir(directory, path.join(directory, assertSafeId(location.file_name, 'artifact filename')), 'registered artifact')
+      if (fs.existsSync(registered)) return readBytes(registered, maxArtifactBytes)
+    }
+    let byStory = legacy.get(kind)
+    if (!byStory) {
+      byStory = indexLegacyArtifacts(kind, directory)
+      legacy.set(kind, byStory)
+    }
+    const files = byStory.get(storyId)
+    if (files && files.length > 1) throw new Error('Ambiguous ' + kind + ' artifacts in a source story')
+    return files ? readBytes(files[0]!, maxArtifactBytes) : undefined
+  }
 }
 
 function decodeArtifact<T extends { scriptId: string }>(bytes: Buffer | undefined, scriptId: string): T | undefined {
@@ -137,6 +173,7 @@ export async function planStories(db: DatabaseSync, owners: number[], staging: s
   }
   const pins = new Map<string, { preparationRevision: string; sourceRevision: string }>()
   const unprepared = []
+  const readLocalArtifact = localArtifactReader(db)
   for (const { user_id: ownerId, story_id: storyId, name, file_path, created_at } of originalRows(db, owners)) {
     if (!ownerSet.has(ownerId)) throw new Error('Story owner is missing from source accounts')
     assertSafeId(storyId, 'story ID')
@@ -149,7 +186,7 @@ export async function planStories(db: DatabaseSync, owners: number[], staging: s
     const sourceRevision = migrationId('source', ownerId, storyId, sha256(original))
     stageObject(sourceKey(ownerId, sourceRevision), original)
 
-    const local = Object.fromEntries(kinds.map(kind => [kind, localArtifacts(db, ownerId, storyId, kind)]))
+    const local = Object.fromEntries(kinds.map(kind => [kind, readLocalArtifact(ownerId, storyId, kind)]))
     const localHashes = []
     for (const kind of kinds) {
       const bytes = local[kind]
