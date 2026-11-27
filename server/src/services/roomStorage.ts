@@ -960,11 +960,11 @@ async function enqueueOwnerPresenceLoss(client: PoolClient, roomId: string, user
   }
 }
 
-export async function removeRoomPresence(entry: RoomPresence, isOrdinary: () => boolean): Promise<void> {
+export async function removeRoomPresence(entry: RoomPresence, ordinaryDisconnect: boolean): Promise<void> {
   const { roomId, userId, subscriptionId } = entry
   const remove = `DELETE FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND subscription_id = $3
     RETURNING expires_at > clock_timestamp() AS live`
-  if (!isOrdinary()) {
+  if (!ordinaryDisconnect) {
     await getPostgresPool().query(remove, [roomId, userId, subscriptionId])
     return
   }
@@ -975,12 +975,12 @@ export async function removeRoomPresence(entry: RoomPresence, isOrdinary: () => 
     `, [roomId, userId])
     if (!room.rowCount) return
     const removed = await client.query<{ live: boolean }>(remove, [roomId, userId, subscriptionId])
-    if (!removed.rows[0]?.live || !room.rows[0]?.current_owner || !isOrdinary()) return
+    if (!removed.rows[0]?.live || !room.rows[0]?.current_owner) return
     const others = await client.query(
       'SELECT 1 FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND expires_at > clock_timestamp() LIMIT 1',
       [roomId, userId],
     )
-    if (!others.rowCount && isOrdinary()) await enqueueOwnerPresenceLoss(client, roomId, userId)
+    if (!others.rowCount) await enqueueOwnerPresenceLoss(client, roomId, userId)
   })
 }
 

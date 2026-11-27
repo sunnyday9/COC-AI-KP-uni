@@ -905,14 +905,43 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       const retainedAfterReconnect = await createRoom()
       await joinInvite(successor, retainedAfterReconnect.inviteCode)
       const retainedMember = await subscribe(successor, retainedAfterReconnect.roomId)
+      const survivingGateway = base
+      const departureGateway = await launch({ runtime: 'gateway', drainable: true })
+      await ready(departureGateway)
+      const drainWitness = await connect(owner.token)
       const departedDevice = await subscribe(owner, retainedAfterReconnect.roomId)
+      base = survivingGateway
       departedDevice.send(chat(retainedAfterReconnect.roomId, 'Keep the lobby open'))
       const replayAnchor = await departedDevice.waitFor((frame) => frame.payload?.message?.content === 'Keep the lobby open')
       await stop(worker)
       lastDevice.send({ type: 'room:sync', roomId: workerOutage.roomId })
       await lastDevice.waitFor((frame) => frame.type === 'room:error')
       lastDevice.close()
-      departedDevice.close()
+      const departureDrain = once(departureGateway, 'exit')
+      const blocker = await db.connect()
+      try {
+        await blocker.query('BEGIN')
+        const held = await blocker.query<{ pid: number }>(
+          'SELECT pg_backend_pid() AS pid FROM rooms WHERE room_id = $1 FOR NO KEY UPDATE', [retainedAfterReconnect.roomId],
+        )
+        departedDevice.close()
+        await expect.poll(async () => (await db.query(`
+          SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+            AND query LIKE '%AS current_owner%' AND $1 = ANY(pg_blocking_pids(pid))
+        `, [held.rows[0].pid])).rowCount).toBe(1)
+
+        // The idle socket closes as soon as drain starts, while the room lock still blocks cleanup.
+        const witnessClosed = drainWitness.closed()
+        departureGateway.send('drain')
+        expect((await witnessClosed)[0]).toBe(1006)
+      } finally {
+        try {
+          await blocker.query('ROLLBACK')
+        } finally {
+          blocker.release(true)
+        }
+      }
+      expect(await departureDrain).toEqual([0, null])
       const queuedLosses = async (queuedRoomId: string) => (await db.query(
         'SELECT 1 FROM room_commands WHERE room_id = $1 AND presence_loss', [queuedRoomId],
       )).rowCount
@@ -931,7 +960,6 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       await failedReconnect.waitFor((frame) => frame.type === 'room:error')
       expect(await queuedLosses(workerOutage.roomId)).toBe(1)
 
-      const survivingGateway = base
       const drainingGateway = await launch({ runtime: 'gateway', drainOnReplayCompletion: true })
       await ready(drainingGateway)
       const interruptedResume = await connect(owner.token)

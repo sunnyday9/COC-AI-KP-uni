@@ -73,9 +73,12 @@ export function releaseGatewayPresence(socket: FrameRecipient, roomId: string, o
   const rooms = sockets.get(socket)
   const entry = rooms?.get(roomId)
   if (!rooms || !entry) return
+  // Drain can begin while registration or the removal transaction is pending.
+  const ordinaryDisconnect = ordinary && !draining
   forget(rooms, entry)
   const removal = entry.ready.catch(() => false)
-    .then(() => removeRoomPresence(entry, () => entry.confirmed && ordinary && !draining)).catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
+    .then(() => removeRoomPresence(entry, entry.confirmed && ordinaryDisconnect))
+    .catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
     .finally(() => pendingRemovals.delete(removal))
   pendingRemovals.add(removal)
 }
@@ -89,7 +92,7 @@ export async function runGatewayPresence(signal: AbortSignal): Promise<void> {
         if (renewed.has(entry.subscriptionId) || !live.has(entry)) continue
         // Another gateway may have pruned a very old lease after a storage outage.
         await registerRoomPresence(entry.roomId, entry.userId, entry.subscriptionId, () => live.has(entry) && !draining)
-        if (!live.has(entry)) await removeRoomPresence(entry, () => false)
+        if (!live.has(entry)) await removeRoomPresence(entry, false)
       }
       await reapRoomPresence()
     } catch (error) {
