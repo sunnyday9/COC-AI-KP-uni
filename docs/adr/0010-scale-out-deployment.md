@@ -1,6 +1,6 @@
 # ADR-0010 Scale out gameplay and story preparation independently
 
-- Status: Adopted design. Single-host baseline and opt-in PostgreSQL and object-storage staging are implemented. The room worker and gateway split is available for staging. Staging capacity validation is pending.
+- Status: Adopted design. The split deployment and SQLite migration tooling are implemented. Reference capacity validation is pending.
 - Date: 2026-11-18
 - Related: ADR-0001 RoomStorage, ADR-0002 shared solo and multiplayer protocol, ADR-0007 dossier authority and spoiler protection
 
@@ -92,5 +92,7 @@ Each catalog p95 comes from only three page reads. Latency varied between local 
 1. Deploy the single-host stage with a matched backup of SQLite and the artifact directories. Set per-host limits from staging measurements and use the readiness and liveness endpoints.
 2. Add PostgreSQL and object storage adapters and validate transfer of existing users, owner-scoped stories, and room state. Move list consumers to paged catalog reads. Switch preparation to durable jobs and publish immutable artifact revisions.
 3. Add gateways and fenced room workers. Test two-host ordering, duplicate action submission, worker loss mid-turn, replay, and rolling upgrades before routing live traffic to multiple gameplay instances.
+
+Use the [SQLite migration and rollback rehearsal](../MIGRATION-REHEARSAL.md) for cutover and the [scale-out acceptance plan](../scale-out-staging.md) for rollout sign-off. The [staging evidence](../scale-out-staging-results.md) records the measured budgets and remaining validation.
 
 The single-host stage retains full room history in snapshots. Catalog pages address story metadata. Source bytes, derived artifacts, live providers, long sessions, and cross-host recovery need independent capacity and fault tests.

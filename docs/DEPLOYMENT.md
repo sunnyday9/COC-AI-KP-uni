@@ -170,6 +170,8 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 跨网关使用已提交事件的序列号排序。加入和同步使用已授权的房间快照。房间命令的等待期限为 2.5 秒。交互命令按房间散列到 16 组，每组最多 32 条等待结果的命令。网关批量读取这些命令的结果。确认房主离线的持久通知使用独立的配额。暂时没有可用 worker 时，HTTP 房间命令返回 503，带行动编号的 WebSocket 聊天返回可重试结果。连接关闭后，已经开始执行的命令仍可能提交。重试聊天时请复用原有的 `actionId`，以便读取已有回执。
 
+从使用全局房间命令配额的预发布构建升级时，请先在负载均衡器关闭新接入，并让旧网关排空连接后停止，然后启动采用分组配额的网关。两种构建使用不同的 PostgreSQL 接入锁，同时接入会突破配额。升级完成后再打开接入。已确认的行动保存在 PostgreSQL 中，客户端重连后可复用原有的 `actionId` 查询。
+
 每次接管取得递增的房间 epoch。行动回执、回合结果、房间快照、按序房间事件和事件待投递记录在当前 epoch 校验下提交。进程在 Keeper 调用中退出后，下一进程从已持久化的行动批次继续。模型请求可能重复，已提交的角色卡、线索和结局效果只保存一次。已订阅的同进程连接在事务提交后接收事件。候选批次的成员或绑定角色在恢复时有变动，会记录原回合为已取消，再以新回合编号处理仍有资格的行动。未激活房间的 REST 写操作会临时获取租约，在同一 epoch 内完成权限检查和写入。
 
 单进程模式使用排他启动锁，多进程预发布使用同一锁的共享模式。切换前先停掉正在运行的房间进程，再启动新模式。SQLite 无需配置。使用独立的 PostgreSQL 夹具运行 `npm run test:server -- src/routes/sharedRooms.test.ts`，覆盖抢占租约、延迟旧结果、杀进程恢复、按原批次重放和规则效果只提交一次。
@@ -242,6 +244,8 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts STORY_PREPARATION_ENABLED=1 
 - [ ] 反向代理配置 WebSocket 升级（`/ws`）
 
 合成规模测试使用独立临时库和模拟 KP。运行 `node e2e/scale-smoke.mjs`，可用 `SCALE_ROOMS`、`SCALE_STORY_ROWS`、`SCALE_ROUNDS` 和 `SCALE_SPREAD_MS` 调整并发房数、剧本元数据行数、回合批次数和每批发送窗口。报告分别给出玩家消息回显、KP 回复和目录分页的 p95。生产验收应另查真实模型、长对话、活跃导入、重连和故障恢复。
+
+拆分部署使用 [规模验收方案](scale-out-staging.md) 中的混合负载与故障测试。上线前在目标环境逐项验证验收预算。当前测量与待验证项目见 [预发布测试结果](scale-out-staging-results.md)。
 
 ## 8. 回滚
 
