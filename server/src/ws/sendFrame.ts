@@ -17,6 +17,20 @@ export function roomEventFrame(roomId: string, seq: number, { type, payload }: {
   return { type: 'room:event', roomId, seq, eventType: type, payload } as const
 }
 
+export function encodeRoomReplay(
+  roomId: string, events: readonly { seq: number; type: string; payload: unknown }[], maxBytes: number,
+): string[] | null {
+  const frames: string[] = []
+  let bytes = 0
+  for (const event of events) {
+    const frame = JSON.stringify(roomEventFrame(roomId, event.seq, event))
+    bytes += Buffer.byteLength(frame)
+    if (bytes > maxBytes) return null
+    frames.push(frame)
+  }
+  return frames
+}
+
 /** Permit one large restored snapshot. Stop adding frames behind a slow client. */
 export function canSendFrame(socket: FrameRecipient, frame: string): boolean {
   if (socket.readyState !== WebSocket.OPEN) return false

@@ -2685,11 +2685,38 @@ export function _clearRoomRegistryForTests(): void {
   roomRegistry.clear()
 }
 
-export const readRoomOutbox = roomStorage.readRoomOutbox
+type CommittedRoomEvent = Awaited<ReturnType<typeof roomStorage.readRoomOutbox>>[number]['events'][number]
+
+type RoomEventDelivery =
+  | { kind: 'removed'; reason: 'kicked' | 'dissolved' }
+  | { kind: 'events'; events: CommittedRoomEvent[]; needsReplay: boolean }
+
+/** Hide membership rows and the storage watermark behind delivery decisions. */
+export async function planCommittedRoomDelivery(cursors: Parameters<typeof roomStorage.readRoomOutbox>[0]) {
+  const rooms = await roomStorage.readRoomOutbox(cursors)
+  return rooms.map((room) => ({
+    roomId: room.roomId,
+    deliveryFor(userId: number, lastSeq: number): RoomEventDelivery {
+      if (!room.members.has(userId)) return { kind: 'removed', reason: room.roomExists ? 'kicked' : 'dissolved' }
+      if (!room.events.length) {
+        return { kind: 'events', events: [], needsReplay: room.highWater !== null && lastSeq < room.highWater }
+      }
+      const events: CommittedRoomEvent[] = []
+      let seq = lastSeq
+      for (const event of room.events) {
+        if (event.seq <= seq) continue
+        if (event.seq !== seq + 1) return { kind: 'events', events, needsReplay: true }
+        events.push(event)
+        seq = event.seq
+      }
+      return { kind: 'events', events, needsReplay: false }
+    },
+  }))
+}
 
 /** Classify reconnects against the membership and high-water mark of one committed view. */
 export async function planCommittedRoomReplay(roomId: string, userId: number, lastSeq: number, maxBytes: number) {
-  const [room] = await readRoomOutbox([{ roomId, userIds: [userId], seq: lastSeq }], MAX_EVENT_LOG, maxBytes)
+  const [room] = await roomStorage.readRoomOutbox([{ roomId, userIds: [userId], seq: lastSeq }], MAX_EVENT_LOG, maxBytes)
   if (!room?.members.has(userId)) return { kind: 'not-member' } as const
   if (room.highWater === null) return { kind: 'snapshot' } as const
   const events = selectReplay(lastSeq, room.highWater, room.events)

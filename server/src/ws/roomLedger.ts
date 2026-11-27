@@ -11,9 +11,10 @@
  * 规划在这里。wire 帧格式不变。
  */
 import type { RoomEvent, RoomService } from '../services/roomService.js'
-import { getRoom, hasRoomCapacity, isRoomMember, joinRoom, RoomWorkerBusyError } from '../services/roomService.js'
+import { getRoom, hasRoomCapacity, isRoomMember, joinRoom, planCommittedRoomReplay, RoomWorkerBusyError } from '../services/roomService.js'
+import { routeSocketCommand } from '../services/roomCommands.js'
 import { releaseGatewayPresence } from './gatewayPresence.js'
-import type { FrameRecipient } from './sendFrame.js'
+import { encodeRoomReplay, type FrameRecipient } from './sendFrame.js'
 
 /** 订阅者的最小传输面（WebSocket 的结构子集）。readyState === 1 = OPEN。 */
 export type RoomSubscriber = FrameRecipient
@@ -26,6 +27,7 @@ const roomSockets = new Map<string, Set<RoomSubscriber>>()
 
 /** 已挂接扇出的 RoomService 实例（防重复 subscribe 产生重复回调）。 */
 const fanoutAttached = new WeakSet<RoomService>()
+const MAX_GATEWAY_REPLAY_BYTES = 512 * 1024
 
 /* ═══════════════ 订阅注册表 ═══════════════ */
 
@@ -126,6 +128,29 @@ export async function planSync(roomId: string, userId: number, lastSeq: number):
   const room = getRoom(roomId)
   if (!room) return { kind: 'error', error: 'room not active' }
   return planDirectReplay(room, lastSeq)
+}
+
+/** Plan a committed replay or request a fresh snapshot before confirming presence. */
+export async function planGatewayResume(
+  roomId: string, userId: number, lastSeq: number, current: () => boolean, signal?: AbortSignal,
+) {
+  if (lastSeq > 0) {
+    const replay = await planCommittedRoomReplay(roomId, userId, lastSeq, MAX_GATEWAY_REPLAY_BYTES)
+    if (!current()) return null
+    if (replay.kind === 'not-member') return { kind: 'not-member' } as const
+    if (replay.kind === 'delta') {
+      const frames = encodeRoomReplay(roomId, replay.events, MAX_GATEWAY_REPLAY_BYTES)
+      if (frames) {
+        const terminal = { type: 'room:sync:done', roomId, seq: replay.seq, actionReceipts: true }
+        return { kind: 'ready', frames, terminal, seq: replay.seq } as const
+      }
+    }
+  }
+  const snapshot = await routeSocketCommand('snapshot', userId, roomId, [], signal)
+  if (!current()) return null
+  if (!snapshot) return { kind: 'not-member' } as const
+  const terminal = { type: 'room:state', roomId, actionReceipts: true, ...snapshot }
+  return { kind: 'ready', frames: [], terminal, seq: snapshot.seq } as const
 }
 
 /** action 规划：成员 gate → 活跃实例（动作串行入队由调用方在实例上执行）。 */
