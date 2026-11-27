@@ -3,6 +3,7 @@ import { WebSocket } from 'ws'
 export type FrameRecipient = Pick<WebSocket, 'readyState' | 'bufferedAmount' | 'send' | 'terminate'>
 
 const MAX_PENDING_BYTES = 2 * 1024 * 1024
+const RESUME_WRITE_TIMEOUT_MS = 1_000
 const transportResets = new WeakSet<FrameRecipient>()
 
 export function markTransportReset(socket: FrameRecipient): void {
@@ -46,5 +47,29 @@ export function sendFrame(socket: FrameRecipient, frame: string): void {
   if (!canSendFrame(socket, frame)) return
   socket.send(frame, (error) => {
     if (error) socket.terminate()
+  })
+}
+
+/** Confirm the terminal resume frame was handed to the transport. */
+export function writeResumeFrame(socket: FrameRecipient, frame: string): Promise<boolean> {
+  if (!canSendFrame(socket, frame)) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (written: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (!written) {
+        markTransportReset(socket)
+        socket.terminate()
+      }
+      resolve(written)
+    }
+    const timer = setTimeout(() => finish(false), RESUME_WRITE_TIMEOUT_MS)
+    try {
+      socket.send(frame, (error) => finish(!error))
+    } catch {
+      finish(false)
+    }
   })
 }

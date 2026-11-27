@@ -606,6 +606,16 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       corrupt.chat('Search the archive cabinet')
       await expect.poll(corrupt.error, { timeout: 12_000 }).toBe('The pinned story revision is unavailable.')
       expect(corrupt.countKp()).toBe(0)
+    } catch (error) {
+      const warnings = [gameplay, roomWorker].flatMap((child) => child ? (startupLogs.get(child) ?? '').split('\n') : [])
+        .filter((line) => line.includes('[WARN]') && /lease|checkpoint|room opening|room action|pinned story/i.test(line))
+      const { credentials } = fixtureObjectStore
+      let detail = warnings.join('\n')
+      for (const value of [databaseUrl, secret, password, credentials.accessKeyId, credentials.secretAccessKey]) {
+        if (value) detail = detail.replaceAll(value, '<REDACTED>')
+      }
+      if (detail) throw new Error('Pinned story journey failed\n' + detail, { cause: error })
+      throw error
     } finally {
       await stopProcess(gameplay)
       if (roomWorker) await stopProcess(roomWorker)

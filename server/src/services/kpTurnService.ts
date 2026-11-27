@@ -220,19 +220,26 @@ function structuredEndGameCall(ending: StructuredTerminalEnding, outcome: string
   }
 }
 
+function loadKeeperAgent() {
+  return Promise.all([import('../agent/kpGraph.js'), import('./kpAgentService.js')])
+}
+
+function loadKeeperStoryTools() {
+  return Promise.all([import('../agent/scriptContext.js'), import('../agent/storyToolGate.js')])
+}
+
+/** Move the first module loads ahead of the short room leases in shared workers. */
+export async function prepareKeeperRuntime(): Promise<void> {
+  await Promise.all([loadKeeperAgent(), loadKeeperStoryTools(), import('./turnKnowledge.js')])
+}
+
 export async function runKpTurn(
   userId: number,
   body: { messages: unknown; storyContext?: Record<string, unknown> | null },
   turn: KpTurnDeps,
 ): Promise<void> {
-  // Keep the room-turn coordinator light: kpGraph pulls LangGraph and the
-  // agent service pulls the provider stack. Load both only when a turn really
-  // runs, which also lets knowledge-only consumers and room construction stay
-  // independent from that heavy graph module.
-  const [{ invokeKPAgent }, { buildInvokeLLM, normalizeMessages, getSharedGraph }] = await Promise.all([
-    import('../agent/kpGraph.js'),
-    import('./kpAgentService.js'),
-  ])
+  // Keep knowledge-only consumers independent of the graph and provider stack.
+  const [{ invokeKPAgent }, { buildInvokeLLM, normalizeMessages, getSharedGraph }] = await loadKeeperAgent()
   if (turn.isOwnerCurrent && !turn.isOwnerCurrent()) {
     turn.onOwnerChanged?.()
     return
@@ -252,10 +259,7 @@ export async function runKpTurn(
     : userId
   if (scriptId) {
     try {
-      const [scriptContextModule, storyToolGateModule] = await Promise.all([
-        import('../agent/scriptContext.js'),
-        import('../agent/storyToolGate.js'),
-      ])
+      const [scriptContextModule, storyToolGateModule] = await loadKeeperStoryTools()
       scriptContext = turn.preparedScript ?? await scriptContextModule.loadScriptContext(storyOwnerId, scriptId)
       if (!scriptContext && body.storyContext?.workflow === 'dossier') {
         throw new Error('Dossier story context is unavailable')

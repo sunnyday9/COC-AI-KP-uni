@@ -6,7 +6,7 @@ import {
   gatewayRoomIds, gatewaySubscribers, planGatewayResume, reserveGatewaySubscription, unsubscribeGatewaySocket, type RoomSubscriber,
 } from './roomLedger.js'
 import { confirmGatewayPresence } from './gatewayPresence.js'
-import { canSendFrame, markTransportReset, roomEventFrame, sendFrame } from './sendFrame.js'
+import { canSendFrame, markTransportReset, roomEventFrame, sendFrame, writeResumeFrame } from './sendFrame.js'
 
 export async function resumeGatewaySocket(
   socket: RoomSubscriber, roomId: string, userId: number, lastSeq: number, signal?: AbortSignal,
@@ -28,16 +28,25 @@ export async function resumeGatewaySocket(
   const finish = async (frame: unknown, seq: number) => {
     const encoded = JSON.stringify(frame)
     if (!current() || !canSendFrame(socket, encoded)) return
-    // Selecting a replay or snapshot can fail. Only a usable resume may
-    // supersede a confirmed owner's durable close request.
-    const present = await confirmGatewayPresence(socket, roomId, userId, () => current() && canSendFrame(socket, encoded))
-    if (!current()) return
-    if (!present) {
-      notMember()
-      return
+    let frameWritten = false
+    try {
+      const present = await confirmGatewayPresence(
+        socket, roomId, userId, current, async () => {
+          frameWritten = await writeResumeFrame(socket, encoded)
+          return frameWritten
+        },
+      )
+      if (!current()) return
+      if (present) {
+        if (!frameWritten) sendFrame(socket, encoded)
+        if (current()) subscription.seq = seq
+      }
+      else if (frameWritten) resetForReplay(socket)
+      else notMember()
+    } catch (error) {
+      if (frameWritten && current()) resetForReplay(socket)
+      throw error
     }
-    sendFrame(socket, encoded)
-    if (current()) subscription.seq = seq
   }
   try {
     const plan = await planGatewayResume(roomId, userId, lastSeq, current, signal)

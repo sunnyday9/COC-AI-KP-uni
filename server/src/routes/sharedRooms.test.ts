@@ -337,7 +337,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const pausedAcceptances = new WeakSet<ChildProcess>()
   const shared = backend === 'postgres'
   let base: string
-  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string; runtime?: 'worker' | 'gateway'; activeRooms?: number; duplicateOutbox?: boolean; drainable?: boolean } = {}): Promise<ChildProcess> {
+  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string; runtime?: 'worker' | 'gateway'; activeRooms?: number; duplicateOutbox?: boolean; drainable?: boolean; drainOnReplayCompletion?: boolean } = {}): Promise<ChildProcess> {
     const port = await freePort()
     base = `http://127.0.0.1:${port}`
     const args = ['--import', 'tsx']
@@ -351,6 +351,18 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     if (options.drainable) args.push('--import', 'data:text/javascript,' + encodeURIComponent(
       "process.once('message', () => process.emit('SIGTERM'));",
     ))
+    if (options.drainOnReplayCompletion) args.push('--import', 'data:text/javascript,' + encodeURIComponent(`
+      import WebSocket from ${JSON.stringify(import.meta.resolve('ws'))};
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (frame, ...args) {
+        if (typeof frame !== 'string' || JSON.parse(frame).type !== 'room:sync:done') {
+          return send.call(this, frame, ...args);
+        }
+        process.emit('SIGTERM');
+        const complete = args.at(-1);
+        if (typeof complete === 'function') complete(new Error('Gateway drained before writing the resume frame'));
+      };
+    `))
     args.push('src/app.ts')
     const child = spawn(process.execPath, args, {
       env: {
@@ -849,10 +861,22 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       await failedReconnect.waitFor((frame) => frame.type === 'room:error')
       expect(await queuedLosses(workerOutage.roomId)).toBe(1)
 
+      const survivingGateway = base
+      const drainingGateway = await launch({ runtime: 'gateway', drainOnReplayCompletion: true })
+      await ready(drainingGateway)
+      const interruptedResume = await connect(owner.token)
+      const interruptedClose = interruptedResume.closed()
+      const drained = once(drainingGateway, 'exit')
+      interruptedResume.send({ type: 'room:join', roomId: retainedAfterReconnect.roomId, lastSeq: replayAnchor.seq })
+      await interruptedClose
+      expect(await drained).toEqual([0, null])
+      expect(await queuedLosses(retainedAfterReconnect.roomId)).toBe(1)
+      base = survivingGateway
+
       const reconnectedOwner = await connect(owner.token)
       reconnectedOwner.send({ type: 'room:join', roomId: retainedAfterReconnect.roomId, lastSeq: replayAnchor.seq })
       await reconnectedOwner.waitFor((frame) => frame.type === 'room:sync:done')
-      expect(await queuedLosses(retainedAfterReconnect.roomId)).toBe(0)
+      await expect.poll(() => queuedLosses(retainedAfterReconnect.roomId)).toBe(0)
       const reconnectReset = reconnectedOwner.closed()
       reconnectedOwner.reset()
       await reconnectReset
@@ -1699,7 +1723,16 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     if (scenario === 'replay-pending') return await runReplayPendingTurn()
     if (scenario === 'replay') return await runGatewayRecovery()
     if (scenario === 'history') return await runRoomHistory()
-    if (pressureScenario) return await runProviderPressure()
+    if (pressureScenario) {
+      try {
+        return await runProviderPressure()
+      } catch (error) {
+        const warnings = children.flatMap((child) => (startupErrors.get(child) ?? '').split('\n'))
+          .filter((line) => line.includes('[WARN]') && /lease|checkpoint|room opening|room action/i.test(line))
+        if (warnings.length) throw new Error('Provider pressure journey failed\n' + warnings.join('\n'), { cause: error })
+        throw error
+      }
+    }
     if (scenario === 'governance') return await runGovernanceRace()
     if (scenario === 'membership') return await runMembershipRecovery()
     if (scenario === 'opening') return await runOpeningRetry()

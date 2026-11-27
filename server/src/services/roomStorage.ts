@@ -907,12 +907,13 @@ const abandonedPresence = Symbol('Gateway room resume no longer current')
 
 export async function registerRoomPresence(
   roomId: string, userId: number, subscriptionId: string, stillCurrent = () => true,
+  writeResume?: () => Promise<boolean>,
 ): Promise<boolean> {
   return inPostgresTransaction(async (client) => {
     // Serialize a new subscriber with the fenced absence check before succession.
     const room = await client.query('SELECT 1 FROM rooms WHERE room_id = $1 FOR NO KEY UPDATE', [roomId])
     if (!room.rowCount || !stillCurrent()) return false
-    const member = await client.query(`
+    const member = await client.query<{ replacing_disconnect: boolean }>(`
       WITH confirmed AS (
         INSERT INTO room_gateway_presence (room_id, user_id, subscription_id, expires_at)
         SELECT room_id, user_id, $3, clock_timestamp() + ${roomPresenceTtl}
@@ -922,11 +923,16 @@ export async function registerRoomPresence(
       ), superseded AS (
         DELETE FROM room_commands WHERE room_id = $1 AND user_id = $2 AND presence_loss
           AND EXISTS (SELECT 1 FROM confirmed)
+        RETURNING 1
       )
-      SELECT 1 FROM confirmed
+      SELECT EXISTS (SELECT 1 FROM superseded) AS replacing_disconnect FROM confirmed
     `, [roomId, userId, subscriptionId])
     if (!stillCurrent()) throw abandonedPresence
-    return member.rowCount === 1
+    if (member.rowCount !== 1) return false
+    // The gateway bounds this write. A drain before completion rolls back the
+    // presence and preserves any older ordinary-disconnect request.
+    if (member.rows[0]?.replacing_disconnect && writeResume && !await writeResume()) throw abandonedPresence
+    return true
   }).catch((error: unknown) => {
     if (error === abandonedPresence) return false
     throw error

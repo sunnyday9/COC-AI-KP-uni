@@ -31,9 +31,10 @@ function forget(rooms: Map<string, GatewayPresence>, entry: GatewayPresence): vo
 }
 
 export function confirmGatewayPresence(
-  socket: FrameRecipient, roomId: string, userId: number, current: () => boolean,
+  socket: FrameRecipient, roomId: string, userId: number, current: () => boolean, writeResume: () => Promise<boolean>,
 ): Promise<boolean> {
-  if (!current() || draining) return Promise.resolve(false)
+  const stillCurrent = () => current() && !draining
+  if (!stillCurrent()) return Promise.resolve(false)
   let rooms = sockets.get(socket)
   if (!rooms) {
     rooms = new Map()
@@ -46,7 +47,7 @@ export function confirmGatewayPresence(
   const entry: GatewayPresence = { roomId, userId, subscriptionId: randomUUID(), ready: Promise.resolve(false), confirmed: false }
   live.add(entry)
   rooms.set(roomId, entry)
-  entry.ready = registerRoomPresence(roomId, userId, entry.subscriptionId, () => current() && !draining).then((registered) => {
+  entry.ready = registerRoomPresence(roomId, userId, entry.subscriptionId, stillCurrent, writeResume).then((registered) => {
     entry.confirmed = registered
     if (!registered) forget(socketRooms, entry)
     return registered && socketRooms.get(roomId) === entry && !draining
