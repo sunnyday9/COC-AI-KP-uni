@@ -95,6 +95,7 @@ pool.on('error', (error) => failures.push({ phase: 'pool', code: errorTag(error)
 const samples = []
 const setup = []
 const provider = []
+const pacedTransports = { established: 0, unexpectedDrops: 0 }
 const report = {
   config, totalSockets, node: process.version, started: new Date().toISOString(),
   revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
@@ -279,14 +280,14 @@ function client(id, room, gateway) {
   }
 }
 
-function applyFrame(person, frame) {
+function applyFrame(person, frame, gateway) {
   if (frame.type === 'room:state' || frame.type === 'room:sync:done') {
     if (frame.seq < person.seq) person.regressions++
     person.seq = Math.max(person.seq, frame.seq)
   }
   if (frame.type === 'room:action:result') {
     const arrivedAt = performance.now()
-    person.status.set(frame.actionId, { ...frame, arrivedAt })
+    person.status.set(frame.actionId, { ...frame, arrivedAt, gateway })
     const action = actions.get(frame.actionId)
     if (action?.userId === person.id && ['pending', 'completed', 'cancelled'].includes(frame.status)) {
       action.ack ??= arrivedAt - action.started
@@ -329,9 +330,14 @@ async function connect(person, destination = person.gateway, cursor) {
   person.replaying = cursor !== undefined
   person.replaySeq = cursor
   let response
+  let opened = false
+  socket.once('open', () => {
+    opened = true
+    if (duringPacedTraffic()) pacedTransports.established++
+  })
   socket.on('message', (raw) => {
     const frame = JSON.parse(String(raw))
-    applyFrame(person, frame)
+    applyFrame(person, frame, destination)
     if (['room:state', 'room:sync:done', 'room:error'].includes(frame.type)) {
       response ??= { type: frame.type, bytes: raw.length, roomPhase: frame.snapshot?.phase, seq: frame.seq, arrivedAt: performance.now() }
       person.replaying = false
@@ -345,7 +351,9 @@ async function connect(person, destination = person.gateway, cursor) {
   })
   socket.on('error', () => socket.terminate())
   socket.on('close', () => {
-    if (!(socket.intentional || socket.gatewayFailure)) person.transportDrops++
+    if (socket.intentional || socket.gatewayFailure) return
+    person.transportDrops++
+    if (opened && duringPacedTraffic()) pacedTransports.unexpectedDrops++
   })
   try {
     await once(socket, 'open')
@@ -363,6 +371,10 @@ async function connect(person, destination = person.gateway, cursor) {
     if (socket.handshakeFailure) throw Object.assign(error, { code: socket.handshakeFailure })
     throw error
   }
+}
+
+function duringPacedTraffic() {
+  return trafficStarted !== undefined && performance.now() - trafficStarted < config.pacedSec * 1000
 }
 
 async function reconnect(person, gateway, phase, started, cursor) {
@@ -594,10 +606,11 @@ async function restartRoomWorkers() {
       // restart of the other slots still runs even if a particular fault misses.
       for (const worker of workers) worker.child.send({ type: 'arm', id: action.id })
       await delay(100)
-      await admit(victim, action, 5000)
+      const acknowledged = await admit(victim, action, 5000)
       const actual = await until(() => workers.find((entry) => entry.fault.get(action.id) === stage), 7000, 'fault_barrier_timeout')
       await recordDurable([action])
-      result.acknowledgedBeforeKill = action.ack !== undefined && action.durableStatus === 'pending'
+      result.originalGateway = acknowledged?.gateway
+      result.acknowledgedBeforeKill = acknowledged?.status === 'pending' && action.durableStatus === 'pending'
       assert(result.acknowledgedBeforeKill, 'Fault victim lacks a pending durable acknowledgement')
       const before = await pool.query('SELECT worker_epoch, worker_id FROM rooms WHERE room_id = $1', [action.room])
       result.previousEpoch = Number(before.rows[0].worker_epoch)
@@ -607,7 +620,7 @@ async function restartRoomWorkers() {
       const kill = performance.now()
       result.killedSinceMixedMs = kill - trafficStarted
       await stop(actual, 'SIGKILL')
-      const other = activeGateways().find((gate) => gate.index !== victim.gateway)
+      const other = activeGateways().find((gate) => gate.index !== result.originalGateway)
       if (other) await reconnect(victim, other.index, 'worker_failover', kill)
       else await reconnect(victim, victim.gateway, 'worker_failover', kill)
       await waitForDurable([action], 60000, 'worker_recovery_timeout')
@@ -618,9 +631,10 @@ async function restartRoomWorkers() {
         result.recoveredMs = recovered - kill
         result.recoveredSinceMixedMs = recovered - trafficStarted
       }
-      result.resentElsewhere = !!other
       const replay = await admit(victim, action, 5000)
       result.replayedReceipt = replay?.status
+      result.replayGateway = replay?.gateway
+      result.resentElsewhere = replay !== undefined && replay.gateway !== result.originalGateway
       const index = workers.indexOf(actual)
       workers[index] = await start('worker', actual.index, actual.p)
       if (actual !== dead && dead.active) {
@@ -628,6 +642,7 @@ async function restartRoomWorkers() {
         workers[slot] = await start('worker', dead.index, dead.p)
         result.additionalRolledWorker = dead.index
       }
+      result.replacementReadySinceMixedMs = performance.now() - trafficStarted
     } catch (error) {
       result.failure = errorTag(error)
       if (action) {
@@ -768,7 +783,7 @@ function capacities() {
 
 
 function budgets() {
-  const { summary, catalog, reconnect, integrity } = report
+  const { summary, catalog: catalogSummary, reconnect, integrity } = report
   const result = (measured, passed) => measured ? (passed ? 'passed' : 'missed') : 'unmeasured'
   const latency = (value, p95, p99) => result(value.count, value.p95 <= p95 && value.p99 <= p99)
   const pace = summary.paced
@@ -779,6 +794,16 @@ function budgets() {
   const recoveries = report.workerFailures ?? []
   const gateway = report.gatewayFailure
   const effectRecoveries = recoveries.filter((row) => row.stage === 'effect')
+  const mixedCatalog = catalog.filter((row) => row.phase === 'mixed')
+  const pacedImports = imports.filter((row) => row.phase === 'paced')
+  const failureRate = (offered, failed) => ({ offered, failed, budget: result(offered, failed / offered <= .005) })
+  report.pacedFailures = {
+    actions: failureRate(pace.offered, pace.offered - pace.liveCompleted),
+    catalog: failureRate(mixedCatalog.length, mixedCatalog.filter((row) => row.failure).length),
+    imports: failureRate(pacedImports.length, pacedImports.filter((row) => row.state !== 'complete').length),
+    socketDrops: failureRate(pacedTransports.established, pacedTransports.unexpectedDrops),
+  }
+  const failureBudgets = Object.values(report.pacedFailures).map((row) => row.budget)
   const pacedActions = [...actions.values()].filter((action) => action.phase === 'paced' && action.sent)
   const overlap = (start, end, unrelated) => {
     const dispatches = pacedActions.filter((action) =>
@@ -788,7 +813,8 @@ function budgets() {
   if (gateway) gateway.pacedOverlap = overlap(gateway.startedSinceMixedMs, gateway.replacementReadySinceMixedMs,
     (action) => action.sentGateway !== gateway.gateway)
   for (const worker of recoveries) {
-    worker.pacedOverlap = overlap(worker.killedSinceMixedMs, worker.recoveredSinceMixedMs,
+    worker.pacedOverlap = overlap(worker.killedSinceMixedMs,
+      Math.max(worker.recoveredSinceMixedMs, worker.replacementReadySinceMixedMs),
       (action) => action.room !== worker.targetRoom)
   }
   const overlapsPaced = (fault) => fault?.pacedOverlap?.fullyWithinPaced && fault.pacedOverlap.unrelatedDispatches > 0
@@ -796,8 +822,9 @@ function budgets() {
     scope: 'These results apply only to this workload and topology',
     pacedEcho: latency(pace.echo, 500, 1500),
     pacedKeeper: latency(pace.keeper, 2000, 5000),
-    catalogWarm: latency(catalog.reusedOwner, 200, 750),
-    pacedFailures: result(pace.offered, (pace.offered - pace.liveCompleted) / pace.offered <= .005),
+    catalogWarm: latency(catalogSummary.reusedOwner, 200, 750),
+    pacedFailures: failureBudgets.includes('missed') ? 'missed'
+      : failureBudgets.every((budget) => budget === 'passed') ? 'passed' : 'unmeasured',
     burstTerminal: result(burst.offered, burst.finalizedWithin30s / burst.offered >= .999),
     durableAcknowledgements: result(integrity?.acknowledged,
       !integrity?.missingAcknowledged.length && !integrity?.pendingAcknowledged.length && !integrity?.mismatchedReceipts.length),
@@ -814,7 +841,8 @@ function budgets() {
       gateway.replacementReadyMs <= 30000 && gateway.membershipPreserved),
     workerRecovery: result(recoveries.length, recoveries.length === config.roomWorkers &&
       workerClients.within30s / recoveries.length >= .99 && recoveries.every((row) =>
-        row.acknowledgedBeforeKill && Number.isFinite(row.recoveredMs) && row.recoveredMs <= 60000 &&
+        !row.failure && Number.isFinite(row.replacementReadySinceMixedMs) &&
+        row.acknowledgedBeforeKill && row.recoveredMs >= 0 && row.recoveredMs <= 60000 &&
         row.recoveredEpoch > row.previousEpoch && row.replayedReceipt === 'completed' && row.resentElsewhere)),
     pacedFaultOverlap: result(recoveries.length || gateway,
       recoveries.length === config.roomWorkers && overlapsPaced(gateway) && recoveries.every(overlapsPaced)),
@@ -902,6 +930,7 @@ try {
   })
   await paced(config.warmupSec, 'warmup')
   trafficStarted = performance.now()
+  pacedTransports.established = clients.filter((person) => person.socket?.readyState === WebSocket.OPEN).length
   const duration = config.pacedSec * 1000
   const mixed = paced(config.pacedSec, 'paced')
   const catalogWork = schedule(config.pacedSec * config.catalogPerSec, duration, (index) => browse(index, 'mixed'), trafficStarted)

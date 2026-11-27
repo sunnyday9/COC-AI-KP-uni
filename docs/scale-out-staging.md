@@ -29,7 +29,7 @@ Use independent processes, a private S3-compatible bucket, and a shared PostgreS
 | Paced player echo | p95 ≤ 500 ms, p99 ≤ 1.5 s |
 | Paced Keeper completion with the deterministic provider | p95 ≤ 2 s, p99 ≤ 5 s |
 | Catalog metadata page at limit 25 | p95 ≤ 200 ms, p99 ≤ 750 ms, cold reads recorded separately |
-| Paced unexpected request or operation failure | ≤ 0.5% per operation, including dropped connections and final failures after retry |
+| Paced unexpected request or operation failure | ≤ 0.5% for each of player actions, catalog requests, imports and established WebSocket connections. Record deliberate disconnects and reconnect failures in the recovery results. |
 | Burst admission | Record immediate overload separately. At least 99.9% of the original actions reach a terminal receipt within 30 s of the burst using bounded retry. |
 | Acknowledged actions and committed rule effects | Zero lost acknowledged actions, zero duplicate committed effects, and zero client sequence regressions |
 | Recovery | At least 99% of affected clients rejoin within 30 s of each induced failure, and all recoverable acknowledged actions resolve within 60 s. A saved pause is recorded with its cause. |
