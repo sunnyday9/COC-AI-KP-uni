@@ -67,6 +67,8 @@
   - 服务端 → 客户端：`room:state {roomId,snapshot,seq,actionReceipts:true,members?}`（全量快照）、`room:event {roomId,seq,eventType,payload}`（增量事件）、`room:sync:done {roomId,seq,actionReceipts?}`、`room:error {roomId,error}`。增量事件类型由 `RoomEventType` 定义。`kp_chunk` 通过实验开关启用。启用房间 worker 故障接管时，每回合提交最多 8 个片段，内容合计最多 16 KiB。客户端以完整 `message_appended` 为准。
   - `room:sync` 在事件仍处于保留窗口时补发增量并以 `room:sync:done` 收尾；缺口过大时改发全量 `room:state`。断线后的 `room:join` 也可携带客户端已应用的最后一个序号。独立网关从 PostgreSQL 重放到已提交的序号，再继续实时投递。保留窗口最多 200 条事件，单次重放上限为 512 KiB。序号超出范围、事件缺失或重放超出上限时，网关发送最新快照。快照帧中的可选 `kpTurnPending` 表示是否仍有待处理的 Keeper 回合。实时事件按已提交的序列号投递。已订阅的成员被踢出或房间解散时，room:error 附带 removedReason（kicked 或 dissolved），随后该连接不再接收房间事件。未知客户端消息类型忽略。架构沿革见 `docs/history/ARCHITECTURE-MULTIPLAYER.md`。
 
+当前版本的全量 `room:state` 随快照提供房间成员列表和角色卡绑定。共享类型将 `members` 保留为可选字段，以兼容旧服务端。
+
 ### 聊天行动回执
 
 支持回执的房间在 `room:state` 或 `room:sync:done` 中声明 `actionReceipts: true`。客户端为每次新聊天生成一个行动编号，并通过 `room:action {roomId,actionId,action}` 发送。编号允许 1–80 个 ASCII 字母、数字、下划线或短横线，按房间和登录账号隔离。消息内容必须是字符串，去除首尾空白后用于判定重试是否相同。相同编号和内容返回原消息编号及当前处理状态。同一编号改发其他内容返回 `action_conflict`。回执只发给提交请求的连接。

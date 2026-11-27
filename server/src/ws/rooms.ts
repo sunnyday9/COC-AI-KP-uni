@@ -21,7 +21,7 @@ import { ROOM_RUNTIME } from '../config.js'
 import { routeSocketCommand } from '../services/roomCommands.js'
 import { releaseGatewaySocketPresence } from './gatewayPresence.js'
 import { resumeGatewaySocket } from './gatewayRooms.js'
-import type { RoomActionResult } from '../../../shared/types/room.js'
+import type { RoomActionResult, RoomServerFrame } from '../../../shared/types/room.js'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
 import { handleOwnerWsDisconnect } from '../services/roomService.js'
 import { cleanupSocket, ensureFanout, planAction, planDirectReplay, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeGatewaySocket, unsubscribeSocket } from './roomLedger.js'
@@ -41,6 +41,18 @@ function send(socket: WebSocket, obj: unknown): void {
     return
   }
   sendFrame(socket, frame)
+}
+
+function sendRoomState(socket: WebSocket, roomId: string, room: RoomService): void {
+  const frame: RoomServerFrame = {
+    type: 'room:state',
+    roomId,
+    actionReceipts: true,
+    snapshot: room.snapshot(),
+    seq: room.getSeq(),
+    members: room.getMembers(),
+  }
+  send(socket, frame)
 }
 
 /** 扇出房间事件（全序 seq 已由 RoomService 分配；编码在此，注册表在订阅簿）。 */
@@ -80,7 +92,7 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
   if (replay.kind === 'delta') {
     sendReplay(socket, roomId, room.getSeq(), replay.events)
   } else {
-    send(socket, { type: 'room:state', roomId, actionReceipts: true, snapshot: room.snapshot(), seq: room.getSeq() })
+    sendRoomState(socket, roomId, room)
   }
   logger.info('room join', { roomId, userId })
 }
@@ -103,7 +115,7 @@ export async function handleRoomSync(socket: WebSocket, userId: number, raw: unk
   }
   if (plan.kind === 'full') {
     // 缺口过大或无需增量 → 全量快照（客户端按 seq 对账）
-    send(socket, { type: 'room:state', roomId, actionReceipts: true, snapshot: plan.room.snapshot(), seq: plan.room.getSeq() })
+    sendRoomState(socket, roomId, plan.room)
     return
   }
   // 增量补齐：补发 lastSeq 之后的事件（客户端按 seq 应用）

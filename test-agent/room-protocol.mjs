@@ -226,6 +226,8 @@ async function main() {
       )
       assertRoomState(ws, 'room join', { phase: 'playing', storyId: scriptId }, roomObservation(ws),
         state.snapshot?.phase === 'playing' && state.snapshot?.storyId === scriptId)
+      assert(state.members?.some((member) => member.role === 'owner' && member.characterId === characterId),
+        'room state must include the owner and bound character')
     })
 
     await step('服务端 opening 经 room:event 到达', async () => {
