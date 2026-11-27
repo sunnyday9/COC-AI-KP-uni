@@ -132,7 +132,8 @@ async function prepare(claim: PreparationClaim, store: ObjectStore, leaseMs: num
       throw new Error('publication claim is no longer current')
     }
   } catch {
-    if (!controller.signal.aborted) {
+    // Let PostgreSQL assign timed_out when the worker's deadline signal fires.
+    if (!signal.aborted) {
       await failStoryPreparation(claim, failure).catch(() => logger.warn('story preparation failure could not be recorded'))
       logger.warn('story preparation did not complete', { jobId: claim.job_id, stage: failure })
     }
