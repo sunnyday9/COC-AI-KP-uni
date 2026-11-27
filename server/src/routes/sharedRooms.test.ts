@@ -31,7 +31,7 @@ type Frame = {
   error?: string
   snapshot?: { phase?: string; turnWindowMs?: number; messages?: { content: string; role?: string }[]; kpMemory?: string[]; transcript?: { before: string | null } }
   eventType?: string
-  payload?: { message?: { role: string; content: string }; path?: string; value?: unknown; members?: { userId: number; role: string }[] }
+  payload?: { message?: { role: string; content: string }; content?: string; path?: string; value?: unknown; members?: { userId: number; role: string }[] }
 }
 type Account = { token: string; user: { id: number; username: string } }
 
@@ -80,6 +80,7 @@ interface KeeperFixture {
   ignoreLeaseRenewal?: boolean
   useByok?: boolean
   archivedNarration?: string
+  longDamageNarration?: boolean
 }
 
 function keeperFixture(options: KeeperFixture): string {
@@ -120,7 +121,13 @@ function keeperFixture(options: KeeperFixture): string {
           while (!existsSync(damageReleaseFile)) await delay(20);
         }
       }
-      turn.handlers.onChunk?.('Narration chunk.');
+      const longNarration = damage && ${options.longDamageNarration === true};
+      if (longNarration) {
+        turn.handlers.onChunk?.('碎'.repeat(3000));
+        turn.handlers.onChunk?.('片'.repeat(3000));
+      }
+      const fragmentCount = longNarration ? 256 : 1;
+      for (let index = 0; index < fragmentCount; index++) turn.handlers.onChunk?.('Narration chunk.');
       const narrative = damage ? 'The ledger was recovered.' : 'The archive is quiet.';
       turn.handlers.onEnd({ content: identity ? narrative + ' Keeper: ' + identity : narrative, displayMessages: [] });
     }
@@ -473,7 +480,9 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const detail = (roomId: string, token: string) => request(`/api/rooms/${roomId}`, { token })
 
   async function runSplitGateways(): Promise<void> {
-    const worker = await launch({ runtime: 'worker', pauseAfterTool: false, activeRooms: 1 })
+    const worker = await launch({
+      runtime: 'worker', pauseAfterTool: false, activeRooms: 1, chunkStream: true, longDamageNarration: true,
+    })
     await expect.poll(() => readyWorkers.has(worker), { timeout: 12_000 }).toBe(true)
     const first = await launch({ runtime: 'gateway', duplicateOutbox: true })
     await ready(first)
@@ -546,6 +555,10 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect(turn).toEqual(committedTurn(socketB.frames))
     const sequences = turn.map((frame) => frame.seq)
     expect(sequences).toEqual([...new Set(sequences)].sort((a, b) => a! - b!))
+    expect(sequences.every((seq, index) => seq === beforeAction + index + 1)).toBe(true)
+    const chunks = turn.filter((frame) => frame.eventType === 'kp_chunk')
+    expect(chunks).toHaveLength(8)
+    expect(chunks.reduce((size, frame) => size + Buffer.byteLength(frame.payload?.content ?? ''), 0)).toBeLessThanOrEqual(16 * 1024)
     expect(turn.filter((frame) => frame.payload?.message?.content === 'Recover the damaged ledger')).toHaveLength(1)
     expect(blocked.frames.some((frame) => (frame.seq ?? 0) > beforeAction)).toBe(false)
 

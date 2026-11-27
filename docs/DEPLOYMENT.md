@@ -66,7 +66,7 @@ Nginx（TLS / WebSocket 升级）
 | `ROOM_CONTEXT_BUDGET_CHARS` | 12000 | 每个房间注入 KP 的近期对话字符上限；长期摘要与结构化状态仍会单独注入 |
 | `LLM_TIMEOUT_MS` | 60000 | 出站 LLM 请求超时（小于 5000 的值会回退到默认值） |
 | `KP_WIRE_SAMPLING` | 开启 | 持久化真实 KP 回合的完整模型消息、工具调用与 RAG 注入文本到 `kp_wire_samples`；设置为 `0` 关闭。生产部署前应明确数据留存/隐私策略 |
-| `KP_CHUNK_STREAM` | 关闭 | 实验开关；设置为 `1` 会广播 `kp_chunk` 增量事件，当前客户端不消费该帧，完整 `message_appended` 仍是权威消息 |
+| `KP_CHUNK_STREAM` | 关闭 | 实验开关。设置为 `1` 时可收到 `kp_chunk` 调试片段。启用房间 worker 故障接管时，每回合提交最多 8 个片段，内容合计最多 16 KiB。完整 `message_appended` 是权威消息，供客户端展示。 |
 | `LOG_LEVEL` | `info` | 服务端日志级别 |
 
 ## 4.1 BYOK（玩家自带 API Key）使用引导

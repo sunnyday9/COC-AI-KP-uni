@@ -129,6 +129,8 @@ const SNAPSHOT_EVERY_MS = 10_000
 const ROOM_TTL_MS = 30 * 60_000
 /** 事件日志环形容量（Phase C1：重连增量窗口；超出 → 全量快照兜底）。 */
 const MAX_EVENT_LOG = roomStorage.ROOM_EVENT_WINDOW
+const MAX_CHECKPOINT_KP_CHUNKS = 8
+const MAX_CHECKPOINT_KP_CHUNK_BYTES = 16 * 1024
 
 function selectReplay<T extends { seq: number }>(lastSeq: number, highWater: number, events: readonly T[]): T[] | null {
   if (lastSeq <= 0 || lastSeq > highWater || highWater - lastSeq > MAX_EVENT_LOG) return null
@@ -1124,6 +1126,8 @@ export class RoomService {
       ownerChanged: false,
       failed: false,
     } : null
+    let checkpointChunkCount = 0
+    let checkpointChunkBytes = 0
 
     const stage = (event: RoomEvent) => {
       if (draft) draft.events.push(event)
@@ -1197,7 +1201,16 @@ export class RoomService {
         }),
         handlers: {
           onChunk: draft ? (chunk) => {
-            if (isKpChunkStreamEnabled() && chunk) stage({ type: 'kp_chunk', payload: { content: chunk } })
+            if (!isKpChunkStreamEnabled() || !chunk) return
+            if (this.workerLease) {
+              // A provider's fragment count must not exhaust the durable replay window.
+              if (checkpointChunkCount >= MAX_CHECKPOINT_KP_CHUNKS) return
+              const bytes = Buffer.byteLength(chunk)
+              if (checkpointChunkBytes + bytes > MAX_CHECKPOINT_KP_CHUNK_BYTES) return
+              checkpointChunkCount++
+              checkpointChunkBytes += bytes
+            }
+            stage({ type: 'kp_chunk', payload: { content: chunk } })
           } : onChunk,
           onEnd: (result) => {
             // KP 回复追加消息流
