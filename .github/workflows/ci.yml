@@ -38,7 +38,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        # onnxruntime-node postinstall 下载 GPU 二进制偶发 ECONNRESET → 重试 3 次
+        # CPU-only runners use the bundled ONNX Runtime CPU provider.
         run: |
           for i in 1 2 3; do
             if npm ci; then exit 0; fi
@@ -49,6 +49,7 @@ jobs:
           exit 1
         env:
           npm_config_fund: 'false'
+          ONNXRUNTIME_NODE_INSTALL_CUDA: 'skip'
 
       - name: Server tests (SQLite and PostgreSQL)
         run: npm run test:server
