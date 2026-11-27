@@ -12,6 +12,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { seedAccounts, seedRooms, formats, source } from './staging/fixtures.mjs'
+import { occupancy, referenceScorecard } from './staging/workload.mjs'
 
 const require = createRequire(import.meta.url)
 const { Pool } = require('pg')
@@ -93,6 +94,8 @@ const reconnects = []
 const failures = []
 pool.on('error', (error) => failures.push({ phase: 'pool', code: errorTag(error) }))
 const samples = []
+const occupancySamples = []
+const workload = { actual: {} }
 const setup = []
 const provider = []
 const pacedTransports = { established: 0, unexpectedDrops: 0 }
@@ -102,11 +105,17 @@ const report = {
   workingTreeDirty: !!execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: root, encoding: 'utf8' }).trim(),
   host: { platform: os.platform(), logicalCpus: os.cpus().length, cpu: os.cpus()[0]?.model, memoryBytes: os.totalmem() },
   localOnly: true,
+  scope: {
+    placement: 'Generator and child processes share one host. PostgreSQL and S3 use IPv4 loopback endpoints.',
+    dependencies: 'Dedicated synthetic PostgreSQL database and S3 bucket, deterministic Keeper, real preparation pipeline',
+    replicas: {},
+  },
 }
 const loop = monitorEventLoopDelay({ resolution: 20 })
 let trafficStarted
 let setupFailure
 let sampling
+let occupancyPhase
 
 function errorTag(error) {
   return typeof error?.code === 'string' && /^[A-Za-z0-9_]{1,40}$/.test(error.code) ? error.code : error?.name
@@ -338,8 +347,11 @@ async function connect(person, destination = person.gateway, cursor) {
   socket.on('message', (raw) => {
     const frame = JSON.parse(String(raw))
     applyFrame(person, frame, destination)
+    if (frame.roomId !== person.room) return
+    if (frame.type === 'room:event' && frame.eventType === 'room_meta') socket.roomPhase = frame.payload?.phase
+    if (frame.type === 'room:state') socket.roomPhase = frame.snapshot?.phase
     if (['room:state', 'room:sync:done', 'room:error'].includes(frame.type)) {
-      response ??= { type: frame.type, bytes: raw.length, roomPhase: frame.snapshot?.phase, seq: frame.seq, arrivedAt: performance.now() }
+      response ??= { type: frame.type, bytes: raw.length, roomPhase: socket.roomPhase, seq: frame.seq, arrivedAt: performance.now() }
       person.replaying = false
     }
   })
@@ -362,9 +374,12 @@ async function connect(person, destination = person.gateway, cursor) {
       ? { type: 'room:join', roomId: person.room }
       : { type: 'room:sync', roomId: person.room, lastSeq: cursor }))
     const result = await until(() => response || (socket.readyState === WebSocket.CLOSED && { type: 'closed' }), 15000, 'join_timeout')
-    if (result.type !== 'room:sync:done' && !(result.type === 'room:state' && result.roomPhase === 'playing')) {
+    const replayed = cursor !== undefined && result.type === 'room:sync:done'
+    if (!replayed && !(result.type === 'room:state' && result.roomPhase === 'playing')) {
       throw Object.assign(new Error('Room subscription failed'), { code: result.type })
     }
+    if (replayed) socket.roomPhase ??= person.lastKnownRoomPhase
+    socket.roomVerified = true
     return result
   } catch (error) {
     socket.terminate()
@@ -398,6 +413,7 @@ async function performReconnect(person, gateway, phase, started, cursor) {
   reconnects.push(record)
   try {
     if (person.socket) {
+      person.lastKnownRoomPhase = person.socket.roomPhase ?? person.lastKnownRoomPhase
       person.socket.intentional = true
       person.socket.terminate()
     }
@@ -781,6 +797,34 @@ function capacities() {
   }
 }
 
+function sampleOccupancy(phase, t = performance.now()) {
+  const sample = { t, phase, ...occupancy(clients, config.gateways, WebSocket.OPEN) }
+  occupancySamples.push(sample)
+  return sample
+}
+
+async function waitForWindowEnd(deadline) {
+  while (performance.now() < deadline) {
+    await delay(Math.max(1, Math.ceil(deadline - performance.now())), undefined, { ref: false })
+  }
+}
+
+function summarizeOccupancy() {
+  return Object.fromEntries(['warmup', 'paced'].map((phase) => {
+    const observed = occupancySamples.filter((sample) => sample.phase === phase)
+    const range = (key) => observed.length
+      ? { min: Math.min(...observed.map((sample) => sample[key])), max: Math.max(...observed.map((sample) => sample[key])) }
+      : null
+    return [phase, {
+      samples: observed.length,
+      maxSampleGapMs: observed.length > 1 ? Math.max(...observed.slice(1).map((sample, index) => sample.t - observed[index].t)) : null,
+      openSockets: range('openSockets'),
+      playingRooms: range('playingRooms'),
+      crossGatewayMultiplayerRooms: range('crossGatewayMultiplayerRooms'),
+    }]
+  }))
+}
+
 
 function budgets() {
   const { summary, catalog: catalogSummary, reconnect, integrity } = report
@@ -819,7 +863,7 @@ function budgets() {
   }
   const overlapsPaced = (fault) => fault?.pacedOverlap?.fullyWithinPaced && fault.pacedOverlap.unrelatedDispatches > 0
   return {
-    scope: 'These results apply only to this workload and topology',
+    scope: 'Diagnostic budgets for the observed run. See workload.referenceWorkload and workload.referenceAcceptance.',
     pacedEcho: latency(pace.echo, 500, 1500),
     pacedKeeper: latency(pace.keeper, 2000, 5000),
     catalogWarm: latency(catalogSummary.reusedOwner, 200, 750),
@@ -874,14 +918,23 @@ try {
     ...Array.from({ length: config.roomWorkers }, (_, index) => start('worker', index).then((worker) => { workers[index] = worker })),
     ...Array.from({ length: config.prepWorkers }, (_, index) => start('prep', index)),
   ])
+  Object.assign(report.scope.replicas, { gateways: gates.length, roomWorkers: workers.length,
+    preparationWorkers: [...children].filter((entry) => entry.role === 'prep' && entry.active).length })
   loop.enable()
   sampling = setInterval(() => {
     for (const entry of children) if (entry.active && entry.child.connected) entry.child.send('sample', () => {})
+    if (occupancyPhase) sampleOccupancy(occupancyPhase)
     track(sampleDatabase())
   }, 1000)
   stage = 'fixture_data'
   report.users = Math.max(config.owners, totalSockets)
   await seedAccounts(pool, report.users, config)
+  const { rows: [seeded] } = await pool.query(`
+    SELECT COALESCE(sum(stories), 0) AS "metadataRows", count(*) AS "catalogOwners",
+      COALESCE(max(stories), 0) AS "largestLibrary"
+    FROM (SELECT count(*) AS stories FROM story_catalog WHERE deleted_at IS NULL GROUP BY owner_id) libraries
+  `)
+  Object.assign(workload.actual, Object.fromEntries(Object.entries(seeded).map(([key, count]) => [key, Number(count)])))
   const sourceCount = config.artifactsPerFormat * formats.length
   const prepared = []
   await batches(Array.from({ length: sourceCount }, (_, i) => i + 1), Math.min(24, report.users - 1), async (serial) => {
@@ -889,10 +942,16 @@ try {
   })
   await checkImports(prepared, Math.max(60000, sourceCount * 8000))
   const { rows: pins } = await pool.query(`
-    SELECT c.story_id, c.owner_id AS story_owner_id, r.revision, r.source_revision, r.objects
+    SELECT c.story_id, c.owner_id AS story_owner_id, r.revision, r.source_revision, r.objects, r.job_id
     FROM story_catalog c JOIN story_preparation_revisions r ON r.revision = c.active_preparation_revision
+    JOIN story_preparation_jobs j ON j.job_id = r.job_id
+    WHERE c.deleted_at IS NULL AND c.source_size > 0 AND c.source_revision = r.source_revision
+      AND c.owner_id = r.owner_id AND c.story_id = r.story_id AND j.state = 'complete'
     ORDER BY c.owner_id, c.story_id
   `)
+  const fixtureFormats = new Map(prepared.map((row) => [row.jobId, row.format]))
+  workload.preparedByFormat = Object.fromEntries(formats.map((format) =>
+    [format, pins.filter((pin) => fixtureFormats.get(pin.job_id) === format).length]))
   assets.push(...pins.map((pin) => ({
     format: pin.story_id.split('.').at(-1),
     artifactSizes: Object.fromEntries(Object.entries(pin.objects).map(([name, detail]) => [name, detail.size])),
@@ -908,6 +967,9 @@ try {
     const gateway = isMember ? room % config.gateways : (id - 1) % config.gateways
     clients.push(client(id, room ? 'fixture-room-' + room : null, gateway))
   }
+  const plannedGateways = occupancy(clients.map((person) => ({
+    ...person, socket: { readyState: WebSocket.OPEN, roomVerified: true, roomPhase: 'playing' },
+  })), config.gateways, WebSocket.OPEN).gateways
   await batches(clients, config.joinConcurrency, async (person) => {
     const started = performance.now()
     try {
@@ -919,6 +981,10 @@ try {
   })
   report.successfulInitialJoins = setup.filter((row) => row.kind === 'join' && !row.failure).length
   report.initialOpenSockets = clients.filter((person) => person.socket?.readyState === WebSocket.OPEN).length
+  workload.initial = sampleOccupancy('initial')
+  workload.initial.plannedGateways = plannedGateways
+  workload.initial.matchesPlannedGateways = plannedGateways.every((planned, index) =>
+    planned.sockets === workload.initial.gateways[index].sockets && planned.rooms === workload.initial.gateways[index].rooms)
   assert(report.initialOpenSockets > 0, 'No synthetic clients joined')
   await sampleDatabase()
   stage = 'traffic'
@@ -928,10 +994,25 @@ try {
     const limit = phase === 'paced' && owner.id % 8 === 1 && (index + Math.floor(index / config.rooms)) % 5 === 0
     return admit(owner, offer(owner, phase, (limit ? 'limit-' : '') + phase + '-' + index, at), 2800, false)
   })
-  await paced(config.warmupSec, 'warmup')
+  occupancyPhase = 'warmup'
+  const warmupStarted = performance.now()
+  sampleOccupancy(occupancyPhase, warmupStarted)
+  await Promise.all([paced(config.warmupSec, 'warmup'), waitForWindowEnd(warmupStarted + config.warmupSec * 1000)])
+  const warmupEnded = performance.now()
+  sampleOccupancy(occupancyPhase, warmupEnded)
+  workload.actual.warmupMs = warmupEnded - warmupStarted
   trafficStarted = performance.now()
-  pacedTransports.established = clients.filter((person) => person.socket?.readyState === WebSocket.OPEN).length
+  occupancyPhase = 'paced'
+  workload.pacedStart = sampleOccupancy(occupancyPhase, trafficStarted)
+  pacedTransports.established = workload.pacedStart.openSockets
   const duration = config.pacedSec * 1000
+  const pacedWindow = waitForWindowEnd(trafficStarted + duration).then(() => {
+    if (occupancyPhase !== 'paced') return
+    const pacedEnded = performance.now()
+    sampleOccupancy(occupancyPhase, pacedEnded)
+    workload.actual.pacedMs = pacedEnded - trafficStarted
+    occupancyPhase = 'recovery'
+  })
   const mixed = paced(config.pacedSec, 'paced')
   const catalogWork = schedule(config.pacedSec * config.catalogPerSec, duration, (index) => browse(index, 'mixed'), trafficStarted)
   const regularImports = schedule(Math.ceil(config.pacedSec * config.importPerMinute / 60), duration,
@@ -960,7 +1041,15 @@ try {
   })
   const gatewayRestart = delay(Math.floor(duration * .40)).then(restartGateway)
   const workerRestarts = delay(Math.floor(duration * .55)).then(restartRoomWorkers)
-  await Promise.all([mixed, catalogWork, regularImports, importBurst, burst, reconnectWave, gatewayRestart, workerRestarts])
+  await Promise.all([pacedWindow, mixed, catalogWork, regularImports, importBurst, burst, reconnectWave, gatewayRestart, workerRestarts])
+  occupancyPhase = undefined
+  Object.assign(workload.actual, {
+    pacedActions: [...actions.values()].filter((action) => action.phase === 'paced').length,
+    burstActions: [...actions.values()].filter((action) => action.phase === 'burst').length,
+    pacedImports: imports.filter((row) => row.phase === 'paced').length,
+    burstImports: imports.filter((row) => row.phase === 'burst').length,
+    reconnectClients: new Set(reconnects.filter((row) => row.phase === 'client_wave').map((row) => row.clientId)).size,
+  })
   stage = 'reconcile'
   console.log('Reconciling receipts, room events, and preparation jobs')
   await Promise.allSettled(pendingTimers)
@@ -976,6 +1065,7 @@ try {
   process.exitCode = 1
 } finally {
   clearInterval(sampling)
+  occupancyPhase = undefined
   report.setupFailure = setupFailure
   report.summary = summarizeActions()
   report.capacity = capacities()
@@ -1000,7 +1090,10 @@ try {
     serviceLatency: percentile(provider.map((call) => call.ms)) }
   report.assets = assets
   report.budgets = budgets()
-  report.raw = { setup, imports, catalog, reconnects, actions: [...actions.values()], provider, samples, failures }
+  report.workload = { ...workload, sampledOccupancy: summarizeOccupancy(), ...referenceScorecard({
+    ...workload, formats, samples: occupancySamples, scope: report.scope, setupFailure,
+  }) }
+  report.raw = { setup, imports, catalog, reconnects, actions: [...actions.values()], provider, samples, occupancySamples, failures }
   loop.disable()
   try {
     await writeFile(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' })
