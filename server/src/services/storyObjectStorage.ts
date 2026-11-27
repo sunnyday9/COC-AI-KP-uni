@@ -26,6 +26,7 @@ function configuration() {
 }
 
 type ObjectStoreConfig = NonNullable<ReturnType<typeof configuration>>
+export const ARTIFACT_REQUEST_TIMEOUT_MS = 120_000
 let storage: ReturnType<typeof createObjectStore> | undefined
 
 export function getStoryObjectStore() {
@@ -44,6 +45,10 @@ function createObjectStore({ Bucket, ...options }: ObjectStoreConfig) {
     responseChecksumValidation: 'WHEN_REQUIRED',
   })
 
+  async function remove(key: string): Promise<void> {
+    await s3.send(new DeleteObjectCommand({ Bucket, Key: key }), { abortSignal: AbortSignal.timeout(5_000) })
+  }
+
   return {
     async put(key: string, path: string, size: number, signal: AbortSignal): Promise<void> {
       const stream = createReadStream(path)
@@ -58,13 +63,16 @@ function createObjectStore({ Bucket, ...options }: ObjectStoreConfig) {
       }
     },
 
-    async putArtifact(key: string, bytes: Buffer, sha256: string, signal: AbortSignal): Promise<void> {
-      const abortSignal = AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+    async putArtifact(
+      key: string, bytes: Buffer, sha256: string, signal: AbortSignal, onWritten?: () => Promise<void>,
+    ): Promise<void> {
+      const abortSignal = AbortSignal.any([signal, AbortSignal.timeout(ARTIFACT_REQUEST_TIMEOUT_MS)])
       try {
         await s3.send(new PutObjectCommand({
           Bucket, Key: key, Body: bytes, ContentLength: bytes.length, IfNoneMatch: '*',
           Metadata: { sha256 }, ContentType: 'application/octet-stream',
         }), { abortSignal })
+        await onWritten?.()
         const object = await s3.send(new HeadObjectCommand({ Bucket, Key: key }), { abortSignal })
         if (object.ContentLength !== bytes.length || object.Metadata?.sha256 !== sha256) {
           throw new Error('artifact verification failed')
@@ -92,9 +100,11 @@ function createObjectStore({ Bucket, ...options }: ObjectStoreConfig) {
       }
     },
 
+    remove,
+
     async discard(key: string): Promise<void> {
       try {
-        await s3.send(new DeleteObjectCommand({ Bucket, Key: key }), { abortSignal: AbortSignal.timeout(5_000) })
+        await remove(key)
       } catch {
         logger.warn('story object cleanup failed')
       }

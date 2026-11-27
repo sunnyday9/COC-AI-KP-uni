@@ -626,14 +626,39 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     expect(queued.status).toBe(202)
     expect((await call(otherGateway, '/api/rag/stories?limit=2', owner.token)).body.stories).toEqual([])
 
-    const stalledSource = createHttpServer((_req, _res) => {})
+    const { bucket, ...config } = fixtureObjectStore
+    const prefix = `stories/${owner.user.id}/prepared/`
+    const s3 = new S3Client(config)
+    const inventory = async () => (await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix })))
+      .Contents?.map(({ Key }) => Key).sort() ?? []
+    let waitingOnVerification = false
+    const stalledSource = createHttpServer((request, response) => {
+      if (!canInjectStorageFault) return
+      const url = new URL(request.url!, config.endpoint)
+      if (request.method === 'HEAD' && url.pathname.endsWith('/gaps')) {
+        waitingOnVerification = true
+        return
+      }
+      const upstream = proxyRequest(url, { method: request.method, headers: request.headers }, (reply) => {
+        response.writeHead(reply.statusCode ?? 502, reply.headers)
+        reply.pipe(response)
+      })
+      upstream.on('error', () => response.writeHead(502).end())
+      request.pipe(upstream)
+    })
     await new Promise<void>((resolve) => { stalledSource.listen(0, '127.0.0.1', resolve) })
     const address = stalledSource.address()
     if (!address || typeof address === 'string') throw new Error('could not start storage boundary fault')
     const stalled = startProcess('src/workers/storyPreparation.ts', 'crash', `http://127.0.0.1:${address.port}`, true,
       undefined, { STORY_PREPARATION_LEASE_MS: '3000' })
     try {
-      await expect.poll(async () => (await call(otherGateway, route, owner.token)).body.job?.stage, { timeout: 8_000 }).toBe('read')
+      if (canInjectStorageFault) {
+        await expect.poll(() => waitingOnVerification, { timeout: 10_000 }).toBe(true)
+        expect(await inventory()).toHaveLength(4)
+        expect((await call(otherGateway, route, owner.token)).body.job?.stage).toBe('publish')
+      } else {
+        await expect.poll(async () => (await call(otherGateway, route, owner.token)).body.job?.stage, { timeout: 8_000 }).toBe('read')
+      }
       expect((await call(gateway, route, owner.token, 'POST')).body.job.id).toBe(queued.body.job.id)
       await stopProcess(stalled, 'SIGKILL')
     } finally {
@@ -670,12 +695,8 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
     expect((await call(gateway, '/api/rag/stories?limit=2', owner.token)).body.stories).toEqual([
       { storyId: 'library.txt', name: 'library.txt', indexedAt: expect.any(Number), chunkCount: expect.any(Number) },
     ])
-    const { bucket, ...config } = JSON.parse(s3Fixture!)
-    const s3 = new S3Client(config)
     try {
-      const prefix = `stories/${owner.user.id}/prepared/`
-      const listed = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }))
-      expect(listed.Contents?.map(({ Key }) => Key).sort()).toEqual(
+      await expect.poll(inventory, { timeout: 8_000 }).toEqual(
         ['dossier', 'gaps', 'index', 'sourceText'].map((type) => prefix + ready.body.activeRevision + '/' + type),
       )
       const key = prefix + prepared.revision + '/gaps'
@@ -716,12 +737,18 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
       job: { id: expect.any(String), version: expect.any(String), state: 'queued', stage: 'queued', percent: 0 },
     })
 
-    const { endpoint } = JSON.parse(s3Fixture!)
-    let rejectedAnchorWrites = 0
+    const { bucket, ...config } = fixtureObjectStore
+    const s3 = new S3Client(config)
+    const prefix = `stories/${owner.user.id}/prepared/`
+    const inventory = async () => (await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix })))
+      .Contents?.map(({ Key }) => Key).sort() ?? []
+    const before = await inventory()
+    expect(before).toHaveLength(4)
+    let rejectedAnchorVerifications = 0
     const storage = createHttpServer((request, response) => {
-      const url = new URL(request.url!, endpoint)
-      if (request.method === 'PUT' && url.pathname.endsWith('/gaps')) {
-        rejectedAnchorWrites++
+      const url = new URL(request.url!, config.endpoint)
+      if (request.method === 'HEAD' && url.pathname.endsWith('/gaps')) {
+        rejectedAnchorVerifications++
         request.resume()
         response.writeHead(503).end()
         return
@@ -745,12 +772,14 @@ describe.skipIf(!databaseUrl || !s3Fixture)('private story catalog over two HTTP
         activeRevision: previous.activeRevision,
         job: { id: queued.body.job.id, version: expect.any(String), state: 'failed', stage: 'publish_failed', percent: 90 },
       })
-      expect(rejectedAnchorWrites).toBe(1)
+      expect(rejectedAnchorVerifications).toBe(1)
+      await expect.poll(inventory, { timeout: 8_000 }).toEqual(before)
       expect(await call(gateway, '/api/rag/stories?limit=2', owner.token)).toEqual(readyStories)
       const current = await loadActivePreparedStory(owner.user.id, 'library.txt', AbortSignal.timeout(5_000))
       expect(current.revision).toBe(previous.activeRevision)
       expect(current.sourceText).toBe(fixture.trim())
     } finally {
+      s3.destroy()
       await stopProcess(partial)
       storage.closeAllConnections()
       await new Promise<void>((resolve) => { storage.close(() => resolve()) })

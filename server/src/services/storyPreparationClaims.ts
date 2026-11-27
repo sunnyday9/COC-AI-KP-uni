@@ -46,7 +46,7 @@ export async function claimStoryPreparation(leaseMs: number): Promise<Preparatio
   }).catch((error) => { throw postgresError(error) })
 }
 
-const CURRENT_CLAIM = `job_id = $1 AND attempt = $2 AND state = 'running' AND lease_expires_at > clock_timestamp() AND deadline_at > clock_timestamp()`
+export const CURRENT_CLAIM = `job_id = $1 AND attempt = $2 AND state = 'running' AND lease_expires_at > clock_timestamp() AND deadline_at > clock_timestamp()`
 
 export async function renewStoryPreparation(claim: PreparationClaim, leaseMs: number): Promise<boolean> {
   const result = await getPostgresPool().query(`
@@ -87,6 +87,13 @@ export async function publishStoryPreparation(
     `, [claim.owner_id, claim.story_id, claim.source_revision])
     if (!story) return false
 
+    const upload = await client.query(`
+      SELECT 1 FROM story_preparation_uploads
+      WHERE revision = $1 AND job_id = $2 AND attempt = $3 AND NOT discarded
+      FOR UPDATE
+    `, [revision, claim.job_id, claim.attempt])
+    if (!upload.rowCount) return false
+
     const completed = await client.query(`
       UPDATE story_preparation_jobs SET state = 'complete', stage = 'complete', percent = 100, lease_expires_at = NULL,
         status_version = nextval('story_preparation_status_version')
@@ -102,6 +109,7 @@ export async function publishStoryPreparation(
       UPDATE story_catalog SET active_preparation_revision = $3, active_prepared_at = $4
       WHERE owner_id = $1 AND story_id = $2
     `, [claim.owner_id, claim.story_id, revision, indexedAt])
+    await client.query('DELETE FROM story_preparation_uploads WHERE revision = $1', [revision])
     return true
   })
 }

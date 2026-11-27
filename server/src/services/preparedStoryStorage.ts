@@ -15,7 +15,6 @@ const MAX_OBJECT_BYTES = 32 * 1024 * 1024
 const ARTIFACTS = ['sourceText', 'index', 'dossier', 'gaps'] as const
 
 type Artifact = typeof ARTIFACTS[number]
-type ObjectStore = NonNullable<ReturnType<typeof getStoryObjectStore>>
 
 export interface PreparedStoryArtifacts {
   sourceText: string
@@ -42,19 +41,8 @@ function digest(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
-export async function writePreparedStory(
-  store: ObjectStore,
-  ownerId: string,
-  revision: string,
-  artifacts: PreparedStoryArtifacts,
-  signal: AbortSignal,
-): Promise<PreparedStoryManifest> {
-  const manifest = {} as PreparedStoryManifest
-  for (const { artifact, key, bytes, sha256 } of encodePreparedStory(ownerId, revision, artifacts)) {
-    await store.putArtifact(key, bytes, sha256, signal)
-    manifest[artifact] = { size: bytes.length, sha256 }
-  }
-  return manifest
+export function preparedStoryObjectKeys(ownerId: string, revision: string): string[] {
+  return ARTIFACTS.map((artifact) => artifactKey(ownerId, revision, artifact))
 }
 
 export function encodePreparedStory(ownerId: string, revision: string, artifacts: PreparedStoryArtifacts) {

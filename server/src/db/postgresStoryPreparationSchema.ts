@@ -67,5 +67,15 @@ export async function initializePostgresStoryPreparation(client: PoolClient): Pr
       objects JSONB NOT NULL,
       FOREIGN KEY (owner_id, story_id) REFERENCES story_catalog (owner_id, story_id)
     );
+
+    CREATE TABLE IF NOT EXISTS story_preparation_uploads (
+      revision UUID PRIMARY KEY,
+      job_id UUID NOT NULL REFERENCES story_preparation_jobs (job_id),
+      attempt BIGINT NOT NULL,
+      cleanup_after TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+      discarded BOOLEAN NOT NULL DEFAULT FALSE,
+      UNIQUE (job_id, attempt)
+    );
+    CREATE INDEX IF NOT EXISTS story_preparation_uploads_cleanup ON story_preparation_uploads (cleanup_after);
   `)
 }

@@ -6,12 +6,13 @@ import { assertRuntimeConfig, DEPLOYMENT_MODE, MAX_UPLOAD_BYTES } from '../confi
 import { getPostgresPool, initializePostgres } from '../db/postgres.js'
 import { generateDossier, MAX_DOSSIER_SOURCE_CHARS } from '../rag/dossier/dossierGenerate.js'
 import { indexStoryForRag } from '../services/indexOrchestration.js'
-import { isCoherentPreparedStory, writePreparedStory, type PreparedStoryArtifacts } from '../services/preparedStoryStorage.js'
+import { isCoherentPreparedStory, type PreparedStoryArtifacts } from '../services/preparedStoryStorage.js'
 import { buildGetEmbeddingForUser } from '../services/ragService.js'
 import { sourceKey } from '../services/sharedStoryCatalog.js'
 import { STORY_PREPARATION_ENABLED } from '../services/sharedStoryPreparation.js'
 import { getStoryObjectStore } from '../services/storyObjectStorage.js'
 import { claimStoryPreparation, failStoryPreparation, publishStoryPreparation, renewStoryPreparation, reportStoryPreparation, type PreparationClaim } from '../services/storyPreparationClaims.js'
+import { reconcileStoryPreparationUploads, writePreparedStory } from '../services/storyPreparationUploads.js'
 import { parseStoryContentForPreparation } from '../services/storyService.js'
 import { logger } from '../utils/logging.js'
 
@@ -125,7 +126,7 @@ async function prepare(claim: PreparationClaim, store: ObjectStore, leaseMs: num
 
     failure = 'publish_failed'
     await progress('publish', 90)
-    const manifest = await writePreparedStory(store, claim.owner_id, revision, complete, signal)
+    const manifest = await writePreparedStory(store, claim, revision, complete, signal)
     signal.throwIfAborted()
     if (!await publishStoryPreparation(claim, revision, index.indexedAt, index.chunkCount, manifest)) {
       throw new Error('publication claim is no longer current')
@@ -158,7 +159,17 @@ async function runWorker() {
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
 
+  let reconciliation: Promise<void> | undefined
+  const reconcile = () => {
+    if (reconciliation || stopping) return
+    reconciliation = reconcileStoryPreparationUploads(store).catch(() => {
+      logger.warn('story preparation uploads could not be reconciled')
+    }).finally(() => { reconciliation = undefined })
+  }
+
+  const reconciliationTimer = setInterval(reconcile, 1_000)
   try {
+    reconcile()
     while (!stopping) {
       const claim = await claimStoryPreparation(leaseMs).catch(() => {
         logger.warn('story preparation could not claim work')
@@ -168,6 +179,8 @@ async function runWorker() {
       else await delay(500)
     }
   } finally {
+    clearInterval(reconciliationTimer)
+    await reconciliation
     await getPostgresPool().end()
   }
 }
