@@ -13,6 +13,10 @@ export function isTransportReset(socket: FrameRecipient): boolean {
   return transportResets.has(socket)
 }
 
+export function roomEventFrame(roomId: string, seq: number, { type, payload }: { type: string; payload: unknown }) {
+  return { type: 'room:event', roomId, seq, eventType: type, payload } as const
+}
+
 /** Permit one large restored snapshot. Stop adding frames behind a slow client. */
 export function sendFrame(socket: FrameRecipient, frame: string): void {
   if (socket.readyState !== WebSocket.OPEN) return

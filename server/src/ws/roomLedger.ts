@@ -107,19 +107,25 @@ export async function planJoin(
   return { ok: true, room }
 }
 
-export type SyncPlan =
-  | { kind: 'error'; error: string }
+type DirectReplayPlan =
   | { kind: 'full'; room: RoomService }
   | { kind: 'delta'; room: RoomService; events: { seq: number; event: RoomEvent }[] }
+
+export type SyncPlan = { kind: 'error'; error: string } | DirectReplayPlan
+
+/** A join can confirm an already-current cursor without sending a snapshot. */
+export function planDirectReplay(room: RoomService, lastSeq: number, joining = false): DirectReplayPlan {
+  const events = room.getEventsSince(lastSeq)
+  if (events === null || (!joining && events.length === 0)) return { kind: 'full', room }
+  return { kind: 'delta', room, events }
+}
 
 /** sync 规划：成员 gate → 活跃性 → 增量/全量（getEventsSince null 或空 = 缺口过大/无增量 → 全量兜底）。 */
 export async function planSync(roomId: string, userId: number, lastSeq: number): Promise<SyncPlan> {
   if (!roomId || !await isRoomMember(roomId, userId)) return { kind: 'error', error: 'not a room member' }
   const room = getRoom(roomId)
   if (!room) return { kind: 'error', error: 'room not active' }
-  const deltas = room.getEventsSince(lastSeq)
-  if (deltas === null || deltas.length === 0) return { kind: 'full', room }
-  return { kind: 'delta', room, events: deltas }
+  return planDirectReplay(room, lastSeq)
 }
 
 /** action 规划：成员 gate → 活跃实例（动作串行入队由调用方在实例上执行）。 */

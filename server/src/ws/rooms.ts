@@ -24,10 +24,10 @@ import { resumeGatewaySocket } from './gatewayRooms.js'
 import type { RoomActionResult } from '../../../shared/types/room.js'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
 import { handleOwnerWsDisconnect } from '../services/roomService.js'
-import { cleanupSocket, ensureFanout, planAction, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeGatewaySocket, unsubscribeSocket } from './roomLedger.js'
+import { cleanupSocket, ensureFanout, planAction, planDirectReplay, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeGatewaySocket, unsubscribeSocket } from './roomLedger.js'
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
-import { isTransportReset, sendFrame } from './sendFrame.js'
+import { isTransportReset, roomEventFrame, sendFrame } from './sendFrame.js'
 
 const directUsers = new WeakMap<object, number>()
 
@@ -45,7 +45,7 @@ function send(socket: WebSocket, obj: unknown): void {
 
 /** 扇出房间事件（全序 seq 已由 RoomService 分配；编码在此，注册表在订阅簿）。 */
 function broadcast(roomId: string, event: RoomEvent, seq: number): void {
-  const frame = JSON.stringify({ type: 'room:event', roomId, seq, eventType: event.type, payload: event.payload })
+  const frame = JSON.stringify(roomEventFrame(roomId, seq, event))
   for (const s of subscribersOf(roomId)) {
     sendFrame(s, frame)
   }
@@ -76,10 +76,9 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
   if (socket.readyState !== 1) return
   directUsers.set(socket, userId)
   subscribeSocket(socket, roomId)
-  // 全量快照（加入时）
-  const events = lastSeq > 0 && lastSeq <= room.getSeq() ? room.getEventsSince(lastSeq) : null
-  if (events) {
-    sendReplay(socket, roomId, room.getSeq(), events)
+  const replay = planDirectReplay(room, lastSeq, true)
+  if (replay.kind === 'delta') {
+    sendReplay(socket, roomId, room.getSeq(), replay.events)
   } else {
     send(socket, { type: 'room:state', roomId, actionReceipts: true, snapshot: room.snapshot(), seq: room.getSeq() })
   }
@@ -113,7 +112,7 @@ export async function handleRoomSync(socket: WebSocket, userId: number, raw: unk
 
 function sendReplay(socket: WebSocket, roomId: string, seq: number, events: { seq: number; event: RoomEvent }[]): void {
   for (const entry of events) {
-    send(socket, { type: 'room:event', roomId, seq: entry.seq, eventType: entry.event.type, payload: entry.event.payload })
+    send(socket, roomEventFrame(roomId, entry.seq, entry.event))
   }
   send(socket, { type: 'room:sync:done', roomId, seq, actionReceipts: true })
 }
