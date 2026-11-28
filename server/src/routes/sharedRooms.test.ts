@@ -336,7 +336,7 @@ function pressureProvider(directory: string): string {
   `)
 }
 
-async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'governance' | 'membership' | 'opening' | 'split' | 'history' | 'replay' | 'replay-pending' | 'pressure' | 'split-pressure' | 'split-governance' | 'dormant-governance'): Promise<void> {
+async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'direct-lease-recovery' | 'governance' | 'membership' | 'opening' | 'split' | 'history' | 'replay' | 'replay-pending' | 'pressure' | 'split-pressure' | 'split-governance' | 'dormant-governance'): Promise<void> {
   const failover = scenario !== undefined
   const pressureScenario = scenario === 'pressure' || scenario === 'split-pressure'
 
@@ -1396,6 +1396,90 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect((await request(api + '?limit=1', { token: owner.token })).messages[0].id).toBe(next)
   }
 
+  async function runDirectLeaseRecovery(): Promise<void> {
+    const release = join(root, 'release-direct-lease-turn')
+    const direct = await launch({ pauseAfterTool: true, damageReleaseFile: release })
+    await ready(direct)
+    const owner = await register()
+    const storyId = 'direct-lease-archive'
+    await prepareDossier(join(fixtureRoot, 'dossiers'), owner.user.id, storyId)
+    const { roomId } = await request('/api/rooms', {
+      method: 'POST', token: owner.token, body: { storyId, workflow: 'dossier' },
+    })
+    const { id: characterId } = await request('/api/characters', {
+      method: 'POST', token: owner.token, body: { name: 'Direct archivist', sheet },
+    })
+    await bind(roomId, owner.token, characterId)
+    await request(`/api/rooms/${roomId}/settings`, { method: 'PUT', token: owner.token, body: { turnWindowMs: 0 } })
+    const original = await connect(owner.token)
+    original.send({ type: 'room:join', roomId })
+    await original.waitFor((frame) => frame.type === 'room:state')
+    await request(`/api/rooms/${roomId}/start`, { method: 'POST', token: owner.token, body: { storyId } })
+    await original.waitFor(isKpMessage)
+
+    const content = 'Recover the damaged ledger'
+    const actionId = randomUUID()
+    const action = { ...chat(roomId, content), actionId }
+    original.send(action)
+    const accepted = await original.waitFor((frame) => frame.actionId === actionId)
+    expect(accepted.status).toBe('pending')
+    const echo = await original.waitFor((frame) => frame.payload?.message?.content === content)
+    await expect.poll(() => pausedKeepers.has(direct), { timeout: 7_000 }).toBe(true)
+
+    const db = new Pool({ connectionString: databaseUrl })
+    try {
+      const closed = original.closed()
+      const expired = await db.query<{ worker_epoch: string }>(`
+        UPDATE rooms SET worker_expires_at = clock_timestamp() - interval '1 second'
+        WHERE room_id = $1 RETURNING worker_epoch::text
+      `, [roomId])
+      const [code] = await Promise.race([closed, delay(6_000, [-1], { ref: false })])
+      expect(code).toBe(1006)
+      expect(await detail(roomId, owner.token)).toMatchObject({ ownerId: owner.user.id, phase: 'playing' })
+
+      // Keep the replacement lease temporarily unavailable when the client retries.
+      const temporaryOwner = randomUUID()
+      const held = await db.query<{ worker_epoch: string; held_at: Date }>(`
+        UPDATE rooms SET worker_id = $2, worker_epoch = worker_epoch + 1,
+          worker_expires_at = clock_timestamp() + interval '30 seconds'
+        WHERE room_id = $1 RETURNING worker_epoch::text, clock_timestamp() AS held_at
+      `, [roomId, temporaryOwner])
+      expect(BigInt(held.rows[0].worker_epoch)).toBe(BigInt(expired.rows[0].worker_epoch) + 1n)
+
+      // The normal client reconnects, then sends its last applied room sequence.
+      const resumed = await connect(owner.token)
+      resumed.send({ type: 'room:join', roomId, lastSeq: echo.seq })
+      // An idle backend's last query proves the first claim completed under contention.
+      await expect.poll(async () => (await db.query(`
+        SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+          AND pid <> pg_backend_pid() AND state = 'idle' AND query_start >= $1
+          AND query LIKE '%RETURNING worker_epoch::text AS epoch%'
+      `, [held.rows[0].held_at])).rowCount).toBeGreaterThan(0)
+      await db.query(`
+        UPDATE rooms SET worker_expires_at = clock_timestamp() - interval '1 second'
+        WHERE room_id = $1 AND worker_id = $2
+      `, [roomId, temporaryOwner])
+      const reply = await resumed.waitFor((frame) =>
+        frame.type === 'room:state' || frame.type === 'room:sync:done' || frame.type === 'room:error',
+      )
+      expect(['room:state', 'room:sync:done']).toContain(reply.type)
+      await writeFile(release, '')
+      await resumed.waitFor((frame) => frame.payload?.message?.content === 'The ledger was recovered.')
+      resumed.send(action)
+      expect(await resumed.waitFor((frame) => frame.actionId === actionId)).toMatchObject({
+        status: 'completed', messageId: accepted.messageId,
+      })
+      const room = await detail(roomId, owner.token)
+      expect(room.state.characters[characterId].derived.hp).toBe(8)
+      expect(room.state.messages.filter((message: { content: string }) => message.content === content)).toHaveLength(1)
+      expect((await db.query(`
+        SELECT epoch::text FROM room_turns WHERE room_id = $1 AND turn_id <> 'opening'
+      `, [roomId])).rows).toEqual([{ epoch: (BigInt(held.rows[0].worker_epoch) + 1n).toString() }])
+    } finally {
+      await db.end()
+    }
+  }
+
   async function runWorkerFailover(): Promise<void> {
     const oldRelease = join(root, 'release-stale-provider')
     const oldest = await launch({ pauseAfterTool: true, damageReleaseFile: oldRelease, ignoreLeaseRenewal: true })
@@ -1835,6 +1919,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     if (scenario === 'membership') return await runMembershipRecovery()
     if (scenario === 'opening') return await runOpeningRetry()
     if (scenario === 'failover') return await runWorkerFailover()
+    if (scenario === 'direct-lease-recovery') return await runDirectLeaseRecovery()
     const beforeCommitId = randomUUID()
     let first = await launch({ pauseActionId: beforeCommitId })
     await ready(first)
@@ -2155,6 +2240,7 @@ describe('room protocol across a gameplay process restart', () => {
   it('creates and resumes solo and multiplayer investigations in SQLite', () => journey('local'), 90_000)
   it.skipIf(!databaseUrl)('runs the same solo and multiplayer investigations in PostgreSQL', () => journey('postgres'), 90_000)
   it.skipIf(!databaseUrl)('fences stale Keeper effects and recovers accepted turns across PostgreSQL workers', () => journey('postgres', 'failover'), 90_000)
+  it.skipIf(!databaseUrl)('reconnects a subscribed direct client after its worker lease expires', () => journey('postgres', 'direct-lease-recovery'), 50_000)
   it.skipIf(!databaseUrl)('serializes competing REST authorizations on an inactive room', () => journey('postgres', 'governance'), 45_000)
   it.skipIf(!databaseUrl)('cancels the original recovered turn when a member was removed', () => journey('postgres', 'membership'), 45_000)
   it.skipIf(!databaseUrl)('holds accepted work on provider pressure and keeps unrelated rooms responsive', () => journey('postgres', 'pressure'), 45_000)

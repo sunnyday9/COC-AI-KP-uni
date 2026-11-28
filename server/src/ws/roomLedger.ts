@@ -10,6 +10,8 @@
  * RoomService.getEventsSince（D-16 领域策略）；「对哪个订阅者发哪种帧」的
  * 规划在这里。wire 帧格式不变。
  */
+import { setTimeout as delay } from 'node:timers/promises'
+import { PostgresOperationError } from '../db/postgres.js'
 import type { RoomEvent, RoomService } from '../services/roomService.js'
 import { getRoom, hasRoomCapacity, isRoomMember, joinRoom, planCommittedRoomReplay, RoomWorkerBusyError } from '../services/roomService.js'
 import { routeSocketCommand } from '../services/roomCommands.js'
@@ -28,6 +30,8 @@ const roomSockets = new Map<string, Set<RoomSubscriber>>()
 /** 已挂接扇出的 RoomService 实例（防重复 subscribe 产生重复回调）。 */
 const fanoutAttached = new WeakSet<RoomService>()
 const MAX_GATEWAY_REPLAY_BYTES = 512 * 1024
+const DIRECT_JOIN_RETRY_DELAYS_MS = [200, 400, 800, 1600]
+const DIRECT_JOIN_RETRY_WINDOW_MS = 4_000
 
 /* ═══════════════ 订阅注册表 ═══════════════ */
 
@@ -81,11 +85,16 @@ export function roomIdsOfSocket(socket: RoomSubscriber): string[] {
 
 /* ═══════════════ 扇出挂接（幂等） ═══════════════ */
 
-/** 同一 RoomService 实例只挂一次扇出监听；帧编码由 adapter 的 listener 完成。 */
-export function ensureFanout(room: RoomService, listener: (event: RoomEvent, seq: number) => void): void {
-  if (fanoutAttached.has(room)) return
+/** Attach fan-out once to the current room instance. */
+export function ensureFanout(
+  room: RoomService, listener: (event: RoomEvent, seq: number) => void, onWorkerRetired?: () => void,
+): boolean {
+  if (room.workerLease && getRoom(room.roomId) !== room) return false
+  if (fanoutAttached.has(room)) return true
   fanoutAttached.add(room)
   room.subscribe(listener)
+  if (room.workerLease && onWorkerRetired) room.onWorkerRetired(onWorkerRetired)
+  return true
 }
 
 /* ═══════════════ 帧规划（纯决策，wire 帧编码在 adapter） ═══════════════ */
@@ -95,13 +104,27 @@ export async function planJoin(
   roomId: string,
   userId: number,
   username: string,
+  retry?: { signal?: AbortSignal },
 ): Promise<{ ok: true; room: RoomService } | { ok: false; error: string }> {
   if (!hasRoomCapacity(roomId)) return { ok: false, error: '服务器活跃房间已满，请稍后重试。' }
-  const room = await joinRoom(roomId, userId, username).catch((error: unknown) => {
-    if (error instanceof RoomWorkerBusyError) return error
-    throw error
-  })
-  if (room instanceof RoomWorkerBusyError) return { ok: false, error: room.message }
+  const retryUntil = performance.now() + DIRECT_JOIN_RETRY_WINDOW_MS
+  let room: RoomService | null
+  for (let attempt = 0; ; attempt++) {
+    if (retry?.signal?.aborted) return { ok: false, error: 'Room join interrupted.' }
+    try {
+      room = await joinRoom(roomId, userId, username)
+      break
+    } catch (error) {
+      const busy = error instanceof RoomWorkerBusyError
+      const retryDelay = DIRECT_JOIN_RETRY_DELAYS_MS[attempt]
+      if (!retry || retryDelay === undefined || performance.now() + retryDelay > retryUntil ||
+          !(busy || error instanceof PostgresOperationError)) {
+        if (busy) return { ok: false, error: error.message }
+        throw error
+      }
+      await delay(retryDelay, undefined, { signal: retry.signal }).catch(() => {})
+    }
+  }
   if (!room) return {
     ok: false,
     error: hasRoomCapacity(roomId) ? 'not a room member' : '\u670d\u52a1\u5668\u6d3b\u8dc3\u623f\u95f4\u5df2\u6ee1\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002',

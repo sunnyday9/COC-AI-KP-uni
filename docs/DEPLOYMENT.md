@@ -163,6 +163,8 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 在共享房间配置上额外设置 `ENABLE_ROOM_WORKER_FAILOVER=1`。每个进程使用独立端口，共享 PostgreSQL、JWT 签名配置和准备好的剧本目录。`ROOM_WORKER_LEASE_MS` 默认 15000，允许 1000–120000 毫秒。PostgreSQL 使用数据库时钟判定租约。进程约每三分之一租期分批续租，每条续租查询最多处理 64 个房间，并将仍有效但被锁定的租约留到下次检查。加入房间时，新进程只有在租约可接管时才恢复房间。默认的 `ROOM_RUNTIME=direct` 适用于将 HTTP、WebSocket 和房间执行部署在同一进程的环境。
 
+direct 实例失去房间租约后会重置该房间仍打开的 WebSocket 连接，客户端按现有重连流程重新订阅。重置按传输中断处理，保留成员和房主。重连所到达的实例需要持有或能接管该房间的租约。租约暂未可用或 PostgreSQL 短时出错时，进程会在短暂窗口内额外尝试至多四次。
+
 跨网关部署请使用以下进程角色。各进程使用相同的 PostgreSQL、JWT 签名配置和剧本存储配置。
 
 - `ROOM_RUNTIME=gateway` 提供 HTTP 和 WebSocket，可以配置多个实例。负载均衡器将 HTTP 和 WebSocket 连接指向网关。
@@ -178,7 +180,7 @@ NODE_ENV=production DEPLOYMENT_MODE=shared-accounts PORT=3001 npm run start --wo
 
 单进程模式使用排他启动锁，多进程预发布使用同一锁的共享模式。切换前先停掉正在运行的房间进程，再启动新模式。SQLite 无需配置。使用独立的 PostgreSQL 夹具运行 `npm run test:server -- src/routes/sharedRooms.test.ts`，覆盖抢占租约、延迟旧结果、杀进程恢复、按原批次重放和规则效果只提交一次。
 
-共享模式仍处于受控预发布。扩大流量前需完成分布式的 30 分钟混合负载与独立的真实 BYOK 验证。direct 模式旧连接恢复及单回合大量事件的边界仍在跟踪。见 [验收方案](scale-out-staging.md)、[结果](scale-out-staging-results.md)、[#129](https://github.com/sunnyday9/COC-AI-KP-uni/issues/129) 和 [#130](https://github.com/sunnyday9/COC-AI-KP-uni/issues/130)。
+共享模式仍处于受控预发布。扩大流量前需完成分布式的 30 分钟混合负载与独立的真实 BYOK 验证。单回合大量事件的边界仍在跟踪。见 [验收方案](scale-out-staging.md)、[结果](scale-out-staging-results.md) 和 [#130](https://github.com/sunnyday9/COC-AI-KP-uni/issues/130)。
 
 ### 6.4 共享剧本准备进程（#116）
 

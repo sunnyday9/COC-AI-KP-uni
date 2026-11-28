@@ -94,6 +94,8 @@ Each catalog p95 comes from only three page reads. Latency varied between local 
 
 Use the [SQLite migration and rollback rehearsal](../MIGRATION-REHEARSAL.md) for cutover and the [scale-out acceptance plan](../scale-out-staging.md) for rollout sign-off. The [staging evidence](../scale-out-staging-results.md) records the measured budgets and remaining validation.
 
-The first terminal frame write has a one-second timeout. Bound its impact on room command latency in staging. Stale direct-mode subscriptions and large event commits still have tracked recovery gaps. See [#126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126), [#129](https://github.com/sunnyday9/COC-AI-KP-uni/issues/129), and [#130](https://github.com/sunnyday9/COC-AI-KP-uni/issues/130).
+In direct mode, retiring a leased room instance resets open sockets subscribed to that room. Reconnection activates the room on a process that holds or can claim its lease and resumes accepted work. A transport reset preserves membership and ownership.
+
+The gateway's first terminal frame write has a one-second timeout. Bound its impact on room command latency in staging. Large event commits still have a tracked recovery gap. See [#126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126) and [#130](https://github.com/sunnyday9/COC-AI-KP-uni/issues/130).
 
 The single-host stage retains full room history in snapshots. Catalog pages address story metadata. Source bytes, derived artifacts, live providers, long sessions, and cross-host recovery need independent capacity and fault tests.

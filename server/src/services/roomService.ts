@@ -252,6 +252,7 @@ export class RoomService {
   private queue: Promise<unknown> = Promise.resolve()
   private queuedClientActions = 0
   private readonly listeners = new Set<(event: RoomEvent, seq: number) => void>()
+  private workerRetirementListeners?: Set<() => void>
   /** 事件日志（Phase C1）：带 seq 的增量事件，环形保留最近 MAX_EVENT_LOG 条。 */
   private eventLog: { seq: number; event: RoomEvent }[] = []
 
@@ -346,8 +347,20 @@ export class RoomService {
   }
 
   private retireWorker(): void {
+    if (this.disposed) return
+    const current = getRoom(this.roomId) === this
+    const listeners = current ? this.workerRetirementListeners : undefined
+    if (current) roomRegistry.delete(this.roomId)
     this.dispose()
-    if (getRoom(this.roomId) === this) roomRegistry.delete(this.roomId)
+    for (const listener of listeners ?? []) {
+      try { listener() } catch (error) {
+        logger.warn('room worker retirement listener failed', { roomId: this.roomId, error: String(error) })
+      }
+    }
+  }
+
+  onWorkerRetired(listener: () => void): void {
+    (this.workerRetirementListeners ??= new Set()).add(listener)
   }
 
   /* ═══════════════ 查询（只读，无需入队） ═══════════════ */
@@ -1721,6 +1734,7 @@ export class RoomService {
     this.stopLeaseHeartbeat?.()
     this.clearTurnWindow()
     this.listeners.clear()
+    this.workerRetirementListeners = undefined
   }
 }
 
