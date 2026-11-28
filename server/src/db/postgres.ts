@@ -8,11 +8,13 @@ import { initializePostgresStoryPreparation } from './postgresStoryPreparationSc
 
 let pool: Pool | undefined
 
+export class PostgresOperationError extends Error {}
+
 /** Keep connection details, row data, and SQL parameters out of app logs. */
-export function postgresError(error: unknown): Error {
+export function postgresError(error: unknown): PostgresOperationError {
   const code = (error as { code?: unknown } | null)?.code
   const reason = typeof code === 'string' && /^[A-Z0-9]{5,20}$/.test(code) ? ` (${code})` : ''
-  return new Error(`PostgreSQL operation failed${reason}`)
+  return new PostgresOperationError(`PostgreSQL operation failed${reason}`)
 }
 
 export function getPostgresPool(): Pool {

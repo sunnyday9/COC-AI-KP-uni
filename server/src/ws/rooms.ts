@@ -17,7 +17,7 @@
  * RoomService（ADR-0001）。
  */
 import type { WebSocket } from 'ws'
-import { ROOM_RUNTIME } from '../config.js'
+import { ROOM_RUNTIME, ROOM_WORKER_FAILOVER_ENABLED } from '../config.js'
 import { routeSocketCommand } from '../services/roomCommands.js'
 import { releaseGatewaySocketPresence } from './gatewayPresence.js'
 import { resumeGatewaySocket } from './gatewayRooms.js'
@@ -27,7 +27,7 @@ import { handleOwnerWsDisconnect } from '../services/roomService.js'
 import { cleanupSocket, ensureFanout, planAction, planDirectReplay, planJoin, planSync, roomIdsOfSocket, subscribeSocket, subscribersOf, unsubscribeGatewaySocket, unsubscribeSocket } from './roomLedger.js'
 import { errorMessage } from '../utils/errors.js'
 import { logger } from '../utils/logging.js'
-import { isTransportReset, roomEventFrame, sendFrame } from './sendFrame.js'
+import { isTransportReset, markTransportReset, roomEventFrame, sendFrame, type FrameRecipient } from './sendFrame.js'
 
 const directUsers = new WeakMap<object, number>()
 
@@ -63,6 +63,12 @@ function broadcast(roomId: string, event: RoomEvent, seq: number): void {
   }
 }
 
+function resetDirectSocket(socket: FrameRecipient): void {
+  if (socket.readyState !== 1) return
+  markTransportReset(socket)
+  socket.terminate()
+}
+
 function readCursor(raw: unknown): number {
   const { lastSeq } = raw as { lastSeq?: unknown }
   return typeof lastSeq === 'number' && Number.isSafeInteger(lastSeq) && lastSeq > 0 ? lastSeq : 0
@@ -77,15 +83,22 @@ export async function handleRoomJoin(socket: WebSocket, userId: number, raw: unk
   }
   const lastSeq = readCursor(raw)
   if (ROOM_RUNTIME === 'gateway') return resumeGatewaySocket(socket, roomId, userId, lastSeq, signal)
-  const plan = await planJoin(roomId, userId, `user_${userId}`)
+  const plan = await planJoin(roomId, userId, `user_${userId}`, ROOM_WORKER_FAILOVER_ENABLED ? { signal } : undefined)
   if (!plan.ok) {
     send(socket, { type: 'room:error', roomId, error: plan.error })
     return
   }
   const room = plan.room
-  // 扇出挂接：RoomService 事件 → 房间订阅组（幂等由订阅簿保证）
-  ensureFanout(room, (event, seq) => broadcast(roomId, event, seq))
   if (socket.readyState !== 1) return
+  const attached = ensureFanout(
+    room,
+    (event, seq) => broadcast(roomId, event, seq),
+    () => subscribersOf(roomId).forEach(resetDirectSocket),
+  )
+  if (!attached) {
+    resetDirectSocket(socket)
+    return
+  }
   directUsers.set(socket, userId)
   subscribeSocket(socket, roomId)
   const replay = planDirectReplay(room, lastSeq, true)
