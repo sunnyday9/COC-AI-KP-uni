@@ -201,6 +201,26 @@ function pauseAcceptance(actionId: string): string {
   `)
 }
 
+/** Leave a first terminal snapshot pending until the peer closes. */
+function pauseFirstSnapshot(directory: string): string {
+  return 'data:text/javascript,' + encodeURIComponent(`
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    import WebSocket from ${JSON.stringify(import.meta.resolve('ws'))};
+    const directory = ${JSON.stringify(directory)};
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (frame, ...args) {
+      const message = typeof frame === 'string' ? JSON.parse(frame) : null;
+      if (message?.type !== 'room:state' || !existsSync(join(directory, 'pause-snapshot-' + message.roomId))) {
+        return send.call(this, frame, ...args);
+      }
+      const complete = args.at(-1);
+      this.once('close', () => complete(new Error('Peer closed while the terminal frame was pending')));
+      writeFileSync(join(directory, 'pending-snapshot-' + message.roomId), '');
+    };
+  `)
+}
+
 /** Interrupt a single worker after it has authorized a REST mutation. */
 function pauseRoomMutations(directory: string): string {
   return 'data:text/javascript,' + encodeURIComponent(`
@@ -337,7 +357,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
   const pausedAcceptances = new WeakSet<ChildProcess>()
   const shared = backend === 'postgres'
   let base: string
-  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string; runtime?: 'worker' | 'gateway'; activeRooms?: number; duplicateOutbox?: boolean; drainable?: boolean; drainOnReplayCompletion?: boolean } = {}): Promise<ChildProcess> {
+  async function launch(options: KeeperFixture & { pauseActionId?: string; singleProcess?: boolean; chunkStream?: boolean; governanceBarrier?: string; runtime?: 'worker' | 'gateway'; activeRooms?: number; duplicateOutbox?: boolean; drainable?: boolean; drainOnReplayCompletion?: boolean; pauseFirstSnapshot?: boolean } = {}): Promise<ChildProcess> {
     const port = await freePort()
     base = `http://127.0.0.1:${port}`
     const args = ['--import', 'tsx']
@@ -345,6 +365,7 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       args.push('--import', keeperFixture(options))
     }
     if (options.pauseActionId) args.push('--import', pauseAcceptance(options.pauseActionId))
+    if (options.pauseFirstSnapshot) args.push('--import', pauseFirstSnapshot(root))
     if (options.governanceBarrier) args.push('--import', pauseRoomMutations(options.governanceBarrier))
     if (options.duplicateOutbox) args.push('--import', duplicateOutboxEvents())
     if (pressureScenario && options.runtime !== 'gateway') args.push('--import', pressureProvider(root))
@@ -786,8 +807,9 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
     expect((await detail(drainRoom.roomId, owner.token)).ownerId).toBe(owner.user.id)
     const lostRoom = await createRoom()
     await subscribe(owner, lostRoom.roomId, secondBase)
-    const third = await launch({ runtime: 'gateway' })
+    const third = await launch({ runtime: 'gateway', pauseFirstSnapshot: true })
     await ready(third)
+    const thirdBase = base
     const abruptlyClosed = once(second, 'exit')
     second.kill('SIGKILL')
     await abruptlyClosed
@@ -816,6 +838,54 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       `, [lostRoom.roomId])).rowCount, { timeout: 17_000 }).toBe(0)
       expect((await detail(lostRoom.roomId, owner.token)).ownerId).toBe(owner.user.id)
 
+      const registrations = async (roomId: string) => (await db.query<{ subscription_id: string }>(
+        'SELECT subscription_id FROM room_gateway_presence WHERE room_id = $1', [roomId],
+      )).rows
+      const suspendFirstResume = async (roomId: string) => {
+        await writeFile(join(root, 'pause-snapshot-' + roomId), '')
+        const socket = await connect(owner.token)
+        let closedBeforeRelease = false
+        const closed = socket.closed().then(() => { closedBeforeRelease = true })
+        socket.send({ type: 'room:join', roomId })
+        await expect.poll(() => existsSync(join(root, 'pending-snapshot-' + roomId))).toBe(true)
+        return { socket, closed, isClosed: () => closedBeforeRelease }
+      }
+
+      const firstResume = await createRoom()
+      const aborted = await suspendFirstResume(firstResume.roomId)
+      expect(await registrations(firstResume.roomId)).toEqual([])
+      expect(aborted.isClosed()).toBe(false)
+      aborted.socket.close()
+      await aborted.closed
+      expect(aborted.socket.frames.filter((frame) => frame.type === 'room:state' || frame.type === 'room:sync:done')).toEqual([])
+      await db.query('SELECT 1 FROM rooms WHERE room_id = $1 FOR NO KEY UPDATE', [firstResume.roomId])
+      await expect.poll(async () => (await registrations(firstResume.roomId)).length).toBe(0)
+      expect((await db.query('SELECT 1 FROM room_commands WHERE room_id = $1 AND presence_loss', [firstResume.roomId])).rowCount).toBe(0)
+      expect((await detail(firstResume.roomId, owner.token)).ownerId).toBe(owner.user.id)
+
+      const overlap = await createRoom()
+      await joinInvite(successor, overlap.inviteCode)
+      const otherGateway = await launch({ runtime: 'gateway' })
+      await ready(otherGateway)
+      const incumbent = await subscribe(owner, overlap.roomId)
+      await expect.poll(async () => (await registrations(overlap.roomId)).length).toBe(1)
+      const [incumbentPresence] = await registrations(overlap.roomId)
+      base = thirdBase
+      const incomplete = await suspendFirstResume(overlap.roomId)
+      incumbent.close()
+      await expect.poll(async () => (await db.query<{ cleanup_started: boolean }>(`
+        SELECT NOT EXISTS (SELECT 1 FROM room_gateway_presence WHERE subscription_id = $1)
+          OR EXISTS (
+            SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND query LIKE '%AS current_owner%'
+              AND cardinality(pg_blocking_pids(pid)) > 0
+          ) AS cleanup_started
+      `, [incumbentPresence.subscription_id])).rows[0].cleanup_started).toBe(true)
+      expect(incomplete.isClosed()).toBe(false)
+      incomplete.socket.close()
+      await incomplete.closed
+      expect(incomplete.socket.frames.some((frame) => frame.type === 'room:state')).toBe(false)
+      await expect.poll(async () => (await detail(overlap.roomId, successor.token)).ownerId).toBe(successor.user.id)
+
       await configure(owner, 'cooling-fixture')
       const workerOutage = await createRoom(storyId)
       await joinInvite(successor, workerOutage.inviteCode)
@@ -835,14 +905,43 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       const retainedAfterReconnect = await createRoom()
       await joinInvite(successor, retainedAfterReconnect.inviteCode)
       const retainedMember = await subscribe(successor, retainedAfterReconnect.roomId)
+      const survivingGateway = base
+      const departureGateway = await launch({ runtime: 'gateway', drainable: true })
+      await ready(departureGateway)
+      const drainWitness = await connect(owner.token)
       const departedDevice = await subscribe(owner, retainedAfterReconnect.roomId)
+      base = survivingGateway
       departedDevice.send(chat(retainedAfterReconnect.roomId, 'Keep the lobby open'))
       const replayAnchor = await departedDevice.waitFor((frame) => frame.payload?.message?.content === 'Keep the lobby open')
       await stop(worker)
       lastDevice.send({ type: 'room:sync', roomId: workerOutage.roomId })
       await lastDevice.waitFor((frame) => frame.type === 'room:error')
       lastDevice.close()
-      departedDevice.close()
+      const departureDrain = once(departureGateway, 'exit')
+      const blocker = await db.connect()
+      try {
+        await blocker.query('BEGIN')
+        const held = await blocker.query<{ pid: number }>(
+          'SELECT pg_backend_pid() AS pid FROM rooms WHERE room_id = $1 FOR NO KEY UPDATE', [retainedAfterReconnect.roomId],
+        )
+        departedDevice.close()
+        await expect.poll(async () => (await db.query(`
+          SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+            AND query LIKE '%AS current_owner%' AND $1 = ANY(pg_blocking_pids(pid))
+        `, [held.rows[0].pid])).rowCount).toBe(1)
+
+        // The idle socket closes as soon as drain starts, while the room lock still blocks cleanup.
+        const witnessClosed = drainWitness.closed()
+        departureGateway.send('drain')
+        expect((await witnessClosed)[0]).toBe(1006)
+      } finally {
+        try {
+          await blocker.query('ROLLBACK')
+        } finally {
+          blocker.release(true)
+        }
+      }
+      expect(await departureDrain).toEqual([0, null])
       const queuedLosses = async (queuedRoomId: string) => (await db.query(
         'SELECT 1 FROM room_commands WHERE room_id = $1 AND presence_loss', [queuedRoomId],
       )).rowCount
@@ -861,7 +960,6 @@ async function journey(backend: 'local' | 'postgres', scenario?: 'failover' | 'g
       await failedReconnect.waitFor((frame) => frame.type === 'room:error')
       expect(await queuedLosses(workerOutage.roomId)).toBe(1)
 
-      const survivingGateway = base
       const drainingGateway = await launch({ runtime: 'gateway', drainOnReplayCompletion: true })
       await ready(drainingGateway)
       const interruptedResume = await connect(owner.token)

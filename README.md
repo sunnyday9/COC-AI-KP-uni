@@ -168,7 +168,7 @@ MODELS_DIR="$PWD/data/models" RERANK_SMOKE=1 npx vitest run src/rag/__tests__/re
 
 - **MVP 完成**：单人 + 多人全功能闭环落地 main；历史回归记录见 `docs/DEVELOPMENT-LOG.md`，当前工作树请以 CI/test runner 实际输出为准；
 - 主要里程碑：Electron → 服务端重构（ADR-0002）→ LLM 协议化（ADR-0003）→ UI 全面重设计（ADR-0004）→ 多人房间（ADR-0005）→ BYOK / 依赖安全收口；
-- 共享部署已完成隔离环境的功能验证和迁移演练。本地 2,000 连接、1,000 房间的混合负载未达到延迟及集中重连预算。扩大部署仍需完成参考环境验收并处理房主续连问题。见 [扩容验收 #126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126) 和 [房主续连 #127](https://github.com/sunnyday9/COC-AI-KP-uni/issues/127)。
+- 共享部署已完成隔离环境的功能验证和迁移演练。本地 2,000 连接、1,000 房间的混合负载未达到延迟及集中重连预算。扩大部署仍需完成参考环境验收，并验证直连租约丢失和大型事件批次下的恢复。见 [扩容验收 #126](https://github.com/sunnyday9/COC-AI-KP-uni/issues/126) 和 [部署指南](docs/DEPLOYMENT.md#多房间进程故障恢复预发布120)。
 - 路线图候选（未立项）：流式输出、observer 观战、多人结局、故事共享。
 
 ## 安全设计

@@ -20,7 +20,8 @@ export async function resumeGatewaySocket(
   }
 
   let membershipLost = false
-  const current = () => socket.readyState === 1 && subscription === gatewaySubscribers(roomId)?.get(socket)
+  const reserved = () => subscription === gatewaySubscribers(roomId)?.get(socket)
+  const current = () => socket.readyState === 1 && reserved()
   const notMember = () => {
     membershipLost = true
     send({ type: 'room:error', roomId, error: 'not a room member' })
@@ -36,13 +37,13 @@ export async function resumeGatewaySocket(
           return frameWritten
         },
       )
-      if (!current()) return
-      if (present) {
-        if (!frameWritten) sendFrame(socket, encoded)
-        if (current()) subscription.seq = seq
+      if (present && reserved()) {
+        // An ordinary close can start after the first frame and before presence commits.
+        subscription.seq = seq
+      } else if (current()) {
+        if (frameWritten) resetForReplay(socket)
+        else notMember()
       }
-      else if (frameWritten) resetForReplay(socket)
-      else notMember()
     } catch (error) {
       if (frameWritten && current()) resetForReplay(socket)
       throw error
@@ -58,7 +59,7 @@ export async function resumeGatewaySocket(
     for (const frame of plan.frames) sendFrame(socket, frame)
     await finish(plan.terminal, plan.seq)
   } finally {
-    if (subscription.seq === null && subscription === gatewaySubscribers(roomId)?.get(socket)) {
+    if (subscription.seq === null && reserved()) {
       if (previousSeq != null && !membershipLost) subscription.seq = previousSeq
       else unsubscribeGatewaySocket(socket, roomId)
     }

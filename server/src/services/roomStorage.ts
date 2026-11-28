@@ -913,7 +913,7 @@ export async function registerRoomPresence(
     // Serialize a new subscriber with the fenced absence check before succession.
     const room = await client.query('SELECT 1 FROM rooms WHERE room_id = $1 FOR NO KEY UPDATE', [roomId])
     if (!room.rowCount || !stillCurrent()) return false
-    const member = await client.query<{ replacing_disconnect: boolean }>(`
+    const member = await client.query(`
       WITH confirmed AS (
         INSERT INTO room_gateway_presence (room_id, user_id, subscription_id, expires_at)
         SELECT room_id, user_id, $3, clock_timestamp() + ${roomPresenceTtl}
@@ -925,13 +925,13 @@ export async function registerRoomPresence(
           AND EXISTS (SELECT 1 FROM confirmed)
         RETURNING 1
       )
-      SELECT EXISTS (SELECT 1 FROM superseded) AS replacing_disconnect FROM confirmed
+      SELECT 1 FROM confirmed
     `, [roomId, userId, subscriptionId])
     if (!stillCurrent()) throw abandonedPresence
     if (member.rowCount !== 1) return false
-    // The gateway bounds this write. A drain before completion rolls back the
-    // presence and preserves any older ordinary-disconnect request.
-    if (member.rows[0]?.replacing_disconnect && writeResume && !await writeResume()) throw abandonedPresence
+    // Publish presence only after the gateway's bounded terminal write. An
+    // interrupted join must not suppress another gateway's ordinary departure.
+    if (writeResume && !await writeResume()) throw abandonedPresence
     return true
   }).catch((error: unknown) => {
     if (error === abandonedPresence) return false
@@ -960,11 +960,11 @@ async function enqueueOwnerPresenceLoss(client: PoolClient, roomId: string, user
   }
 }
 
-export async function removeRoomPresence(entry: RoomPresence, isOrdinary: () => boolean): Promise<void> {
+export async function removeRoomPresence(entry: RoomPresence, ordinaryDisconnect: boolean): Promise<void> {
   const { roomId, userId, subscriptionId } = entry
   const remove = `DELETE FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND subscription_id = $3
     RETURNING expires_at > clock_timestamp() AS live`
-  if (!isOrdinary()) {
+  if (!ordinaryDisconnect) {
     await getPostgresPool().query(remove, [roomId, userId, subscriptionId])
     return
   }
@@ -975,12 +975,12 @@ export async function removeRoomPresence(entry: RoomPresence, isOrdinary: () => 
     `, [roomId, userId])
     if (!room.rowCount) return
     const removed = await client.query<{ live: boolean }>(remove, [roomId, userId, subscriptionId])
-    if (!removed.rows[0]?.live || !room.rows[0]?.current_owner || !isOrdinary()) return
+    if (!removed.rows[0]?.live || !room.rows[0]?.current_owner) return
     const others = await client.query(
       'SELECT 1 FROM room_gateway_presence WHERE room_id = $1 AND user_id = $2 AND expires_at > clock_timestamp() LIMIT 1',
       [roomId, userId],
     )
-    if (!others.rowCount && isOrdinary()) await enqueueOwnerPresenceLoss(client, roomId, userId)
+    if (!others.rowCount) await enqueueOwnerPresenceLoss(client, roomId, userId)
   })
 }
 

@@ -30,24 +30,30 @@ function forget(rooms: Map<string, GatewayPresence>, entry: GatewayPresence): vo
   live.delete(entry)
 }
 
-export function confirmGatewayPresence(
+export async function confirmGatewayPresence(
   socket: FrameRecipient, roomId: string, userId: number, current: () => boolean, writeResume: () => Promise<boolean>,
 ): Promise<boolean> {
-  const stillCurrent = () => current() && !draining
-  if (!stillCurrent()) return Promise.resolve(false)
+  const stillCurrent = () => current() && !draining && !isTransportReset(socket)
+  if (!stillCurrent()) return false
+  const writeWhileServing = async () => {
+    if (!stillCurrent()) return false
+    const written = await writeResume()
+    return written && !draining && !isTransportReset(socket)
+  }
   let rooms = sockets.get(socket)
   if (!rooms) {
     rooms = new Map()
     sockets.set(socket, rooms)
   }
   const previous = rooms.get(roomId)
-  if (previous) return previous.ready
+  if (previous) return await previous.ready && await writeWhileServing()
   if (live.size + pendingRemovals.size >= capacity) throw new CapacityError('Room presence capacity reached. Retry joining.')
   const socketRooms = rooms
-  const entry: GatewayPresence = { roomId, userId, subscriptionId: randomUUID(), ready: Promise.resolve(false), confirmed: false }
+  const entry: GatewayPresence = {
+    roomId, userId, subscriptionId: randomUUID(), ready: Promise.resolve(false), confirmed: false,
+  }
   live.add(entry)
   rooms.set(roomId, entry)
-  const writeWhileServing = async () => await writeResume() && !draining && !isTransportReset(socket)
   entry.ready = registerRoomPresence(roomId, userId, entry.subscriptionId, stillCurrent, writeWhileServing).then((registered) => {
     entry.confirmed = registered
     if (!registered) forget(socketRooms, entry)
@@ -67,9 +73,12 @@ export function releaseGatewayPresence(socket: FrameRecipient, roomId: string, o
   const rooms = sockets.get(socket)
   const entry = rooms?.get(roomId)
   if (!rooms || !entry) return
+  // Drain can begin while registration or the removal transaction is pending.
+  const ordinaryDisconnect = ordinary && !draining
   forget(rooms, entry)
   const removal = entry.ready.catch(() => false)
-    .then(() => removeRoomPresence(entry, () => entry.confirmed && ordinary && !draining)).catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
+    .then(() => removeRoomPresence(entry, entry.confirmed && ordinaryDisconnect))
+    .catch((error) => logger.warn('Gateway presence cleanup failed', { roomId, error: postgresError(error).message }))
     .finally(() => pendingRemovals.delete(removal))
   pendingRemovals.add(removal)
 }
@@ -83,7 +92,7 @@ export async function runGatewayPresence(signal: AbortSignal): Promise<void> {
         if (renewed.has(entry.subscriptionId) || !live.has(entry)) continue
         // Another gateway may have pruned a very old lease after a storage outage.
         await registerRoomPresence(entry.roomId, entry.userId, entry.subscriptionId, () => live.has(entry) && !draining)
-        if (!live.has(entry)) await removeRoomPresence(entry, () => false)
+        if (!live.has(entry)) await removeRoomPresence(entry, false)
       }
       await reapRoomPresence()
     } catch (error) {
